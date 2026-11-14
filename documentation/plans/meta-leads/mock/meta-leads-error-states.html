@@ -42,6 +42,12 @@ th{font-size:12px;color:var(--muted);font-weight:600}
 .cap{color:var(--muted);font-size:12px;margin-top:10px}
 [hidden]{display:none!important}
 .theme{position:fixed;right:12px;bottom:12px}
+.sw{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border:1px solid var(--line);border-radius:8px;padding:14px;margin:0 0 14px}
+.sw small{display:block;color:var(--muted)}
+.tog{flex:none;width:40px;height:22px;border-radius:999px;background:var(--chip);border:1px solid var(--line);position:relative;cursor:pointer;padding:0}
+.tog::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--muted);transition:left .15s}
+.tog[aria-checked="true"]{background:var(--primary);border-color:var(--primary)}
+.tog[aria-checked="true"]::after{left:20px;background:#fff}
 </style>
 </head>
 <body>
@@ -56,6 +62,7 @@ th{font-size:12px;color:var(--muted);font-weight:600}
     <button role="tab" aria-selected="false" data-s="e4">E4 Page in use</button>
     <button role="tab" aria-selected="false" data-s="e5">E5 Reconnect</button>
     <button role="tab" aria-selected="false" data-s="e6">E6 New form found</button>
+    <button role="tab" aria-selected="false" data-s="e8">Page sharing switch</button>
   </div>
 
   <!-- E1 -->
@@ -137,6 +144,19 @@ th{font-size:12px;color:var(--muted);font-weight:600}
       <p class="cap">Leads keep arriving meanwhile. Map fields opens the Fields step for the new form only.</p>
     </div>
   </section>
+  <!-- E8 -->
+  <section class="frame" data-p="e8" hidden>
+    <div class="bar"><b>Company Settings</b><span class="crumb">Lead Capture</span></div>
+    <div class="body">
+      <div class="sw"><div><b>Share Facebook Pages with other products</b><small>When on, a Page you connect here can also send its leads to another product that has this switched on.</small><small id="shared">Shared with 1 other product: Sample Home Page</small></div>
+        <button class="tog" role="switch" aria-checked="true" id="tog" aria-label="Share Facebook Pages with other products"></button></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Source</th><th>Account</th><th>Status</th><th>Last lead</th><th>Leads (7 days)</th></tr></thead>
+        <tbody><tr><td>Facebook</td><td>Sample Home Page</td><td><span class="pill ok">Live</span></td><td>14/11/2026, 10:41 am</td><td>21</td></tr></tbody>
+      </table></div>
+      <p class="cap">Off: other products can no longer join your Pages. Pages already shared stay connected.</p>
+    </div>
+  </section>
 </div>
 <button class="btn btn2 theme" id="theme">Light / Dark</button>
 <script>
@@ -144,6 +164,7 @@ document.querySelectorAll('[role=tab]').forEach(function(t){t.addEventListener('
   document.querySelectorAll('[role=tab]').forEach(function(x){x.setAttribute('aria-selected',x===t?'true':'false')});
   document.querySelectorAll('[data-p]').forEach(function(p){p.hidden=p.getAttribute('data-p')!==t.getAttribute('data-s')});
 })});
+document.getElementById('tog').addEventListener('click',function(){var t=this,on=t.getAttribute('aria-checked')!=='true';t.setAttribute('aria-checked',on);});
 document.getElementById('theme').addEventListener('click',function(){
   var r=document.documentElement,d=r.getAttribute('data-theme')==='dark'||(!r.getAttribute('data-theme')&&matchMedia('(prefers-color-scheme: dark)').matches);
   r.setAttribute('data-theme',d?'light':'dark');

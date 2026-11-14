@@ -57,14 +57,18 @@ common platforms that can support integration".
 - D3 **Meta plumbing moves to core** `app/integrations/meta/` (code exchange, long-lived token, `/me/accounts`,
   `subscribed_apps`, signature check, Graph error classification). Pure move first (slice S0): omnichannel imports it,
   its suites pass UNEDITED. Lead Capture uses it directly; no cross-module import.
-- D4 **One Foundryx Meta app.** Scopes requested by Lead Capture's login config: `pages_show_list`,
-  `pages_manage_metadata`, `pages_read_engagement`, `leads_retrieval`, `business_management`, plus `ads_read` for
-  campaign/ad names if S-META confirms it is needed. App name shown on Facebook's consent screen must be neutral
+- D4 **One Foundryx Meta app.** Scopes requested by Lead Capture's login config (owner 14 Nov, D4 = b):
+  `pages_show_list`, `pages_manage_metadata`, `pages_read_engagement`, `leads_retrieval`, `pages_manage_ads`
+  (Meta's retrieving-leads page lists it for full lead data). `business_management` only if S-META shows the
+  system-user login needs it. `ads_management` (campaign and ad names) is deferred to a later release. Token type
+  (owner D2 = b): business system-user token via Login for Business when S-META confirms it covers Pages and leads,
+  else the long-lived user/Page token; Reconnect (AC-64-29) stays in both cases. App name shown on Facebook's consent screen must be neutral
   (white-label, O-2).
 - D5 **Meta webhook field registry in core** `app/integrations/meta/webhook_registry.py`:
   `register_meta_change_handler(object, field, provider_module, handler)` at boot, one owner per (object, field), a
-  second claimant is a loud boot error (same shape as `register_public_cors_prefix`). Omnichannel's ingress, after its
-  own handling, hands each `changes[]` entry whose (object, field) has an owner to that handler (sync, fast, the handler
+  second claimant is a loud boot error (same shape as `register_public_cors_prefix`). Omnichannel's ingress, BEFORE its
+  own channel lookup and module-active check (`OC/services/inbound_service.py:81-93`, which would otherwise drop a
+  lead-only Page), hands each `changes[]` entry whose (object, field) has an owner to that handler (sync, fast, the handler
   only enqueues). Lead Capture registers (`page`, `leadgen`). Without Lead Capture installed nothing changes.
 - D6 **Provider contract** `modules/lead_capture/providers/base.py`: `key`, `phase`, `mode` (auto | guided),
   `is_configured()` (env present), `wizard_steps`, `parse_inbound(request) -> list[RawLead]`, `fetch(raw) -> RawLead`
@@ -84,6 +88,17 @@ common platforms that can support integration".
   OWN message table + backfill no-op since old rows have none). Lead Capture never reads omnichannel tables.
 - D11 **Lead store is a buffer, not a CRM**: no statuses, owners or pipelines here; the consumer owns the lead's life.
   Raw + personal fields purged after 180 days (AC-64-54).
+- D13 **Page sharing is a per-product toggle** (owner 14 Nov: "it should be toggleable per product"). Setting
+  `allow_shared_pages` per tenant, default OFF, in Lead Capture > Settings and `GET|PUT /api/v1/lead-capture/settings`
+  (so EcoHub can show it in its own Company Settings > Lead Capture tab). A Page may be live under several tenants only
+  when every tenant on it allows sharing; else `PAGE_IN_USE`, worded the same either way (AC-64-36). A shared Page's
+  lead is fetched once and stored + delivered once per live source with that source's own map (AC-64-37). The Page is
+  unsubscribed only when its last live source goes.
+- D14 **New forms deliver at once** (owner D3 = a): unmapped answers go to Lead notes and the source shows "Map
+  fields" (AC-64-35); in All-forms mode the backfill re-reads the form list each run (AC-64-28).
+- D15 **One Page-subscribe function** in core `app/integrations/meta/` (lane S0) reads the app's current fields on the
+  Page and posts the union, used by both omnichannel (Messenger fields, today `OC/adapters/messenger.py:94,311`) and
+  Lead Capture (`leadgen`), so neither switches the other off.
 - D12 **Animated guides** are data (frames of schematic screens + target + caption), one JSON per platform step,
   rendered by one `GuidePlayer` component. A platform UI change = edit the JSON.
 
@@ -92,11 +107,14 @@ common platforms that can support integration".
 - `lc_source` id, tenant_id, platform, mode, name, status (DRAFT | WAITING_FOR_TEST | LIVE | NEEDS_RECONNECT |
   DISCONNECTED), account_ref (page id / channel id / null), account_name, config_json (forms mode + ids, rule, IG
   account), field_map_json, credentials_json (Fernet: page token / source key hash), source_key (guided, unique),
-  cursor_at, created_by, created_at, updated_at, last_lead_at. Partial unique index (platform, account_ref) over live
-  rows (one Page, one tenant: AC-64-25).
+  cursor_at, created_by, created_at, updated_at, last_lead_at. Partial unique index (tenant_id, platform, account_ref) over live
+  rows (one live source per Page per tenant). The cross-tenant rule is NOT an index any more (D13): the connect
+  service takes a Postgres advisory lock on hash(platform, account_ref), reads the live sources on that Page and
+  applies AC-64-36. Ingest resolves `page_id` to ALL live sources.
+- `lc_settings` tenant_id (pk), allow_shared_pages bool default false, updated_by, updated_at.
 - `lc_connect_session` id, tenant_id, key_id, user_id null, return_origin, token_hash, expires_at, consumed_at,
   meta_session_json (Fernet).
-- `lc_lead` id, tenant_id, source_id, platform, platform_lead_id, received_at, fields_json, raw_json, attribution_json,
+- `lc_lead` id, tenant_id, source_id, platform, platform_lead_id, received_at, fields_json (Fernet), raw_json (Fernet), attribution_json,
   phone_e164, email, duplicate_of null, is_test, purged_at. Unique (source_id, platform_lead_id).
 - `lc_webhook_endpoint` id, tenant_id, url, events, secret (Fernet), active. `lc_delivery` id, tenant_id, endpoint_id,
   lead_id null, event, body_json, attempt, next_at, status, last_code, last_error.
@@ -112,7 +130,9 @@ guided sources `POST /public/lead-capture/in/{sourceKey}`.
 
 ## 6. Phases and lanes (order is the dependency order)
 
-Phase A (release 1): S0, S-META, L1-L6. Phase B: L7 TikTok (after S-TT). Phase C: one lane per platform after its spike.
+Release 1 (owner 14 Nov, D5 = b): S-META, S0, L1, L4, L2 (Facebook + Instagram channels only), L3, L-ECO, OPS.
+Release 2: L5 (Google Ads, website form), L6 (Click-to-WhatsApp). Then L7 TikTok (after S-TT) and one lane per further
+platform after its spike. Release 1 lane detail: `documentation/plans/meta-leads/PLAN-meta-lead-ads-14nov.md` section 9.
 
 | Lane | Scope | UAC | Depends |
 |---|---|---|---|
@@ -148,6 +168,9 @@ mode; owner tests on the Foundryx Page. 3. Phase A behind module install (only t
 the app. 5. EcoHub lane ships after L4 is on production.
 
 ## 9. Open questions (owner)
+
+Decided 14 Nov ~22:45 (owner: "for meta, 1 it should be toggleable per product, 2b, 3a, 4b, 5b"): D13, D2/D4, D14,
+D4, release split above. Still open:
 
 - O-1 Look of the hosted wizard: this repo's design system + tenant branding (D9, recommended, required for
   white-label) or the Playbook UIUX look from the mock?

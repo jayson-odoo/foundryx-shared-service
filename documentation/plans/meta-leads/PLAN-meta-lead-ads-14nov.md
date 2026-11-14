@@ -1,4 +1,4 @@
-# Meta Lead Ads: is plan 64 the right mechanism? (owner review, 14/11/2026)
+# Meta Lead Ads: is plan 64 the right mechanism? (owner review, 14/11/2026, decisions taken ~22:45)
 
 **What this is.** A check of the existing Lead Capture plan, not a new plan. Plan 64 and its acceptance criteria are
 already written: `documentation/plans/sprint-5/64-lead-capture.md` and `64-lead-capture-acceptance-criteria.md` on
@@ -36,12 +36,12 @@ static-table approach.**
 - **Two gaps in the plan, both easy to close:**
   1. **New questions on a new form.** The field mapping is set once, at setup, for the forms that exist then
      (AC-64-24). A new form's lead still arrives: name, phone and email are matched automatically and other answers
-     go to Lead notes. But nothing tells you a new form appeared with questions nobody mapped. **Fix:** show a notice
+     go to Lead notes. But nothing tells you a new form appeared with questions nobody mapped. **Fix (decided, AC-64-35):** show a notice
      on the source in EcoHub ("New form 'Raya promo' found, 2 answers go to Lead notes. Map them"), with the mapping
      reopening on that form only. Decision 3.
   2. **Catching up missed leads on new forms.** The 15-minute catch-up reads "each LIVE form" (AC-64-28). In "All
      forms" mode it must re-read the Page's form list each run, or a lead missed on a new form is never recovered.
-     **Fix:** one sentence added to AC-64-28.
+     **Fix (folded into AC-64-28).**
 - **Not automatic, by design:** a **new Facebook Page** needs one "Connect a source" in EcoHub. So does an ad run from
   a Page that was never connected.
 
@@ -178,53 +178,83 @@ must also appear on Scheduled Tasks with last run, last error and Run now (stand
 
 All paths are under `service_backend/modules/omnichannel/` except the last two, which are under `service_backend/`.
 
-## 7. Decisions for you (5)
+## 7. Decisions taken (owner, 14/11/2026 ~22:45)
 
-1. **One Facebook Page, two products (for example EcoHub and another Foundryx product).**
-   - (a) Refuse the second connection, as plan 64 does (`PAGE_IN_USE`).
-   - (b) Allow it and send each lead to both.
+His words: "for meta, 1 it should be toggleable per product, 2b, 3a, 4b, 5b".
 
-   **Recommend (a) for release 1.** It is simpler and safer for personal data. Change to (b) when a real customer
-   needs it.
-2. **Kind of Facebook connection.**
-   - (a) Tied to the person who clicked Connect. Breaks if they leave or change their password; the customer then
-     clicks Reconnect.
-   - (b) A business "system user" connection through Login for Business. Does not depend on one person.
-
-   **Recommend (b) if S-META confirms it works for Pages and leads, otherwise (a).** Both keep the Reconnect screen.
-3. **New form with questions nobody mapped.**
-   - (a) Deliver at once (name/phone/email matched, rest in Lead notes) and show "Map fields" on the source.
-   - (b) Hold those leads until someone maps them.
-
-   **Recommend (a).** A held lead is a lost sale.
-4. **Facebook permissions to submit for App Review.**
-   - (a) Plan 64's list.
-   - (b) Plan 64's list plus `pages_manage_ads` (Meta's leads page lists it).
-   - (c) As (b), plus `ads_management` so EcoHub shows campaign and ad names.
-
-   **Recommend (b) now, (c) later.** Every extra permission makes App Review harder; ad names are nice to have.
-5. **What release 1 contains.**
-   - (a) Plan 64 Phase A as written: Facebook, Instagram, WhatsApp ads, Google Ads, website form.
-   - (b) Facebook and Instagram plus delivery to EcoHub first; WhatsApp ads, Google Ads and website form in release 2.
-
-   **Recommend (b).** You get Facebook and Instagram leads in EcoHub sooner, and Meta App Review (the slowest step,
-   days to weeks) can start in parallel.
-
-The look of the wizard and the app name on Facebook's consent screen are already open questions O-1 and O-2 in plan
-64. They are not repeated here.
-
-## 8. Work order (hand-testable slices, release 1 = decision 5b)
-
-| # | Slice (plan 64 lane) | Size | What you can test by hand |
+| # | Decision | Ruling | Now in plan 64 |
 |---|---|---|---|
-| 1 | Meta test on the Foundryx Page (S-META) | S, 1 day | Send a test lead from Meta's testing tool; see the real webhook and lead recorded. Confirms Section 3 |
-| 2 | Shared Meta plumbing + Page-subscribe fix + Graph version (S0, with R1, R2, R4) | M | Messenger on a connected Page still works exactly as before; omnichannel tests unchanged |
-| 3 | Lead Capture module, sources and leads lists, gateway key (L1) | M | Install Lead Capture for a test company; see the empty Sources and Leads lists; create a key |
-| 4 | Delivery to EcoHub: signed push, retries, pull, purge (L4, with R5 and R6) | M | Point a test receiver at it; a fake lead arrives signed; stop the receiver and watch the retries and the Failed state; press Redeliver |
-| 5 | Wizard shell, all channels simulated (L2) | L | Click through the whole wizard at phone and desktop width with no Meta app |
-| 6 | Facebook and Instagram for real (L3, with gaps 1 and 2, screens E1-E7) | L | On the Foundryx Page: Connect, pick forms, map, send a test lead, see Live; remove the app in Facebook and see Reconnect |
-| 7 | EcoHub: toggle, Settings tab, popup, receiver (L-ECO, EcoHub repos) | M | From EcoHub: Connect a source, finish, and see the test lead in Leads |
-| 8 | Release 2: Google Ads + website form (L5), WhatsApp ads (L6), TikTok after its spike | M each | Per channel, as in the artifact |
+| 1 | One Facebook Page, more than one product | **A toggle per product** (new option, see section 8) | D13, AC-64-25, AC-64-36, AC-64-37 |
+| 2 | Kind of Facebook connection | **(b)** business "system user" connection if the Meta test confirms it, otherwise (a); Reconnect stays | D4, AC-64-20 |
+| 3 | New form with unmapped questions | **(a)** deliver at once, "Map fields" notice on the source | D14, AC-64-35 |
+| 4 | Facebook permissions for App Review | **(b)** plan 64 list plus `pages_manage_ads`; ad and campaign names later | D4, AC-64-20 |
+| 5 | Release 1 | **(b)** Facebook + Instagram + delivery to EcoHub; WhatsApp ads, Google Ads and website form in release 2 | section 6 |
 
-App Review and Business Verification (lane OPS) start right after slice 1, because Meta's review takes days to
-weeks. No customer outside Foundryx can connect until it passes.
+Also folded into plan 64: gap 2 (AC-64-28: in "All forms" mode every catch-up run re-reads the Page's form list),
+R1 (one shared Page-subscribe function, D15), R2 (hand-off before omnichannel's checks, D5 and AC-64-26), R6 (lead
+answers encrypted, AC-64-55) and R7 (History tab, AC-64-38). Plan 64 is copied onto this branch with those edits
+(`documentation/plans/sprint-5/64-lead-capture*.md`), so its original branch `claude/wizardly-albattani-ymi7d2` is
+now superseded by this PR.
+
+## 8. Decision 1 in detail: sharing a Facebook Page between products
+
+**What the customer sees.** One switch in each product's Lead Capture settings (in EcoHub: Company Settings > Lead
+Capture, above the source list):
+
+> **Share Facebook Pages with other products** - Off
+> *When on, a Page you connect here can also send its leads to another product that has this switched on.*
+
+**Default: Off.** That matches plan 64's original behaviour, and no company's leads go anywhere new unless it chose so.
+
+**The rule when a Page is connected.**
+
+| This product's switch | Every product already on that Page | Result |
+|---|---|---|
+| Any | (nobody else on the Page) | Connects |
+| On | All On | Connects. Each new lead goes to every product on the Page, each with its own field mapping |
+| Off | Any | "This Page is already connected to another account." (E4) |
+| On | At least one Off | Same E4 message. It never says which side said no, so nobody learns about the other company |
+
+- **Turning the switch Off later** stops new products joining. Pages already shared stay connected, and the setting
+  shows "Shared with 1 other product" so the effect is visible.
+- **One product disconnecting** never stops the others. The Page stops sending to Shared Service only when the last
+  product leaves it.
+- **Each product still needs a Page admin** to sign in and pick the Page. Sharing never hands one company's Page to
+  another without that Page's own admin consenting.
+
+**What changes underneath** (for the build lanes):
+
+- **Index.** The old one-Page-one-company index `(platform, Page id)` becomes `(company, platform, Page id)`: one live
+  source per Page per company. The cross-company rule moves into the connect step, which holds a database lock on
+  that Page id while it checks, so two companies connecting at the same moment cannot both slip past.
+- **Setting storage.** A small `lc_settings` table, one row per company. Staff change it in Shared Service; EcoHub
+  changes it through `GET|PUT /api/v1/lead-capture/settings`.
+- **Lead delivery.** For a shared Page, the lead is fetched from Meta once. It is then stored and delivered once per
+  product, each mapped its own way and sent only to that product. Each copy has its own retries and its own History.
+- **The 180-day purge and the duplicate check** stay per company, so nothing crosses between products.
+
+**Who sets it.** Assumption: one EcoHub customer company is one Shared Service account. EcoHub decides whether to
+show the switch to its customers or set it once for all of them through the API. If that assumption is wrong, crew
+should tell me before lane L1.
+
+## 9. Release 1 build lanes (no code until you approve this list)
+
+Order is the dependency order. Lanes 3 and 4 can run in parallel after lane 2; lane 5 can start alongside them with
+everything simulated.
+
+| # | Lane (plan 64 id) | Size | What it delivers | What you test by hand |
+|---|---|---|---|---|
+| 1 | **Meta test, 1 day (S-META)** | S | On the Foundryx Page with the app in Development mode, confirms every fact marked unconfirmed in section 3: <br>- the permission list, and whether the system-user connection works (decision 2) <br>- that new forms arrive with nothing to do <br>- that Instagram leads come through the Page <br>- the test-lead call and its one-at-a-time limit <br>- whether subscribing replaces the field list (R1) <br>- the Graph version <br>Real payloads from Foundryx's own Page are kept as test files | Submit a lead with Meta's Lead Ads Testing Tool; we show you the lead as it arrived. You get a one-page result with "confirmed / changed" per fact, and any change to plan 64 before lane 2 starts |
+| 2 | **Shared Meta plumbing (S0 + R1, R2, R4)** | M | Facebook sign-in, Page list and Page subscribe moved to one shared place. Subscribe keeps every feature's fields. Leads are handed over before omnichannel's checks. One current Graph version | Messenger on a connected Page works exactly as before (send and receive a message). Nothing new to see yet |
+| 3 | **Lead Capture module (L1 + D1 switch)** | M | Install, permissions, Sources and Leads lists, gateway key, published EcoHub fields, the sharing switch and its API | Install Lead Capture for a test company. See the empty Sources and Leads lists, flip the sharing switch, and see the change in the source's History |
+| 4 | **Delivery to EcoHub (L4 + R5, R6)** | M | Signed push with retries and Redeliver, built on ONE shared sender with omnichannel's. Pull API, encrypted lead answers, 180-day purge on Scheduled Tasks, consumer guide | Point a test receiver at it and send a fake lead: it arrives signed. Stop the receiver and watch the retries and the Failed state. Press Redeliver. Run the purge from Scheduled Tasks |
+| 5 | **Wizard shell (L2, Facebook + Instagram only)** | L | Hosted wizard, popup hand-back to EcoHub, step engine, animated guides, done screen. Every step simulated; WhatsApp, Google Ads, website form and TikTok hidden | Click through Facebook and Instagram end to end at phone and desktop width, light and dark, with no Meta app |
+| 6 | **Facebook + Instagram for real (L3 + decisions 1-3, screens E1-E7)** | L | Real sign-in, Page and forms, field mapping, subscribe, lead fetch, 15-minute catch-up with form-list re-read, "Map fields" notice, Reconnect, shared-Page delivery | On the Foundryx Page: Connect, Send test lead, see Live. Add a new form and submit to it: the lead arrives and "Map fields" shows. Remove the app in Facebook and see Reconnect. Connect the same Page from a second test company with the switch On on both, and see the lead reach both; then repeat with one switch Off and see the "already connected" message |
+| 7 | **EcoHub (L-ECO, EcoHub repos)** | M | Leads > Lead Capture toggle, Company Settings > Lead Capture tab with the sharing switch, popup, ecohub-backend receiver that creates the Lead | From EcoHub: Connect a source, finish, and see the test lead in Leads as New. Send it twice and still see one lead |
+| 8 | **Meta App Review + Business Verification (OPS)** | S of our time, days to weeks at Meta | Runbook and screencast recorded on the Foundryx Page. Submitted right after lane 1 so Meta's wait runs in parallel | Nothing to click. Until it passes, only Pages whose admins have a role on the Foundryx app can connect |
+
+Release 2 (after release 1 is live): Google Ads + website form (L5, M), WhatsApp ads (L6, M), then TikTok after
+its spike.
+
+The plan 64 lane order changes slightly: L4 moves ahead of L2 so delivery is testable before any wizard exists.
+security-reviewer stays mandatory on lanes 2, 4, 5 and 6.
