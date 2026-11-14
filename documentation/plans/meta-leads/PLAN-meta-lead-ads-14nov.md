@@ -288,6 +288,36 @@ security-reviewer stays mandatory on lanes 2, 4, 5 and 6.
 still Open (`documentation/backlogs/backlog.md:40`). WhatsApp therefore works only for numbers whose owner has a role
 on the app (Development mode or Standard Access). **Owner to confirm** what Meta's dashboard shows today.
 
+**What the owner's dashboard shows (screenshot, 14/11/2026 ~23:00):**
+
+- App name: "Foundryx WA App", App ID 1425562942670564 (an app id is public, not a secret).
+- Status: Published (Live mode).
+- Products: Use cases, Facebook Login for Business, Review.
+- Required actions: none.
+
+This is very likely the same app as `META_APP_ID`. Crew cannot read the secret's value to compare, so the owner
+confirms it in lane 1 by checking that the deploy's `META_APP_ID` ends in ...0564.
+
+Live mode alone does not mean customers can connect. Each permission still needs Advanced Access, and the screenshot
+does not show that. The owner checks three things in this app:
+
+| # | Check | Where | Why |
+|---|---|---|---|
+| a | Which use cases are added | Use cases | The lead permissions sit under a use case. If no leads or Pages use case is listed, crew adds one (unconfirmed name, e.g. "Capture and manage ad leads") |
+| b | Which permissions already have Advanced Access | Review > Permissions and features | Tells us whether BL-017 (WhatsApp) was already reviewed, and which of the five lead permissions are new to the submission |
+| c | Business Verification status | App settings > Basic (verification panel), or Business Settings > Business info | Verified = no documents needed again (section 10.3 rows 2-3 drop out) |
+
+**The app name is shown to every customer.** Facebook's consent screen says "Foundryx WA App wants to..." when an
+EcoHub customer clicks Continue with Facebook. "WA" is wrong for a leads connection and puzzles a customer. Rename it
+before App Review is submitted (plan 64 open question O-2), so the screencasts and the reviewer see the final name.
+
+- **Crew's suggestion:** "Foundryx". One name covers WhatsApp, Messenger, Instagram and leads.
+- **The trade-off:** our white-label rule says tenant-facing screens never say "Foundryx" (AC-64-11). Facebook's
+  consent screen is Meta's screen, not ours, but the customer still reads the name there. The neutral alternative is
+  "Lead Capture", but that misnames the WhatsApp and Messenger connects, which use the same app.
+- **Recommendation:** "Foundryx" unless you want the consent screen unbranded. Whether a rename on a Live app
+  triggers its own check by Meta is unconfirmed.
+
 **Conclusion:** plan 64 adds the lead permissions and the Page `leadgen` webhook field to this same app. One
 App Review submission can cover both BL-017 (WhatsApp) and the lead permissions.
 
@@ -307,6 +337,7 @@ customers does.
 
 | # | Item | Who | Notes |
 |---|---|---|---|
+| 0 | **Check the existing app** (section 10.1 table): use cases, which permissions have Advanced Access, Business Verification status. **Rename "Foundryx WA App"** (O-2) before submitting | Owner (a few minutes in the dashboard) | Decides which rows below are still needed |
 | 1 | **Business portfolio** (Meta Business Manager) that owns the app, with its id | Owner | The app must belong to the business being verified |
 | 2 | **Business Verification:** legal company name exactly as registered, registration document, business address, business phone, website domain, and an email on that domain (or domain verified by DNS / meta tag) | Owner | Documents only the owner holds. Meta may call or email the phone/email for a code |
 | 3 | **Domain verification** of the website domain in Business Settings | Owner clicks; crew can add the meta tag if the domain is ours | Needed if Meta asks for it during verification |

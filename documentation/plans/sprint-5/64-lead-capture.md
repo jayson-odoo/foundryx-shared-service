@@ -174,8 +174,10 @@ D4, release split above. Still open:
 
 - O-1 Look of the hosted wizard: this repo's design system + tenant branding (D9, recommended, required for
   white-label) or the Playbook UIUX look from the mock?
-- O-2 The Meta app's display name is shown on Facebook's consent screen to every client's users. Keep "Foundryx ..."
-  or rename it neutrally (e.g. "Lead Capture")?
+- O-2 The Meta app's display name is shown on Facebook's consent screen to every client's users. The existing app
+  (App ID 1425562942670564, Live, owner screenshot 14 Nov) is named "Foundryx WA App", which misnames a leads
+  connection. Recommendation: rename it before App Review is submitted, to "Foundryx" (covers every channel on the
+  app), or to a neutral name if the consent screen must stay unbranded. Owner to choose the name.
 - O-3 Pricing/entitlement per tenant (number of sources, leads per month) - none in phase A unless decided.
 - O-4 Conversions API write-back (send CRM outcome back to Meta with `lead_id` / `ctwa_clid`) - deferred to backlog;
   confirm it is phase D, not A.
