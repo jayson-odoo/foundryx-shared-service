@@ -4,8 +4,6 @@ Contract: verify fast, ACK fast (<50ms), do NOTHING else synchronously - the
 raw payload goes to the Celery queue and the worker owns processing. A slow
 handler makes Meta retry + eventually disable the subscription.
 """
-import hashlib
-import hmac
 import json
 import logging
 
@@ -13,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from app.config import settings
+from app.integrations.meta.signature import signature_valid
 
 logger = logging.getLogger(__name__)
 
@@ -34,21 +33,8 @@ def verify_handshake(
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
-def _signature_valid(body: bytes, header: str) -> bool:
-    """X-Hub-Signature-256 = HMAC-SHA256(app_secret, raw_body).
-
-    Fail-OPEN only in development with no secret set (local testing without a
-    Meta app). In any other environment a missing secret fails CLOSED - a prod
-    misconfig must never silently accept forged webhooks.
-    """
-    if not settings.meta_app_secret:
-        return settings.environment == "development"
-    if not header.startswith("sha256="):
-        return False
-    expected = hmac.new(
-        settings.meta_app_secret.encode(), body, hashlib.sha256
-    ).hexdigest()
-    return hmac.compare_digest(header[len("sha256=") :], expected)
+# Moved to core (plan 64 D3); the old name stays for existing callers/tests.
+_signature_valid = signature_valid
 
 
 @router.post("/{channel_id}")
