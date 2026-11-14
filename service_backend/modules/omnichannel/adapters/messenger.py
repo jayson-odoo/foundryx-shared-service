@@ -51,22 +51,18 @@ Sources (cited per CLAUDE.md, section 10 of the plan):
 """
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.config import settings
 from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
 from app.integrations.meta.pages import MetaPagesMixin, register_page_fields
-from .base import CodeExchangeError, ConnectionStatus, SendError  # noqa: F401
+from .base import ConnectionStatus, SendError
 from .meta_graph import (
     _meta_error_detail,
-    _meta_error_obj,
     _meta_error_text,
-    _dict_items,
     _json_obj,
-    _list_field,
     _str_field,
     is_rate_limited_error,
     meta_error_code,
