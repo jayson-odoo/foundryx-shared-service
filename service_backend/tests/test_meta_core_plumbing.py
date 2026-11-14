@@ -42,9 +42,17 @@ def _fake_realtime():
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
+    """Each test starts with no handlers and no reservations; whatever the
+    boot registered (omnichannel's reservations) is restored afterwards."""
+    saved = dict(reg._HANDLERS)
+    saved_fields = {k: set(v) for k, v in meta_pages._KNOWN_PAGE_FIELDS.items()}
     reg.reset_meta_change_handlers()
+    import modules.omnichannel.adapters.messenger  # noqa: F401 - declares omnichannel's Page fields
     yield
     reg.reset_meta_change_handlers()
+    reg._HANDLERS.update(saved)
+    meta_pages._KNOWN_PAGE_FIELDS.clear()
+    meta_pages._KNOWN_PAGE_FIELDS.update(saved_fields)
 
 
 @pytest.fixture
@@ -112,8 +120,6 @@ def test_subscribe_when_app_not_yet_subscribed_posts_requested_only(live_meta):
 
 
 def test_subscribe_get_failure_falls_back_to_requested_plus_known(live_meta):
-    import modules.omnichannel.adapters.messenger  # noqa: F401 - registers omnichannel's fields
-
     fake = FakeGraph(get_status=500)
     meta_pages.subscribe_page_fields("tok", "pg-1", ["leadgen"], client=fake.client())
     posted = fake.posted_fields()
@@ -146,14 +152,23 @@ def test_unsubscribe_last_field_deletes(live_meta):
     assert [c.method for c in fake.calls] == ["GET", "DELETE"]
 
 
-def test_unsubscribe_get_failure_keeps_known_fields(live_meta):
-    import modules.omnichannel.adapters.messenger  # noqa: F401
-
+def test_unsubscribe_get_failure_changes_nothing(live_meta):
+    """A failed read never guesses a remainder: no POST, and above all no
+    DELETE of the app's whole subscription."""
+    meta_pages.register_page_fields("lead_capture", ["leadgen"])
     fake = FakeGraph(get_status=400)
-    meta_pages.unsubscribe_page_fields("tok", "pg-1", ["leadgen"], client=fake.client())
-    posted = fake.posted_fields()
-    assert "leadgen" not in posted
-    assert set(MESSENGER_FIELDS) <= set(posted)
+    assert meta_pages.unsubscribe_page_fields("tok", "pg-1", MESSENGER_FIELDS + ["leadgen"], client=fake.client()) is None
+    assert [c.method for c in fake.calls] == ["GET"]
+
+
+def test_subscribe_update_refused_returns_none(live_meta):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(400, json={"error": {"message": "nope", "code": 100}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert meta_pages.subscribe_page_fields("tok", "pg-1", ["leadgen"], client=client) is None
 
 
 def test_subscribe_dev_stub_makes_no_call(monkeypatch):
@@ -257,6 +272,62 @@ def test_raising_handler_does_not_stop_messaging_in_same_payload(session_factory
         db.close()
 
 
+def test_failed_handler_writes_are_rolled_back(session_factory):
+    """A handler that adds a row and then raises: the row is NOT committed by
+    omnichannel's later commit (savepoint rollback)."""
+    from modules.omnichannel.models import Workspace
+
+    cid = _fb_channel(session_factory, external_account_id="pg-rb")
+
+    def half_done(db, obj, eid, value):
+        db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, name="should-not-exist-rb"))
+        db.flush()
+        raise RuntimeError("after a write")
+
+    reg.register_meta_change_handler("page", "leadgen", "lead_capture", half_done)
+    payload = _messenger_payload(page_id="pg-rb", mid="m.rb.1")
+    payload["entry"][0]["changes"] = _leadgen_payload("pg-rb")["entry"][0]["changes"]
+    assert _process(session_factory, cid, payload)["messages"] == 1
+    db = session_factory()
+    try:
+        assert db.query(Workspace).filter(Workspace.name == "should-not-exist-rb").count() == 0
+    finally:
+        db.close()
+
+
+def test_successful_handler_writes_are_kept(session_factory):
+    from modules.omnichannel.models import Workspace
+
+    cid = _fb_channel(session_factory, external_account_id="pg-ok")
+
+    def enqueue(db, obj, eid, value):
+        db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, name="kept-by-handler"))
+
+    reg.register_meta_change_handler("page", "leadgen", "lead_capture", enqueue)
+    payload = _messenger_payload(page_id="pg-ok", mid="m.ok.1")
+    payload["entry"][0]["changes"] = _leadgen_payload("pg-ok")["entry"][0]["changes"]
+    _process(session_factory, cid, payload)
+    db = session_factory()
+    try:
+        assert db.query(Workspace).filter(Workspace.name == "kept-by-handler").count() == 1
+    finally:
+        db.close()
+
+
+def test_omnichannel_reserves_its_message_fields():
+    from modules.omnichannel import bootstrap
+
+    bootstrap.register_capabilities()
+    for obj, field in (("whatsapp_business_account", "messages"), ("page", "messages"),
+                       ("instagram", "messages"), ("whatsapp_business_account", "message_template_status_update")):
+        with pytest.raises(reg.DuplicateMetaChangeHandler):
+            reg.register_meta_change_handler(obj, field, "lead_capture", lambda *a: None)
+    # Reservations are not dispatched and leave `leadgen` free.
+    assert reg.meta_change_handlers() == []
+    reg.register_meta_change_handler("page", "leadgen", "lead_capture", lambda *a: None)
+    bootstrap.register_capabilities()  # idempotent re-boot
+
+
 def test_handler_that_breaks_the_session_is_isolated(session_factory):
     """A handler whose flush fails leaves the session needing a rollback; the
     dispatcher recovers it so omnichannel's processing still commits."""
@@ -305,7 +376,7 @@ def test_omnichannel_shims_point_at_core():
     assert meta_graph.MetaGraphMixin is graph.MetaGraphMixin
     assert meta_graph.provider_error_text is graph.provider_error_text
     assert meta_graph._meta_error_detail is graph._meta_error_detail
-    assert meta_graph.httpx is graph.httpx
+    assert meta_graph is graph  # a module alias, so monkeypatches reach the running code
     assert base.SendError is errors.SendError
     assert base.CodeExchangeError is errors.CodeExchangeError
     assert webhooks._signature_valid is signature.signature_valid

@@ -268,7 +268,8 @@ class MetaPagesMixin(MetaGraphMixin):
         """Remove ``fields`` from this app's Page subscription, keeping every
         other field. Posts the remainder, or ``DELETE``s the app's subscription
         when nothing remains. Returns the remainder (``[]`` after a delete), or
-        ``None`` in dev / unconfigured or when Meta refused the update."""
+        ``None`` in dev / unconfigured, when the current set cannot be read
+        (nothing is changed then), or when Meta refused the update."""
         drop = set(_clean_fields(fields))
         if not self._configured or dev:
             return None
@@ -276,10 +277,13 @@ class MetaPagesMixin(MetaGraphMixin):
         try:
             current = self._current_page_fields(client, page_token, page_id)
             if current is None:
+                # Never guess on removal: a guessed remainder could drop a
+                # field this process does not know about, or DELETE the app's
+                # whole subscription. Leave the Page as it is.
                 logger.warning(
-                    "Page %s: current subscription unknown, keeping known fields", page_id
+                    "Page %s: current subscription unknown, unsubscribe skipped", page_id
                 )
-                current = known_page_fields()
+                return None
             remainder = [f for f in current if f not in drop]
             if remainder:
                 ok = self._post_page_fields(client, page_token, page_id, remainder)
