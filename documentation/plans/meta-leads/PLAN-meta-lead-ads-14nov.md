@@ -60,7 +60,8 @@ Both show the same source list and a "Connect a source" button that opens the wi
 | TikTok | Shown in the mock, **not built** until the TikTok spike confirms how TikTok sends leads | Guided, later |
 
 **Screens the artifact does not have** (drawn in `mock/meta-leads-error-states.html`, fake data only; the artifact's
-other screens are reused unchanged):
+other screens are reused unchanged). **Approved by the owner 14/11/2026 22:45 ("ok")**, v2 including the Page
+sharing switch:
 
 | # | Situation | What EcoHub shows | Button |
 |---|---|---|---|
