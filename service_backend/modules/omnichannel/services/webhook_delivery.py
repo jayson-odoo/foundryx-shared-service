@@ -14,7 +14,6 @@ Delivery NEVER runs synchronously inside inbound processing and is fully failure
 isolated - a broken/slow consumer can't 500 or block a WhatsApp message landing
 in the inbox.
 """
-import asyncio
 import hashlib
 import hmac
 import json
@@ -243,17 +242,9 @@ _run_under_deadline = _core_post.run_under_deadline
 
 
 def _check_address(url: str, budget: float) -> float:
-    """Run the address check inside the attempt's budget; return what is left."""
-    started = time.monotonic()
-
-    async def check() -> None:
-        await asyncio.to_thread(assert_deliverable, url)
-
-    _run_under_deadline(check, budget)
-    left = budget - (time.monotonic() - started)
-    if left <= 0:
-        raise DeliveryDeadlineError()
-    return left
+    """Run the address check inside the attempt's budget; return what is left.
+    ``assert_deliverable`` is read from this module at call time (tests patch it)."""
+    return _core_post.check_address_within(url, budget, lambda u: assert_deliverable(u))
 
 
 async def _post_async(

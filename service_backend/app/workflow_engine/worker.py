@@ -102,6 +102,9 @@ celery_app.conf.beat_schedule = {
     # self-reschedule was lost to a crash (omnichannel Slice 4). Defined in this
     # worker (the sole beat host); guarded so a missing module is a no-op.
     "retry-due-webhooks": {"task": "webhooks.retry_due", "schedule": 60.0},
+    # Lead Capture consumer deliveries (plan 64 AC-64-63) - re-drives PENDING
+    # rows whose retry time passed (a lost self-reschedule). Module-absence safe.
+    "lead-capture-deliveries-due": {"task": "lead_capture.deliveries_due", "schedule": 60.0},
     # Resume workflow runs parked by an omnichannel Ask-a-question / Wait step
     # whose deadline passed (plan sprint-4/31 S4, D-A5-10/F8). Module-owned
     # work, defined + scheduled HERE (the sole beat host) and guarded exactly
@@ -324,6 +327,77 @@ def retry_due_webhooks_task() -> dict:
         return {"redriven": run_due_deliveries(db)}
     except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("webhook retry tick failed")
+        db.rollback()
+        return {"redriven": 0}
+    finally:
+        db.close()
+
+
+# ── Lead Capture (plan 64 L3/L4) - module-owned work on the deployed workflow
+# worker (no extra process). Each task opens its own session; a missing module
+# is a no-op. Only ids ever cross the queue (leads are personal data).
+@celery_app.task(name="lead_capture.process_leadgen")
+def lead_capture_process_leadgen(page_id: str, leadgen_id: str, form_id: str = "", created_time=None) -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.services.leadgen_service import process_leadgen
+    except ImportError:
+        return {"leads": 0}
+    db = SessionLocal()
+    try:
+        return {"leads": len(process_leadgen(db, page_id, leadgen_id, form_id, created_time))}
+    except Exception:  # noqa: BLE001 - logged with ids only; Meta's own retry + backfill recover
+        logger.exception("lead_capture leadgen processing failed")
+        db.rollback()
+        return {"leads": 0, "error": "processing failed"}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="lead_capture.deliver")
+def lead_capture_deliver(delivery_id: str) -> str:
+    """One delivery attempt; a retry reschedules itself (the due tick is the
+    backstop after a crash). Eager dev runs one attempt inline."""
+    from datetime import datetime, timezone
+
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.models import LcDelivery
+        from modules.lead_capture.services.delivery_service import dispatch
+    except ImportError:
+        return "skip"
+    db = SessionLocal()
+    try:
+        outcome = dispatch(db, delivery_id)
+        if outcome == "retry" and not settings.celery_task_always_eager:
+            row = db.query(LcDelivery).filter(LcDelivery.id == delivery_id).first()
+            if row is not None and row.next_at is not None:
+                delay = (row.next_at - datetime.now(timezone.utc)).total_seconds()
+                lead_capture_deliver.apply_async((delivery_id,), countdown=max(1, int(delay)))
+        return outcome
+    except Exception:  # noqa: BLE001
+        logger.exception("lead_capture delivery %s failed", delivery_id)
+        db.rollback()
+        return "error"
+    finally:
+        db.close()
+
+
+@celery_app.task(name="lead_capture.deliveries_due")
+def lead_capture_deliveries_due() -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.services.delivery_service import run_due
+    except ImportError:
+        return {"redriven": 0}
+    db = SessionLocal()
+    try:
+        return {"redriven": run_due(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("lead_capture delivery tick failed")
         db.rollback()
         return {"redriven": 0}
     finally:

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple, Type
 
@@ -101,6 +102,21 @@ def run_under_deadline(make_coro: Callable[[], Any], timeout: float) -> Any:
     if "error" in box:
         raise box["error"]
     return box["value"]
+
+
+def check_address_within(url: str, budget: float, guard: Callable[[str], None]) -> float:
+    """Run the address check ``guard(url)`` inside the attempt's budget; return
+    what is left. Raises what ``guard`` raises, or DeliveryDeadlineError."""
+    started = time.monotonic()
+
+    async def check() -> None:
+        await asyncio.to_thread(guard, url)
+
+    run_under_deadline(check, budget)
+    left = budget - (time.monotonic() - started)
+    if left <= 0:
+        raise DeliveryDeadlineError()
+    return left
 
 
 async def post_async(
