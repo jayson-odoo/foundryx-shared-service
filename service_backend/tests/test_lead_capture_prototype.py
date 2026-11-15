@@ -509,25 +509,36 @@ def test_delivery_signature_verifies_and_headers_match(lc, graph, posts):
 
 
 def test_500_retries_on_the_ladder_then_fails(lc, graph, posts):
+    """AC-64-63: 1 min, 5 min, 30 min, 2 h, 6 h, 24 h, then FAILED."""
     posts.state["status"] = 500
     delivery_id, _ = _lead_and_delivery(lc)
+    expected_gaps = [60, 300, 1800, 7200, 21600, 86400]
     db = lc()
     try:
-        row = db.get(LcDelivery, delivery_id)
-        assert row.status == "PENDING" and row.attempt == 1 and row.last_code == 500
-        gap = (row.next_at - row.last_attempt_at).total_seconds()
-        assert 55 <= gap <= 65  # first rung: 1 minute
-        for _ in range(delivery_service.MAX_ATTEMPTS - 1):
-            row.status = "PENDING"
-            db.commit()
-            delivery_service.dispatch(db, delivery_id)
+        for n, gap in enumerate(expected_gaps, start=1):
+            db.expire_all()
+            row = db.get(LcDelivery, delivery_id)
+            assert row.status == "PENDING" and row.attempt == n and row.last_code == 500
+            actual = (row.next_at - row.last_attempt_at).total_seconds()
+            assert gap - 5 <= actual <= gap + 5, (n, actual)
+            assert delivery_service.dispatch(db, delivery_id) == ("dead" if n == len(expected_gaps) else "retry")
         db.expire_all()
         row = db.get(LcDelivery, delivery_id)
         assert row.attempt == 7 and row.status == "FAILED" and row.next_at is None
         assert len(posts) == 7
     finally:
         db.close()
-    assert delivery_service.RETRY_LADDER == [60, 300, 1800, 7200, 21600, 86400]
+
+
+def test_timeout_is_a_failed_attempt(lc, graph, posts):
+    posts.state["status"] = httpx.ReadTimeout("slow")
+    delivery_id, _ = _lead_and_delivery(lc)
+    db = lc()
+    try:
+        row = db.get(LcDelivery, delivery_id)
+        assert row.status == "PENDING" and row.last_error == "Consumer did not answer within 10 seconds."
+    finally:
+        db.close()
 
 
 def test_internal_callback_is_refused_per_attempt(lc, graph, monkeypatch):
@@ -615,6 +626,18 @@ def test_gateway_key_auth_audit_and_cross_tenant_pull(client, lc, graph, posts):
         assert {(a.route, a.status_code) for a in b_audits} >= {("/leads", 200), ("/deliveries/{delivery_id}/redeliver", 404)}
     finally:
         db.close()
+
+
+def test_bad_keys_are_throttled_per_ip(client, lc, monkeypatch):
+    """AC-64-72: repeated 401s from one IP answer 429 with Retry-After."""
+    monkeypatch.setattr(settings, "throttle_lead_gateway_max_fails", 3)
+    codes = [
+        client.get("/api/v1/lead-capture/leads", headers={"Authorization": "Bearer fxl_live_wrong0000000000"}).status_code
+        for _ in range(5)
+    ]
+    assert codes[:3] == [401, 401, 401] and codes[-1] == 429
+    res = client.get("/api/v1/lead-capture/leads", headers={"Authorization": "Bearer fxl_live_wrong0000000000"})
+    assert res.json()["error"]["code"] == "rate_limited" and "Retry-After" in res.headers
 
 
 def test_pull_cursor_pages_in_order(client, lc, graph, posts):
