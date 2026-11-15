@@ -276,7 +276,7 @@ rules in 57 contract sections 2a.1 and 8. Absent or invalid = stored empty, neve
 
 ```json
 409 { "actionId": null, "outcome": "refused", "errorCode": "ROW_RECEIVED", "operationId": "7a1d...",
-      "message": "Goods have already been received on this purchase order line at BR1, so it cannot be changed or moved here. Handle the received goods in AutoCount, then try again.",
+      "message": "Goods have already been received on this purchase order line at BR1, so the change was not made. Handle the received goods in AutoCount, then try again.",
       "warnings": [], "docKey": 12008, "docNo": null, "replacedLines": [], "detail": null, "document": null }
 ```
 
@@ -319,7 +319,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `UOM_MISMATCH` | Different units of measure | Do not offer this pair |
 | `QTY_INVALID` | `qty` is zero or negative, above 1,000,000,000, or has more than 8 decimal places (checked before AutoCount is read) | Fix the input |
 | `QTY_ABOVE_FREE` | `qty` is above the PO row qty | Lower `qty` |
-| `ROW_RECEIVED` | The PO row has goods received against it (the whole row, or any receipt when the partial-receipt split is off). A PARTLY received row is not refused: it is cut to the received quantity at its own location and the open remainder is linked and moved (owner ruling Q2). `message` is a plain reason to show as is | Show `message` and "Try again" |
+| `ROW_RECEIVED` | The PO row has goods received against it (the whole row, or any receipt when the partial-receipt split is off). A PARTLY received row is not refused: it is cut to the received quantity at its own location and the open remainder is linked and moved (owner ruling Q2). `message` is a plain reason to show as is (plan 64; on every route that can refuse `ROW_RECEIVED`) | Show `message` and "Try again" |
 | `IDEMPOTENCY_CONFLICT` | The `Idempotency-Key` was used for a different body or route and its first call did not release it | Use a new key for a new change |
 | `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |

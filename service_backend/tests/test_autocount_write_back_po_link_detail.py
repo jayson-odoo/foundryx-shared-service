@@ -205,3 +205,12 @@ def test_ac_64_06_split_link_with_nothing_to_restore_answers_the_new_row(client,
     assert len(gw.h.vendor.writes()) == 1  # no restore write
     detail = r.json()["detail"]
     assert detail["DtlKey"] != w.p_free and detail["FromSODtlKey"] == w.so_a and detail["Location"] == "HQ"
+
+
+def test_ac_64_07_unlink_refused_received_gets_the_same_plain_reason_and_no_detail(client, gw, far):
+    _received(gw, 4)
+    r = client.post(f"{PREFIX}/po-links/unlink",
+                    json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": far.p_linked}, headers=gw.hdr())
+    assert r.status_code == 409 and r.json()["errorCode"] == "ROW_RECEIVED"
+    assert "received" in r.json()["message"].lower() and "detail" not in r.json()
+    assert gw.h.vendor.writes() == []

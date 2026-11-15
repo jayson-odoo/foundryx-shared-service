@@ -209,8 +209,8 @@ def received_message(kind: str, row: Doc) -> str:
     """Plan 64: the plain reason for ``ROW_RECEIVED`` (the CRM shows it as is)."""
     where = f" at {row['Location']}" if row.get("Location") else ""
     noun = "shipping purchase order" if kind == "SPO" else "purchase order"
-    return (f"Goods have already been received on this {noun} line{where}, so it cannot be changed or "
-            "moved here. Handle the received goods in AutoCount, then try again.")
+    return (f"Goods have already been received on this {noun} line{where}, so the change was not made. "
+            "Handle the received goods in AutoCount, then try again.")
 
 
 def _link_of(kind: str, row: Doc) -> int:
