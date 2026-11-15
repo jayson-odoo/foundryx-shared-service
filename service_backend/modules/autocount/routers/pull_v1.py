@@ -477,7 +477,7 @@ def _write_status(result: WriteActionResult) -> int:
     return 502
 
 
-def _write_body(result: WriteActionResult) -> Dict[str, object]:
+def _write_body(result: WriteActionResult, *, with_detail: bool = False) -> Dict[str, object]:
     body: Dict[str, object] = {
         "actionId": result.action_id,
         "outcome": result.outcome,
@@ -490,6 +490,8 @@ def _write_body(result: WriteActionResult) -> Dict[str, object]:
             docKey=result.doc_key, docNo=result.doc_no,
             replacedLines=[{"oldDtlKey": o, "newDtlKey": n} for o, n in result.replaced_lines],
         )
+    if with_detail:  # plan 64: po-links answers the linked PO row (``detail.Location``); additive
+        body["detail"] = result.detail if result.outcome == "done" else None
     return body
 
 
@@ -574,6 +576,8 @@ def _write_route(
     action: str,
     call: WriteCall,
     operations: Optional[OperationService] = None,
+    *,
+    with_detail: bool = False,
 ) -> JSONResponse:
     """The shared write-route frame. ``call(service, raw, tenant_id, company_id,
     key_id)`` invokes the service method; everything before it is auth, scope,
@@ -604,7 +608,7 @@ def _write_route(
         result = call(service, raw, key_row.tenant_id, company.id, key_row.id)
         status_code = _write_status(result)
         _finalize(db, ctx, action, status_code)
-        return _json_response(status_code, _write_body(result))
+        return _json_response(status_code, _write_body(result, with_detail=with_detail))
     except PullGatewayError as exc:
         _merge_error_context(ctx, exc)
         exc.with_context(company_code=company_code_hint)
@@ -635,7 +639,7 @@ def link_po_row(
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
         )
 
-    return _write_route(request, db, raw_body, service, "write_link", call, operations)
+    return _write_route(request, db, raw_body, service, "write_link", call, operations, with_detail=True)
 
 
 @router.post("/po-links/unlink")

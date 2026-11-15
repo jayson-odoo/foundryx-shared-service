@@ -78,6 +78,8 @@ class WriteActionResult:
     replaced_lines: List[Tuple[int, int]] = field(default_factory=list)
     doc_key: Optional[int] = None
     doc_no: Optional[str] = None
+    # plan 64: ``po-links`` only - the PO row the link landed on, as read back (None unless done)
+    detail: Optional[Doc] = None
 
 
 class _Stop(Exception):

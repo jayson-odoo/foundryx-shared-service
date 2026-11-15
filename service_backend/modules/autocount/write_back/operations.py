@@ -155,6 +155,7 @@ class OperationResult:
     doc_key: Optional[int] = None
     doc_no: Optional[str] = None
     batch: Optional[Dict[str, Any]] = None  # link_batch only: {"links": [...], "freeLine": {...} | None}
+    detail: Optional[Doc] = None  # plan 64: link_row / split_link - the PO row the link landed on
 
 
 @dataclass
@@ -198,6 +199,19 @@ def _doc_no(document: Optional[Doc], snapshot: Optional[Doc]) -> Optional[str]:
 
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
+
+
+def _row_in(document: Optional[Doc], dtl_key: int) -> Optional[Doc]:
+    """Plan 64: row ``dtl_key`` of the read-back ``document`` (the ``detail`` answer)."""
+    return next((r for r in (document or {}).get("Details") or [] if r.get("DtlKey") == dtl_key), None)
+
+
+def received_message(kind: str, row: Doc) -> str:
+    """Plan 64: the plain reason for ``ROW_RECEIVED`` (the CRM shows it as is)."""
+    where = f" at {row['Location']}" if row.get("Location") else ""
+    noun = "shipping purchase order" if kind == "SPO" else "purchase order"
+    return (f"Goods have already been received on this {noun} line{where}, so the change was not made. "
+            "Handle the received goods in AutoCount, then try again.")
 
 
 def _link_of(kind: str, row: Doc) -> int:
@@ -452,21 +466,23 @@ class OperationService:
             stored.get("message") or "", list(stored.get("warnings") or []),
             [(int(o), int(n)) for o, n in stored.get("replacedLines") or []], stored.get("document"),
             row.doc_key, _doc_no(stored.get("document"), row.snapshot_json), stored.get("batch"),
+            stored.get("detail"),
         )
 
     def _finish(self, row: AcWriteOperation, status: str, code: Optional[str] = None, *, message: str = "",
                 replaced: Optional[List[Tuple[int, int]]] = None,
-                document: Optional[Doc] = None, batch: Optional[Dict[str, Any]] = None) -> OperationResult:
+                document: Optional[Doc] = None, batch: Optional[Dict[str, Any]] = None,
+                detail: Optional[Doc] = None) -> OperationResult:
         result = OperationResult(
             row.id, status, code, message, list(self._warnings), list(replaced or []), document,
-            row.doc_key, _doc_no(document, row.snapshot_json), batch,
+            row.doc_key, _doc_no(document, row.snapshot_json), batch, detail if status == DONE else None,
         )
         row.status, row.error_code = status, code
         row.steps_json = _json_safe(self._steps)
         row.result_json = _json_safe({
             "outcome": status, "errorCode": code, "message": message, "warnings": result.warnings,
             "replacedLines": [list(p) for p in result.replaced_lines], "document": document,
-            "batch": batch,
+            "batch": batch, "detail": result.detail,
         })
         self.db.commit()
         return result
@@ -651,7 +667,7 @@ class OperationService:
         if received <= 0:
             return "delete", received
         if received >= _dec(row.get("Qty")) or not capabilities.PARTIAL_RECEIPT_SPLIT:
-            raise _Done(REFUSED, ROW_RECEIVED)
+            raise _Done(REFUSED, ROW_RECEIVED, received_message(defn.kind, row))
         return "partial", received
 
     def _guard_target(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc,
@@ -780,7 +796,7 @@ class OperationService:
         new_key = int(add.new_dtl_key)
         document = self._move(row, company, snap, new_key, add.document, snap.get("moveTo") or snap["location"])
         self.prims._stage(company, snap["kind"], document, None)
-        return self._finish(row, DONE, None, replaced=[], document=document)
+        return self._finish(row, DONE, None, replaced=[], document=document, detail=_row_in(document, new_key))
 
     def _merge_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int,
                    free_key: int) -> OperationResult:
@@ -820,7 +836,8 @@ class OperationService:
         new_key = int(res.new_dtl_key)
         document = self._move(row, company, snap, new_key, res.document, snap.get("moveTo") or snap["location"])
         self.prims._stage(company, snap["kind"], document, {new_key: old_key})
-        return self._finish(row, DONE, None, replaced=[(old_key, new_key)], document=document)
+        return self._finish(row, DONE, None, replaced=[(old_key, new_key)], document=document,
+                            detail=_row_in(document, new_key))
 
     def _abort_unless_done(self, res: PrimitiveResult) -> None:
         """A first step that did not land cleanly: nothing to recover."""
@@ -1002,7 +1019,7 @@ class OperationService:
             new_key = int(intended["DtlKey"])
             self.prims._stage(company, snap["kind"], document, None if partial else {new_key: old_key})
             return self._finish(row, DONE, None, replaced=[] if partial else [(old_key, new_key)],
-                                document=document)
+                                document=document, detail=_row_in(document, new_key))
         if partial:
             if _dec(original.get("Qty")) == qty if original else True:
                 return self._finish(row, REFUSED, NOT_APPLIED, document=doc)
@@ -1102,7 +1119,7 @@ class OperationService:
             raise _Done(REFUSED, "ROW_ALREADY_LINKED")
         mode, _received = self._receipt(company, defn, doc, old)
         if mode == "partial":
-            raise _Done(REFUSED, ROW_RECEIVED)
+            raise _Done(REFUSED, ROW_RECEIVED, received_message("PO", old))
         # the PO row's qty that pending link operations on it may already have taken (outcome unknown) is not free
         free = _dec(old.get("Qty")) - self._po_row_pending_qty(company, spec, doc)
         # Owner rule (plan 62, 12 Nov): a bad line never fails the batch. Each line is checked on its own,
@@ -1307,7 +1324,8 @@ class OperationService:
                             "actionId": result.action_id})
         status = result.outcome if result.outcome in (DONE, REFUSED, PENDING, VENDOR_ERROR) else (
             PENDING if result.outcome == OUTCOME_MISMATCH else result.outcome)
-        return self._finish(row, status, result.error_code, message=result.message, document=result.document)
+        return self._finish(row, status, result.error_code, message=result.message, document=result.document,
+                            detail=result.detail)
 
     # ── gateway helpers (plan 57 S6) ─────────────────────────────────────────
 
