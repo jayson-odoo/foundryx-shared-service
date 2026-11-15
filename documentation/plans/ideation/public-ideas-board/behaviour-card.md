@@ -3,7 +3,7 @@
 Owner ask (15 Nov): a Canny-like public page, no login, where a contact sees all items with their status and also
 "my issue / my feature / my request / my feedback". Every link we send a contact about an idea goes there.
 
-Mock: `mock-v1.html` (follows this card). Examples below are SHAPE ONLY until crew sends masked dev rows (data request
+Mock: `mock-v1.html` (5 screens in the top bar, width toggle 1280 / 375). Screenshots: `evidence/mock-v1-*-{1280,375}.png`. Examples below are SHAPE ONLY until crew sends masked dev rows (data request
 posted on the PR).
 
 ## What exists today (cited on origin/main)
@@ -18,6 +18,17 @@ posted on the PR).
 - `Idea.submitter_contact_id` (omnichannel contact, per workspace) links an idea to the contact who filed it.
   Contacts are per workspace, so one phone can be several contact rows in one tenant (`Contact.phone_digits`).
 - Types: `idea_types` catalog, today `idea` and `issue` (`models.py:123`, PR #235).
+
+## Mock element -> component it reuses
+| Mock element | Reused component |
+|---|---|
+| Header (tenant logo or tenant NAME), footer | `app/(public)/public/ideas/[token]/components/public-idea-header.tsx`, `public-idea-footer.tsx` |
+| All / My requests tabs | `components/ui/tabs.tsx` |
+| List + one toolbar row (Search, Filters, Columns), server sort/filter/pagination | standard DataGrid `components/ui/data-grid*.tsx` (+ `data-grid-column-visibility.tsx`); no Create button, the board is read-only |
+| Status pill | `components/platform/idea-portal/portal-status-pill.tsx` |
+| Item popup | `components/ui/dialog.tsx` wrapping `idea-hero.tsx`, `next-step-callout.tsx`, `idea-status-timeline.tsx`, `idea-detail-sections.tsx` from the public idea page |
+| "No requests yet", "This link is not valid" | `components/platform/idea-portal/portal-states.tsx` |
+| Backend visibility + first-name rules | `PortalService._visible` (`services/portal.py:446`), `project_first_name` (`services/public_status.py:70`), timeline/next-step from `PublicIdeaStatusService` |
 
 ## Rules (proposed)
 1. **New page `/public/ideas/board/{contactToken}`** (shared-service frontend, tenant branding, no login).
