@@ -104,7 +104,7 @@ describe('useEmbedConnectionsListConfig (PLAN-ideation-embed-sso §7)', () => {
     const acc = (productCol as unknown as { accessorFn: (r: EmbedConnectionItem) => string })
       .accessorFn;
     expect(acc(conn({ productId: 'prod-1' }))).toBe('Sorento CRM');
-    expect(acc(conn({ productId: null }))).toBe('All ideas');
+    expect(acc(conn({ productId: null }))).toBe('All feedback');
   });
 
   it('toggle-active is a deferred (grace-window) action - no confirm, no run; label reflects state and the payload carries the flipped flag (fix round 1, T5, item 15)', () => {

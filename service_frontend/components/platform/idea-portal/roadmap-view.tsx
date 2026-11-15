@@ -46,7 +46,7 @@ export function RoadmapView() {
               aria-pressed={mine}
               onClick={() => setMine((m) => !m)}
             >
-              My ideas
+              My feedback
             </Button>
           )}
         </div>

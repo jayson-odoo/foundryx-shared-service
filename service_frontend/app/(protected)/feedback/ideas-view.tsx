@@ -134,7 +134,7 @@ export function IdeasView() {
             data-testid="ideas-include-test"
           />
           <Label htmlFor="ideas-include-test" className="cursor-pointer text-sm">
-            Show test ideas
+            Show test feedback
           </Label>
         </div>
       )}

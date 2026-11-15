@@ -12,7 +12,7 @@ const products: Product[] = [
 describe('IdeaCaptureDialog (idea form)', () => {
   it('renders the segregated capture form fields', () => {
     render(<IdeaCaptureDialog products={products} onClose={vi.fn()} onCreate={vi.fn()} />);
-    expect(screen.getByRole('heading', { name: /capture idea/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /capture feedback/i })).toBeInTheDocument();
     // Plan 20 card fields; the legacy three are gone from the UI.
     expect(screen.getByLabelText(/^title$/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/business problem/i)).toBeInTheDocument();
@@ -28,7 +28,7 @@ describe('IdeaCaptureDialog (idea form)', () => {
   it('keeps submit disabled until a problem statement is entered (validation)', async () => {
     const user = userEvent.setup();
     render(<IdeaCaptureDialog products={products} onClose={vi.fn()} onCreate={vi.fn()} />);
-    const submit = screen.getByRole('button', { name: /capture idea/i });
+    const submit = screen.getByRole('button', { name: /capture feedback/i });
     expect(submit).toBeDisabled(); // product auto-selected but problem blank
     await user.type(screen.getByLabelText(/business problem/i), 'Export orders to Excel');
     expect(submit).toBeEnabled();
@@ -44,7 +44,7 @@ describe('IdeaCaptureDialog (idea form)', () => {
     await user.type(screen.getByLabelText(/desired outcome/i), '  Self-serve export  ');
     await user.type(screen.getByRole('textbox', { name: 'Use case 1' }), 'Monthly report');
     await user.type(screen.getByLabelText(/current workaround/i), '  Copy-paste  ');
-    await user.click(screen.getByRole('button', { name: /capture idea/i }));
+    await user.click(screen.getByRole('button', { name: /capture feedback/i }));
     await waitFor(() =>
       expect(onCreate).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -66,7 +66,7 @@ describe('IdeaCaptureDialog (idea form)', () => {
     const onClose = vi.fn();
     render(<IdeaCaptureDialog products={products} onClose={onClose} onCreate={onCreate} />);
     await user.type(screen.getByLabelText(/business problem/i), 'Export orders');
-    await user.click(screen.getByRole('button', { name: /capture idea/i }));
+    await user.click(screen.getByRole('button', { name: /capture feedback/i }));
     expect(await screen.findByText(/not available yet/i)).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });

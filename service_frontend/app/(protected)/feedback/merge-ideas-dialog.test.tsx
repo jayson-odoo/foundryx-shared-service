@@ -49,11 +49,11 @@ const ideas = [
 describe('MergeIdeasDialog (plan 20, AC-20-16)', () => {
   it('renders one column per idea with defaults on the kept idea', () => {
     render(<MergeIdeasDialog ideas={ideas} initialKeptId="a" onClose={vi.fn()} onMerge={vi.fn()} />);
-    expect(screen.getByRole('radio', { name: 'Keep IDEA-0010' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0010 Title' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0004 Title' })).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Keep FB-0010' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Use FB-0010 Title' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Use FB-0004 Title' })).not.toBeChecked();
     // Kept idea has no desired outcome -> first non-empty column is ticked.
-    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0004 Desired outcome' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Use FB-0004 Desired outcome' })).toBeChecked();
     // A row with no content anywhere offers no tick.
     const workaround = screen.getByTestId('merge-row-currentWorkaround');
     expect(within(workaround).queryAllByRole('checkbox')).toHaveLength(0);
@@ -65,10 +65,10 @@ describe('MergeIdeasDialog (plan 20, AC-20-16)', () => {
     const onMerge = vi.fn().mockResolvedValue(undefined);
     render(<MergeIdeasDialog ideas={ideas} initialKeptId="a" onClose={vi.fn()} onMerge={onMerge} />);
 
-    await user.click(screen.getByRole('checkbox', { name: 'Use IDEA-0004 Business problem' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Use FB-0004 Business problem' }));
     const problemRow = screen.getByTestId('merge-row-problem');
     expect(within(problemRow).getByText('Result')).toBeInTheDocument();
-    expect(within(problemRow).getByText(/--- from IDEA-0004 ---/)).toBeInTheDocument();
+    expect(within(problemRow).getByText(/--- from FB-0004 ---/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /^merge$/i }));
     expect(onMerge).toHaveBeenCalledWith('a', {
@@ -83,7 +83,7 @@ describe('MergeIdeasDialog (plan 20, AC-20-16)', () => {
     render(<MergeIdeasDialog ideas={ideas} initialKeptId="a" onClose={vi.fn()} onMerge={vi.fn()} />);
     const mergeButton = screen.getByRole('button', { name: /^merge$/i });
     expect(mergeButton).toBeEnabled();
-    await user.click(screen.getByRole('checkbox', { name: 'Use IDEA-0010 Title' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Use FB-0010 Title' }));
     expect(mergeButton).toBeDisabled();
   });
 
@@ -91,10 +91,10 @@ describe('MergeIdeasDialog (plan 20, AC-20-16)', () => {
     const user = userEvent.setup();
     const onMerge = vi.fn().mockResolvedValue(undefined);
     render(<MergeIdeasDialog ideas={ideas} initialKeptId="a" onClose={vi.fn()} onMerge={onMerge} />);
-    await user.click(screen.getByRole('radio', { name: 'Keep IDEA-0017' }));
+    await user.click(screen.getByRole('radio', { name: 'Keep FB-0017' }));
     // Untouched ticks follow the kept idea (its values stay unless changed).
-    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0017 Title' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0010 Title' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Use FB-0017 Title' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Use FB-0010 Title' })).not.toBeChecked();
     await user.click(screen.getByRole('button', { name: /^merge$/i }));
     expect(onMerge).toHaveBeenCalledWith('c', {
       title: ['c'],
@@ -106,9 +106,9 @@ describe('MergeIdeasDialog (plan 20, AC-20-16)', () => {
   it('once a tick is changed, switching the kept idea keeps the user choices', async () => {
     const user = userEvent.setup();
     render(<MergeIdeasDialog ideas={ideas} initialKeptId="a" onClose={vi.fn()} onMerge={vi.fn()} />);
-    await user.click(screen.getByRole('checkbox', { name: 'Use IDEA-0004 Title' }));
-    await user.click(screen.getByRole('radio', { name: 'Keep IDEA-0017' }));
-    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0004 Title' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Use IDEA-0010 Title' })).toBeChecked();
+    await user.click(screen.getByRole('checkbox', { name: 'Use FB-0004 Title' }));
+    await user.click(screen.getByRole('radio', { name: 'Keep FB-0017' }));
+    expect(screen.getByRole('checkbox', { name: 'Use FB-0004 Title' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Use FB-0010 Title' })).toBeChecked();
   });
 });

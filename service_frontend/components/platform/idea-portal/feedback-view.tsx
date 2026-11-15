@@ -93,7 +93,7 @@ export function FeedbackView() {
                 setPage(1);
               }}
             >
-              My ideas
+              My feedback
             </Button>
           )}
         </div>

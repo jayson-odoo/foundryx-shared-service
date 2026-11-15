@@ -136,10 +136,10 @@ describe('IdeaPage', () => {
     const p = mockPage();
     render(<IdeaPage ideaId="i10" />);
     const hero = screen.getByTestId('portal-idea-hero');
-    expect(within(hero).getByText('IDEA-0010')).toBeInTheDocument();
+    expect(within(hero).getByText('FB-0010')).toBeInTheDocument();
     expect(within(hero).getByRole('heading', { level: 1 })).toHaveTextContent('Order status tracking for dealers');
     expect(within(hero).getByText('New')).toBeInTheDocument();
-    expect(within(hero).getByText('Your idea')).toBeInTheDocument();
+    expect(within(hero).getByText('Your feedback')).toBeInTheDocument();
     await userEvent.click(within(hero).getByRole('button', { name: /upvote \(2\)/i }));
     expect(p.vote).toHaveBeenCalledTimes(1);
   });
@@ -204,7 +204,7 @@ describe('IdeaPage', () => {
   it('not found → the uniform message', () => {
     mockPage({ idea: { ...q<PortalIdea>(idea), data: null, notFound: true } });
     render(<IdeaPage ideaId="nope" />);
-    expect(screen.getByText('This idea isn’t available.')).toBeInTheDocument();
+    expect(screen.getByText('This feedback isn’t available.')).toBeInTheDocument();
   });
 });
 
@@ -219,7 +219,7 @@ describe('RoadmapBoard', () => {
     render(<RoadmapBoard columns={columns} ideaHref={(id) => `/portal/ideas/${id}`} onVote={onVote} />);
     const sections = screen.getAllByRole('region');
     expect(sections.map((s) => s.getAttribute('aria-label'))).toEqual(['Under review', 'Planned']);
-    expect(within(sections[1]).getByText('No ideas')).toBeInTheDocument();
+    expect(within(sections[1]).getByText('No feedback')).toBeInTheDocument();
     expect(within(sections[0]).getByText('7')).toBeInTheDocument(); // the column total, not the capped card count
     const link = within(sections[0]).getByTestId('portal-idea-card');
     expect(link).toHaveAttribute('href', '/portal/ideas/a');

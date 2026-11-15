@@ -103,7 +103,7 @@ describe('IdeationRuntimeProvider (embed mode)', () => {
   it('defaults to operator outside any provider', () => {
     render(<Probe />);
     expect(screen.getByTestId('mode').textContent).toBe('operator');
-    expect(screen.getByTestId('form-href').textContent).toBe('/ideation/ideas/abc');
+    expect(screen.getByTestId('form-href').textContent).toBe('/feedback/abc');
   });
 
   it('supplies the embed service + embed URLs under the embed provider', () => {
@@ -113,9 +113,9 @@ describe('IdeationRuntimeProvider (embed mode)', () => {
           mode: 'embed',
           service: ideationEmbedService,
           paths: {
-            listHref: '/embed/ideas',
-            formHref: (id) => `/embed/ideas/${id}`,
-            newHref: '/embed/ideas/new',
+            listHref: '/embed/feedback',
+            formHref: (id) => `/embed/feedback/${id}`,
+            newHref: '/embed/feedback/new',
           },
         }}
       >
@@ -124,7 +124,7 @@ describe('IdeationRuntimeProvider (embed mode)', () => {
     );
     expect(screen.getByTestId('mode').textContent).toBe('embed');
     expect(screen.getByTestId('is-embed-service').textContent).toBe('true');
-    expect(screen.getByTestId('form-href').textContent).toBe('/embed/ideas/abc');
+    expect(screen.getByTestId('form-href').textContent).toBe('/embed/feedback/abc');
   });
 });
 
@@ -152,9 +152,9 @@ const embedRuntime = {
   mode: 'embed' as const,
   service: ideationEmbedService,
   paths: {
-    listHref: '/embed/ideas#token=t',
-    formHref: (id: string) => `/embed/ideas/${id}#token=t`,
-    newHref: '/embed/ideas/new#token=t',
+    listHref: '/embed/feedback#token=t',
+    formHref: (id: string) => `/embed/feedback/${id}#token=t`,
+    newHref: '/embed/feedback/new#token=t',
   },
 };
 
@@ -174,7 +174,7 @@ describe('shared TriageBoard in embed mode', () => {
     expect(screen.getByText('Export orders to Excel')).toBeInTheDocument();
     // The card link stays inside the iframe and carries the fragment token.
     const link = screen.getByText('Export orders to Excel').closest('a');
-    expect(link?.getAttribute('href')).toBe('/embed/ideas/i-1#token=t');
+    expect(link?.getAttribute('href')).toBe('/embed/feedback/i-1#token=t');
   });
 });
 
@@ -195,7 +195,7 @@ describe('embed pager - paths.formHref carries ctx/index, never the token (AC-94
     return <span data-testid="href">{paths.formHref('abc', { ctx: 'CTX', index: 2 })}</span>;
   }
 
-  it('builds a plain query on /embed/ideas/{id} with ctx and i, no token in the query', async () => {
+  it('builds a plain query on /embed/feedback/{id} with ctx and i, no token in the query', async () => {
     const { EmbedIdeationShell } = await import('./embed-app');
     render(
       <EmbedIdeationShell>
@@ -203,7 +203,7 @@ describe('embed pager - paths.formHref carries ctx/index, never the token (AC-94
       </EmbedIdeationShell>,
     );
     const href = screen.getByTestId('href').textContent;
-    expect(href).toBe('/embed/ideas/abc?ctx=CTX&i=2');
+    expect(href).toBe('/embed/feedback/abc?ctx=CTX&i=2');
     expect(href).not.toContain('token');
   });
 });

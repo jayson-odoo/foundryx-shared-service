@@ -20,7 +20,7 @@ import { IdeaMergedTab } from './idea-merged-tab';
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), prefetch: vi.fn() })),
   useSearchParams: vi.fn(() => new URLSearchParams()),
-  usePathname: vi.fn(() => '/ideation/ideas/survivor-1'),
+  usePathname: vi.fn(() => '/feedback/survivor-1'),
 }));
 
 vi.mock('next-auth/react', () => ({
@@ -103,7 +103,7 @@ describe('IdeaMergedTab (AC-94-25)', () => {
   it('is empty-state when there are no merged children', async () => {
     useIdeaMerged.mockReturnValue({ merged: [] });
     render(<IdeaMergedTab ideaId="survivor-1" onUnmerge={vi.fn()} />);
-    expect(await screen.findByText(/no merged ideas|nothing merged/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no merged feedback|nothing merged/i)).toBeInTheDocument();
   });
 
   // ── BLOCKER 1 (issue #94 review round 1) - a row must open through the
@@ -114,7 +114,7 @@ describe('IdeaMergedTab (AC-94-25)', () => {
     useIdeaMerged.mockReturnValue({ merged: [child()] });
     render(<IdeaMergedTab ideaId="survivor-1" onUnmerge={vi.fn()} />);
     const link = (await screen.findByText(/Export orders to Excel/i)).closest('a');
-    expect(link?.getAttribute('href')).toMatch(/^\/ideation\/ideas\/child-1/);
+    expect(link?.getAttribute('href')).toMatch(/^\/feedback\/child-1/);
   });
 
   it('embed mode: a row opens the embed path, never the operator one', async () => {

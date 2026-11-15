@@ -48,7 +48,7 @@ describe('IdeasView - "Show test ideas" toggle (issue #1179)', () => {
   it('renders the toggle in operator mode (no provider = operator default)', () => {
     render(<IdeasView />);
     expect(screen.getByTestId('ideas-include-test')).toBeInTheDocument();
-    expect(screen.getByText('Show test ideas')).toBeInTheDocument();
+    expect(screen.getByText('Show test feedback')).toBeInTheDocument();
   });
 
   it('hides the toggle entirely in embed mode', () => {
@@ -79,7 +79,7 @@ describe('IdeasView - "Show test ideas" toggle (issue #1179)', () => {
       </IdeationRuntimeProvider>,
     );
     expect(screen.queryByTestId('ideas-include-test')).not.toBeInTheDocument();
-    expect(screen.queryByText('Show test ideas')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show test feedback')).not.toBeInTheDocument();
   });
 });
 

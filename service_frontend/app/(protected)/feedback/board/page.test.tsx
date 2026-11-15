@@ -101,7 +101,7 @@ describe('IdeationBoardPage', () => {
     for (const title of ['New', 'Triaged', 'Linked to BR', 'Building', 'Delivered']) {
       expect(screen.getByText(title)).toBeInTheDocument();
     }
-    expect(screen.getAllByText(/drop ideas here/i)).toHaveLength(5);
+    expect(screen.getAllByText(/drop feedback here/i)).toHaveLength(5);
   });
 
   it('renders an idea card in its lifecycle column (data state)', () => {

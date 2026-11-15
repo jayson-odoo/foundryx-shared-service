@@ -11,7 +11,7 @@ import { toCsv } from '@/lib/csv';
 import { useIdeaBusinessRequirements } from '@/hooks/use-idea-business-requirements';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { BusinessRequirement } from '@/types/business-requirement';
-import { brFormHref } from '../../business-requirements/components/paths';
+import { brFormHref } from '../business-requirements/components/paths';
 
 export interface IdeaBrsTabProps {
   ideaId: string;

@@ -108,7 +108,7 @@ describe('promoteIdeasToBr - embed runtime (AC-15-24)', () => {
   it('surfaces a 403 as the permission toast', async () => {
     const promoteToBr = vi.fn().mockRejectedValue(new ApiError('Forbidden', 403, undefined, { code: 'forbidden' }));
     await promoteIdeasToBr([anIdea()], router, { runtime: embedRuntime(promoteToBr) });
-    expect(toastError).toHaveBeenCalledWith('You do not have permission to promote ideas.');
+    expect(toastError).toHaveBeenCalledWith('You do not have permission to promote feedback.');
     expect(push).not.toHaveBeenCalled();
   });
 });
@@ -138,6 +138,6 @@ describe('promoteIdeasToBr - operator runtime unchanged (AC-15-23/24)', () => {
         paths: { listHref: '/l', formHref: (id: string) => `/l/${id}`, newHref: '/l/new' },
       },
     });
-    expect(toastError).toHaveBeenCalledWith('You do not have permission to promote ideas.');
+    expect(toastError).toHaveBeenCalledWith('You do not have permission to promote feedback.');
   });
 });

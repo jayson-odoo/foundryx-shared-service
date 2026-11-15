@@ -132,8 +132,8 @@ describe('DetailsTab - "Merged into" link is runtime-aware (BLOCKER 1)', () => {
 
   it('operator mode: links to the operator path', () => {
     render(<Harness idea={anIdea({ mergedInto } as Partial<Idea>)} editing={false} />);
-    const link = screen.getByRole('link', { name: 'IDEA-0012' });
-    expect(link).toHaveAttribute('href', '/ideation/ideas/survivor-1');
+    const link = screen.getByRole('link', { name: 'FB-0012' });
+    expect(link).toHaveAttribute('href', '/feedback/survivor-1');
   });
 
   it('embed mode: links to the embed path, never the operator one', () => {
@@ -152,7 +152,7 @@ describe('DetailsTab - "Merged into" link is runtime-aware (BLOCKER 1)', () => {
         <Harness idea={anIdea({ mergedInto } as Partial<Idea>)} editing={false} />
       </IdeationRuntimeProvider>,
     );
-    const link = screen.getByRole('link', { name: 'IDEA-0012' });
+    const link = screen.getByRole('link', { name: 'FB-0012' });
     expect(link).toHaveAttribute('href', '/embed/ideas/survivor-1');
   });
 });
@@ -208,7 +208,7 @@ describe('DetailsTab - plan 20 card fields (AC-20-06/07)', () => {
 
   it('edit mode: Title input, Textareas, use cases list editor; no legacy inputs', () => {
     render(<Harness idea={real} editing />);
-    expect(screen.getByPlaceholderText('A short name for the idea')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('A short name for the feedback')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Use case 1' })).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('How could we solve it?')).toBeNull();
     expect(screen.queryByPlaceholderText('Which team is this for?')).toBeNull();

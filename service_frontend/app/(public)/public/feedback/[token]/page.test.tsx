@@ -65,7 +65,7 @@ const richView = {
   submitterFirstName: 'Jayson',
   submittedAt: '2026-07-20T10:00:00Z',
   upvotes: 7,
-  nextStep: 'Your idea is in. The team will review it soon.',
+  nextStep: 'Your feedback is in. The team will review it soon.',
   timeline: [
     { label: 'New', color: 'blue', state: 'done' },
     { label: 'Triaged', color: 'indigo', state: 'current' },
@@ -103,7 +103,7 @@ describe('PublicIdeaStatusPage - AC-90-110 the full page contract', () => {
 
     // Hero.
     const hero = screen.getByTestId('idea-hero');
-    expect(within(hero).getByText('IDEA-0182')).toBeInTheDocument();
+    expect(within(hero).getByText('FB-0182')).toBeInTheDocument();
     expect(
       within(hero).getByText('Show promo price in red on price tags'),
     ).toBeInTheDocument();
@@ -131,7 +131,7 @@ describe('PublicIdeaStatusPage - AC-90-110 the full page contract', () => {
 
     // "What happens next".
     expect(
-      screen.getByText('Your idea is in. The team will review it soon.'),
+      screen.getByText('Your feedback is in. The team will review it soon.'),
     ).toBeInTheDocument();
 
     // Footer mark - unbranded host shows the Foundryx wordmark (inline SVG,
@@ -228,7 +228,7 @@ describe('PublicIdeaStatusPage - merged child (issue #94, AC-94-13/31)', () => {
     });
     render(<PublicIdeaStatusPage />);
     const hero = screen.getByTestId('idea-hero');
-    expect(within(hero).getByText('Merged into IDEA-0012')).toBeInTheDocument();
+    expect(within(hero).getByText('Merged into FB-0012')).toBeInTheDocument();
   });
 
   it('renders nothing extra for a plain (never-merged) idea', () => {
@@ -258,9 +258,9 @@ describe('PublicIdeaStatusPage - not-found (regression, unchanged)', () => {
     render(<PublicIdeaStatusPage />);
     const hero = screen.getByTestId('idea-hero');
     expect(within(hero).getByText(richView.problem)).toBeInTheDocument();
-    expect(screen.queryByText('Idea IDEA-0182')).not.toBeInTheDocument();
+    expect(screen.queryByText('Idea FB-0182')).not.toBeInTheDocument();
     // The number itself still renders exactly once (the muted line).
-    expect(screen.getAllByText('IDEA-0182').length).toBe(1);
+    expect(screen.getAllByText('FB-0182').length).toBe(1);
   });
 
   it('shows the idea number exactly once when both title and problem are null', () => {
@@ -270,8 +270,8 @@ describe('PublicIdeaStatusPage - not-found (regression, unchanged)', () => {
       view: { ...richView, title: null, problem: null },
     });
     render(<PublicIdeaStatusPage />);
-    expect(screen.getAllByText('IDEA-0182').length).toBe(1);
-    expect(screen.queryByText('Idea IDEA-0182')).not.toBeInTheDocument();
+    expect(screen.getAllByText('FB-0182').length).toBe(1);
+    expect(screen.queryByText('Idea FB-0182')).not.toBeInTheDocument();
   });
 });
 

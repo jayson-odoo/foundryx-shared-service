@@ -11,22 +11,22 @@ import { ideaFormHref } from './paths';
 
 describe('ideaFormHref - record-nav context (AC-94-36)', () => {
   it('builds a plain path with no options', () => {
-    expect(ideaFormHref('idea-1')).toBe('/ideation/ideas/idea-1');
+    expect(ideaFormHref('idea-1')).toBe('/feedback/idea-1');
   });
 
   it('carries ctx + index (i) as query params', () => {
     expect(ideaFormHref('idea-1', { ctx: 'CTX', index: 3 })).toBe(
-      '/ideation/ideas/idea-1?ctx=CTX&i=3',
+      '/feedback/idea-1?ctx=CTX&i=3',
     );
   });
 
   it('carries includeTest alongside ctx/i, mirroring brFormHref', () => {
     expect(ideaFormHref('idea-1', { ctx: 'CTX', index: 3, includeTest: true })).toBe(
-      '/ideation/ideas/idea-1?ctx=CTX&i=3&includeTest=1',
+      '/feedback/idea-1?ctx=CTX&i=3&includeTest=1',
     );
   });
 
   it('still supports edit mode standalone', () => {
-    expect(ideaFormHref('idea-1', { edit: true })).toBe('/ideation/ideas/idea-1?edit=1');
+    expect(ideaFormHref('idea-1', { edit: true })).toBe('/feedback/idea-1?edit=1');
   });
 });

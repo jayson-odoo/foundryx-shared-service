@@ -15,7 +15,7 @@ import { IdeaSimilarTab } from './idea-similar-tab';
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), prefetch: vi.fn() })),
   useSearchParams: vi.fn(() => new URLSearchParams()),
-  usePathname: vi.fn(() => '/ideation/ideas/survivor-1'),
+  usePathname: vi.fn(() => '/feedback/survivor-1'),
 }));
 
 vi.mock('next-auth/react', () => ({
@@ -91,12 +91,12 @@ describe('IdeaSimilarTab (plan 20, AC-20-23)', () => {
       </IdeationRuntimeProvider>,
     );
     const table = await screen.findByRole('table');
-    expect(within(table).getByText('IDEA-0004')).toBeInTheDocument();
+    expect(within(table).getByText('FB-0004')).toBeInTheDocument();
     const hrefs = within(table)
       .getAllByRole('link')
       .map((a) => a.getAttribute('href') ?? '');
     expect(hrefs.some((h) => /^\/embed\/ideas\/idea-4/.test(h))).toBe(true);
-    expect(hrefs.join(' ')).not.toMatch(/\/ideation\/ideas\//);
+    expect(hrefs.join(' ')).not.toMatch(/\/feedback\//);
   });
 
   it('row Merge calls onMerge with that row', async () => {
@@ -119,7 +119,7 @@ describe('IdeaSimilarTab (plan 20, AC-20-23)', () => {
     const retry = vi.fn();
     useIdeaSimilar.mockReturnValue({ state: { status: 'unavailable' }, retry });
     render(<IdeaSimilarTab ideaId="idea-10" onMerge={vi.fn()} />);
-    expect(screen.getByText('Similar ideas unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Similar feedback unavailable')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(retry).toHaveBeenCalled();
   });
@@ -127,6 +127,6 @@ describe('IdeaSimilarTab (plan 20, AC-20-23)', () => {
   it('empty result says so', () => {
     useIdeaSimilar.mockReturnValue({ state: { status: 'ready', ideas: [] }, retry: vi.fn() });
     render(<IdeaSimilarTab ideaId="idea-10" onMerge={vi.fn()} />);
-    expect(screen.getByText('No similar ideas')).toBeInTheDocument();
+    expect(screen.getByText('No similar feedback')).toBeInTheDocument();
   });
 });
