@@ -15,11 +15,13 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+import contextlib
+
 import httpx
 
 from app.services.url_guard import UrlGuardError
 
-from modules.autocount.http_client import autocount_guarded_client
+from modules.autocount.http_client import shared_autocount_client
 from modules.autocount.write_back import auth, call_log as cl
 from modules.autocount.write_back.guard import WriteNotAllowed, assert_write_allowed
 
@@ -106,14 +108,12 @@ class AutoCountWriteClient:
         change the path or add a parameter)."""
         return self._send("DELETE", path, None, params={str(k): str(v) for k, v in params.items()})
 
-    def _http(self) -> httpx.Client:
+    def _http(self) -> "contextlib.AbstractContextManager[httpx.Client]":
+        """An injected transport gets its own short client; otherwise the process-wide
+        pooled client, left open on exit (SS-AUTOCOUNT-SPEEDUP)."""
         if self._transport is not None:
-            return httpx.Client(
-                transport=self._transport,
-                timeout=self._timeout,
-                follow_redirects=False,
-            )
-        return autocount_guarded_client(self._timeout)
+            return httpx.Client(transport=self._transport, timeout=self._timeout, follow_redirects=False)
+        return contextlib.nullcontext(shared_autocount_client())
 
     def _send(
         self, method: str, path: str, body: Any, *, params: Optional[Mapping[str, str]] = None
@@ -130,9 +130,11 @@ class AutoCountWriteClient:
         try:
             with self._http() as http:
                 if params is not None:
-                    request = http.build_request(method, url, params=dict(params), headers=self._auth_headers)
+                    request = http.build_request(method, url, params=dict(params), headers=self._auth_headers,
+                                                 timeout=self._timeout)
                 else:
-                    request = http.build_request(method, url, json=body, headers=self._auth_headers)
+                    request = http.build_request(method, url, json=body, headers=self._auth_headers,
+                                                 timeout=self._timeout)
                 sent_path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
                 response = http.send(request)
         except httpx.TimeoutException:

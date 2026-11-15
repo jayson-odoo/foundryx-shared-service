@@ -16,11 +16,13 @@ from datetime import date
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
+import contextlib
+
 import httpx
 
 from app.services.url_guard import UrlGuardError
 
-from modules.autocount.http_client import autocount_guarded_client
+from modules.autocount.http_client import shared_autocount_client
 from modules.autocount.write_back import auth, call_log as cl
 from modules.autocount.write_back.doc_kinds import KINDS
 
@@ -90,7 +92,9 @@ class AutoCountDocReader:
         started = self._call_log.started() if self._call_log else None
         path = cl.vendor_path(self.base_url, urlsplit(url).path)
         try:
-            request = http.build_request("GET", url, params=params, headers=self._auth_headers)
+            request = http.build_request(
+                "GET", url, params=params, headers=self._auth_headers, timeout=self._timeout
+            )
             path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
             response = http.send(request)
         except httpx.TimeoutException:
@@ -111,12 +115,12 @@ class AutoCountDocReader:
         self._call_log.record(base_url=self.base_url, method="GET", path=path, started=started,  # type: ignore[arg-type]
                               status=status, body=text, outcome=outcome, error_code=code)
 
-    def _http(self) -> httpx.Client:
+    def _http(self) -> "contextlib.AbstractContextManager[httpx.Client]":
+        """An injected transport gets its own short client; otherwise the process-wide
+        pooled client, left open on exit (SS-AUTOCOUNT-SPEEDUP)."""
         if self._transport is not None:
-            return httpx.Client(
-                transport=self._transport, timeout=self._timeout, follow_redirects=False
-            )
-        return autocount_guarded_client(self._timeout)
+            return httpx.Client(transport=self._transport, timeout=self._timeout, follow_redirects=False)
+        return contextlib.nullcontext(shared_autocount_client())
 
     def _fetch(self, path: Optional[str], params: Dict[str, str]) -> List[Document]:
         if path is None:

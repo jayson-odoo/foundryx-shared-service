@@ -12,7 +12,9 @@ response body beyond a bounded row count, and never persists anything.
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional
+import os
+import threading
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -81,6 +83,37 @@ def autocount_guarded_client(timeout: float) -> httpx.Client:
         follow_redirects=False,
     )
 
+
+
+# SS-AUTOCOUNT-SPEEDUP: the write-back reader and writer share ONE guarded client per
+# process, so the calls of one link reuse a kept-alive connection instead of paying a
+# new TLS handshake each. The guard still runs on every NEW connection (at connect,
+# GuardedTransport); a kept-alive connection only ever goes to an address that passed
+# it (keep-alive 5 s, url_guard._default_limits). Each request carries its caller's own
+# timeout (``build_request(timeout=...)``), so the pool's default is only a fallback.
+SHARED_CLIENT_TIMEOUT_SECONDS = 90.0
+_shared_lock = threading.Lock()
+_shared: Optional[Tuple[int, httpx.Client]] = None
+
+
+def shared_autocount_client() -> httpx.Client:
+    """The process-wide guarded client (built on first use; a forked worker or a
+    closed client gets a new one). Callers never close it."""
+    global _shared
+    pid = os.getpid()
+    with _shared_lock:
+        if _shared is None or _shared[0] != pid or _shared[1].is_closed:
+            _shared = (pid, autocount_guarded_client(SHARED_CLIENT_TIMEOUT_SECONDS))
+        return _shared[1]
+
+
+def reset_shared_autocount_client() -> None:
+    """Close and forget the shared client (tests; a new one is built on next use)."""
+    global _shared
+    with _shared_lock:
+        if _shared is not None and _shared[0] == os.getpid():
+            _shared[1].close()
+        _shared = None
 
 def assert_autocount_base_url_deliverable(base_url: str) -> None:
     """AC-10-58 M2 - the outbound-egress guard: every AutoCount open-REST

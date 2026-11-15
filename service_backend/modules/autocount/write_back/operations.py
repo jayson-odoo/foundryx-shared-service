@@ -847,9 +847,12 @@ class OperationService:
         if deadline and time.monotonic() > self._op_deadline:  # move due, deadline past: skip it
             self._move_warnings({k: None for k in fields})
             return document
+        # ``document`` is the last read of this document (the step's read-back or resume's read), with
+        # no vendor call since: the move is built on it, not on a second identical GET (SS-AUTOCOUNT-SPEEDUP).
         moved = self.prims.edit_doc(
             **self._call(row, company, snap, "move"), header_changes={},
             line_changes=[{"DtlKey": key, **changes} for key, changes in changes_by_key.items()],
+            fresh_doc=document,
         )
         self._step("move", moved)
         if moved.outcome == OUTCOME_DONE and moved.document:

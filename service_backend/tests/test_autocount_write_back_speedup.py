@@ -121,7 +121,7 @@ def test_spd_04_a_failed_so_bydocno_falls_back_to_the_day_list_and_both_are_logg
     h.vendor.fail_next("GET", "salesorderbydocno", status=500)
     res = h.run("link_row", world.params["link_row"])
     assert res.outcome == "done", res.error_code
-    so_logs = [(r.path.split("?")[0], r.outcome) for r in logs(h) if r.path.startswith("/SalesOrder")]
+    so_logs = [(r.path.split("?")[0], r.outcome) for r in logs(h) if r.path.lower().startswith("/salesorder")]
     assert so_logs[0] == ("/SalesOrderbydocno", "http_error") and len(so_logs) == 2, so_logs
     assert_one_row_per_call(h)
 
