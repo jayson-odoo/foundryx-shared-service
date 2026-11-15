@@ -298,14 +298,22 @@ on the app (Development mode or Standard Access). **Owner to confirm** what Meta
 This is very likely the same app as `META_APP_ID`. Crew cannot read the secret's value to compare, so the owner
 confirms it in lane 1 by checking that the deploy's `META_APP_ID` ends in ...0564.
 
-Live mode alone does not mean customers can connect. Each permission still needs Advanced Access, and the screenshot
-does not show that. The owner checks three things in this app:
+**Owner's dashboard checks (screenshots, 15/11/2026 ~15:20):**
 
-| # | Check | Where | Why |
+| # | Check | Answer | What it means |
 |---|---|---|---|
-| a | Which use cases are added | Use cases | The lead permissions sit under a use case. If no leads or Pages use case is listed, crew adds one (unconfirmed name, e.g. "Capture and manage ad leads") |
-| b | Which permissions already have Advanced Access | Review > Permissions and features | Tells us whether BL-017 (WhatsApp) was already reviewed, and which of the five lead permissions are new to the submission |
-| c | Business Verification status | App settings > Basic (verification panel), or Business Settings > Business info | Verified = no documents needed again (section 10.3 rows 2-3 drop out) |
+| a | Use cases | "Capture & manage ad leads with Marketing API" is listed, beside "Connect with customers through WhatsApp" | Nothing to add. The lead permissions already sit on this app |
+| b | Advanced Access for the 5 lead permissions (`leads_retrieval`, `pages_manage_ads`, `pages_manage_metadata`, `pages_read_engagement`, `pages_show_list`) | All "Ready for testing", 0 API calls | Standard Access only, App Review not submitted. Works today for people with a role on the app (Foundryx Page), not yet for customers |
+| c | Business Verification | Business portfolio "Foundryx": Verified, 03/11/2025. Primary Page: None | No documents needed again. Verification is the part that usually takes longest, and it is done |
+
+Not checked yet: the Advanced Access status of `whatsapp_business_management` / `whatsapp_business_messaging`
+(BL-017). A quick glance at the same Review page tells us whether one submission covers WhatsApp too.
+
+**Does "Primary Page: None" matter?** Probably not for App Review or for leads (unconfirmed). The Primary Page is the
+Page shown as the business portfolio's public face in Business Settings. App Review checks the app's permissions and
+the verified business, not that setting. What matters is different: the Foundryx Page used for testing and the
+screencast must be one the owner (an app admin) manages, ideally owned by the "Foundryx" portfolio. Setting it as
+Primary Page is harmless and takes one click, so do it if convenient, but it is not a blocker.
 
 **The app name is shown to every customer.** Facebook's consent screen says "Foundryx WA App wants to..." when an
 EcoHub customer clicks Continue with Facebook. "WA" is wrong for a leads connection and puzzles a customer. Rename it
@@ -335,22 +343,74 @@ customers does.
 
 ### 10.3 What the owner provides or clicks, and what crew prepares
 
+Rows answered by the 15/11 checks are gone: use case (present), Business portfolio (exists), Business Verification
+and its documents (verified 03/11/2025). Domain verification is only needed if Meta asks again, so it is dropped too.
+
 | # | Item | Who | Notes |
 |---|---|---|---|
-| 0 | **Check the existing app** (section 10.1 table): use cases, which permissions have Advanced Access, Business Verification status. **Rename "Foundryx WA App"** (O-2) before submitting | Owner (a few minutes in the dashboard) | Decides which rows below are still needed |
-| 1 | **Business portfolio** (Meta Business Manager) that owns the app, with its id | Owner | The app must belong to the business being verified |
-| 2 | **Business Verification:** legal company name exactly as registered, registration document, business address, business phone, website domain, and an email on that domain (or domain verified by DNS / meta tag) | Owner | Documents only the owner holds. Meta may call or email the phone/email for a code |
-| 3 | **Domain verification** of the website domain in Business Settings | Owner clicks; crew can add the meta tag if the domain is ours | Needed if Meta asks for it during verification |
-| 4 | **App roles:** owner stays Admin; add any staff who will test (Admin or Tester). Crew has no Facebook account, so every Facebook-side click in testing is the owner's or staff's | Owner | Also needed for lane 1 |
-| 5 | **App settings > Basic:** app icon (1024x1024), category (Business), contact email, Privacy Policy URL, Terms URL, Data Deletion URL | Owner pastes; crew prepares the pages and the icon file | The three URLs must be public pages |
-| 6 | **Privacy Policy page** covering lead data: what is collected, why, the 180-day retention, deletion, contact | Crew drafts, owner approves the wording | Public page on our domain. White-label question: Foundryx-branded, since it is the app's policy |
-| 7 | **Terms of Service page** | Crew drafts, owner approves | Same |
-| 8 | **Data deletion:** a public instructions page, plus optionally Meta's data deletion callback endpoint | Crew builds | Callback = one small endpoint; can be added to lane 4 |
-| 9 | **Use-case text per permission** (why we need each, how it is used, what the user sees) | Crew writes | From the wizard copy |
-| 10 | **Screencasts per permission:** sign in, pick Page, pick forms, test lead, lead appears | Crew scripts; **owner records** (Facebook login is his) | Recorded on the Foundryx Page in Development mode after lane 6 |
-| 11 | **Reviewer test access:** a Shared Service test company login + written steps; Meta reviewers use their own Facebook test account to connect | Crew prepares the test company and steps; owner pastes them into the submission | No real customer data |
-| 12 | **Submit** the review and answer Meta's follow-up questions | Owner submits (dashboard access); crew drafts every answer | Typical wait: days to weeks (unconfirmed) |
-| 13 | **Annual Data Use Checkup / Data Protection Assessment** when Meta asks | Owner signs; crew drafts | Recurring, yearly (unconfirmed) |
+| 1 | **Rename "Foundryx WA App"** (O-2) before submitting | Owner, 1 minute | App settings > Basic > Display name |
+| 2 | **App roles:** owner stays Admin; any staff who will test become Admin or Tester. Crew has no Facebook account, so every Facebook-side click is the owner's or staff's | Owner | Needed for lane 1 |
+| 3 | **App settings > Basic:** confirm the Privacy Policy URL, Terms URL, Data Deletion URL, app icon and category. A Published app already has some of these (unconfirmed which) | Owner checks and pastes; crew prepares any page that is missing or does not cover lead data | The policy must mention lead data |
+| 4 | **Privacy Policy page** covering lead data: what is collected, why, 180-day retention, deletion, contact | Crew drafts, owner approves the wording | Public page; Foundryx-branded, since it is the app's policy |
+| 5 | **Data deletion:** public instructions page, plus optionally Meta's data deletion callback | Crew builds | Callback can go into lane 4 |
+| 6 | **App Review package** (section 10.5) | Crew prepares; owner records and submits | After lane 6 |
+| 7 | **Answer Meta's follow-up questions** | Owner sends; crew drafts | Typical wait: days to weeks (unconfirmed) |
+| 8 | **Annual Data Use Checkup** when Meta asks | Owner signs; crew drafts | Yearly (unconfirmed) |
+
+### 10.5 What App Review still needs (one submission, five permissions)
+
+Everything is unconfirmed in detail, since Meta's pages are blocked from this sandbox.
+
+**1. Real API calls first.** Meta usually requires at least one successful call per permission before it lets you
+request Advanced Access (unconfirmed). The "0 API calls" on every permission means the request button may be
+blocked today. Lanes 1 and 6 on the Foundryx Page make those calls naturally:
+
+| Permission | Call that counts |
+|---|---|
+| `pages_show_list` | Page list |
+| `pages_manage_metadata` | Page subscribe |
+| `leads_retrieval` | Fetch a lead |
+| `pages_read_engagement` | Form list and questions |
+| `pages_manage_ads` | Lead and form reads (lane 1 confirms which call Meta counts) |
+
+**2. Per permission, a short written note** (crew writes all five). Each says what the customer does, what we read,
+and why we need it:
+
+| Permission | Note |
+|---|---|
+| `pages_show_list` | Show the customer the Pages they manage so they pick where leads come from |
+| `pages_manage_metadata` | Subscribe the picked Page to new-lead notifications |
+| `leads_retrieval` | Read each new lead's answers and deliver it to the customer's CRM |
+| `pages_read_engagement` | Read the Page's lead forms and questions for the field mapping step |
+| `pages_manage_ads` | Required by Meta to read full lead data |
+
+**3. One screencast, about 2-3 minutes, covering all five** (crew scripts it, owner records it on the Foundryx Page
+with the renamed app):
+
+1. Sign in to a test company in Shared Service or EcoHub.
+2. Click Connect a source, then Facebook.
+3. "Continue with Facebook". The consent screen must show every requested permission.
+4. Pick the Foundryx Page.
+5. Pick forms and map fields.
+6. Send a test lead with the Lead Ads Testing Tool.
+7. Show the lead arriving in the Leads list.
+8. Disconnect, to show the customer controls it.
+
+Captions are in English, and no real customer data appears.
+
+**4. Reviewer test access** (crew prepares, owner pastes into the submission):
+
+- A test company login on the production Shared Service with only fake data. If the reviewer goes through EcoHub,
+  an EcoHub test login too.
+- Written steps matching the screencast.
+- Meta's reviewers use their own Facebook account to connect, so no Facebook password is ever shared. They may need
+  a Page with a lead form: the steps tell them to use their own test Page, or Meta's Lead Ads Testing Tool on one
+  (unconfirmed what reviewers expect).
+
+**5. Settings that must already be right:** the renamed display name (10.3 row 1), the Privacy Policy and Data
+Deletion URLs (rows 3-5), and app category Business.
+
+Order: lane 6 done, then screencast plus API calls exist, then submit. Lanes 1-7 never wait on the review.
 
 ### 10.4 What lane 1 (Meta test, 1 day) needs from the owner
 
