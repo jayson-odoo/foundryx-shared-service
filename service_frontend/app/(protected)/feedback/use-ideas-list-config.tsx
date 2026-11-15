@@ -322,7 +322,7 @@ export function useIdeasListConfig(
       searchHints: ['Feedback', 'Submitter', 'Product'],
       enableStatusViews: true,
       statusViewLabels: { active: 'Active', trashed: 'Archived' },
-      createLabel: 'Capture feedback',
+      createLabel: 'Create',
       onCreate,
       columns,
       filterFields: [

@@ -3,10 +3,7 @@
     "vp": "desktop",
     "label": "list",
     "url": "http://localhost:3001/feedback",
-    "ideaHits": [
-      "\tIdea\tDemo User\tManual\tDemo App\t",
-      "\tIdea\tDemo User\tManual\tDemo App\t"
-    ],
+    "ideaHits": [],
     "hScroll": false
   },
   {
@@ -36,10 +33,7 @@
     "vp": "desktop",
     "label": "redirect-list",
     "url": "http://localhost:3001/feedback?keep=1",
-    "ideaHits": [
-      "\tIdea\tDemo User\tManual\tDemo App\t",
-      "\tIdea\tDemo User\tManual\tDemo App\t"
-    ],
+    "ideaHits": [],
     "hScroll": false
   },
   {
@@ -78,10 +72,7 @@
     "vp": "mobile",
     "label": "list",
     "url": "http://localhost:3001/feedback",
-    "ideaHits": [
-      "\tIdea\tDemo User\tManual\tDemo App\t",
-      "\tIdea\tDemo User\tManual\tDemo App\t"
-    ],
+    "ideaHits": [],
     "hScroll": false
   },
   {
@@ -111,10 +102,7 @@
     "vp": "mobile",
     "label": "redirect-list",
     "url": "http://localhost:3001/feedback?keep=1",
-    "ideaHits": [
-      "\tIdea\tDemo User\tManual\tDemo App\t",
-      "\tIdea\tDemo User\tManual\tDemo App\t"
-    ],
+    "ideaHits": [],
     "hScroll": false
   },
   {
