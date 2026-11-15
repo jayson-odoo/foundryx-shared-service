@@ -12,6 +12,7 @@ import {
   FileText,
   GitMerge,
   Lightbulb,
+  Link2Off,
   Rocket,
   Sparkles,
   Split,
@@ -266,6 +267,22 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               toast.success('Feedback restored.');
             },
           },
+          ...(mode === 'operator'
+            ? [
+                {
+                  // Lane PUBLIC-IDEAS-BOARD (owner QD a): the submitter's personal
+                  // feedback link works until staff cancel it here; the next
+                  // message to them carries a fresh link.
+                  id: 'cancel-feedback-link',
+                  label: 'Cancel feedback link',
+                  icon: Link2Off,
+                  permission: 'ideation.triage.manage',
+                  surfaces: { row: false, form: true, bulk: false },
+                  isVisible: (rows: Idea[]) => rows.every((r) => r.hasSubmitterContact === true),
+                  deferred: { actionKey: 'ideation_ideas.cancel_feedback_link', entityType: 'ideation_idea' },
+                } satisfies ResourceAction<Idea>,
+              ]
+            : []),
           {
             id: 'delete',
             label: 'Delete',

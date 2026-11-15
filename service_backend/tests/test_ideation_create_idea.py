@@ -392,7 +392,7 @@ def test_confirm_completes_with_link(setup, monkeypatch):
     assert body["status"] == "complete"
     token = _idea_field(s["factory"], draft_id, "status_token")
     assert token is not None
-    assert body["link"] == f"https://fe.example.test/public/feedback/{token}"
+    assert body["link"] == _expected_board_link(s["factory"], draft_id)
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
     # On completion the captured answers are promoted to first-class Idea columns.
@@ -429,8 +429,7 @@ def test_confirm_on_captured_is_idempotent(setup, monkeypatch):
     )
     body = r3.json()
     assert body["status"] == "complete"
-    token = _idea_field(s["factory"], draft_id, "status_token")
-    assert body["link"] == f"https://fe.example.test/public/feedback/{token}"
+    assert body["link"] == _expected_board_link(s["factory"], draft_id)
     assert _idea_count(s["factory"]) == 1
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
@@ -546,8 +545,7 @@ def test_reply_text_deterministic(setup, monkeypatch):
         s["client"], s["key"], s["contact_id"], s["product_id"],
         draft_id=draft_id, confirm=True,
     )
-    token = _idea_field(s["factory"], draft_id, "status_token")
-    assert f"https://fe.example.test/public/feedback/{token}" in r3.json()["reply_text"]
+    assert _expected_board_link(s["factory"], draft_id) in r3.json()["reply_text"]
 
 
 # ── WS-A / AC-CAP-1..3 - submitter_name stored verbatim ───────────────────────
@@ -561,6 +559,24 @@ def _idea_field(factory, idea_id, attr):
         idea = db.query(Idea).filter(Idea.id == idea_id).first()
         assert idea is not None
         return getattr(idea, attr)
+    finally:
+        db.close()
+
+
+def _expected_board_link(factory, idea_id, base="https://fe.example.test"):
+    """Lane PUBLIC-IDEAS-BOARD: a contact's link is their personal feedback board
+    opening the idea (``/public/feedback/board/{link token}/{idea number}``)."""
+    from modules.ideation.models import Idea, IdeaContactLink
+
+    db = factory()
+    try:
+        idea = db.query(Idea).filter(Idea.id == idea_id).first()
+        link = (
+            db.query(IdeaContactLink)
+            .filter(IdeaContactLink.contact_id == idea.submitter_contact_id, IdeaContactLink.revoked_at.is_(None))
+            .one()
+        )
+        return f"{base}/public/feedback/board/{link.token}/{idea.idea_number.replace('IDEA-', 'FB-')}"
     finally:
         db.close()
 
@@ -768,6 +784,8 @@ def test_is_test_persists_on_create_and_survives_turns(setup, monkeypatch):
         draft_id=draft_id, confirm=True,
     )
     assert r3.json()["status"] == "complete"
+    # A test turn never mints a real contact's personal link (security review):
+    # the per-idea status page, as before.
     token = _idea_field(s["factory"], draft_id, "status_token")
     assert r3.json()["link"] == f"https://fe.example.test/public/feedback/{token}"
     assert _idea_status_key(s["factory"], draft_id) == "captured"

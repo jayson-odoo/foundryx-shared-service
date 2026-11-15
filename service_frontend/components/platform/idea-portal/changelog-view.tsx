@@ -20,7 +20,7 @@ function monthKey(iso: string, timeZone: string): string {
 /** Changelog (Q3 a): delivered ideas, grouped by month, newest first. */
 export function ChangelogView() {
   const { paths } = useIdeaPortal();
-  const { formatDate, timeZone } = useDatetime();
+  const { formatDmyDate: formatDate, timeZone } = useDatetime();
   const log = usePortalChangelog();
 
   const groups: { month: string; items: PortalChangelogItem[] }[] = [];
@@ -42,7 +42,7 @@ export function ChangelogView() {
           <li key={g.month} className="flex flex-col gap-2">
             <p className="text-xs text-muted-foreground">{g.month}</p>
             {g.items.map((item) => (
-              <Link key={item.id} href={paths.idea(item.id)}>
+              <Link key={item.id} href={paths.idea(item.ideaNumber ?? item.id)}>
                 <Card className="transition-colors hover:border-primary/60">
                   <CardContent className="flex flex-col gap-1.5 py-4">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">

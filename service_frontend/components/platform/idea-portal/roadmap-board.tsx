@@ -32,7 +32,7 @@ export function RoadmapBoard({ columns, ideaHref, onVote }: RoadmapBoardProps) {
               <p className="py-4 text-center text-xs text-muted-foreground">No feedback</p>
             ) : (
               col.ideas.map((idea) => (
-                <IdeaCard key={idea.id} idea={idea} href={ideaHref(idea.id)} onVote={onVote} />
+                <IdeaCard key={idea.id} idea={idea} href={ideaHref(idea.ideaNumber ?? idea.id)} onVote={onVote} />
               ))
             )}
           </div>

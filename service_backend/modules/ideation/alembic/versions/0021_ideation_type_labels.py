@@ -8,16 +8,16 @@ data-only, no schema change. Postgres-only; a no-op on the SQLite test engine
 (``seed_idea_types`` applies the same guarded relabel at every install()).
 Uses Alembic's own connection (``op.get_bind()``) - never commits it.
 
-Revision ID: 0020_ideation_type_labels
-Revises: 0019_ideation_idea_type
+Revision ID: 0021_ideation_type_labels
+Revises: 0020_ideation_contact_links
 Create Date: 2026-11-15
 """
 from alembic import op
 from sqlalchemy import text
 
 # <= 32 chars (alembic_version.version_num is VARCHAR(32)).
-revision = "0020_ideation_type_labels"
-down_revision = "0019_ideation_idea_type"
+revision = "0021_ideation_type_labels"
+down_revision = "0020_ideation_contact_links"
 branch_labels = None
 depends_on = None
 

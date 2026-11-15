@@ -55,7 +55,8 @@ from .intake_definitions import (
     get_intake_definition,
     next_field as compute_next_field,
 )
-from .ownership import SubmitterIdentity, find_contacts_by_phone, phone_digits
+from .ownership import SubmitterIdentity, find_contacts_by_phone, person_contact_ids, phone_digits
+from .feedback_links import SUBMITTER, mint_board_link
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
 from .idea_types import idea_type_label, resolve_idea_type
 from .numbering import display_idea_number
@@ -307,7 +308,9 @@ class IntakeService:
             )
 
         # complete - explicit confirm: the sink is the ONLY promotion path.
-        link = definition.on_complete_sink(self.db, idea, tenant_id)
+        sink_link = definition.on_complete_sink(self.db, idea, tenant_id)
+        # Lane PUBLIC-IDEAS-BOARD: the contact gets their personal board link.
+        link = mint_board_link(self.db, idea) or sink_link
         self.db.commit()
         return _response(
             status="complete",
@@ -461,8 +464,20 @@ class IntakeService:
             "status": status.key if status else "",
             "title": idea.title,
             "type": idea.type or "idea",
+            # The one-shot API answers the HOST (CRM chatbot / user), not the
+            # contact's own conversation: never hand out a personal link here
+            # (security review #1) - the per-idea status page, as before.
             "link": mint_idea_link(self.db, idea),
         }
+
+    def _contact_link(self, idea: Idea, *, recipient: object = SUBMITTER) -> Optional[str]:
+        """The link the contact in THIS conversation gets about ``idea`` (lane
+        PUBLIC-IDEAS-BOARD): their personal feedback board opening that idea,
+        else (no same-tenant contact, or a test turn) the per-idea status page.
+        ``recipient`` = the replying contact's id (``None`` = no contact; never
+        falls back to the idea's author). Minting writes a row: every caller
+        commits right after."""
+        return mint_board_link(self.db, idea, recipient) or mint_idea_link(self.db, idea)
 
     def similar_own(
         self,
@@ -710,12 +725,16 @@ class IntakeService:
                 return
         # Tenant-scoped throughout (review round 1, blocking #3) - the vote
         # insert filters on ``tenant_id`` too, never id-alone.
+        # One vote per PERSON (lane PUBLIC-IDEAS-BOARD): a vote by any
+        # same-phone contact of this submitter (e.g. cast on the feedback board)
+        # already counts; a new one is stored under the canonical id.
+        person_ids = person_contact_ids(self.db, tenant_id, submitter_contact_id)
         exists = (
             self.db.query(IdeaVote)
             .filter(
                 IdeaVote.idea_id == idea_id,
                 IdeaVote.tenant_id == tenant_id,
-                IdeaVote.voter_id == submitter_contact_id,
+                IdeaVote.voter_id.in_(person_ids),
             )
             .first()
         )
@@ -724,7 +743,7 @@ class IntakeService:
                 IdeaVote(
                     tenant_id=tenant_id,
                     idea_id=idea_id,
-                    voter_id=submitter_contact_id,
+                    voter_id=person_ids[0],
                     dir="up",
                 )
             )
@@ -922,7 +941,7 @@ class IntakeService:
         # #6) - a pure read now (mint_idea_link never mutates), but this keeps
         # the ordering honest regardless.
         cand_number = candidate.idea_number
-        cand_link = mint_idea_link(self.db, candidate)
+        cand_link = self._contact_link(candidate, recipient=idea.submitter_contact_id)
         self.db.commit()
         return _response(
             status="voted",
@@ -971,7 +990,9 @@ class IntakeService:
             state = _IntakeState.load(idea)
             candidate = self._resolve_candidate(idea, state.voted_for)
             cand_number = candidate.idea_number if candidate else None
-            cand_link = mint_idea_link(self.db, candidate) if candidate else None
+            cand_link = (
+                self._contact_link(candidate, recipient=idea.submitter_contact_id) if candidate else None
+            )
             self.db.commit()
             return _response(
                 status="voted",
@@ -983,7 +1004,7 @@ class IntakeService:
             )
         # captured (or further along the lifecycle) - the completion echo.
         captured, missing = definition.completion_rule(idea.captured_json or {})
-        link = mint_idea_link(self.db, idea)
+        link = self._contact_link(idea)
         self.db.commit()
         return _response(
             status="complete",

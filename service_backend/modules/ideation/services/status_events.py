@@ -41,6 +41,7 @@ from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaStatusEvent
 from .numbering import mint_idea_identity
+from .feedback_links import mint_board_link
 from .sinks import mint_idea_link
 from .statuses import IDEA_ENTITY
 
@@ -110,6 +111,10 @@ def _write_event(
     DB-computed value back so ``occurred_at`` reflects it exactly."""
     mint_idea_identity(db, recipient)
     track_url = mint_idea_link(db, recipient)
+    # Lane PUBLIC-IDEAS-BOARD: the requester's personal feedback board link,
+    # opening this idea (``None`` when the idea has no same-tenant contact).
+    # ``track_url`` stays the per-idea status page, unchanged.
+    board_url = mint_board_link(db, recipient)
 
     row = IdeaStatusEvent(
         id=str(uuid.uuid4()),
@@ -136,6 +141,7 @@ def _write_event(
         "status_label": status_label,
         "from_status_label": from_status_label,
         "track_url": track_url,
+        "board_url": board_url,
         "requester_phone": requester_phone,
         "merged_into": merged_into,
         "separated_from": separated_from,

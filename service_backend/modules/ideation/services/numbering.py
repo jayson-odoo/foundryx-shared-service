@@ -54,6 +54,19 @@ def display_idea_number(number: Optional[str]) -> Optional[str]:
     return f"FB-{m.group(1)}" if m else number
 
 
+_DISPLAY_RE = re.compile(r"^FB-(\d+)$", re.IGNORECASE)
+
+
+def stored_idea_number(value: Optional[str]) -> Optional[str]:
+    """The stored form of a number a user typed or a link carries: ``FB-0016``
+    (any case) -> ``IDEA-0016``; anything else passes through. The inverse of
+    ``display_idea_number`` so a lookup accepts both forms."""
+    if not value:
+        return value
+    m = _DISPLAY_RE.match(value.strip())
+    return f"IDEA-{m.group(1)}" if m else value
+
+
 def next_idea_number(db: Session) -> str:
     """Format ``IDEA-<n, zero-padded to at least 4 digits>`` - grows past
     9999 without wrapping or truncating (``IDEA-10000``)."""

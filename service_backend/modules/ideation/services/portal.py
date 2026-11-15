@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from jose import JWTError, jwt
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -61,24 +61,33 @@ from ..models import (
     IdeaStatusEvent,
     IdeaVote,
 )
-from .comments import AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
+from .comments import AUTHOR_CONTACT, AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
 from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
 from .statuses import IDEA_ENTITY
+from .numbering import display_idea_number, stored_idea_number
 
 PORTAL_TYP = "idea_portal"
 PORTAL_AUD = "ideation-portal"
 # Security review: the staff token is bound to the staff login on the client
 # and re-checked per request; the CRM token lives in iframe memory and is
 # re-exchanged on every load, so it stays close to the embed token's own TTL.
-PORTAL_TTL = {"staff": timedelta(hours=12), "crm": timedelta(hours=2)}
+# A contact token (lane PUBLIC-IDEAS-BOARD) lives in page memory and is
+# re-exchanged from the personal link on every load; the link itself is
+# re-checked on every request, so cancelling it ends the session at once.
+PORTAL_TTL = {"staff": timedelta(hours=12), "crm": timedelta(hours=2), "contact": timedelta(hours=2)}
 ROADMAP_COLUMN_CAP = 100
 CHANGELOG_CAP = 200
 
 KIND_STAFF = "staff"
 KIND_CRM = "crm"
-# Everyone on the portal is staff (Q1); the role label is the same for both.
-ROLE_BY_KIND = {KIND_STAFF: "Staff", KIND_CRM: "Staff"}
+# A dealer / WhatsApp contact opening the portal through a personal feedback
+# link (lane PUBLIC-IDEAS-BOARD, owner 15 Nov) - view, upvote, comment; never
+# submit or manage. "Dealer" is the label the portal already gives a contact
+# voter (``voters`` below).
+KIND_CONTACT = "contact"
+DEALER_ROLE = "Dealer"
+ROLE_BY_KIND = {KIND_STAFF: "Staff", KIND_CRM: "Staff", KIND_CONTACT: DEALER_ROLE}
 STAFF_ROLE = "Staff"
 
 VIEW_PERMISSION = "ideation.ideas.view"
@@ -106,6 +115,14 @@ CORE_FIELDS = (
 )
 
 MAX_PAGE_SIZE = 100
+
+# Owner ruling (b), strict: on an item a dealer (contact principal) did not
+# create, these keys never leave the server. Cards drop the submitter/product
+# keys; the item page additionally drops the free text and the submitter name.
+WITHHELD_CARD_KEYS = ("submittedAt", "productName")
+WITHHELD_DETAIL_KEYS = WITHHELD_CARD_KEYS + (
+    "problem", "desiredOutcome", "useCases", "currentWorkaround", "submitterFirstName",
+)
 
 
 def as_use_case_list(value: Any) -> Optional[List[str]]:
@@ -163,6 +180,8 @@ class PortalPrincipal:
     phone: Optional[str] = None
     connection_id: Optional[str] = None
     can_manage: bool = False
+    # kind=contact: the personal link row the session was minted from.
+    link_id: Optional[str] = None
 
     @property
     def role(self) -> str:
@@ -175,6 +194,10 @@ class PortalPrincipal:
         iframe already vote with, so a person's vote is one vote everywhere."""
         if self.kind == KIND_STAFF:
             return self.subject
+        if self.kind == KIND_CONTACT:
+            # The bare contact id: the SAME voter id the WhatsApp intake upvote
+            # uses, so a dealer has one vote per item everywhere.
+            return self.subject
         return f"embed-user:{self.subject}"
 
     @property
@@ -185,6 +208,8 @@ class PortalPrincipal:
 
     @property
     def comment_kind(self) -> str:
+        if self.kind == KIND_CONTACT:
+            return AUTHOR_CONTACT
         return AUTHOR_USER if self.kind == KIND_STAFF else AUTHOR_EMBED
 
     @property
@@ -209,6 +234,7 @@ def mint_portal_token(p: PortalPrincipal, extra: Optional[Dict[str, Any]] = None
         "sub": p.subject,
         "pid": p.product_id,
         "cid": p.connection_id,
+        "lid": p.link_id,
         "iat": int(now.timestamp()),
         "exp": int((now + PORTAL_TTL[p.kind]).timestamp()),
     })
@@ -268,6 +294,16 @@ def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
             raise _unauthorized()
         p.name = first_name(user.name) or "Staff"
         p.can_manage = _can_manage_staff(user)
+    elif kind == KIND_CONTACT:
+        from .feedback_links import resolve_link_by_id
+
+        resolved = resolve_link_by_id(db, tenant_id, claims.get("lid") or "")
+        if resolved is None or resolved[1].id != sub:
+            raise _unauthorized()
+        _link, contact = resolved
+        p.link_id = _link.id
+        p.name = first_name(contact.first_name)
+        p.phone = contact.phone
     else:
         from ..models import EmbedConnection
 
@@ -352,6 +388,35 @@ def session_for_embed(db: Session, embed_token: str) -> Dict[str, Any]:
         can_manage=ep.ideas_manage is True,
     )
     return _session_out(p, extra={"nm": name, "ph": ep.phone, "mg": ep.ideas_manage is True})
+
+
+def session_for_link(db: Session, token: str, *, ip: str) -> Dict[str, Any]:
+    """A dealer opens the portal through a personal feedback link (lane
+    PUBLIC-IDEAS-BOARD). Every failure is the same 401 (no enumeration) and is
+    counted against the caller's IP; over the limit = 429."""
+    from app.services.throttle import Throttled, ThrottleService
+
+    from .feedback_links import resolve_link
+
+    throttle = ThrottleService(db)
+    try:
+        throttle.enforce_idea_feedback_link(ip=ip)
+    except Throttled as exc:
+        raise PortalError(429, "too_many_attempts", "Too many attempts. Try again later.", exc.retry_after_seconds)
+    resolved = resolve_link(db, token)
+    if resolved is None or not _tenant_ok(db, resolved[0].tenant_id):
+        throttle.record_idea_feedback_link(ip=ip)
+        raise _unauthorized()
+    link, contact = resolved
+    p = PortalPrincipal(
+        tenant_id=link.tenant_id,
+        kind=KIND_CONTACT,
+        subject=contact.id,
+        name=first_name(contact.first_name),
+        phone=contact.phone,
+        link_id=link.id,
+    )
+    return _session_out(p)
 
 
 # ── status map ────────────────────────────────────────────────────────────────
@@ -468,19 +533,36 @@ class IdeaPortalService:
         q = self.db.query(Idea.id).filter(Idea.tenant_id == self.p.tenant_id)
         if self.p.kind == KIND_STAFF:
             return q.filter(Idea.submitter_user_id == self.p.subject)
+        if self.p.kind == KIND_CONTACT:
+            # The link's own contact + every same-tenant contact with the same
+            # phone digits (one person, several workspace rows). Never by name.
+            # Same (cached) set the vote uses.
+            return q.filter(Idea.submitter_contact_id.in_(self._my_voter_ids()))
         return owned_filter(self.db, q, self.p.tenant_id, self.p.identity)
 
     def _resolve(self, idea_id: str, *, follow_merge: bool) -> Idea:
         """A visible idea by id, or 404. ``follow_merge``: a merged child
         resolves to its survivor (scoped by the child's own tenant); without
         it a merged child is a 409 (writes always target the survivor)."""
+        # ``idea_id`` is the row id, or the idea number a personal feedback
+        # link carries (lane PUBLIC-IDEAS-BOARD: no internal ids in links).
         row = (
             self.db.query(Idea)
-            .filter(Idea.id == idea_id, Idea.tenant_id == self.p.tenant_id, Idea.is_test.is_(False))
+            .filter(
+                or_(
+                    Idea.id == idea_id,
+                    # A link carries the shown number (FB-0016); older links
+                    # carry the stored one (IDEA-0016). Both resolve.
+                    Idea.idea_number.in_({idea_id, stored_idea_number(idea_id) or idea_id}),
+                ),
+                Idea.tenant_id == self.p.tenant_id,
+                Idea.is_test.is_(False),
+            )
             .first()
         )
         if row is None:
             raise _not_found()
+        idea_id = row.id
         if row.merged_into_id:
             if not follow_merge:
                 raise PortalError(409, "merged", "This feedback was merged into another one.")
@@ -511,7 +593,7 @@ class IdeaPortalService:
             for r in self.db.query(IdeaVote.idea_id)
             .filter(
                 IdeaVote.idea_id.in_(ids),
-                IdeaVote.voter_id == self.p.voter_id,
+                IdeaVote.voter_id.in_(self._my_voter_ids()),
                 IdeaVote.dir == "up",
             )
             .all()
@@ -525,7 +607,13 @@ class IdeaPortalService:
                 {
                     "id": i.id,
                     "ideaNumber": i.idea_number,
-                    "title": (i.title or i.problem or "").strip(),
+                    # A dealer never gets another submitter's problem text as a
+                    # title fallback (owner ruling (b)): the number stands in.
+                    "title": (
+                        (i.title or "").strip() or (display_idea_number(i.idea_number) or "")
+                        if self._text_withheld(i.id in mine)
+                        else (i.title or i.problem or "").strip()
+                    ),
                     "upvotes": i.upvotes or 0,
                     "commentCount": counts.get(i.id, 0),
                     "isMine": i.id in mine,
@@ -537,6 +625,8 @@ class IdeaPortalService:
                     "submittedAt": i.created_at,
                 }
             )
+            if self._text_withheld(i.id in mine):
+                self._withhold_card(out[-1])
         return out
 
     def _product_names(self, ids: Iterable[str]) -> Dict[str, str]:
@@ -605,8 +695,19 @@ class IdeaPortalService:
             query = self._mine_filter(query)
         if q and q.strip():
             like = f"%{q.strip().lower()}%"
+            # A user types the number as shown (FB-0016); match the stored form.
+            number_like = f"%{(stored_idea_number(q.strip()) or q.strip()).lower()}%"
+            text_match = func.lower(Idea.problem).like(like)
+            if self.p.kind == KIND_CONTACT:
+                # Ruling (b): a dealer's search must not probe other
+                # submitters' problem text - only their own items' text.
+                text_match = and_(text_match, Idea.id.in_(self._owned_q().subquery()))
             query = query.filter(
-                or_(func.lower(func.coalesce(Idea.title, "")).like(like), func.lower(Idea.problem).like(like))
+                or_(
+                    func.lower(func.coalesce(Idea.title, "")).like(like),
+                    func.lower(func.coalesce(Idea.idea_number, "")).like(number_like),
+                    text_match,
+                )
             )
         if columns:
             wanted: Set[str] = set()
@@ -692,7 +793,43 @@ class IdeaPortalService:
         for wire, attr in CORE_FIELDS:
             out[wire] = self._core_field(idea, attr)
         out["note"] = idea.portal_note
+        if self._text_withheld(card["isMine"]):
+            # Owner ruling (b), strict (15 Nov + crew-pass): a dealer sees the
+            # full text only on their own items; on everyone else's ONLY title,
+            # status, steps, votes and comments. The keys are OMITTED (never
+            # sent as null); the routes serialize with exclude_unset.
+            for key in WITHHELD_DETAIL_KEYS:
+                out.pop(key, None)
         return out
+
+    def _is_owned(self, idea_id: str) -> bool:
+        return self._owned_q().filter(Idea.id == idea_id).first() is not None
+
+    def _my_voter_ids(self) -> List[str]:
+        """Every voter id that is THIS person. A dealer = their contact plus every
+        same-tenant contact with the same exact phone digits (the "My requests"
+        rule), so a second contact row cannot add a second vote (crew-pass fix
+        3). Sorted: the first id is the canonical one a new vote is stored
+        under, so two of the person's links racing on the same item collide on
+        ``uq_idea_vote_voter`` instead of both landing."""
+        if self.p.kind != KIND_CONTACT:
+            return [self.p.voter_id]
+        cached = getattr(self, "_voter_ids_cache", None)
+        if cached is None:
+            from .ownership import person_contact_ids
+
+            cached = self._voter_ids_cache = person_contact_ids(self.db, self.p.tenant_id, self.p.subject)
+        return cached
+
+    def _withhold_card(self, card: Dict[str, Any]) -> Dict[str, Any]:
+        for key in WITHHELD_CARD_KEYS:
+            card.pop(key, None)
+        return card
+
+    def _text_withheld(self, is_mine: bool) -> bool:
+        """A dealer on a personal link never reads another submitter's free
+        text (owner ruling (b), security review #3)."""
+        return self.p.kind == KIND_CONTACT and not is_mine
 
     def set_hidden(self, idea_id: str, hidden: bool) -> Dict[str, Any]:
         """Q5: managers hide/show an idea on the portal."""
@@ -718,16 +855,24 @@ class IdeaPortalService:
         from .actions import IdeaActionService
 
         idea = self._resolve(idea_id, follow_merge=False)
-        existing = (
+        mine_ids = self._my_voter_ids()
+        rows = (
             self.db.query(IdeaVote)
-            .filter(IdeaVote.idea_id == idea.id, IdeaVote.voter_id == self.p.voter_id)
-            .first()
+            .filter(IdeaVote.idea_id == idea.id, IdeaVote.voter_id.in_(mine_ids))
+            .order_by(IdeaVote.voter_id.asc())
+            .all()
         )
+        # One person = one vote (a dealer's same-phone contacts included): any
+        # up-vote of theirs means "on", and turning it off removes every one of
+        # them (legacy double votes from two contact rows collapse too).
+        ups = [r for r in rows if r.dir == "up"]
+        existing = ups[0] if ups else (rows[0] if rows else None)
         # Decided BEFORE the row changes (review: reading ``existing.dir``
         # after switching a legacy down-vote to up reported the vote as off).
-        voted = existing is None or existing.dir != "up"
-        if existing is not None and existing.dir == "up":
-            self.db.delete(existing)
+        voted = not ups
+        if ups:
+            for r in ups:
+                self.db.delete(r)
         elif existing is not None:
             existing.dir = "up"
             existing.voter_name, existing.voter_role = self.p.name, self.p.role
@@ -736,7 +881,7 @@ class IdeaPortalService:
                 IdeaVote(
                     tenant_id=idea.tenant_id,
                     idea_id=idea.id,
-                    voter_id=self.p.voter_id,
+                    voter_id=mine_ids[0],
                     dir="up",
                     voter_name=self.p.name,
                     voter_role=self.p.role,
@@ -794,12 +939,13 @@ class IdeaPortalService:
                 return None, STAFF_ROLE
             if r.voter_id in users:
                 return users[r.voter_id], STAFF_ROLE
-            return contacts.get(r.voter_id), "Dealer"
+            return contacts.get(r.voter_id), DEALER_ROLE
 
         out = []
+        mine = set(self._my_voter_ids())
         for r in rows:
             name, role = _who(r)
-            out.append({"name": name, "role": role, "isMe": r.voter_id == self.p.voter_id})
+            out.append({"name": name, "role": role, "isMe": r.voter_id in mine})
         return out
 
     # ---- comments ----------------------------------------------------------
@@ -824,7 +970,12 @@ class IdeaPortalService:
         out = []
         for r in rows:
             d = r.model_dump()
-            d["authorRole"] = STAFF_ROLE if r.authorKind in (AUTHOR_USER, AUTHOR_EMBED) else "Submitter"
+            if r.authorKind in (AUTHOR_USER, AUTHOR_EMBED):
+                d["authorRole"] = STAFF_ROLE
+            elif r.authorKind == AUTHOR_CONTACT:
+                d["authorRole"] = DEALER_ROLE
+            else:
+                d["authorRole"] = "Submitter"
             if d["authorName"]:
                 d["authorName"] = first_name(d["authorName"]) or d["authorRole"]
             d["likeCount"] = counts.get(r.id, 0)
@@ -916,18 +1067,21 @@ class IdeaPortalService:
     def activity(self, idea_id: str, *, order: str = "desc") -> List[Dict[str, Any]]:
         idea = self._resolve(idea_id, follow_merge=True)
         events: List[Tuple[datetime, int, Dict[str, Any]]] = []
-        events.append(
-            (
-                idea.created_at,
-                0,
-                {
-                    "kind": "submitted",
-                    "at": idea.created_at,
-                    "by": PublicIdeaStatusService(self.db)._first_name(idea),
-                    "source": idea.source,
-                },
+        # Strict ruling (b): who submitted it (and when, over which channel)
+        # is not shown on another dealer's item.
+        if not self._text_withheld(self._is_owned(idea.id)):
+            events.append(
+                (
+                    idea.created_at,
+                    0,
+                    {
+                        "kind": "submitted",
+                        "at": idea.created_at,
+                        "by": PublicIdeaStatusService(self.db)._first_name(idea),
+                        "source": idea.source,
+                    },
+                )
             )
-        )
         for a in (
             self.db.query(IdeaActivity)
             .filter(IdeaActivity.idea_id == idea.id, IdeaActivity.tenant_id == idea.tenant_id)
@@ -1001,6 +1155,9 @@ class IdeaPortalService:
         from app.services.throttle import Throttled, ThrottleService
 
         p = self.p
+        if p.kind == KIND_CONTACT:
+            # Owner 15 Nov, QB a: dealers submit on WhatsApp, never on the board.
+            raise _forbidden()
         throttle = ThrottleService(self.db)
         key = hashlib.sha256(f"{p.tenant_id}:{p.voter_id}".encode("utf-8")).hexdigest()
         try:

@@ -24,7 +24,7 @@ DEFAULT_IDEA_TYPES = (
     ("issue", "Problem report", 1, False),
 )
 # The stock labels shipped before the relabel. A catalog row still carrying one
-# of these is moved to the new label (migration 0020 + every install()); a row
+# of these is moved to the new label (migration 0021 + every install()); a row
 # someone deliberately relabelled is left alone.
 LEGACY_IDEA_TYPE_LABELS = {"idea": "Idea", "issue": "Issue"}
 FALLBACK_DEFAULT_TYPE = "idea"
@@ -44,7 +44,7 @@ def seed_idea_types(db: Session) -> None:
 
 
 def relabel_idea_types_sql(schema: str) -> List[str]:
-    """Guarded relabel for migration 0020: only a row still on its stock legacy
+    """Guarded relabel for migration 0021: only a row still on its stock legacy
     label moves to the new default label (idempotent, value untouched)."""
     new = {k: label for k, label, _o, _d in DEFAULT_IDEA_TYPES}
     return [

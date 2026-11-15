@@ -108,7 +108,7 @@ function CommentItem({
   onReply?: () => void;
   small?: boolean;
 }) {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
   if (c.isDeleted) {
     return <p className="text-sm text-muted-foreground italic">Comment deleted</p>;
   }
@@ -166,7 +166,7 @@ function ActivityItem({
   onDelete: (id: string) => void;
   onReply: (parentId: string, body: string) => Promise<void>;
 }) {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
   const [replying, setReplying] = useState(false);
   if (e.kind === 'comment' && e.comment) {
     const top = e.comment;
@@ -261,7 +261,7 @@ export function groupFeed(events: PortalActivity[], timeZone: string): FeedRow[]
 }
 
 function UpvoteRow({ row }: { row: Extract<FeedRow, { kind: 'upvotes' }> }) {
-  const { formatDate } = useDatetime();
+  const { formatDmyDate: formatDate } = useDatetime();
   const named = row.names.slice(0, 3);
   const others = row.count - named.length;
   return (
@@ -371,8 +371,9 @@ export interface IdeaPageProps {
 /** The idea (card) page: status, upvote box, the four fields, comments,
  * activity feed (newest first), "where is it" timeline, voters. */
 export function IdeaPage({ ideaId }: IdeaPageProps) {
-  const { paths, principal } = useIdeaPortal();
-  const { formatDate, timeZone } = useDatetime();
+  const { mode, paths, principal } = useIdeaPortal();
+  const back = mode === 'link' ? { href: paths.feedback, label: 'Feedback' } : { href: paths.roadmap, label: 'Roadmap' };
+  const { formatDmyDate: formatDate, timeZone } = useDatetime();
   const page = usePortalIdeaPage(ideaId);
   const idea = page.idea.data;
 
@@ -384,9 +385,9 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
 
   return (
     <>
-      <Link href={paths.roadmap} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+      <Link href={back.href} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="size-4" aria-hidden />
-        Roadmap
+        {back.label}
       </Link>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
         <div className="flex min-w-0 flex-col gap-5">
@@ -400,7 +401,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
                 {idea.submitterFirstName && <span>Submitted by {idea.submitterFirstName}</span>}
                 {idea.submittedAt && <span>{formatDate(idea.submittedAt)}</span>}
                 {idea.isMine && (
-                  <span className="rounded-full border border-primary px-2 py-0.5 text-xs text-primary">Your feedback</span>
+                  <span className="rounded-full border border-primary px-2 py-0.5 text-xs text-primary">Yours</span>
                 )}
               </div>
             </div>

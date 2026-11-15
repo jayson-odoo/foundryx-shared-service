@@ -74,7 +74,9 @@ Request:
 | `type` | string? | idea type (SS-IDEA-TYPE): `idea` (default when omitted) or `issue` (a problem with the system / complaint); case-insensitive; unknown = 422 `unknown_type`. Allowed values = the `idea_types` table (`GET /ideation/intake/idea-types`) |
 
 Response: `{"idea_id", "idea_number", "status": "captured", "title", "type", "link"}`
-(`link` = the public status link, null when no `status_token`).
+(`link` = the public status link, null when no `status_token`; deliberately NOT
+the contact's personal feedback board link - this response goes to the host, and
+that link is a bearer credential for the contact, see `feedback-link-contract.md`).
 No cross-submitter dedup on this call: run the own-similar lookup first.
 
 Idempotency: a retry with the same `intake_ref` (same tenant, same

@@ -164,3 +164,13 @@ def test_problem_report_reply_noun(db):
     from modules.ideation.services.intake import IntakeService
 
     assert IntakeService(db)._noun(Idea(type="issue")) == "Problem report"
+
+
+def test_stored_number_accepts_the_shown_form():
+    from modules.ideation.services.numbering import display_idea_number, stored_idea_number
+
+    assert stored_idea_number("FB-0016") == "IDEA-0016"
+    assert stored_idea_number("fb-0016") == "IDEA-0016"
+    assert stored_idea_number("IDEA-0016") == "IDEA-0016"
+    assert stored_idea_number(None) is None
+    assert display_idea_number(stored_idea_number("FB-10000")) == "FB-10000"
