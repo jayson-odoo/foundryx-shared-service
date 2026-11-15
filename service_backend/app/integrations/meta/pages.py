@@ -23,6 +23,7 @@ Sources:
   https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
 """
 import logging
+import re
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 import httpx
@@ -96,6 +97,16 @@ def _clean_fields(fields: Iterable[str]) -> List[str]:
         if name and name not in out:
             out.append(name)
     return out
+
+
+# A Meta Page id is all digits. It becomes a Graph URL path segment, so
+# anything else (e.g. "123/feed") would aim the Page token at another
+# endpoint; refuse it before any call.
+_PAGE_ID_RE = re.compile(r"\d{1,32}")
+
+
+def _valid_page_id(page_id: object) -> bool:
+    return isinstance(page_id, str) and _PAGE_ID_RE.fullmatch(page_id) is not None
 
 
 class MetaPagesMixin(MetaGraphMixin):
@@ -240,11 +251,14 @@ class MetaPagesMixin(MetaGraphMixin):
     ) -> Optional[List[str]]:
         """Add ``fields`` to this app's Page subscription WITHOUT dropping any
         field already there (another feature's). Returns the field set posted,
-        or ``None`` in dev / unconfigured (no Meta call) or when Meta refused
-        the update. A transport error on the POST propagates - callers keep
+        or ``None`` in dev / unconfigured (no Meta call), for a page id that
+        is not all digits (no call), or when Meta refused the update. A transport error on the POST propagates - callers keep
         the best-effort rule (AC-CHN-33) by wrapping the call."""
         requested = _clean_fields(fields)
         if not self._configured or dev:
+            return None
+        if not _valid_page_id(page_id):
+            logger.warning("Page subscribe refused: page id is not a Meta Page id")
             return None
         client = self._http()
         try:
@@ -272,6 +286,9 @@ class MetaPagesMixin(MetaGraphMixin):
         (nothing is changed then), or when Meta refused the update."""
         drop = set(_clean_fields(fields))
         if not self._configured or dev:
+            return None
+        if not _valid_page_id(page_id):
+            logger.warning("Page unsubscribe refused: page id is not a Meta Page id")
             return None
         client = self._http()
         try:

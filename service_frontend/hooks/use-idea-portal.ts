@@ -35,25 +35,48 @@ export interface IdeaPortalPaths {
 }
 
 export interface IdeaPortalRuntime {
-  mode: 'portal' | 'embed';
+  /** `link` = a dealer's personal feedback link (no login, no header actions). */
+  mode: 'portal' | 'embed' | 'link';
   paths: IdeaPortalPaths;
   principal: PortalPrincipal;
   signOut: () => void;
 }
 
 export const PORTAL_PATHS: IdeaPortalPaths = {
-  roadmap: '/portal/ideas',
-  feedback: '/portal/ideas/feedback',
-  changelog: '/portal/ideas/changelog',
-  idea: (id) => `/portal/ideas/${encodeURIComponent(id)}`,
+  roadmap: '/portal/feedback',
+  feedback: '/portal/feedback/list',
+  changelog: '/portal/feedback/changelog',
+  idea: (id) => `/portal/feedback/${encodeURIComponent(id)}`,
 };
 
 export const EMBED_PORTAL_PATHS: IdeaPortalPaths = {
-  roadmap: '/embed/ideas/portal',
-  feedback: '/embed/ideas/portal/feedback',
-  changelog: '/embed/ideas/portal/changelog',
-  idea: (id) => `/embed/ideas/portal/${encodeURIComponent(id)}`,
+  roadmap: '/embed/feedback/portal',
+  feedback: '/embed/feedback/portal/list',
+  changelog: '/embed/feedback/portal/changelog',
+  idea: (id) => `/embed/feedback/portal/${encodeURIComponent(id)}`,
 };
+
+/** A dealer's personal feedback link (lane PUBLIC-IDEAS-BOARD): the board
+ * opens on Feedback; the link token is part of every path. */
+export function linkPortalPaths(linkToken: string): IdeaPortalPaths {
+  // `/public/feedback/board/...`: `/public/feedback/{statusToken}` is the
+  // per-item status page (lane FEEDBACK-RENAME), so the board has its own segment.
+  const base = `/public/feedback/board/${encodeURIComponent(linkToken)}`;
+  return {
+    roadmap: `${base}/roadmap`,
+    feedback: base,
+    changelog: `${base}/changelog`,
+    idea: (id) => `${base}/${encodeURIComponent(id)}`,
+  };
+}
+
+/** The "only mine" toggle label, or null when the viewer has no own items to
+ * filter by (staff on the shared-service portal). */
+export function mineFilterLabel(principal: PortalPrincipal): string | null {
+  if (principal.kind === 'contact') return 'My requests';
+  if (principal.kind === 'crm') return 'My feedback';
+  return null;
+}
 
 export const IdeaPortalContext = createContext<IdeaPortalRuntime | null>(null);
 
@@ -128,7 +151,7 @@ export function usePortalSession(): UsePortalSession {
     ideaPortalAuth.set(null);
     setPrincipal(null);
     setStatus('signin');
-    void nextAuthSignOut({ callbackUrl: '/portal/ideas' });
+    void nextAuthSignOut({ callbackUrl: '/portal/feedback' });
   }, []);
 
   return { status, principal, signOut };
@@ -161,6 +184,48 @@ export function useEmbedPortalSession(embedToken: string | null): UsePortalSessi
 
   // A 401 mid-session clears the token (service layer): leave the ready state
   // so the gate shows "not available" instead of a page of inline errors.
+  useEffect(
+    () =>
+      ideaPortalAuth.subscribe((token) => {
+        if (token === null) setStatus((s) => (s === 'ready' ? 'signin' : s));
+      }),
+    [],
+  );
+
+  return { status, principal, signOut: () => ideaPortalAuth.set(null) };
+}
+
+/** A dealer's personal feedback link: exchange it once per page load. The
+ * portal token is kept in memory only (never storage), so a closed tab leaves
+ * nothing behind; a cancelled link fails the next request and the gate shows
+ * the not-valid message. */
+export function useLinkPortalSession(linkToken: string | null): UsePortalSession {
+  const [status, setStatus] = useState<PortalSessionStatus>('loading');
+  const [principal, setPrincipal] = useState<PortalPrincipal | null>(null);
+
+  useEffect(() => {
+    ideaPortalAuth.setPersist(false);
+    if (!linkToken) {
+      setStatus('signin');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await ideaPortalService.linkSession(linkToken);
+        if (cancelled) return;
+        ideaPortalAuth.set(s.token);
+        setPrincipal(s.principal);
+        setStatus('ready');
+      } catch {
+        if (!cancelled) setStatus('signin');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [linkToken]);
+
   useEffect(
     () =>
       ideaPortalAuth.subscribe((token) => {
@@ -355,7 +420,7 @@ export function usePortalSubmit(): UsePortalSubmit {
     try {
       return await ideaPortalService.submit(input);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not submit the idea.');
+      setError(err instanceof Error ? err.message : 'Could not submit the feedback.');
       return null;
     } finally {
       setSubmitting(false);

@@ -19,4 +19,7 @@ class PermissionResourceOut(BaseModel):
     resource: str
     resourceLabel: str
     module: str
+    # What a user reads for ``module`` (the Services title, e.g. "Feedback"
+    # for the ``ideation`` module) - the Roles editor's section header.
+    moduleLabel: str = ""
     actions: List[PermissionActionOut] = []

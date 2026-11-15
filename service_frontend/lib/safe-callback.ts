@@ -1,6 +1,6 @@
 /**
  * The post-sign-in destination from a `?callbackUrl=` query - only a same-origin
- * absolute PATH is honoured (`/portal/ideas`). The value is resolved the way the
+ * absolute PATH is honoured (`/portal/feedback`). The value is resolved the way the
  * browser will resolve it (WHATWG URL against a dummy origin), so a dot-segment
  * trick (`/..//evil`, `/%2e%2e//evil` -> pathname `//evil`) is caught too, along
  * with external URLs, protocol-relative `//host`, backslashes and control

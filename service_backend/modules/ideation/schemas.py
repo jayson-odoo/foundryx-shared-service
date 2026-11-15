@@ -109,6 +109,10 @@ class IdeaOut(ApiModel):
     submitterName: str
     # The submitter's tier (e.g. ``dealer``, S1 AC-1115) - null when not set.
     submitterTier: Optional[str] = None
+    # Lane PUBLIC-IDEAS-BOARD: the idea has a submitter contact, so a personal
+    # feedback link exists for it (drives the staff "Cancel feedback link"
+    # action; the contact id itself is never on the wire).
+    hasSubmitterContact: bool = False
     upvotes: int
     downvotes: int = 0
     myVote: Optional[Literal["up"]] = None
@@ -819,7 +823,7 @@ class SimilarOwnIn(ApiModel):
 
 
 class PortalPrincipalOut(ApiModel):
-    kind: Literal["staff", "crm"]
+    kind: Literal["staff", "crm", "contact"]
     name: Optional[str] = None
     role: str
     productId: Optional[str] = None
@@ -834,6 +838,13 @@ class PortalSessionOut(ApiModel):
 
 class PortalEmbedSessionIn(ApiModel):
     token: str = Field(min_length=1, max_length=4096)
+
+
+class PortalLinkSessionIn(ApiModel):
+    """A personal feedback link (lane PUBLIC-IDEAS-BOARD). No min length: a
+    blank or malformed token gets the same uniform 401 as an unknown one."""
+
+    token: str = Field(default="", max_length=128)
 
 
 class PortalCardOut(ApiModel):

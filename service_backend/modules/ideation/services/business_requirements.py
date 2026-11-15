@@ -116,6 +116,7 @@ from .br_templates import (
     get_stamped_doc,
     resolve_active_template,
 )
+from .numbering import display_idea_number
 from .ideas import IdeaReadService
 from .statuses import (
     BR_ENTITY,
@@ -354,7 +355,7 @@ class BusinessRequirementService:
             .first()
         )
         if idea is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
         br_ids = [
             r.business_requirement_id
             for r in self.db.query(
@@ -520,7 +521,7 @@ class BusinessRequirementService:
         flags = {bool(r[0]) for r in rows}
         if len(flags) > 1:
             raise HTTPException(
-                422, "Test and real ideas cannot be promoted together."
+                422, "Test and real feedback cannot be promoted together."
             )
         return flags.pop() if flags else False
 
@@ -581,7 +582,7 @@ class BusinessRequirementService:
             if idea is None:
                 raise HTTPException(
                     422,
-                    "One or more ideas do not exist for this workspace.",
+                    "One or more feedback items do not exist for this workspace.",
                 )
             if idea.merged_into_id:
                 # AC-94-09: a merged child is frozen - it feeds a BR only
@@ -591,21 +592,21 @@ class BusinessRequirementService:
                     .filter(Idea.id == idea.merged_into_id, Idea.tenant_id == tenant_id)
                     .first()
                 )
-                label = (survivor.idea_number if survivor else None) or idea.merged_into_id
+                label = display_idea_number(survivor.idea_number if survivor else None) or idea.merged_into_id
                 raise HTTPException(
-                    422, f"This idea was merged into {label} and cannot be linked directly."
+                    422, f"This feedback was merged into {label} and cannot be linked directly."
                 )
             if bool(idea.is_test) != bool(br.is_test):
                 message = (
-                    "A test idea cannot be linked to a real Business Requirement."
+                    "Test feedback cannot be linked to a real Business Requirement."
                     if idea.is_test
-                    else "A real idea cannot be linked to a test Business Requirement."
+                    else "Real feedback cannot be linked to a test Business Requirement."
                 )
                 raise HTTPException(422, message)
             if idea.product_id != br.product_id:
                 raise HTTPException(
                     422,
-                    "An idea can only be linked to a BR on the same product.",
+                    "Feedback can only be linked to a BR on the same product.",
                 )
             if idea_id in existing:
                 continue

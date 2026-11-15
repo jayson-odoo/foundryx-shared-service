@@ -499,7 +499,7 @@ def test_ac_19_11_permission_row_in_csv():
     csv = (
         Path(__file__).resolve().parent.parent / "modules/ideation/permissions/permissions.csv"
     ).read_text()
-    assert "ideation.ideas,Ideas,comment,Comment" in csv
+    assert "ideation.ideas,Feedback,comment,Comment" in csv
 
 
 def _drop_comment_permission(db):

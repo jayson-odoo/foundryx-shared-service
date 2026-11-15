@@ -128,3 +128,17 @@ def merged_child_ids(db: Session, tenant_id: str, idea_id: str) -> List[str]:
             Idea.tenant_id == tenant_id, Idea.merged_into_id == idea_id
         )
     ]
+
+
+def person_contact_ids(db: Session, tenant_id: str, contact_id: str) -> List[str]:
+    """Every same-tenant contact id that is the SAME person as ``contact_id``:
+    itself plus each contact with the same exact phone digits (never by name).
+    Sorted, so ``[0]`` is the one canonical id a new vote is stored under
+    (lane PUBLIC-IDEAS-BOARD: one vote per person, board and WhatsApp alike)."""
+    contact = (
+        db.query(Contact).filter(Contact.id == contact_id, Contact.tenant_id == tenant_id).first()
+    )
+    ids = {contact_id}
+    if contact is not None:
+        ids |= {c.id for c in find_contacts_by_phone(db, tenant_id, contact.phone)}
+    return sorted(ids)

@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Textarea } from '@/components/ui/textarea';
 import { UserAvatar } from '@/components/platform/user-avatar';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 export interface IdeaCommentsViewProps {
   threads: IdeaCommentThread[];
@@ -98,7 +99,7 @@ function CommentRow({
           )}
           {comment.fromIdea && (
             <Badge variant="outline" appearance="light" size="sm">
-              from {comment.fromIdea.ideaNumber ?? 'merged idea'}
+              from {formatFeedbackNumber(comment.fromIdea.ideaNumber) ?? 'merged feedback'}
             </Badge>
           )}
           <span className="text-xs text-muted-foreground">

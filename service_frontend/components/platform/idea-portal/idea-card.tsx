@@ -5,6 +5,7 @@ import { ClampedText } from '@/components/platform/clamped-text';
 import type { PortalCard } from '@/types/idea-portal';
 import { UpvoteBox } from './upvote-box';
 import { PortalStatusPill } from './portal-status-pill';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 export interface IdeaCardProps {
   idea: PortalCard;
@@ -27,11 +28,11 @@ export function IdeaCard({ idea, href, onVote, variant = 'card' }: IdeaCardProps
           <ClampedText text={idea.title} lines={2} className="font-medium text-foreground" />
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             {idea.statusLabel && <PortalStatusPill label={idea.statusLabel} color={idea.statusColor} />}
-            {idea.ideaNumber && <span>{idea.ideaNumber}</span>}
+            {idea.ideaNumber && <span>{formatFeedbackNumber(idea.ideaNumber)}</span>}
             <span>
               {idea.commentCount} {idea.commentCount === 1 ? 'comment' : 'comments'}
             </span>
-            {idea.isMine && <span className="text-primary">Your idea</span>}
+            {idea.isMine && <span className="text-primary">Yours</span>}
           </div>
         </div>
       </Link>
@@ -46,7 +47,7 @@ export function IdeaCard({ idea, href, onVote, variant = 'card' }: IdeaCardProps
       <UpvoteBox count={idea.upvotes} voted={idea.myVote} onVote={() => onVote(idea.id)} />
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-xs text-muted-foreground">
-          {idea.ideaNumber}
+          {formatFeedbackNumber(idea.ideaNumber)}
           {idea.isMine && <span className="text-primary"> · Yours</span>}
         </span>
         <ClampedText text={idea.title} lines={3} className="text-sm font-medium text-foreground" />

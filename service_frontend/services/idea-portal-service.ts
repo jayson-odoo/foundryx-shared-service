@@ -64,6 +64,10 @@ export const ideaPortalService = {
   embedSession(embedToken: string): Promise<PortalSession> {
     return publicFetch<PortalSession>(`${BASE}/session/embed`, json({ token: embedToken }));
   },
+  /** Dealer: exchange a personal feedback link (no login; lane PUBLIC-IDEAS-BOARD). */
+  linkSession(linkToken: string): Promise<PortalSession> {
+    return publicFetch<PortalSession>(`${BASE}/session/link`, json({ token: linkToken }));
+  },
   me(): Promise<PortalPrincipal> {
     return call<PortalPrincipal>('/me');
   },

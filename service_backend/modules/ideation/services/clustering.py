@@ -385,7 +385,7 @@ def _components(pairs: List[Tuple[str, str]]) -> List[List[str]]:
 
 
 def _fallback_clusters(components: List[List[str]]) -> List[Tuple[str, List[str]]]:
-    return [("Similar ideas", members) for members in components]
+    return [("Similar feedback", members) for members in components]
 
 
 def _parse_clusters(
@@ -414,5 +414,5 @@ def _parse_clusters(
                 used.add(iid)
                 kept.append(iid)
         if kept:
-            out.append((label.strip() or "Similar ideas", kept))
+            out.append((label.strip() or "Similar feedback", kept))
     return out

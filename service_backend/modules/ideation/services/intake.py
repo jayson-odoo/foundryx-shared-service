@@ -55,9 +55,11 @@ from .intake_definitions import (
     get_intake_definition,
     next_field as compute_next_field,
 )
-from .ownership import SubmitterIdentity, find_contacts_by_phone, phone_digits
+from .ownership import SubmitterIdentity, find_contacts_by_phone, person_contact_ids, phone_digits
+from .feedback_links import SUBMITTER, mint_board_link
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
 from .idea_types import idea_type_label, resolve_idea_type
+from .numbering import display_idea_number
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
 from .status_events import _iso_z
 
@@ -306,7 +308,9 @@ class IntakeService:
             )
 
         # complete - explicit confirm: the sink is the ONLY promotion path.
-        link = definition.on_complete_sink(self.db, idea, tenant_id)
+        sink_link = definition.on_complete_sink(self.db, idea, tenant_id)
+        # Lane PUBLIC-IDEAS-BOARD: the contact gets their personal board link.
+        link = mint_board_link(self.db, idea) or sink_link
         self.db.commit()
         return _response(
             status="complete",
@@ -460,8 +464,20 @@ class IntakeService:
             "status": status.key if status else "",
             "title": idea.title,
             "type": idea.type or "idea",
+            # The one-shot API answers the HOST (CRM chatbot / user), not the
+            # contact's own conversation: never hand out a personal link here
+            # (security review #1) - the per-idea status page, as before.
             "link": mint_idea_link(self.db, idea),
         }
+
+    def _contact_link(self, idea: Idea, *, recipient: object = SUBMITTER) -> Optional[str]:
+        """The link the contact in THIS conversation gets about ``idea`` (lane
+        PUBLIC-IDEAS-BOARD): their personal feedback board opening that idea,
+        else (no same-tenant contact, or a test turn) the per-idea status page.
+        ``recipient`` = the replying contact's id (``None`` = no contact; never
+        falls back to the idea's author). Minting writes a row: every caller
+        commits right after."""
+        return mint_board_link(self.db, idea, recipient) or mint_idea_link(self.db, idea)
 
     def similar_own(
         self,
@@ -561,7 +577,10 @@ class IntakeService:
     def _noun(self, idea: Idea) -> str:
         """Display word for the idea's type in reply_text (``Idea`` / ``Issue``),
         from the ``idea_types`` catalog label - the idea path stays byte-identical."""
-        return idea_type_label(self.db, idea.type)
+        # The ``idea`` type reads "Feedback" to users (lane FEEDBACK-RENAME);
+        # other types keep their catalog label (``Issue``).
+        key = (idea.type or "idea").strip().lower()
+        return "Feedback" if key == "idea" else idea_type_label(self.db, key)
 
     def _is_draft(self, idea: Idea) -> bool:
         return idea.status_id == initial_idea_status_id(self.db, idea.tenant_id)
@@ -706,12 +725,16 @@ class IntakeService:
                 return
         # Tenant-scoped throughout (review round 1, blocking #3) - the vote
         # insert filters on ``tenant_id`` too, never id-alone.
+        # One vote per PERSON (lane PUBLIC-IDEAS-BOARD): a vote by any
+        # same-phone contact of this submitter (e.g. cast on the feedback board)
+        # already counts; a new one is stored under the canonical id.
+        person_ids = person_contact_ids(self.db, tenant_id, submitter_contact_id)
         exists = (
             self.db.query(IdeaVote)
             .filter(
                 IdeaVote.idea_id == idea_id,
                 IdeaVote.tenant_id == tenant_id,
-                IdeaVote.voter_id == submitter_contact_id,
+                IdeaVote.voter_id.in_(person_ids),
             )
             .first()
         )
@@ -720,7 +743,7 @@ class IntakeService:
                 IdeaVote(
                     tenant_id=tenant_id,
                     idea_id=idea_id,
-                    voter_id=submitter_contact_id,
+                    voter_id=person_ids[0],
                     dir="up",
                 )
             )
@@ -870,7 +893,7 @@ class IntakeService:
             # applied. Never answer ``cancelled`` for a mutation that did not
             # happen (review round 1, should-fix #4).
             self.db.rollback()
-            raise ApiError(409, "transition_blocked", "This idea cannot be cancelled right now.")
+            raise ApiError(409, "transition_blocked", "This feedback cannot be cancelled right now.")
         try:
             status_machine.transition(
                 self.db, IDEA_ENTITY, idea, rejected_id, actor=None, tenant_id=tenant_id, commit=False
@@ -880,7 +903,7 @@ class IntakeService:
             # (or any other engine refusal) is a 409, never a 500 (review
             # round 1, should-fix #4).
             self.db.rollback()
-            raise ApiError(409, "transition_blocked", "This idea cannot be cancelled right now.")
+            raise ApiError(409, "transition_blocked", "This feedback cannot be cancelled right now.")
         self.db.commit()
         return _response(
             status="cancelled", draft_id=idea.id, reply_text=_reply_cancelled(self._noun(idea).lower()), title=idea.title
@@ -904,7 +927,7 @@ class IntakeService:
         duplicate_id = idea_status_id(self.db, "duplicate", tenant_id)
         if duplicate_id is None:
             self.db.rollback()
-            raise ApiError(409, "transition_blocked", "This idea cannot be voted right now.")
+            raise ApiError(409, "transition_blocked", "This feedback cannot be voted on right now.")
         try:
             status_machine.transition(
                 self.db, IDEA_ENTITY, idea, duplicate_id, actor=None, tenant_id=tenant_id, commit=False
@@ -913,12 +936,12 @@ class IntakeService:
             # A forked tenant status set missing the draft -> duplicate edge
             # is a 409, never a 500 (review round 1, should-fix #4).
             self.db.rollback()
-            raise ApiError(409, "transition_blocked", "This idea cannot be voted right now.")
+            raise ApiError(409, "transition_blocked", "This feedback cannot be voted on right now.")
         # Compute the candidate link BEFORE commit (review round 1, should-fix
         # #6) - a pure read now (mint_idea_link never mutates), but this keeps
         # the ordering honest regardless.
         cand_number = candidate.idea_number
-        cand_link = mint_idea_link(self.db, candidate)
+        cand_link = self._contact_link(candidate, recipient=idea.submitter_contact_id)
         self.db.commit()
         return _response(
             status="voted",
@@ -967,7 +990,9 @@ class IntakeService:
             state = _IntakeState.load(idea)
             candidate = self._resolve_candidate(idea, state.voted_for)
             cand_number = candidate.idea_number if candidate else None
-            cand_link = mint_idea_link(self.db, candidate) if candidate else None
+            cand_link = (
+                self._contact_link(candidate, recipient=idea.submitter_contact_id) if candidate else None
+            )
             self.db.commit()
             return _response(
                 status="voted",
@@ -979,7 +1004,7 @@ class IntakeService:
             )
         # captured (or further along the lifecycle) - the completion echo.
         captured, missing = definition.completion_rule(idea.captured_json or {})
-        link = mint_idea_link(self.db, idea)
+        link = self._contact_link(idea)
         self.db.commit()
         return _response(
             status="complete",
@@ -1034,13 +1059,13 @@ def _reply_collecting(
     next_key: Optional[str],
 ) -> str:
     if missing:
-        last = "What's the idea or problem you'd like to raise?"
+        last = "What's the feedback or problem you'd like to raise?"
     elif next_key == "proposed_solution":
         last = "What's your proposed solution?"
     elif next_key == "impact":
         last = "What's the impact if we do this?"
     else:  # pragma: no cover - collecting is only reached via one of the above
-        last = "What's the idea or problem you'd like to raise?"
+        last = "What's the feedback or problem you'd like to raise?"
     return _compose(title, _recap_lines(captured), last)
 
 
@@ -1048,7 +1073,7 @@ def _reply_review(title: Optional[str], captured: Dict[str, object]) -> str:
     return _compose(title, _recap_lines(captured), "Submit it?")
 
 
-def _reply_duplicate_candidate(candidate_title: str, noun: str = "idea") -> str:
+def _reply_duplicate_candidate(candidate_title: str, noun: str = "feedback") -> str:
     return "\n".join(
         [
             f"Similar {noun} exists: {candidate_title}",
@@ -1061,24 +1086,24 @@ def _reply_complete(
     title: Optional[str],
     idea_number: Optional[str],
     link: Optional[str],
-    noun: str = "Idea",
+    noun: str = "Feedback",
 ) -> str:
     lines: List[str] = []
     t = _title_line(title)
     if t:
         lines.append(t)
-    lines.append(f"{noun} {idea_number} is in. We'll update you on WhatsApp.")
+    lines.append(f"{noun} {display_idea_number(idea_number)} is in. We'll update you on WhatsApp.")
     if link:
         lines.append(f"Track it here: {link}")
     return "\n".join(lines)
 
 
 def _reply_voted(idea_number: Optional[str], link: Optional[str]) -> str:
-    lines = [f"Thanks, your vote is on {idea_number}."]
+    lines = [f"Thanks, your vote is on {display_idea_number(idea_number)}."]
     if link:
         lines.append(f"Track it here: {link}")
     return "\n".join(lines)
 
 
-def _reply_cancelled(noun: str = "idea") -> str:
+def _reply_cancelled(noun: str = "feedback") -> str:
     return f"No worries, I've dropped that {noun}. Say the word anytime you want to start again."

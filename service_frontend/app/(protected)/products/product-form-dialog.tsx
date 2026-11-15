@@ -310,9 +310,9 @@ export function ProductFormDialog({
                 disabled={deliveryLoading || Boolean(deliveryError)}
               />
               <p className="text-xs text-muted-foreground">
-                The absolute origin of this software product&apos;s app. Ideation
-                uses it to mint idea links (e.g. an idea captured on WhatsApp
-                deep-links back here). Set it once the app has a hosted URL.
+                The absolute origin of this software product&apos;s app. Feedback
+                links use it (e.g. feedback captured on WhatsApp deep-links back
+                here). Set it once the app has a hosted URL.
               </p>
               <Label htmlFor="prod-build-repo" className="pt-2">
                 Build repository
@@ -334,7 +334,7 @@ export function ProductFormDialog({
               )}
               {deliveryError && (
                 <p className="text-xs text-destructive">
-                  {deliveryError} (requires the ideation.products.manage permission)
+                  {deliveryError} (requires the Feedback Products: Manage permission)
                 </p>
               )}
             </div>

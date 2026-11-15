@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { toast } from '@/lib/toast';
-import { useIdeaPortal, usePortalProducts, usePortalRoadmap } from '@/hooks/use-idea-portal';
+import { mineFilterLabel, useIdeaPortal, usePortalProducts, usePortalRoadmap } from '@/hooks/use-idea-portal';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Button } from '@/components/ui/button';
 import { RoadmapBoard } from './roadmap-board';
@@ -39,14 +39,14 @@ export function RoadmapView() {
               onChange={(v) => setProductId(v === ALL_PRODUCTS ? null : v)}
             />
           )}
-          {principal.kind === 'crm' && (
+          {mineFilterLabel(principal) && (
             <Button
               variant={mine ? 'primary' : 'outline'}
               size="sm"
               aria-pressed={mine}
               onClick={() => setMine((m) => !m)}
             >
-              My ideas
+              {mineFilterLabel(principal)}
             </Button>
           )}
         </div>
