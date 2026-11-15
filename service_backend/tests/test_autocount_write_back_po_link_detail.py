@@ -104,7 +104,7 @@ def test_ac_64_04_received_row_is_refused_with_a_plain_reason(client, gw, far):
     body = r.json()
     assert body["outcome"] == "refused" and body["errorCode"] == "ROW_RECEIVED"
     assert body["message"] and "ROW_RECEIVED" not in body["message"]
-    assert "received" in body["message"].lower()
+    assert "received" in body["message"].lower() and "BR1" in body["message"]  # the row's own location
     assert body["detail"] is None and body["document"] is None
     assert gw.h.vendor.writes() == []
     # fixed in AutoCount (nothing received any more): the same key runs fresh
@@ -184,3 +184,24 @@ def test_ac_64_05_replay_of_an_answer_stored_before_detail_existed(client, gw, f
     again = client.post(LINK, json=_whole(far), headers=gw.hdr())
     assert again.status_code == 200
     assert again.json()["detail"] == first.json()["detail"]
+
+
+def test_ac_64_05_replay_of_a_split_link_answers_the_same_detail(client, gw, far):
+    first = client.post(LINK, json=_whole(far, qty=1), headers=gw.hdr())
+    calls = len(gw.h.vendor.calls)
+    again = client.post(LINK, json=_whole(far, qty=1), headers=gw.hdr())
+    assert len(gw.h.vendor.calls) == calls
+    assert again.json()["detail"] is not None and again.json()["detail"] == first.json()["detail"]
+
+
+def test_ac_64_06_split_link_with_nothing_to_restore_answers_the_new_row(client, gw):
+    """The vendor already put the new row where and as it should be (SO row at HQ, no price,
+    no date): no second write, the new row is still named."""
+    w = World(gw.h, so_loc="HQ")
+    row = _row(w.po_rows(), w.p_free)
+    row["UnitPrice"], row["DeliveryDate"] = 0.0, "0001-01-01T00:00:00"
+    r = client.post(LINK, json=_whole(w, qty=1), headers=_hdr(gw.plain))
+    assert r.status_code == 200, r.text
+    assert len(gw.h.vendor.writes()) == 1  # no restore write
+    detail = r.json()["detail"]
+    assert detail["DtlKey"] != w.p_free and detail["FromSODtlKey"] == w.so_a and detail["Location"] == "HQ"
