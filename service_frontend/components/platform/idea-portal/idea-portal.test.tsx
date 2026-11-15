@@ -147,20 +147,27 @@ describe('IdeaPage', () => {
   });
 
   it('owner ruling (b): another dealer item (text withheld by the API) shows no free-text section', () => {
-    const withheld: PortalIdea = {
-      ...idea,
-      isMine: false,
-      problem: null,
-      desiredOutcome: null,
-      useCases: null,
-      currentWorkaround: null,
-    };
+    // Strict (b): the API OMITS the text, submitter and product keys.
+    const {
+      problem: _p,
+      desiredOutcome: _d,
+      useCases: _u,
+      currentWorkaround: _c,
+      submitterFirstName: _s,
+      submittedAt: _t,
+      productName: _n,
+      ...rest
+    } = idea;
+    const withheld: PortalIdea = { ...rest, isMine: false };
     mockPage({ idea: q<PortalIdea>(withheld) });
     render(<IdeaPage ideaId="i10" />);
     expect(screen.getByTestId('portal-idea-hero')).toHaveTextContent('Order status tracking for dealers');
     expect(screen.queryByTestId('portal-idea-fields')).not.toBeInTheDocument();
     expect(screen.queryByText('Business problem')).not.toBeInTheDocument();
     expect(screen.queryByText('Current workaround')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Submitted by/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Product')).not.toBeInTheDocument();
+    expect(screen.queryByText('2026-10-02')).not.toBeInTheDocument();
     expect(screen.getByTestId('portal-activity')).toBeInTheDocument();
   });
 
@@ -242,7 +249,8 @@ describe('RoadmapBoard', () => {
     expect(within(sections[1]).getByText('No feedback')).toBeInTheDocument();
     expect(within(sections[0]).getByText('7')).toBeInTheDocument(); // the column total, not the capped card count
     const link = within(sections[0]).getByTestId('portal-idea-card');
-    expect(link).toHaveAttribute('href', '/portal/ideas/a');
+    // Crew-pass fix (4): the address bar shows the item number, never the row id.
+    expect(link).toHaveAttribute('href', '/portal/ideas/IDEA-0010');
     const box = within(link).getByRole('button', { name: /remove upvote \(4\)/i });
     expect(box).toHaveAttribute('aria-pressed', 'true');
     await userEvent.click(box);

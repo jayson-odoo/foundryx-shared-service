@@ -603,6 +603,13 @@ def test_rr1_portal_token_subject_must_match_the_links_contact(setup):
 
 # ── owner ruling (b): free text only on the dealer's own items ────────────────
 
+# Strict (b): on another dealer's item ONLY title, status, steps, votes and
+# comments - these keys never leave the server for it.
+WITHHELD_KEYS = (
+    "problem", "desiredOutcome", "useCases", "currentWorkaround",
+    "submitterFirstName", "submittedAt", "productName",
+)
+
 
 def test_rb_full_text_only_on_own_items(setup):
     s = setup
@@ -617,12 +624,19 @@ def test_rb_full_text_only_on_own_items(setup):
     assert mine["problem"] == "My own business detail"
     other_page = s["client"].get(f"/portal/ideas/{theirs}", headers=h).json()
     assert other_page["title"] == "Their item" and other_page["statusLabel"]
-    assert other_page["problem"] is None
-    assert other_page["desiredOutcome"] is None and other_page["currentWorkaround"] is None
-    assert not other_page["useCases"]
+    # Fix round (crew-pass): the withheld keys are OMITTED, never sent as null.
+    for key in WITHHELD_KEYS:
+        assert key not in other_page, key
+    assert other_page["timeline"] and "upvotes" in other_page
+    # Own item keeps everything.
+    for key in ("problem", "submitterFirstName", "submittedAt", "productName"):
+        assert key in mine, key
     cards = {c["id"]: c for c in s["client"].get("/portal/ideas", headers=h).json()["items"]}
     assert cards[untitled]["title"] == "IDEA-0503"
     assert "secret" not in str(cards).lower()
+    for key in ("submittedAt", "productName"):
+        assert key not in cards[theirs], key
+        assert key in cards[own], key
     # Staff still read everything.
     staff = s["client"].get(f"/portal/ideas/{theirs}", headers=_staff_session(s)).json()
     assert staff["problem"] == "Customer X pays 12% less"
@@ -638,3 +652,69 @@ def test_rb_search_never_probes_others_text(setup):
     h = _contact_session(s, me)
     ids = {i["id"] for i in s["client"].get("/portal/ideas?q=needle", headers=h).json()["items"]}
     assert ids == {own, by_title}
+
+
+def test_rb_strict_no_submitter_activity_on_others_items(setup):
+    """Crew-pass fix (1): the 'Feedback submitted by <name> over WhatsApp'
+    activity line is not returned for another dealer's item; staff and the
+    dealer's own item keep it."""
+    s = setup
+    me = _contact(s)
+    other = _contact(s, first_name="Other Dealer", phone="+60123450997")
+    own = _idea(s, 521, submitter_contact_id=me)
+    theirs = _idea(s, 522, submitter_contact_id=other)
+    h = _contact_session(s, me)
+    kinds = [e["kind"] for e in s["client"].get(f"/portal/ideas/{theirs}/activity", headers=h).json()]
+    assert "submitted" not in kinds
+    assert "submitted" in [e["kind"] for e in s["client"].get(f"/portal/ideas/{own}/activity", headers=h).json()]
+    staff = s["client"].get(f"/portal/ideas/{theirs}/activity", headers=_staff_session(s)).json()
+    assert "submitted" in [e["kind"] for e in staff]
+
+
+def test_rb_one_vote_per_person_across_same_phone_contacts(setup):
+    """Crew-pass fix (3): two contact rows with the same phone are ONE person,
+    so a second link cannot add a second vote."""
+    from modules.ideation.models import IdeaVote
+
+    s = setup
+    a = _contact(s, phone="+60123450001")
+    twin = _contact(s, phone="+60 12-345 0001")
+    iid = _idea(s, 531)
+    ha, ht = _contact_session(s, a), _contact_session(s, twin)
+    on = s["client"].post(f"/portal/ideas/{iid}/vote", headers=ha).json()
+    assert on["upvotes"] == 1 and on["myVote"] is True
+    card = s["client"].get(f"/portal/ideas/{iid}", headers=ht).json()
+    assert card["myVote"] is True  # the twin sees the person's vote as theirs
+    off = s["client"].post(f"/portal/ideas/{iid}/vote", headers=ht).json()
+    assert off == {"id": iid, "upvotes": 0, "myVote": False}
+    again = s["client"].post(f"/portal/ideas/{iid}/vote", headers=ht).json()
+    assert again["upvotes"] == 1
+    assert s["client"].post(f"/portal/ideas/{iid}/vote", headers=ha).json()["upvotes"] == 0
+    db = s["factory"]()
+    try:
+        assert db.query(IdeaVote).filter(IdeaVote.idea_id == iid, IdeaVote.dir == "up").count() == 0
+    finally:
+        db.close()
+    voters_seen = s["client"].post(f"/portal/ideas/{iid}/vote", headers=ha)
+    assert voters_seen.status_code == 200
+    voters = s["client"].get(f"/portal/ideas/{iid}/voters", headers=ht).json()
+    assert len(voters) == 1 and voters[0]["isMe"] is True
+
+
+def test_rb_intake_vote_by_a_twin_counts_as_the_persons_vote(setup):
+    from modules.ideation.models import IdeaVote
+
+    s = setup
+    a = _contact(s, phone="+60123450001")
+    twin = _contact(s, phone="+60 12-345 0001")
+    iid = _idea(s, 532, upvotes=1)
+    db = s["factory"]()
+    try:
+        db.add(IdeaVote(tenant_id=DEFAULT_TENANT_ID, idea_id=iid, voter_id=twin, dir="up"))
+        db.commit()
+    finally:
+        db.close()
+    h = _contact_session(s, a)
+    assert s["client"].get(f"/portal/ideas/{iid}", headers=h).json()["myVote"] is True
+    off = s["client"].post(f"/portal/ideas/{iid}/vote", headers=h).json()
+    assert off["upvotes"] == 0 and off["myVote"] is False

@@ -76,6 +76,26 @@ describe('LinkPortalRoot', () => {
     expect(tabs.slice(0, 3)).toEqual(['Feedback', 'Roadmap', 'Changelog']);
   });
 
+  it('rows link to the item NUMBER (crew-pass fix 4), the row id only when there is none', async () => {
+    svc.linkSession.mockResolvedValue({ token: 'portal-jwt', principal: contact });
+    const card = {
+      id: 'row-uuid-1', ideaNumber: 'IDEA-0003', title: 'Export button', upvotes: 1, commentCount: 0,
+      isMine: false, myVote: false, column: 'in_progress', statusLabel: 'Building', statusColor: 'amber',
+    };
+    svc.list.mockResolvedValue({
+      items: [card, { ...card, id: 'row-uuid-2', ideaNumber: null, title: 'No number yet' }],
+      total: 2, page: 1, pageSize: 25,
+    });
+    render(
+      <LinkPortalRoot linkToken={TOKEN}>
+        <FeedbackView />
+      </LinkPortalRoot>,
+    );
+    const rows = await screen.findAllByTestId('portal-idea-row');
+    expect(rows[0]).toHaveAttribute('href', `/public/feedback/board/${TOKEN}/IDEA-0003`);
+    expect(rows[1]).toHaveAttribute('href', `/public/feedback/board/${TOKEN}/row-uuid-2`);
+  });
+
   it('a bad or cancelled link shows the not-valid message', async () => {
     svc.linkSession.mockRejectedValue(new Error('401'));
     render(
