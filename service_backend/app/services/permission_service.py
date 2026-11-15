@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Set
 
 from sqlalchemy.orm import Session
 
+from app.repositories.module_repository import ModuleRepository
 from app.repositories.permission_repository import PermissionRepository
 from app.schemas.permission import PermissionActionOut, PermissionResourceOut
 
@@ -28,9 +29,19 @@ def load_csv(path: Path) -> List[dict]:
         return [dict(row) for row in csv.DictReader(fh)]
 
 
+def _module_label(module: str, titles: Dict[str, str]) -> str:
+    """A plain word for a permission group header, never the raw module key."""
+    if module == CORE_MODULE:
+        return "Core"
+    if module == PLATFORM_MODULE:
+        return "Platform"
+    return titles.get(module) or module.replace("_", " ").capitalize()
+
+
 class PermissionService:
     def __init__(self, db: Session):
         self.repo = PermissionRepository(db)
+        self.modules = ModuleRepository(db)
 
     def catalog(
         self,
@@ -47,6 +58,7 @@ class PermissionService:
         """
         grouped: Dict[str, PermissionResourceOut] = {}
         order: List[str] = []
+        titles = self.modules.titles_by_name()
         for perm in self.repo.list_all():
             if perm.module == PLATFORM_MODULE and not include_platform:
                 continue
@@ -62,6 +74,7 @@ class PermissionService:
                     resource=perm.resource,
                     resourceLabel=perm.resource_label,
                     module=perm.module,
+                    moduleLabel=_module_label(perm.module, titles),
                     actions=[],
                 )
                 grouped[perm.resource] = res

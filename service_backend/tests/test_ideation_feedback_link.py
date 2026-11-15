@@ -369,7 +369,7 @@ def test_ac_fb_30_board_link_shape(setup):
     iid = _idea(s, 301, submitter_contact_id=cid)
     url = _board_link(s, iid)
     token = _link(s, cid)
-    assert url == f"{settings.frontend_url.rstrip('/')}/public/feedback/board/{token}/IDEA-0301"
+    assert url == f"{settings.frontend_url.rstrip('/')}/public/feedback/board/{token}/FB-0301"
     assert _board_link(s, _idea(s, 302)) is None
 
 
@@ -382,7 +382,7 @@ def test_ac_fb_30_board_link_on_crm_template_base(setup, monkeypatch):
     monkeypatch.setattr(
         feedback_links, "tenant_public_link_base", lambda db, tid: "https://crm.example.test/portal/ideas/{token}"
     )
-    assert _board_link(s, iid) == f"https://crm.example.test/feedback/board/{_link(s, cid)}/IDEA-0303"
+    assert _board_link(s, iid) == f"https://crm.example.test/feedback/board/{_link(s, cid)}/FB-0303"
 
 
 def test_ac_fb_30_board_link_plain_base(setup, monkeypatch):
@@ -392,7 +392,7 @@ def test_ac_fb_30_board_link_plain_base(setup, monkeypatch):
     cid = _contact(s)
     iid = _idea(s, 304, submitter_contact_id=cid)
     monkeypatch.setattr(feedback_links, "tenant_public_link_base", lambda db, tid: "https://ss.example.test/")
-    assert _board_link(s, iid) == f"https://ss.example.test/public/feedback/board/{_link(s, cid)}/IDEA-0304"
+    assert _board_link(s, iid) == f"https://ss.example.test/public/feedback/board/{_link(s, cid)}/FB-0304"
 
 
 def test_ac_fb_30_foreign_contact_gets_no_link(setup):
@@ -432,8 +432,8 @@ def test_ac_fb_31_status_event_carries_board_url(setup):
         payload = db.query(IdeaStatusEvent).filter(IdeaStatusEvent.idea_id == iid).one().payload_json
     finally:
         db.close()
-    assert payload["board_url"].endswith(f"/public/feedback/board/{_link(s, cid)}/IDEA-0311")
-    assert "/public/ideas/" in payload["track_url"]
+    assert payload["board_url"].endswith(f"/public/feedback/board/{_link(s, cid)}/FB-0311")
+    assert "/public/feedback/" in payload["track_url"]
 
 
 def test_ac_fb_33_staff_cancel_endpoint(setup):
@@ -459,6 +459,11 @@ def test_ac_fb_41_item_opens_by_number(setup):
     assert page.status_code == 200 and page.json()["id"] == iid
     assert s["client"].post("/portal/ideas/IDEA-0261/vote", headers=h).json()["myVote"] is True
     assert s["client"].get("/portal/ideas/IDEA-9999", headers=h).status_code == 404
+    # Lane FEEDBACK-RENAME: the link now carries the shown number (FB-0261);
+    # both forms resolve, so links already sent keep working.
+    fb = s["client"].get("/portal/ideas/FB-0261", headers=h)
+    assert fb.status_code == 200 and fb.json()["id"] == iid
+    assert s["client"].get("/portal/ideas/fb-0261", headers=h).json()["id"] == iid
 
 
 def test_ac_fb_32_whatsapp_reply_carries_the_board_link(setup):
@@ -478,7 +483,7 @@ def test_ac_fb_32_whatsapp_reply_carries_the_board_link(setup):
         link = IntakeService(db)._contact_link(idea)
     finally:
         db.close()
-    assert link == f"{settings.frontend_url.rstrip('/')}/public/ideas/{'T' * 32}"
+    assert link == f"{settings.frontend_url.rstrip('/')}/public/feedback/{'T' * 32}"
 
 
 def test_ac_fb_33_staff_grace_window_action_and_flag(setup):
@@ -522,9 +527,9 @@ def test_rr1_b1_voter_without_contact_never_gets_the_authors_link(setup):
         db.commit()
     finally:
         db.close()
-    assert voter_without_contact == f"{settings.frontend_url.rstrip('/')}/public/ideas/{'C' * 32}"
+    assert voter_without_contact == f"{settings.frontend_url.rstrip('/')}/public/feedback/{'C' * 32}"
     assert _link(s, author) not in voter_with_contact
-    assert voter_with_contact.endswith(f"/public/feedback/board/{_link(s, other_voter)}/IDEA-0401")
+    assert voter_with_contact.endswith(f"/public/feedback/board/{_link(s, other_voter)}/FB-0401")
 
 
 def test_rr1_test_ideas_never_mint_a_link(setup):
@@ -553,7 +558,7 @@ def test_rr1_one_shot_response_keeps_the_per_idea_link(setup):
         out = IntakeService(db)._one_shot_response(db.query(Idea).filter(Idea.id == iid).first())
     finally:
         db.close()
-    assert out["link"].endswith(f"/public/ideas/{'O' * 32}")
+    assert out["link"].endswith(f"/public/feedback/{'O' * 32}")
 
 
 def test_rr1_cancel_reaches_same_phone_siblings(setup):
@@ -632,7 +637,7 @@ def test_rb_full_text_only_on_own_items(setup):
     for key in ("problem", "submitterFirstName", "submittedAt", "productName"):
         assert key in mine, key
     cards = {c["id"]: c for c in s["client"].get("/portal/ideas", headers=h).json()["items"]}
-    assert cards[untitled]["title"] == "IDEA-0503"
+    assert cards[untitled]["title"] == "FB-0503"
     assert "secret" not in str(cards).lower()
     for key in ("submittedAt", "productName"):
         assert key not in cards[theirs], key

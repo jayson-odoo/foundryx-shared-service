@@ -33,6 +33,7 @@ from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaContactLink
 from .sinks import LINK_PLACEHOLDERS
+from .numbering import display_idea_number
 
 # 32-64 URL-safe chars: ``token_urlsafe(32)`` is 43. Anything else is rejected
 # before the database is touched.
@@ -195,4 +196,5 @@ def mint_board_link(db: Session, idea: Idea, contact_id: object = SUBMITTER) -> 
         return None
     link = get_or_create_link(db, idea.tenant_id, contact.id)
     url = f"{board_base(db, idea.tenant_id)}/{link.token}"
-    return f"{url}/{idea.idea_number}" if idea.idea_number else url
+    # The URL carries the number as users read it (FB-0016), never "idea".
+    return f"{url}/{display_idea_number(idea.idea_number)}" if idea.idea_number else url

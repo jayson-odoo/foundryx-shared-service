@@ -345,9 +345,9 @@ def test_ac_stb_10_body_has_one_section_per_template_field_in_order(ideation_cli
     body, _ = _body_of_send(ideation_client, monkeypatch, s)
     headings = re.findall(r"^## (.+)$", body, flags=re.M)
     assert headings[: len(TEMPLATE_LABELS)] == TEMPLATE_LABELS
-    assert "Linked ideas" in headings
+    assert "Linked feedback" in headings
     assert "Links" in headings
-    assert headings.index("Linked ideas") < headings.index("Links")
+    assert headings.index("Linked feedback") < headings.index("Links")
     # Answers rendered under their heading; blank optional field -> placeholder.
     assert "CS cannot export orders." in body
     assert "50% fewer support tickets." in body
@@ -423,9 +423,9 @@ def test_ac_stb_10_linked_ideas_with_votes(ideation_client, monkeypatch):
     )
     assert res.status_code == 200, res.text
     body, _ = _body_of_send(ideation_client, monkeypatch, s)
-    section = body.split("## Linked ideas", 1)[1].split("\n## ", 1)[0]
+    section = body.split("## Linked feedback", 1)[1].split("\n## ", 1)[0]
     # Plan 19 (AC-19-14): upvotes only, no "/ -N" downvote half.
-    assert re.search(r"^- IDEA-0042 .*\(\+3\)$", section, flags=re.M), section
+    assert re.search(r"^- FB-0042 .*\(\+3\)$", section, flags=re.M), section
 
 
 def test_ac_stb_10_links_section_and_markers_last(ideation_client, monkeypatch):
@@ -433,7 +433,7 @@ def test_ac_stb_10_links_section_and_markers_last(ideation_client, monkeypatch):
     body, _ = _body_of_send(ideation_client, monkeypatch, s)
     links = body.split("## Links", 1)[1]
     base = settings.frontend_url.rstrip("/")
-    assert f"{base}/ideation/business-requirements/{s['br_id']}" in links
+    assert f"{base}/feedback/business-requirements/{s['br_id']}" in links
     lines = [ln for ln in body.rstrip().splitlines() if ln.strip()]
     assert lines[-2:] == [
         f"<!-- br-id: {s['br_id']} -->",
@@ -683,7 +683,7 @@ def test_sec_f4_ac_stb_10_planted_marker_in_linked_idea_is_neutralised(
     assert res.status_code == 200, res.text
     body, _ = _body_of_send(ideation_client, monkeypatch, s)
     assert body.count("<!--") == 2
-    assert "Idea" in body.split("## Linked ideas", 1)[1]
+    assert "Idea" in body.split("## Linked feedback", 1)[1]
 
 
 def test_sec_f4_ac_stb_10_planted_marker_in_grill_transcript_is_neutralised(

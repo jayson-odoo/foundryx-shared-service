@@ -65,6 +65,7 @@ from .comments import AUTHOR_CONTACT, AUTHOR_EMBED, AUTHOR_USER, CommentViewer, 
 from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
 from .statuses import IDEA_ENTITY
+from .numbering import display_idea_number, stored_idea_number
 
 PORTAL_TYP = "idea_portal"
 PORTAL_AUD = "ideation-portal"
@@ -155,7 +156,7 @@ def _unauthorized() -> PortalError:
 
 
 def _not_found() -> PortalError:
-    return PortalError(404, "not_found", "Idea not found.")
+    return PortalError(404, "not_found", "Feedback not found.")
 
 
 def _forbidden() -> PortalError:
@@ -347,11 +348,11 @@ def session_for_staff(db: Session, user: User, *, impersonating: bool = False) -
     the target would attribute the admin's votes/comments to the target and
     outlive the impersonation session."""
     if impersonating:
-        raise PortalError(403, "impersonating", "Stop impersonating to open the ideas portal.")
+        raise PortalError(403, "impersonating", "Stop impersonating to open the feedback portal.")
     if not _tenant_ok(db, user.tenant_id):
-        raise PortalError(403, "module_inactive", "Ideas are not available.")
+        raise PortalError(403, "module_inactive", "Feedback is not available.")
     if _staff_user(db, user.tenant_id, user.id) is None:
-        raise PortalError(403, "forbidden", "You do not have access to ideas.")
+        raise PortalError(403, "forbidden", "You do not have access to feedback.")
     p = PortalPrincipal(
         tenant_id=user.tenant_id,
         kind=KIND_STAFF,
@@ -548,7 +549,12 @@ class IdeaPortalService:
         row = (
             self.db.query(Idea)
             .filter(
-                or_(Idea.id == idea_id, Idea.idea_number == idea_id),
+                or_(
+                    Idea.id == idea_id,
+                    # A link carries the shown number (FB-0016); older links
+                    # carry the stored one (IDEA-0016). Both resolve.
+                    Idea.idea_number.in_({idea_id, stored_idea_number(idea_id) or idea_id}),
+                ),
                 Idea.tenant_id == self.p.tenant_id,
                 Idea.is_test.is_(False),
             )
@@ -559,7 +565,7 @@ class IdeaPortalService:
         idea_id = row.id
         if row.merged_into_id:
             if not follow_merge:
-                raise PortalError(409, "merged", "This idea was merged into another idea.")
+                raise PortalError(409, "merged", "This feedback was merged into another one.")
             idea_id = row.merged_into_id
         idea = self._visible(include_closed=True).filter(Idea.id == idea_id).first()
         if idea is None:
@@ -604,7 +610,7 @@ class IdeaPortalService:
                     # A dealer never gets another submitter's problem text as a
                     # title fallback (owner ruling (b)): the number stands in.
                     "title": (
-                        (i.title or "").strip() or (i.idea_number or "")
+                        (i.title or "").strip() or (display_idea_number(i.idea_number) or "")
                         if self._text_withheld(i.id in mine)
                         else (i.title or i.problem or "").strip()
                     ),
@@ -689,6 +695,8 @@ class IdeaPortalService:
             query = self._mine_filter(query)
         if q and q.strip():
             like = f"%{q.strip().lower()}%"
+            # A user types the number as shown (FB-0016); match the stored form.
+            number_like = f"%{(stored_idea_number(q.strip()) or q.strip()).lower()}%"
             text_match = func.lower(Idea.problem).like(like)
             if self.p.kind == KIND_CONTACT:
                 # Ruling (b): a dealer's search must not probe other
@@ -697,7 +705,7 @@ class IdeaPortalService:
             query = query.filter(
                 or_(
                     func.lower(func.coalesce(Idea.title, "")).like(like),
-                    func.lower(func.coalesce(Idea.idea_number, "")).like(like),
+                    func.lower(func.coalesce(Idea.idea_number, "")).like(number_like),
                     text_match,
                 )
             )
@@ -1155,7 +1163,7 @@ class IdeaPortalService:
         try:
             throttle.enforce_idea_portal_submit(principal_key=key)
         except Throttled as exc:
-            raise PortalError(429, "too_many_ideas", "Too many ideas. Try again later.", exc.retry_after_seconds)
+            raise PortalError(429, "too_many_ideas", "Too much feedback sent. Try again later.", exc.retry_after_seconds)
         product_id = p.product_id or product_id
         if not product_id or product_id not in {x["id"] for x in self.products()}:
             raise PortalError(422, "invalid_product", "Choose a product.")

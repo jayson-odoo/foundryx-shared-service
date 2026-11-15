@@ -6,7 +6,7 @@ import { ArrowLeft, Heart, Reply, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeaPortal, usePortalIdeaPage } from '@/hooks/use-idea-portal';
-import { IdeaStatusTimeline } from '@/app/(public)/public/ideas/[token]/components/idea-status-timeline';
+import { IdeaStatusTimeline } from '@/app/(public)/public/feedback/[token]/components/idea-status-timeline';
 import { colorToHex } from '@/components/platform/status-badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,7 @@ import type { PortalActivity, PortalComment, PortalIdea, PortalVoter } from '@/t
 import { PortalStatusPill } from './portal-status-pill';
 import { PortalLoading, PortalMessage } from './portal-states';
 import { UpvoteBox } from './upvote-box';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 const ORDER_OPTIONS = [
   { value: 'desc', label: 'Newest first' },
@@ -393,7 +394,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
           <div className="flex gap-4" data-testid="portal-idea-hero">
             <UpvoteBox size="lg" count={idea.upvotes} voted={idea.myVote} onVote={() => onAction(page.vote())} />
             <div className="min-w-0">
-              {idea.ideaNumber && <p className="text-sm font-medium text-muted-foreground">{idea.ideaNumber}</p>}
+              {idea.ideaNumber && <p className="text-sm font-medium text-muted-foreground">{formatFeedbackNumber(idea.ideaNumber)}</p>}
               <div role="heading" aria-level={1} className="font-heading text-xl font-semibold break-words sm:text-2xl">{idea.title}</div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 {idea.statusLabel && <PortalStatusPill label={idea.statusLabel} color={idea.statusColor} />}

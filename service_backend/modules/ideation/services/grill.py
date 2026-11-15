@@ -6,7 +6,7 @@ ideation-coupled bindings for the Idea → BR pairing:
 - **target template resolver** - the BR's STAMPED template field list + doc,
   so the prompt/extraction schema follow the version the BR was created under.
 - **source artifacts** - the linked ideas' text (grounding, AC-BI-28).
-- **agent resolver** - the per-tenant auto-seeded ``Ideation grill`` agent
+- **agent resolver** - the per-tenant auto-seeded ``Feedback grill`` agent
   (AC-BI-20b); if it has no connection yet it lazily heals to any resolvable LLM
   connection so grilling lights up the moment a key is added - no re-seed.
 - **skill** - the platform-tier ``grill-me-business`` skill's active body.
@@ -54,7 +54,10 @@ GRILL_SKILL_KEY = "grill-me-business"
 # The STABLE binding key (never the display name - a tenant may rename the agent,
 # AC-BI-20b). ``GRILL_AGENT_NAME`` is only the seeded display default.
 GRILL_AGENT_KEY = "ideation-grill"
-GRILL_AGENT_NAME = "Ideation grill"
+GRILL_AGENT_NAME = "Feedback grill"
+# The name seeded before lane FEEDBACK-RENAME; a row still carrying it moves to
+# GRILL_AGENT_NAME at the next seed (a tenant's own rename is left alone).
+LEGACY_GRILL_AGENT_NAME = "Ideation grill"
 GRILL_MODEL = "gemini-2.5-flash"
 SOURCE_TYPE = "idea"
 
@@ -155,7 +158,7 @@ def _source_artifacts(db: Session, tenant_id: str, br: BusinessRequirement) -> T
 
 
 def _resolve_agent(db: Session, tenant_id: str) -> AiAgent:
-    """The auto-seeded ``Ideation grill`` agent (AC-BI-20b). If it carries no
+    """The auto-seeded ``Feedback grill`` agent (AC-BI-20b). If it carries no
     connection but one resolves now, lazily heal it so grilling lights up the
     moment a platform/tenant key is added (no re-seed needed). Bound by the
     STABLE key so a renamed agent (AC-BI-20b) still resolves."""
@@ -266,7 +269,7 @@ class IdeationGrillService:
     def _definition(self) -> GrillDefinition:
         definition = get_grill_definition(GRILL_DEFINITION_KEY)
         if definition is None:  # boot-registered - a missing one is a config bug
-            raise HTTPException(500, "The idea→BR grill definition is not registered.")
+            raise HTTPException(500, "The feedback→BR grill definition is not registered.")
         return definition
 
     def state(self, tenant_id: str, br_id: str) -> GrillStateOut:

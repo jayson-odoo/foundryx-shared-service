@@ -60,7 +60,7 @@ class IdeaCommentService:
             .first()
         )
         if idea is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
         return idea
 
     def _comment_or_404(self, tenant_id: str, idea_id: str, comment_id: str) -> IdeaComment:

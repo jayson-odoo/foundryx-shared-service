@@ -24,6 +24,8 @@ export interface PermissionResource {
   resourceLabel: string;
   /** Owning module - `core` or an App-Store module name (groups the sections). */
   module: string;
+  /** What a user reads for `module` (e.g. "Feedback"); the section header. */
+  moduleLabel?: string;
   actions: PermissionAction[];
 }
 

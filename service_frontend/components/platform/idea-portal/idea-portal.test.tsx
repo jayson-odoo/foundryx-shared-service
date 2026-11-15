@@ -138,7 +138,7 @@ describe('IdeaPage', () => {
     const p = mockPage();
     render(<IdeaPage ideaId="i10" />);
     const hero = screen.getByTestId('portal-idea-hero');
-    expect(within(hero).getByText('IDEA-0010')).toBeInTheDocument();
+    expect(within(hero).getByText('FB-0010')).toBeInTheDocument();
     expect(within(hero).getByRole('heading', { level: 1 })).toHaveTextContent('Order status tracking for dealers');
     expect(within(hero).getByText('New')).toBeInTheDocument();
     expect(within(hero).getByText('Yours')).toBeInTheDocument();

@@ -980,7 +980,7 @@ def test_ac_1114_1118_complete_link_and_reply_text(setup, monkeypatch):
 
     lines = final["reply_text"].split("\n")
     assert lines[0] == '"Show promo price in red"'
-    assert lines[1] == f"Idea {final['idea_number']} is in. We'll update you on WhatsApp."
+    assert lines[1] == f"Feedback {final['idea_number'].replace('IDEA-', 'FB-')} is in. We'll update you on WhatsApp."
     assert lines[2] == f"Track it here: {final['link']}"
 
 
@@ -1151,6 +1151,6 @@ def test_template_duplicate_candidate_two_lines(setup):
     dup = _create_idea(s, other, message_text=problem).json()
     lines = dup["reply_text"].split("\n")
     assert lines == [
-        f"Similar idea exists: {problem}",
+        f"Similar feedback exists: {problem}",
         "Vote for that one, or keep yours separate?",
     ]

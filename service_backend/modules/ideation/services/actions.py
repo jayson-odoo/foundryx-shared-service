@@ -27,6 +27,7 @@ from .card_fields import clean_text, clean_use_cases
 from .idea_types import resolve_idea_type
 from .ideas import IdeaReadService, next_capture_priority
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
+from .numbering import display_idea_number
 
 
 class IdeaActionService:
@@ -41,7 +42,7 @@ class IdeaActionService:
             .first()
         )
         if idea is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
         return idea
 
     def _refuse_if_merged_child(self, idea: Idea) -> None:
@@ -55,8 +56,8 @@ class IdeaActionService:
             .filter(Idea.id == idea.merged_into_id, Idea.tenant_id == idea.tenant_id)
             .first()
         )
-        label = (survivor.idea_number if survivor else None) or idea.merged_into_id
-        raise HTTPException(409, f"This idea was merged into {label}.")
+        label = display_idea_number(survivor.idea_number if survivor else None) or idea.merged_into_id
+        raise HTTPException(409, f"This feedback was merged into {label}.")
 
     def _product_or_422(self, tenant_id: str, product_id: str) -> Product:
         product = (
@@ -352,7 +353,7 @@ class IdeaActionService:
             .first()
         )
         if row is None:
-            raise HTTPException(422, "toStatusId does not resolve to an idea status.")
+            raise HTTPException(422, "toStatusId does not resolve to a feedback status.")
         return row.id
 
     def set_status(
@@ -377,7 +378,7 @@ class IdeaActionService:
         else:
             target_id = idea_status_id(self.db, status_key, tenant_id)
             if target_id is None:
-                raise HTTPException(422, f"Unknown idea status '{status_key}'.")
+                raise HTTPException(422, f"Unknown feedback status '{status_key}'.")
         try:
             status_machine.transition(
                 self.db, IDEA_ENTITY, idea, target_id, actor=actor, tenant_id=tenant_id

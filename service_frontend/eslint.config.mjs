@@ -141,7 +141,7 @@ const eslintConfig = [
     // `off`) - these files are exempt from the select restriction only, and
     // still can't import a bare table/sonner.
     files: [
-      'app/(protected)/ideation/ideas/components/idea-form-fields.tsx',
+      'app/(protected)/feedback/components/idea-form-fields.tsx',
       'app/(protected)/settings/integrations/components/connection-form-fields.tsx',
       'app/(protected)/components/demo1/light-sidebar/components/earnings-chart.tsx',
       'app/(protected)/omnichannel/settings/workspaces/components/workspace-form-fields.tsx',
