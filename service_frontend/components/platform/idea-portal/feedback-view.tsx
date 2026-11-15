@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { toast } from '@/lib/toast';
-import { useIdeaPortal, usePortalList } from '@/hooks/use-idea-portal';
+import { mineFilterLabel, useIdeaPortal, usePortalList } from '@/hooks/use-idea-portal';
 import { ListSearchInput } from '@/components/platform/list-search-input';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { SearchSelect } from '@/components/platform/search-select';
@@ -27,6 +27,9 @@ const PAGE_SIZE = 25;
 
 export function FeedbackView() {
   const { paths, principal } = useIdeaPortal();
+  const mineLabel = mineFilterLabel(principal);
+  // Owner 15 Nov (QB a): a contact on a personal link never submits here.
+  const canSubmit = principal.kind !== 'contact';
   const [q, setQ] = useState('');
   const [columns, setColumns] = useState<string[]>([]);
   const [sort, setSort] = useState<'top' | 'new'>('top');
@@ -49,10 +52,16 @@ export function FeedbackView() {
   };
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[20rem_minmax(0,1fr)] lg:items-start">
-      <aside className="order-2 lg:order-1">
-        <SubmitIdeaForm />
-      </aside>
+    <div
+      className={
+        canSubmit ? 'grid grid-cols-1 gap-6 lg:grid-cols-[20rem_minmax(0,1fr)] lg:items-start' : 'flex flex-col gap-6'
+      }
+    >
+      {canSubmit && (
+        <aside className="order-2 lg:order-1">
+          <SubmitIdeaForm />
+        </aside>
+      )}
       <section className="order-1 flex min-w-0 flex-col gap-3 lg:order-2">
         <div role="heading" aria-level={1} className="font-heading text-xl font-semibold">Feedback</div>
         <div className="flex flex-wrap items-center gap-2">
@@ -62,7 +71,7 @@ export function FeedbackView() {
               setQ(v);
               setPage(1);
             }}
-            placeholder="Search ideas"
+            placeholder="Search feedback"
             className="min-w-0 flex-1"
           />
           <MultiSelect
@@ -83,7 +92,7 @@ export function FeedbackView() {
             value={sort}
             onChange={(v) => setSort(v === 'new' ? 'new' : 'top')}
           />
-          {principal.kind === 'crm' && (
+          {mineLabel && (
             <Button
               variant={mine ? 'primary' : 'outline'}
               size="sm"
@@ -93,16 +102,16 @@ export function FeedbackView() {
                 setPage(1);
               }}
             >
-              My ideas
+              {mineLabel}
             </Button>
           )}
         </div>
         {list.loading && !list.data && <PortalLoading />}
-        {list.error && <PortalMessage text="Ideas could not be loaded." />}
+        {list.error && <PortalMessage text="Feedback could not be loaded." />}
         {list.data && (
           <Card className="divide-y divide-border overflow-hidden" data-testid="portal-feedback-list">
             {list.data.items.length === 0 ? (
-              <p className="p-6 text-center text-sm text-muted-foreground">No ideas</p>
+              <p className="p-6 text-center text-sm text-muted-foreground">No feedback</p>
             ) : (
               list.data.items.map((idea) => (
                 <IdeaCard key={idea.id} idea={idea} variant="row" href={paths.idea(idea.id)} onVote={onVote} />

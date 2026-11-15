@@ -3,7 +3,8 @@
  * `service_backend/modules/ideation/schemas.py` `Portal*` models.
  */
 
-export type PortalKind = 'staff' | 'crm';
+/** `contact` = a dealer on a personal feedback link (lane PUBLIC-IDEAS-BOARD). */
+export type PortalKind = 'staff' | 'crm' | 'contact';
 
 export interface PortalPrincipal {
   kind: PortalKind;

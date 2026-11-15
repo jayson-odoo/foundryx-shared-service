@@ -23,7 +23,9 @@ function initials(name: string | null): string {
 /**
  * Portal chrome: tenant brand + Submit + the signed-in person, then the
  * Roadmap / Feedback / Changelog tabs (each its own route). Inside the Sorento
- * iframe (`mode: 'embed'`) only the tabs render - Sorento owns the header.
+ * iframe (`mode: 'embed'`) only the tabs render - Sorento owns the header. On a
+ * dealer's personal link (`mode: 'link'`) the brand shows, with no submit and
+ * no sign-out (there is no login).
  */
 export function PortalShell({ children }: PortalShellProps) {
   const { mode, paths, principal, signOut } = useIdeaPortal();
@@ -32,21 +34,34 @@ export function PortalShell({ children }: PortalShellProps) {
   const { branding: live, isResolved } = useTenantBranding();
   const branding = shellBranding ?? live;
 
-  const tabs = [
-    { href: paths.roadmap, label: 'Roadmap', active: pathname === paths.roadmap },
-    { href: paths.feedback, label: 'Feedback', active: pathname.startsWith(paths.feedback) },
-    { href: paths.changelog, label: 'Changelog', active: pathname.startsWith(paths.changelog) },
-  ];
+  const onRoadmap = pathname === paths.roadmap;
+  const onChangelog = pathname.startsWith(paths.changelog);
+  // On a personal link the feedback base prefixes every path, so it is only
+  // active when neither of the other tabs is.
+  const roadmapTab = { href: paths.roadmap, label: 'Roadmap', active: onRoadmap };
+  const feedbackTab = {
+    href: paths.feedback,
+    label: 'Feedback',
+    active: !onRoadmap && !onChangelog && pathname.startsWith(paths.feedback),
+  };
+  const changelogTab = { href: paths.changelog, label: 'Changelog', active: onChangelog };
+  // A dealer's link lands on Feedback, so it leads the tabs there.
+  const tabs = mode === 'link' ? [feedbackTab, roadmapTab, changelogTab] : [roadmapTab, feedbackTab, changelogTab];
 
   return (
     <div className="flex min-h-full w-full grow flex-col bg-muted/20">
       <header className="border-b border-border bg-background">
+        {mode === 'link' && (shellBranding || isResolved) && (
+          <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 py-3">
+            <BrandMark branding={branding} />
+          </div>
+        )}
         {mode === 'portal' && (
           <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 py-3">
             {(shellBranding || isResolved) && <BrandMark branding={branding} />}
             <div className="ml-auto flex items-center gap-2">
               <Button asChild size="sm" className="hidden sm:inline-flex">
-                <Link href={`${paths.feedback}#submit`}>Submit an idea</Link>
+                <Link href={`${paths.feedback}#submit`}>Submit feedback</Link>
               </Button>
               <span
                 className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary"
