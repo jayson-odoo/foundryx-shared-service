@@ -18,6 +18,7 @@ re-creates the line only when it is still absent.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import hashlib
 import html
 import json
@@ -376,6 +377,7 @@ class OperationService:
             self.db.rollback()
             return self._finish(row, restore or PENDING, INTERNAL_ERROR)
         finally:
+            self._prefetched = {}  # an unused side read never outlives its run
             self.db.rollback()
 
     @staticmethod
@@ -609,17 +611,23 @@ class OperationService:
         ))
         reader = self.prims._reader_for(self._base_url, log)  # type: ignore[arg-type]
         self.db.commit()  # no transaction open during the GETs
+        context = contextvars.copy_context()  # request id / logging / tracing context follow the read
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="ac-side-read") as pool:
-            future = pool.submit(reader.get_document, defn.target, key, found, doc_no=doc_no)
+            future = pool.submit(context.run, reader.get_document, defn.target, key, found, doc_no=doc_no)
+            failed = True
             try:
                 yield
+                failed = False
             finally:
+                # Waited for even when the document's own read failed: its calls are then logged
+                # here, on this thread, like every other call (the log's session never crosses threads).
                 try:
                     outcome: Any = future.result()
                 except BaseException as exc:  # noqa: BLE001 - handed to the target's own _read
                     outcome = exc
                 log.flush()
-                self._prefetched[(defn.target, key)] = (found, outcome)
+                if not failed:  # a refused run never leaves a read behind for a later one
+                    self._prefetched[(defn.target, key)] = (found, outcome)
 
     # ── guards (AC-57-32, 33): every refusal before any write ────────────────
 

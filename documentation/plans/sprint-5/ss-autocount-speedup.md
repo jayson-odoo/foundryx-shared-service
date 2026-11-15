@@ -24,15 +24,32 @@ Option (c) of the AutoCount latency scout: no change a user can see except a sho
 | 2 | The move edit takes the previous step's read-back instead of an identical second GET: only inside an operation, only for an edit, only for the same DocKey. | `primitives._reusable` / `_prepare`, `operations._move_rows` |
 | 3 | The link target's first read (SO for a PO link, PO for an SPO link) runs on a second thread during the document's own first read. Refusal order unchanged (target still checked after the document's own guards); its calls are held and logged on the request thread with their real duration. | `operations._target_beside`, `call_log.BufferedCallLog` |
 
-Why reusing the read-back is safe: an operation holds its document for all its steps
-(`uq_ac_write_operation_one_in_progress`), so no other SS operation can write the PO between the
-two PUTs. A standalone SS primitive or an AutoCount desktop user could, exactly as they could
-between the old second GET and the PUT; that window was never closed by the duplicate GET.
+Who can write the PO between the replace read-back and the move PUT: another SS operation or
+gateway primitive cannot (`uq_ac_write_operation_one_in_progress` holds the document for every step
+of an operation). The plan-55 `WriteBackService` path and an AutoCount desktop user can: their check
+(`frame._check_not_busy`) only sees in-flight actions, and between steps there is none. Before, the
+move's own GET would have picked such a write up; now the move PUT is built from the read-back, so a
+header change made in that gap (for example Description) would be sent back as it was. The gap grows
+by about one GET plus a few local commits (tens of ms to ~1 s); the same race already existed between
+the old GET and the PUT. Closing it fully would need a re-read, which is the call this change removes.
 
 Not changed: the live re-read right before the first PUT, `expectedLastModified` (DOC_STALE),
-refusal codes, unknown-outcome / resume / recovery paths, response shapes, the batch path's per-link
-SO reads. One side effect: when the PO itself is refused after it is read (e.g. ROW_ALREADY_LINKED),
-the SO read has already been made and is logged (one extra logged GET on that refusal).
+refusal codes and their order, unknown-outcome / resume / recovery outcomes, response shapes, the
+batch path's per-link SO reads.
+
+Side effects, by design:
+- The SO read starts with the PO read, so every refusal that comes after the PO read (DOC_NOT_FOUND,
+  READ_FAILED, DOC_STALE, ROW_ALREADY_LINKED, ROW_ON_SPO, ROW_RECEIVED, ...) now also makes and logs
+  one SO GET. The request waits for it so that it is logged on the request thread: usually no extra
+  wait (both reads start together); at worst an SO read that is slower than the PO read (a failed
+  bydocno plus the day-list fallback) delays the refusal by that difference.
+- No cookie is kept or sent (the shared client refuses cookies). Before, a per-call client only kept
+  cookies within one call (the debtor page walk).
+- The shared pool has no cap on open connections (only idle ones are capped), so a write never waits
+  for a slot. A kept-alive connection the server closes at the moment it is reused fails as a connect
+  error and the write is pending (the safe path: resume reads AutoCount); httpcore checks a pooled
+  connection before reuse, so this is rare.
+- Never call `abort_connections` on the shared transport (nothing does today).
 
 ## Measured (mocked vendor, fixed delay per call, median of 5 runs)
 

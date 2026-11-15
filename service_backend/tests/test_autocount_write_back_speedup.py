@@ -200,8 +200,9 @@ def pooled(monkeypatch, h):
             seen.append(request)
             return inner.handle_request(request)
 
-    def guarded(timeout: float) -> httpx.Client:
+    def guarded(timeout: float, *, limits=None) -> httpx.Client:
         client = httpx.Client(transport=Seen(), timeout=timeout, follow_redirects=False)
+        client.limits_asked = limits  # type: ignore[attr-defined]
         built.append(client)
         return client
 
@@ -313,3 +314,80 @@ def test_spd_03_a_read_back_of_another_document_is_never_reused(h, world):
     assert PrimitiveService._reusable(call)
     call.operation_id = None
     assert not PrimitiveService._reusable(call)
+
+
+# ============================== review fixes ==================================================
+
+def test_spd_01_the_shared_client_never_keeps_or_replays_a_cookie(monkeypatch):
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=[], headers={"Set-Cookie": "ASP.NET_SessionId=abc; Path=/"})
+
+    real = http_client.autocount_guarded_client
+    monkeypatch.setattr(http_client, "autocount_guarded_client",
+                        lambda timeout, *, limits=None: httpx.Client(transport=httpx.MockTransport(handler)))
+    http_client.reset_shared_autocount_client()
+    try:
+        client = http_client.shared_autocount_client()
+        client.get("https://ac.example.test/api/db3/x")
+        client.get("https://ac.example.test/api/db9/y")  # another book on the same host
+        assert len(seen) == 2 and "cookie" not in seen[1].headers
+        assert not list(client.cookies.jar)
+    finally:
+        http_client.reset_shared_autocount_client()
+        monkeypatch.setattr(http_client, "autocount_guarded_client", real)
+
+
+def test_spd_01_the_shared_pool_has_no_connection_cap(pooled):
+    built, _seen = pooled
+    http_client.shared_autocount_client()
+    limits = built[0].limits_asked
+    assert limits is not None and limits.max_connections is None  # a write never queues for a slot
+
+
+def test_spd_01_the_real_shared_transport_takes_the_uncapped_limits():
+    http_client.reset_shared_autocount_client()
+    try:
+        client = http_client.shared_autocount_client()
+        pool = client._transport._pool  # GuardedTransport's httpcore pool
+        import sys
+
+        assert pool._max_connections == sys.maxsize
+    finally:
+        http_client.reset_shared_autocount_client()
+
+
+def test_spd_01_a_forked_child_starts_with_a_free_lock_and_no_client(pooled):
+    http_client.shared_autocount_client()
+    http_client._shared_lock.acquire()  # held by another thread at fork time
+    http_client._after_fork_in_child()
+    assert http_client._shared is None and not http_client._shared_lock.locked()
+
+
+def test_spd_04_the_side_read_keeps_the_request_context(h, world, monkeypatch):
+    import contextvars
+
+    marker: contextvars.ContextVar = contextvars.ContextVar("marker", default=None)
+    marker.set("req-7")
+    seen: List[Any] = []
+    inner = h.vendor.transport
+
+    class Spy(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            seen.append((request.url.path.rsplit("/", 1)[-1].lower(), marker.get()))
+            return inner.handle_request(request)
+
+    h.vendor.transport = Spy()
+    res = h.run("link_row", world.params["link_row"])
+    assert res.outcome == "done", res.error_code
+    assert ("salesorderbydocno", "req-7") in seen
+
+
+def test_spd_04_a_refused_run_leaves_no_side_read_behind(h, world):
+    svc = h.ops()
+    params = dict(world.params["link_row"], dtl_key=world.p_linked)  # refused after both reads
+    res = h.run("link_row", params, svc=svc)
+    assert res.error_code == "ROW_ALREADY_LINKED"
+    assert svc._prefetched == {}
