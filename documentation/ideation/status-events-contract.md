@@ -100,11 +100,23 @@ safety check (which stays: a missed poke is fine).
   **Path and body are provisional until the CRM lane FEEDBACK-STATUS-WA
   publishes its endpoint** (`modules/ideation/services/crm_poke.py`
   `POKE_PATH` / `_body`).
-- Fire and forget: background thread, 3 s timeout, at most ONE retry (transport
-  error or 5xx only; a 4xx is never retried). The status change never waits on
-  or fails because of it. Test-idea events never poke. The key is never logged.
+- Sent `POKE_DELAY_SECONDS` (6 s) after the commit, i.e. just past the feed's
+  5 s settle window (section 2): a pull the CRM makes on receipt already sees
+  the new rows.
+- Fire and forget: background thread, 3 s timeout per connect/read phase, at
+  most ONE retry (transport error or 5xx only; a 4xx is never retried). The
+  status change never waits on or fails because of it. Test-idea events never
+  poke. The key is never logged.
+- One poke per ROOT commit per tenant: savepoints inside the transaction (item
+  number / link mints) neither send nor drop it.
+- The key presented is the tenant's Sorento integration key (the AutoCount ESB
+  integration on the CRM side), so the CRM attributes pokes to that
+  integration and should scope the endpoint accordingly.
 - The CRM should treat the poke as "pull the feed now" (cursor-based, so a
   duplicate or out-of-order poke is harmless).
+- Known limit: the connection lookup is one read inside the status change's
+  transaction; on Postgres a failure of that read (e.g. a statement timeout)
+  would abort the transaction. Accepted as very unlikely (one indexed row).
 
 ## 3. Payload (exact keys - `test_event_payload_exact_keys`)
 

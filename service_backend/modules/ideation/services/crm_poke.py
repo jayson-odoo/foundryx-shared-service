@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 # Provisional, pending the CRM lane's relay (FEEDBACK-STATUS-WA, CRM #2433).
 POKE_PATH = "/api/v1/external/ideation/status-events/poke"
 POKE_TIMEOUT_SECONDS = 3.0
+# Sent this long after the commit: one second past the feed's settle window
+# (``status_events.SETTLE_WINDOW_SECONDS``), so the CRM's pull sees the rows.
+POKE_DELAY_SECONDS = 6.0
 MAX_ATTEMPTS = 2  # the call + ONE retry - never a retry storm
 
 SORENTO_PROVIDER = "sorento"
@@ -46,7 +49,12 @@ _transport: Optional[httpx.BaseTransport] = None
 
 
 def _spawn(fn: Callable[[], None]) -> None:
-    threading.Thread(target=fn, name="ideation-crm-poke", daemon=True).start()
+    """Run ``fn`` on a background thread AFTER the feed settle window: the feed
+    withholds rows younger than ``SETTLE_WINDOW_SECONDS`` (status_events), so a
+    poke sent sooner would make the CRM's pull return nothing (review B1)."""
+    timer = threading.Timer(POKE_DELAY_SECONDS, fn)
+    timer.daemon = True
+    timer.start()
 
 
 def queue_crm_poke(db: Session, tenant_id: str, event_id: str, seq: int) -> None:
@@ -61,7 +69,9 @@ def queue_crm_poke(db: Session, tenant_id: str, event_id: str, seq: int) -> None
         buf: Dict[str, Dict[str, Any]] = db.info.setdefault(_BUFFER, {})
         entry = buf.get(tenant_id)
         if entry is None:
-            entry = buf[tenant_id] = {"target": _tenant_target(db, tenant_id), "events": []}
+            # Cached even on failure, so one bad connection logs once per session.
+            entry = buf[tenant_id] = {"target": None, "events": []}
+            entry["target"] = _tenant_target(db, tenant_id)
         entry["events"].append((event_id, seq))
     except Exception:  # noqa: BLE001 - a poke never breaks the status change
         logger.exception("crm poke queue failed for tenant %s", tenant_id)
@@ -125,6 +135,10 @@ def _send(url: str, key: str, body: Dict[str, Any]) -> None:
 def _drain(committed: Session) -> None:
     """After the commit: hand each tenant's HTTP call to a background thread.
     No database work here. Never raises into the caller."""
+    # A savepoint release fires after_commit too (SQLAlchemy sends it for
+    # nested transactions): only the ROOT commit sends (review S1).
+    if committed.in_nested_transaction():
+        return
     pending = committed.info.pop(_BUFFER, None)
     if not pending:
         return
@@ -141,6 +155,10 @@ def _drain(committed: Session) -> None:
 
 
 def _discard(session: Session) -> None:
+    # A savepoint rollback (e.g. a lost mint race) keeps what the outer
+    # transaction queued before it; only the ROOT rollback discards (S1).
+    if session.in_nested_transaction():
+        return
     session.info.pop(_BUFFER, None)
 
 
