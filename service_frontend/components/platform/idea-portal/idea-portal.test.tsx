@@ -146,6 +146,24 @@ describe('IdeaPage', () => {
     expect(p.vote).toHaveBeenCalledTimes(1);
   });
 
+  it('owner ruling (b): another dealer item (text withheld by the API) shows no free-text section', () => {
+    const withheld: PortalIdea = {
+      ...idea,
+      isMine: false,
+      problem: null,
+      desiredOutcome: null,
+      useCases: null,
+      currentWorkaround: null,
+    };
+    mockPage({ idea: q<PortalIdea>(withheld) });
+    render(<IdeaPage ideaId="i10" />);
+    expect(screen.getByTestId('portal-idea-hero')).toHaveTextContent('Order status tracking for dealers');
+    expect(screen.queryByTestId('portal-idea-fields')).not.toBeInTheDocument();
+    expect(screen.queryByText('Business problem')).not.toBeInTheDocument();
+    expect(screen.queryByText('Current workaround')).not.toBeInTheDocument();
+    expect(screen.getByTestId('portal-activity')).toBeInTheDocument();
+  });
+
   it('activity feed: status change, threaded reply, grouped upvotes, submitted', () => {
     mockPage();
     render(<IdeaPage ideaId="i10" />);

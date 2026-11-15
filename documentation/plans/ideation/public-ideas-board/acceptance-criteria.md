@@ -33,6 +33,11 @@ Tags: [BE] backend pytest, [FE] vitest, [E2E] recorded agent-browser run, [T] co
 - **AC-FB-24 [BE]** Submit, hide, and changelog-note are refused for a contact (403) (QB a).
 - **AC-FB-25 [BE]** Detail of an item from another tenant, or a draft/test/hidden-not-mine item -> 404.
 
+- **AC-FB-26 [BE][FE]** Owner ruling (b), 15 Nov: on items the link owner did not create, the API returns NO
+  `problem` / `desiredOutcome` / `useCases` / `currentWorkaround` (null), the card title never falls back to the
+  problem text (the number stands in), and search never matches others' text. Own items keep full text; staff
+  unchanged. The item page then shows only title, status, steps, votes and comments.
+
 ## D. Links we send
 - **AC-FB-30 [BE]** `mint_board_link(idea)` = `{base}/public/feedback/board/{linkToken}/{ideaNumber}` for an idea with a
   same-tenant submitter contact; `None` when the idea has no contact. Tenant base with a `{token}` template ->

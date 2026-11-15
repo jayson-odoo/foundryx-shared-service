@@ -22,6 +22,7 @@ not installed in the cloud sandbox), evidence in `evidence/live/live-*-{1280,375
 | AC-FB-23 | Comment, delete own only | staff comment exists | post, delete others', delete own | role Dealer; others' 403/404; own 204 | as expected; live comment shows "Dealer / Dealer" | PASS |
 | AC-FB-24 | No submit / hide / note | - | POST idea, PUT hidden, PUT note | 403 each | as expected; live: no Submit form, no sign-out | PASS |
 | AC-FB-25 | Detail 404s | hidden-not-mine, draft | GET | 404 | as expected | PASS |
+| AC-FB-26 | Ruling (b): text only on own items | own item, other dealer's item with text, untitled item | contact GET detail/list, search | others: problem/outcome/use cases/workaround null, title = number when untitled, search ignores others' text; staff full | as expected (`test_rb_*`, red when the guard is removed); vitest: no fields section; live: see AC-FB-43 | PASS |
 | AC-FB-30 | Link shape | contact idea / CRM template base / plain base / foreign contact | `mint_board_link` | `/public/feedback/board/{t}/{n}`; CRM `/feedback/board/{t}/{n}`; plain base; null | as expected | PASS |
 | AC-FB-31 | `board_url` on status events | contact idea | status change | payload board_url = requester's link, track_url unchanged | as expected | PASS |
 | AC-FB-32 | WhatsApp reply link | conversational intake | confirm / re-confirm / voted | replier's own board link; never the author's (B1); test turn + one-shot keep the per-idea link | as expected (`test_rr1_*`, create-idea + intake-contract suites) | PASS |
@@ -33,5 +34,5 @@ not installed in the cloud sandbox), evidence in `evidence/live/live-*-{1280,375
 | AC-FB-50 | Contracts | - | read docs | board_url + link contract + CRM page contract | `status-events-contract.md`, `feedback-link-contract.md`, `own-ideas-contract.md` | PASS |
 | - | Migration 0020 on live Postgres | ideation stamped 0019 | `bootstrap_db` | table + partial unique index created, stamp 0020 | as expected | PASS |
 
-Deferred: CRM `/feedback/{token}` page (second PR, sorento-crm; repo not attached to this sandbox yet). Free-text PII
-exposure to dealers awaits an owner ruling (security review #3). Low items logged: BL-SS-361, BL-SS-362.
+Deferred: CRM `/feedback/{token}` page (second PR, sorento-crm; repo not attached to this sandbox yet). Free-text
+exposure settled by owner ruling (b) (AC-FB-26). Low items logged: BL-SS-361, BL-SS-362.
