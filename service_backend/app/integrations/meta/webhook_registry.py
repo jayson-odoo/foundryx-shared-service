@@ -14,7 +14,9 @@ Rules (same shape as ``app/module_platform/public_cors.py``):
 - A module may also RESERVE further pairs it consumes itself without a
   handler (``reserve_meta_change_fields``).
 - A handler gets ``(db, object, entry_id, change_value)`` and must only
-  enqueue (the webhook worker has no tenant context yet). It maps the Page or
+  enqueue (the webhook worker has no tenant context yet), and it never calls
+  ``db.commit()`` / ``db.rollback()`` itself (the dispatcher owns the
+  transaction). It maps the Page or
   account to its tenant(s) from ``entry_id`` against its own live bindings,
   never from ids inside ``change_value`` (raw Meta data).
 - Handlers MUST be idempotent (e.g. dedupe on ``leadgen_id``): the inbound
@@ -193,8 +195,13 @@ def _run_isolated(db: Session, reg: MetaChangeRegistration, obj: str, entry_id: 
         try:
             if savepoint.is_active:
                 savepoint.rollback()
+            else:
+                # The savepoint already ended (the handler or the commit after
+                # it failed): reset the whole session so omnichannel can still
+                # use it for the same payload.
+                db.rollback()
         except Exception:  # noqa: BLE001
-            logger.exception("savepoint rollback after a Meta change handler failure failed")
+            logger.exception("rollback after a Meta change handler failure failed")
             try:
                 db.rollback()
             except Exception:  # noqa: BLE001

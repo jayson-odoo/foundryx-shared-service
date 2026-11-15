@@ -100,14 +100,14 @@ def test_messenger_connect_subscribe_keeps_existing_leadgen(live_meta):
 
     fake = FakeGraph(current=["messages", "leadgen"])
     MessengerAdapter(client=fake.client()).subscribe_webhook(
-        {"access_token": "page-tok"}, "pg-1", "/omnichannel/webhooks/x"
+        {"access_token": "page-tok"}, "1001", "/omnichannel/webhooks/x"
     )
     posted = fake.posted_fields()
     assert "leadgen" in posted and "messages" in posted
     assert set(MESSENGER_FIELDS) <= set(posted)
     assert len(posted) == len(set(posted))  # no duplicates
     get = fake.calls[0]
-    assert get.method == "GET" and get.url.path.endswith("/pg-1/subscribed_apps")
+    assert get.method == "GET" and get.url.path.endswith("/1001/subscribed_apps")
     assert get.headers["Authorization"] == "Bearer page-tok"
     # Only THIS app's fields are read - another app's set is never merged in.
     assert "leadgen_other" not in posted
@@ -115,13 +115,13 @@ def test_messenger_connect_subscribe_keeps_existing_leadgen(live_meta):
 
 def test_subscribe_when_app_not_yet_subscribed_posts_requested_only(live_meta):
     fake = FakeGraph(current=None)
-    out = meta_pages.subscribe_page_fields("tok", "pg-1", ["leadgen"], client=fake.client())
+    out = meta_pages.subscribe_page_fields("tok", "1001", ["leadgen"], client=fake.client())
     assert fake.posted_fields() == ["leadgen"] == out
 
 
 def test_subscribe_get_failure_falls_back_to_requested_plus_known(live_meta):
     fake = FakeGraph(get_status=500)
-    meta_pages.subscribe_page_fields("tok", "pg-1", ["leadgen"], client=fake.client())
+    meta_pages.subscribe_page_fields("tok", "1001", ["leadgen"], client=fake.client())
     posted = fake.posted_fields()
     assert "leadgen" in posted
     assert set(MESSENGER_FIELDS) <= set(posted)
@@ -134,20 +134,20 @@ def test_subscribe_get_transport_error_never_blocks(live_meta):
         return httpx.Response(200, json={"success": True})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    out = meta_pages.subscribe_page_fields("tok", "pg-1", ["leadgen"], client=client)
+    out = meta_pages.subscribe_page_fields("tok", "1001", ["leadgen"], client=client)
     assert "leadgen" in out
 
 
 def test_unsubscribe_leadgen_keeps_messenger_fields(live_meta):
     fake = FakeGraph(current=MESSENGER_FIELDS + ["leadgen"])
-    out = meta_pages.unsubscribe_page_fields("tok", "pg-1", ["leadgen"], client=fake.client())
+    out = meta_pages.unsubscribe_page_fields("tok", "1001", ["leadgen"], client=fake.client())
     assert fake.posted_fields() == MESSENGER_FIELDS == out
     assert not [c for c in fake.calls if c.method == "DELETE"]
 
 
 def test_unsubscribe_last_field_deletes(live_meta):
     fake = FakeGraph(current=["leadgen"])
-    out = meta_pages.unsubscribe_page_fields("tok", "pg-1", ["leadgen"], client=fake.client())
+    out = meta_pages.unsubscribe_page_fields("tok", "1001", ["leadgen"], client=fake.client())
     assert out == []
     assert [c.method for c in fake.calls] == ["GET", "DELETE"]
 
@@ -157,7 +157,7 @@ def test_unsubscribe_get_failure_changes_nothing(live_meta):
     DELETE of the app's whole subscription."""
     meta_pages.register_page_fields("lead_capture", ["leadgen"])
     fake = FakeGraph(get_status=400)
-    assert meta_pages.unsubscribe_page_fields("tok", "pg-1", MESSENGER_FIELDS + ["leadgen"], client=fake.client()) is None
+    assert meta_pages.unsubscribe_page_fields("tok", "1001", MESSENGER_FIELDS + ["leadgen"], client=fake.client()) is None
     assert [c.method for c in fake.calls] == ["GET"]
 
 
@@ -168,14 +168,14 @@ def test_subscribe_update_refused_returns_none(live_meta):
         return httpx.Response(400, json={"error": {"message": "nope", "code": 100}})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    assert meta_pages.subscribe_page_fields("tok", "pg-1", ["leadgen"], client=client) is None
+    assert meta_pages.subscribe_page_fields("tok", "1001", ["leadgen"], client=client) is None
 
 
 def test_subscribe_dev_stub_makes_no_call(monkeypatch):
     monkeypatch.setattr(settings, "meta_app_id", "")
     fake = FakeGraph(current=[])
-    assert meta_pages.subscribe_page_fields("tok", "pg-1", ["leadgen"], client=fake.client()) is None
-    assert meta_pages.unsubscribe_page_fields("tok", "pg-1", ["leadgen"], client=fake.client()) is None
+    assert meta_pages.subscribe_page_fields("tok", "1001", ["leadgen"], client=fake.client()) is None
+    assert meta_pages.unsubscribe_page_fields("tok", "1001", ["leadgen"], client=fake.client()) is None
     assert fake.calls == []
 
 
@@ -183,7 +183,7 @@ def test_subscribe_dev_credential_makes_no_call(live_meta):
     from modules.omnichannel.adapters.messenger import MessengerAdapter
 
     fake = FakeGraph(current=[])
-    MessengerAdapter(client=fake.client()).subscribe_webhook({"dev": True}, "pg-1", "/x")
+    MessengerAdapter(client=fake.client()).subscribe_webhook({"dev": True}, "1001", "/x")
     assert fake.calls == []
 
 
@@ -431,3 +431,72 @@ def test_signature_check_unchanged(monkeypatch):
     assert not signature_valid(body, good)
     monkeypatch.setattr(settings, "environment", "development")
     assert signature_valid(body, "")
+
+
+# ── Final review round (b1a5e21f) ───────────────────────────────────────────
+
+
+def test_successful_handler_is_committed_on_the_outer_transaction(session_factory):
+    """Kill test survivor: on SQLite a savepoint release alone looks like a
+    commit, so assert the OUTER commit really fires (on Postgres the release
+    does not commit, and a lead for a Page with no channel would be lost)."""
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+
+    commits = []
+
+    def _on_commit(session):
+        commits.append(session)
+
+    reg.register_meta_change_handler("page", "leadgen", "lead_capture", lambda *a: None)
+    db = session_factory()
+    event.listen(Session, "after_commit", _on_commit)
+    try:
+        assert reg.dispatch_meta_changes(db, _leadgen_payload()) == 1
+        assert db in commits
+        assert not db.in_transaction()
+    finally:
+        event.remove(Session, "after_commit", _on_commit)
+        db.close()
+
+
+def test_commit_failure_after_handler_leaves_session_usable(session_factory, monkeypatch):
+    """A commit that fails after a successful handler is rolled back, so the
+    session is usable for omnichannel's processing of the same payload."""
+    from sqlalchemy import text
+
+    reg.register_meta_change_handler("page", "leadgen", "lead_capture", lambda *a: None)
+    db = session_factory()
+    real_commit = db.commit
+    calls = {"n": 0}
+
+    def flaky_commit():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real_commit()  # leave nothing half-done, then report a failure
+            raise RuntimeError("commit failed")
+        return real_commit()
+
+    monkeypatch.setattr(db, "commit", flaky_commit)
+    rolled = {"n": 0}
+    real_rollback = db.rollback
+
+    def spy_rollback():
+        rolled["n"] += 1
+        return real_rollback()
+
+    monkeypatch.setattr(db, "rollback", spy_rollback)
+    try:
+        assert reg.dispatch_meta_changes(db, _leadgen_payload()) == 0
+        assert rolled["n"] >= 1
+        assert db.execute(text("SELECT 1")).scalar() == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("bad", ["123/feed", "../me", "", "12 3", "abc", "1" * 40, None])
+def test_page_id_must_be_a_meta_numeric_id(live_meta, bad):
+    fake = FakeGraph(current=[])
+    assert meta_pages.subscribe_page_fields("tok", bad, ["leadgen"], client=fake.client()) is None
+    assert meta_pages.unsubscribe_page_fields("tok", bad, ["leadgen"], client=fake.client()) is None
+    assert fake.calls == []
