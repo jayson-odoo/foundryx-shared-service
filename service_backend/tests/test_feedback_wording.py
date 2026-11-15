@@ -100,3 +100,25 @@ def test_services_catalog_card_says_feedback():
     manifest = json.loads((pathlib.Path(mod.__file__).parent / "manifest.json").read_text())
     assert manifest["title"] == "Feedback"
     assert not IDEA_WORD.search(manifest["description"])
+
+
+def test_permission_labels_and_descriptions_say_feedback():
+    import csv
+    import pathlib
+
+    import modules.ideation as mod
+
+    rows = list(csv.DictReader(open(pathlib.Path(mod.__file__).parent / "permissions" / "permissions.csv")))
+    assert rows
+    for r in rows:
+        for col in ("resource_label", "action_label", "description"):
+            assert not IDEA_WORD.search(r[col] or ""), (r["resource"], col, r[col])
+            assert "ideation" not in (r[col] or "").lower()
+
+
+def test_statuses_entity_label_is_feedback():
+    from app.status_engine.registry import get_status_entity
+    from modules.ideation.services.statuses import IDEA_ENTITY
+
+    entity = get_status_entity(IDEA_ENTITY)
+    assert entity is not None and entity.label == "Feedback"

@@ -97,7 +97,7 @@ def register_engine_entities() -> None:
     register_status_entity(
         StatusEntity(
             entity_type=IDEA_ENTITY,
-            label="Idea",
+            label="Feedback",
             module=MODULE_NAME,
             count_records=idea_count_records,
             migrate_records=idea_migrate_records,
