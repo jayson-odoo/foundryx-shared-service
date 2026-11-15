@@ -36,6 +36,7 @@ import {
   type Product,
 } from '@/types/ideation';
 import type { IdeaFormValues } from './idea-schema';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 export interface DetailsTabProps {
   form: UseFormReturn<IdeaFormValues>;
@@ -75,7 +76,7 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
   const productOptions = products.map((p) => ({ label: p.name, value: p.id }));
   // Runtime-aware href (BLOCKER 1, issue #94 review round 1) - the CRM embed
   // iframe has no operator session, so the "Merged into" link must resolve
-  // to `/embed/ideas/<id>`, never the bare operator path.
+  // to `/embed/feedback/<id>`, never the bare operator path.
   const { paths } = useIdeationRuntime();
   const { formatDateTime } = useDatetime();
 
@@ -90,7 +91,7 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
               render={({ field }) => (
                 <FormItem className="max-w-xl">
                   <FormControl>
-                    <Input placeholder="A short name for the idea" {...field} />
+                    <Input placeholder="A short name for the feedback" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -168,7 +169,7 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
               href={paths.formHref(idea.mergedInto.id)}
               className="text-sm font-medium text-primary hover:underline"
             >
-              {idea.mergedInto.ideaNumber ?? idea.mergedInto.title}
+              {formatFeedbackNumber(idea.mergedInto.ideaNumber) ?? idea.mergedInto.title}
             </Link>
           </FormRow>
         )}
@@ -378,7 +379,7 @@ export function AttachmentsTab({ attachments, onUpload, fetchContent }: Attachme
                     </div>
                     {a.fromIdea && (
                       <Badge variant="outline" appearance="light" size="sm">
-                        from {a.fromIdea.ideaNumber ?? 'merged idea'}
+                        from {formatFeedbackNumber(a.fromIdea.ideaNumber) ?? 'merged feedback'}
                       </Badge>
                     )}
                     <Badge variant="outline" appearance="light" className="capitalize">

@@ -46,7 +46,7 @@ export function PortalShell({ children }: PortalShellProps) {
             {(shellBranding || isResolved) && <BrandMark branding={branding} />}
             <div className="ml-auto flex items-center gap-2">
               <Button asChild size="sm" className="hidden sm:inline-flex">
-                <Link href={`${paths.feedback}#submit`}>Submit an idea</Link>
+                <Link href={`${paths.feedback}#submit`}>Submit feedback</Link>
               </Button>
               <span
                 className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary"

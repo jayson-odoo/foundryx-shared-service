@@ -85,7 +85,7 @@ export function MergeIdeasDialog({ ideas, initialKeptId, onClose, onMerge }: Mer
       await onMerge(keptId, mergeFieldsPayload(choices));
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not merge these ideas.');
+      setError(e instanceof Error ? e.message : 'Could not merge this feedback.');
       setSaving(false);
     }
   };
@@ -104,8 +104,8 @@ export function MergeIdeasDialog({ ideas, initialKeptId, onClose, onMerge }: Mer
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-5xl">
         <DialogHeader>
-          <DialogTitle>Merge ideas</DialogTitle>
-          <DialogDescription className="sr-only">Merge ideas</DialogDescription>
+          <DialogTitle>Merge feedback</DialogTitle>
+          <DialogDescription className="sr-only">Merge feedback</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
           <div className="overflow-x-auto">
@@ -113,7 +113,7 @@ export function MergeIdeasDialog({ ideas, initialKeptId, onClose, onMerge }: Mer
               <RadioGroup
                 value={keptId}
                 onValueChange={changeKept}
-                aria-label="Idea to keep"
+                aria-label="Feedback to keep"
                 className="flex gap-3 pb-2"
               >
                 <div className={LABEL_CELL} />

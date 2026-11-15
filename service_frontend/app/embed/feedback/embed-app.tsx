@@ -3,7 +3,7 @@
 import { useMemo, type ReactNode } from 'react';
 import { IdeationRuntimeProvider, type IdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { ideationEmbedService } from '@/services/ideation-embed-service';
-import { buildIdeaFormQuery } from '@/app/(protected)/ideation/ideas/components/paths';
+import { buildIdeaFormQuery } from '@/app/(protected)/feedback/components/paths';
 import { useEmbedSession, EmbedExpired, EmbedLoading } from './embed-session';
 
 /**
@@ -20,9 +20,9 @@ function buildEmbedRuntime(): IdeationRuntime {
     mode: 'embed',
     service: ideationEmbedService,
     paths: {
-      listHref: '/embed/ideas',
-      formHref: (id, opts) => `/embed/ideas/${encodeURIComponent(id)}${buildIdeaFormQuery(opts)}`,
-      newHref: '/embed/ideas/new',
+      listHref: '/embed/feedback',
+      formHref: (id, opts) => `/embed/feedback/${encodeURIComponent(id)}${buildIdeaFormQuery(opts)}`,
+      newHref: '/embed/feedback/new',
     },
   };
 }

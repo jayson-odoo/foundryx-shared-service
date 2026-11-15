@@ -3,11 +3,11 @@
 import { useRouter } from 'next/navigation';
 import { toast } from '@/lib/toast';
 import { businessRequirementService } from '@/services/business-requirement-service';
-import { brFormHref } from '@/app/(protected)/ideation/business-requirements/components/paths';
+import { brFormHref } from '@/app/(protected)/feedback/business-requirements/components/paths';
 import {
   NO_TEMPLATE_MESSAGE,
   isBrTemplateUnavailable,
-} from '@/app/(protected)/ideation/business-requirements/components/br-template-error';
+} from '@/app/(protected)/feedback/business-requirements/components/br-template-error';
 import type { IdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { ApiError } from '@/lib/api-client';
 import type { Idea } from '@/types/ideation';
@@ -25,7 +25,7 @@ export interface PromoteOptions {
   runtime?: IdeationRuntime;
 }
 
-const FORBIDDEN_MESSAGE = 'You do not have permission to promote ideas.';
+const FORBIDDEN_MESSAGE = 'You do not have permission to promote feedback.';
 
 /**
  * Promote a set of ideas to a NEW draft BR and land on its Grill tab (AC-BI-32 /
@@ -44,7 +44,7 @@ export async function promoteIdeasToBr(
   if (ideas.length === 0) return;
   const productIds = new Set(ideas.map((i) => i.productId));
   if (productIds.size > 1) {
-    toast.error('Select ideas from a single product to promote them together.');
+    toast.error('Select feedback from a single product to promote it together.');
     return;
   }
   try {

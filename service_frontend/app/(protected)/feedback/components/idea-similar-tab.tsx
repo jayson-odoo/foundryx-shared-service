@@ -19,6 +19,7 @@ import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { Idea } from '@/types/ideation';
 import { statusRegistryFor } from './status-registry';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -75,10 +76,10 @@ export function IdeaSimilarTab({ ideaId, onMerge }: IdeaSimilarTabProps) {
       },
       {
         id: 'number',
-        meta: { headerTitle: 'Idea' },
-        header: () => 'Idea',
+        meta: { headerTitle: 'Number' },
+        header: () => 'Number',
         cell: ({ row }) => (
-          <span className="font-medium text-primary">{row.original.ideaNumber ?? '-'}</span>
+          <span className="font-medium text-primary">{formatFeedbackNumber(row.original.ideaNumber) ?? '-'}</span>
         ),
         size: 110,
         enableSorting: false,
@@ -138,7 +139,7 @@ export function IdeaSimilarTab({ ideaId, onMerge }: IdeaSimilarTabProps) {
         data = data.filter(
           (r) =>
             (r.title ?? r.problem).toLowerCase().includes(s) ||
-            (r.ideaNumber ?? '').toLowerCase().includes(s),
+            (formatFeedbackNumber(r.ideaNumber) ?? '').toLowerCase().includes(s),
         );
       }
       const total = data.length;
@@ -149,8 +150,8 @@ export function IdeaSimilarTab({ ideaId, onMerge }: IdeaSimilarTabProps) {
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Idea', 'Title', 'Status', 'Votes'],
-        data.map((r) => [r.ideaNumber ?? '', r.title ?? r.problem, r.statusLabel ?? r.status, String(r.upvotes)]),
+        ['Number', 'Title', 'Status', 'Votes'],
+        data.map((r) => [formatFeedbackNumber(r.ideaNumber) ?? '', r.title ?? r.problem, r.statusLabel ?? r.status, String(r.upvotes)]),
       );
     };
 
@@ -160,13 +161,13 @@ export function IdeaSimilarTab({ ideaId, onMerge }: IdeaSimilarTabProps) {
       rowHref: (row) => paths.formHref(row.id),
       fetcher,
       exporter,
-      searchPlaceholder: 'Search similar ideas…',
-      searchHints: ['Idea', 'Title'],
+      searchPlaceholder: 'Search similar feedback…',
+      searchHints: ['Number', 'Title'],
       enableStatusViews: false,
       columns,
       filterFields: [],
       exportColumns: [
-        { id: 'number', label: 'Idea' },
+        { id: 'number', label: 'Number' },
         { id: 'title', label: 'Title' },
         { id: 'status', label: 'Status' },
         { id: 'votes', label: 'Votes' },
@@ -179,7 +180,7 @@ export function IdeaSimilarTab({ ideaId, onMerge }: IdeaSimilarTabProps) {
     return (
       <Card>
         <CardContent className="flex items-center justify-center py-12 text-muted-foreground">
-          <LoaderCircleIcon className="size-5 animate-spin" aria-label="Finding similar ideas" />
+          <LoaderCircleIcon className="size-5 animate-spin" aria-label="Finding similar feedback" />
         </CardContent>
       </Card>
     );
@@ -189,7 +190,7 @@ export function IdeaSimilarTab({ ideaId, onMerge }: IdeaSimilarTabProps) {
     return (
       <Card>
         <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
-          <p className="text-sm text-muted-foreground">Similar ideas unavailable</p>
+          <p className="text-sm text-muted-foreground">Similar feedback unavailable</p>
           <Button variant="outline" size="sm" onClick={retry}>
             Retry
           </Button>
@@ -202,7 +203,7 @@ export function IdeaSimilarTab({ ideaId, onMerge }: IdeaSimilarTabProps) {
     return (
       <Card>
         <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          No similar ideas
+          No similar feedback
         </CardContent>
       </Card>
     );

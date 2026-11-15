@@ -62,7 +62,7 @@ export function FeedbackView() {
               setQ(v);
               setPage(1);
             }}
-            placeholder="Search ideas"
+            placeholder="Search feedback"
             className="min-w-0 flex-1"
           />
           <MultiSelect
@@ -98,11 +98,11 @@ export function FeedbackView() {
           )}
         </div>
         {list.loading && !list.data && <PortalLoading />}
-        {list.error && <PortalMessage text="Ideas could not be loaded." />}
+        {list.error && <PortalMessage text="Feedback could not be loaded." />}
         {list.data && (
           <Card className="divide-y divide-border overflow-hidden" data-testid="portal-feedback-list">
             {list.data.items.length === 0 ? (
-              <p className="p-6 text-center text-sm text-muted-foreground">No ideas</p>
+              <p className="p-6 text-center text-sm text-muted-foreground">No feedback</p>
             ) : (
               list.data.items.map((idea) => (
                 <IdeaCard key={idea.id} idea={idea} variant="row" href={paths.idea(idea.id)} onVote={onVote} />

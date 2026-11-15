@@ -125,8 +125,8 @@ export function useBrListConfig(
       },
       {
         id: 'ideas',
-        meta: { headerTitle: 'Ideas' },
-        header: () => 'Ideas',
+        meta: { headerTitle: 'Feedback' },
+        header: () => 'Feedback',
         cell: ({ row }) => (
           <span className="text-muted-foreground">{row.original.ideaCount}</span>
         ),
@@ -177,7 +177,7 @@ export function useBrListConfig(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Title', 'Product', 'Status', 'Ideas'],
+        ['Title', 'Product', 'Status', 'Feedback'],
         data.map((r) => [r.title, r.productName, r.statusLabel, String(r.ideaCount)]),
       );
     };

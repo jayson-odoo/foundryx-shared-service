@@ -130,7 +130,7 @@ export function IdeaBrsTab({ ideaId }: IdeaBrsTabProps) {
     return (
       <Card>
         <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          This idea has not been promoted to a business requirement yet.
+          This feedback has not been promoted to a business requirement yet.
         </CardContent>
       </Card>
     );

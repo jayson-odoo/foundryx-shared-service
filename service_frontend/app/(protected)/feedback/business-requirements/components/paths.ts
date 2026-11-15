@@ -1,4 +1,4 @@
-export const BR_PATH = '/ideation/business-requirements';
+export const BR_PATH = '/feedback/business-requirements';
 
 export function brPath(id: string): string {
   return `${BR_PATH}/${id}`;

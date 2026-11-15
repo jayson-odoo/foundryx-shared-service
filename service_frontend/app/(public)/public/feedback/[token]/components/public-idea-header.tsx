@@ -1,6 +1,6 @@
 /**
  * Issue #90 W1 (AC-90-110) - the public idea page's own header (the shell's
- * chrome is opted out for `/public/ideas/`, see `ownsChromePath`). On-brand
+ * chrome is opted out for `/public/feedback/`, see `ownsChromePath`). On-brand
  * bar (border + heading type) showing the idea's core PRODUCT name (R1: the
  * idea's Product, e.g. "Sorento CRM" - never the tenant/app name). The
  * white-label mark itself lives ONLY in the footer (`PublicIdeaFooter`,

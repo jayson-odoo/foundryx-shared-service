@@ -20,7 +20,7 @@ import { useCan } from '@/hooks/use-can';
 import { useBrIdeas } from '@/hooks/use-br-ideas';
 import { businessRequirementService } from '@/services/business-requirement-service';
 import { ideationService } from '@/services/ideation-service';
-import { ideaFormHref } from '@/app/(protected)/ideation/ideas/components/paths';
+import { ideaFormHref } from '@/app/(protected)/feedback/components/paths';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { Idea } from '@/types/ideation';
 
@@ -80,8 +80,8 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
     const columns: ColumnDef<Idea>[] = [
       {
         id: 'problem',
-        meta: { headerTitle: 'Idea' },
-        header: () => 'Idea',
+        meta: { headerTitle: 'Feedback' },
+        header: () => 'Feedback',
         cell: ({ row }) => <ClampedText text={row.original.problem} lines={2} />,
         size: 360,
         enableSorting: false,
@@ -149,7 +149,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Idea', 'Submitter', 'Product'],
+        ['Feedback', 'Submitter', 'Product'],
         data.map((r) => [r.problem, r.submitterName, r.productName]),
       );
     };
@@ -160,14 +160,14 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
       rowHref: (row) => ideaFormHref(row.id),
       fetcher,
       exporter,
-      searchPlaceholder: 'Search linked ideas…',
-      searchHints: ['Idea', 'Submitter'],
+      searchPlaceholder: 'Search linked feedback…',
+      searchHints: ['Feedback', 'Submitter'],
       // Lineage list - no Active/Trashed segmentation (there is no trashed view).
       enableStatusViews: false,
       columns,
       filterFields: [],
       exportColumns: [
-        { id: 'problem', label: 'Idea' },
+        { id: 'problem', label: 'Feedback' },
         { id: 'submitter', label: 'Submitter' },
       ],
       actions,
@@ -192,7 +192,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
             <LoaderCircleIcon className="size-5 animate-spin" />
           </div>
         ) : ideas.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">No linked ideas.</p>
+          <p className="py-8 text-center text-sm text-muted-foreground">No linked feedback.</p>
         ) : (
           // Remount on reload so the freshly-fetched linked set drives the list.
           <ResourceList key={reloadToken} config={config} hideHeader />
@@ -242,11 +242,11 @@ function LinkIdeas({
     setBusy(true);
     try {
       await businessRequirementService.linkIdeas(brId, selected);
-      toast.success(selected.length === 1 ? 'Idea linked.' : `${selected.length} ideas linked.`);
+      toast.success(selected.length === 1 ? 'Feedback linked.' : `${selected.length} feedback items linked.`);
       setSelected([]);
       onLinked();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Could not link ideas.');
+      toast.error(e instanceof Error ? e.message : 'Could not link feedback.');
     } finally {
       setBusy(false);
     }
@@ -259,7 +259,7 @@ function LinkIdeas({
           options={options}
           value={selected}
           onChange={setSelected}
-          placeholder="Link ideas from this product…"
+          placeholder="Link feedback from this product…"
         />
       </div>
       <Button onClick={link} disabled={busy || selected.length === 0} className="shrink-0">

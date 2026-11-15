@@ -35,6 +35,7 @@ import { MergeIdeasDialog } from '../merge-ideas-dialog';
 import { VoteCell } from './vote-cell';
 import { ideaFormPath, buildIdeaFormQuery } from './paths';
 import { ideaFormSchema, type IdeaFormValues } from './idea-schema';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 function toFormValues(idea: Idea | null): IdeaFormValues {
   if (!idea)
@@ -167,7 +168,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     (recordId: string, ctx: string, index: number) => {
       const query = buildIdeaFormQuery({ ctx, index, includeTest: pagerIncludeTest });
       return mode === 'embed'
-        ? `/embed/ideas/${encodeURIComponent(recordId)}${query}`
+        ? `/embed/feedback/${encodeURIComponent(recordId)}${query}`
         : `${ideaFormPath(recordId)}${query}`;
     },
     [pagerIncludeTest, mode],
@@ -203,7 +204,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       const [restored] = await ideationService.unmerge(target.id);
       setIdea(restored);
       form.reset(toFormValues(restored));
-      toast.success('Idea unmerged.');
+      toast.success('Feedback unmerged.');
     };
 
     const actions: ResourceAction<Idea>[] = isMergedChild
@@ -262,7 +263,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               const target = rows[0]?.transitions?.[0];
               if (!target) return;
               await applyStatus(rows[0].id, target.toStatusId);
-              toast.success('Idea restored.');
+              toast.success('Feedback restored.');
             },
           },
           {
@@ -298,7 +299,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           label: 'Unmerge',
           icon: Split,
           disabled: !ideationService.unmerge,
-          onRun: () => guarded(() => unmergeIdea(idea), 'Could not unmerge the idea.'),
+          onRun: () => guarded(() => unmergeIdea(idea), 'Could not unmerge the feedback.'),
         };
       } else if (idea.statusIsArchived) {
         if (restoreEdge) {
@@ -309,8 +310,8 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             onRun: () =>
               guarded(async () => {
                 await applyStatus(idea.id, restoreEdge.toStatusId);
-                toast.success('Idea restored.');
-              }, 'Could not restore the idea.'),
+                toast.success('Feedback restored.');
+              }, 'Could not restore the feedback.'),
           };
         }
       } else if (advanceEdge) {
@@ -322,7 +323,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             guarded(async () => {
               await applyStatus(idea.id, advanceEdge.toStatusId);
               toast.success(`Moved to ${advanceEdge.toStatusLabel}.`);
-            }, 'Could not move the idea.'),
+            }, 'Could not move the feedback.'),
         };
       }
     }
@@ -338,7 +339,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             ...cardFields(values),
             rawText: values.rawText ?? '',
           });
-          toast.success('Idea captured.');
+          toast.success('Feedback captured.');
           router.push(paths.formHref(created.id));
         } else {
           // Fields only - a save never moves status (AC-94-34, owner Q5).
@@ -350,7 +351,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           });
           setIdea(updated);
           form.reset(toFormValues(updated));
-          toast.success('Idea updated.');
+          toast.success('Feedback updated.');
         }
         ok = true;
       })();
@@ -373,7 +374,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
 
     // The visible label is the idea's title when set, falling back to the
     // problem text (S1, AC-1106) - a pre-lane idea has no title.
-    const visibleLabel = creating ? 'New idea' : (idea?.title ?? idea?.problem ?? 'Idea');
+    const visibleLabel = creating ? 'New feedback' : (idea?.title ?? idea?.problem ?? 'Feedback');
 
     const mergedCount = idea?.mergedCount ?? 0;
 
@@ -406,20 +407,19 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       breadcrumb:
         mode === 'embed'
           ? [
-              { label: 'Ideas', href: paths.listHref },
+              { label: 'Feedback', href: paths.listHref },
               { label: visibleLabel },
             ]
           : [
               { label: 'Home', href: '/' },
-              { label: 'Ideation', href: paths.listHref },
-              { label: 'Ideas', href: paths.listHref },
+              { label: 'Feedback', href: paths.listHref },
               { label: visibleLabel },
             ],
       backHref: paths.listHref,
-      backLabel: 'Back to ideas',
+      backLabel: 'Back to feedback',
       title: visibleLabel,
       subtitle: creating
-        ? 'Capture a new idea'
+        ? 'Capture new feedback'
         : idea
           ? <StatusBadge status={idea.status} registry={statusRegistryFor(idea)} />
           : undefined,
@@ -488,7 +488,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           ? [
               {
                 id: 'similar',
-                label: 'Similar ideas',
+                label: 'Similar feedback',
                 icon: Sparkles,
                 render: () => (
                   <IdeaSimilarTab
@@ -518,7 +518,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
                       const refreshed = await ideationService.getIdea(idea.id);
                       setIdea(refreshed);
                       setMergedReloadToken((t) => t + 1);
-                      toast.success('Idea unmerged.');
+                      toast.success('Feedback unmerged.');
                     }}
                   />
                 ),
@@ -570,7 +570,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           if (!ideationService.merge) throw new Error('Merge is not available.');
           const ids = [idea.id, ...similarMergeRows.map((r) => r.id)];
           const survivor = await ideationService.merge(survivorId, ids, fields);
-          toast.success(`Merged into ${survivor.ideaNumber ?? survivor.title ?? survivor.problem}.`);
+          toast.success(`Merged into ${formatFeedbackNumber(survivor.ideaNumber) ?? survivor.title ?? survivor.problem}.`);
           if (survivor.id !== idea.id) {
             router.push(paths.formHref(survivor.id));
             return;

@@ -51,7 +51,7 @@ export function BrSendConfirmDialog({
             <dd className="min-w-0 font-medium">
               <ClampedText text={repo ?? ''} lines={1} />
             </dd>
-            <dt className="text-muted-foreground">Linked ideas</dt>
+            <dt className="text-muted-foreground">Linked feedback</dt>
             <dd className="font-medium">{ideaCount}</dd>
             <dt className="text-muted-foreground">Fields</dt>
             <dd className="font-medium">

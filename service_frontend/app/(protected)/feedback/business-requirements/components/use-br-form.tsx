@@ -281,7 +281,7 @@ export function useBrForm(
         },
         {
           id: 'ideas',
-          label: 'Ideas',
+          label: 'Feedback',
           icon: Lightbulb,
           render: () => (
             <BrIdeasTab

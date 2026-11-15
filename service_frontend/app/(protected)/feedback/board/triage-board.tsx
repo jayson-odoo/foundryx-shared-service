@@ -17,7 +17,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useIdeas } from '@/hooks/use-ideas';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
-import { VoteCell } from '@/app/(protected)/ideation/ideas/components/vote-cell';
+import { VoteCell } from '@/app/(protected)/feedback/components/vote-cell';
 import { IDEA_SOURCE_LABEL, type BoardColumn, type Idea } from '@/types/ideation';
 
 type Columns = Record<string, Idea[]>;
@@ -200,7 +200,7 @@ export function TriageBoard() {
       }
       await reorderPriority(order); // board reading order → priority
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not move the idea.');
+      toast.error(err instanceof Error ? err.message : 'Could not move the feedback.');
       void reload(); // revert optimistic drag from the source of truth
     }
   };
@@ -237,7 +237,7 @@ export function TriageBoard() {
                 </KanbanItem>
               ))}
               {(columns[col.statusId]?.length ?? 0) === 0 && (
-                <p className="px-1 py-6 text-center text-xs text-muted-foreground">Drop ideas here</p>
+                <p className="px-1 py-6 text-center text-xs text-muted-foreground">Drop feedback here</p>
               )}
             </KanbanColumnContent>
           </KanbanColumn>

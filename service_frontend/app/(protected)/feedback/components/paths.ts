@@ -1,6 +1,6 @@
 /** Route helpers for the Ideas feature - single source of truth for its URLs. */
 
-export const ideasListPath = '/ideation/ideas';
+export const ideasListPath = '/feedback';
 export const ideaNewPath = `${ideasListPath}/new`;
 export const ideaFormPath = (id: string) => `${ideasListPath}/${id}`;
 

@@ -222,7 +222,7 @@ export function useIdeasListConfig(
           disabled={Boolean(row.original.mergedIntoId)}
         />
       ), 80),
-      col('problem', 'Idea', (i) => i.title ?? i.problem, ({ row }) => (
+      col('problem', 'Feedback', (i) => i.title ?? i.problem, ({ row }) => (
         <div className="flex items-start gap-1.5">
           <div className="min-w-0 flex-1">
             <ClampedText text={row.original.title ?? row.original.problem} lines={2} />
@@ -294,7 +294,7 @@ export function useIdeasListConfig(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Idea', 'Type', 'Submitter', 'Channel', 'Product', 'Status', 'Votes', 'Submitted'],
+        ['Feedback', 'Type', 'Submitter', 'Channel', 'Product', 'Status', 'Votes', 'Submitted'],
         data.map((r) => [
           r.problem,
           ideaTypeLabel(ideaTypeKey(r)),
@@ -316,11 +316,11 @@ export function useIdeasListConfig(
       rowHref: (row) => paths.formHref(row.id, { includeTest: opts?.includeTest }),
       fetcher,
       exporter,
-      searchPlaceholder: 'Search ideas…',
-      searchHints: ['Idea', 'Submitter', 'Product'],
+      searchPlaceholder: 'Search feedback…',
+      searchHints: ['Feedback', 'Submitter', 'Product'],
       enableStatusViews: true,
       statusViewLabels: { active: 'Active', trashed: 'Archived' },
-      createLabel: 'Capture idea',
+      createLabel: 'Capture feedback',
       onCreate,
       columns,
       filterFields: [
@@ -360,7 +360,7 @@ export function useIdeasListConfig(
       ],
       defaultSort: { id: 'votes', desc: true },
       exportColumns: [
-        { id: 'problem', label: 'Idea' },
+        { id: 'problem', label: 'Feedback' },
         { id: 'type', label: 'Type' },
         { id: 'submitter', label: 'Submitter' },
         { id: 'status', label: 'Status' },

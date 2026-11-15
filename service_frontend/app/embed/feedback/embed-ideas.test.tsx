@@ -131,7 +131,7 @@ describe('IdeationRuntimeProvider (embed mode)', () => {
 // ── the SHARED board renders chrome-less in embed mode with embed card links ──
 vi.mock('@/hooks/use-ideas', () => ({ useIdeas: vi.fn() }));
 import { useIdeas } from '@/hooks/use-ideas';
-import { TriageBoard } from '@/app/(protected)/ideation/board/triage-board';
+import { TriageBoard } from '@/app/(protected)/feedback/board/triage-board';
 
 const baseUseIdeas: UseIdeas = {
   ideas: [],

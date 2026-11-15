@@ -32,8 +32,8 @@ export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
   const { merged } = useIdeaMerged(ideaId);
   // Runtime-aware href (BLOCKER 1, issue #94 review round 1) - the CRM embed
   // iframe has no operator session, so a row opened via the bare operator
-  // path (`/ideation/ideas/<id>`) would break; `paths.formHref` resolves to
-  // `/embed/ideas/<id>` there instead.
+  // path (`/feedback/<id>`) would break; `paths.formHref` resolves to
+  // `/embed/feedback/<id>` there instead.
   const { paths } = useIdeationRuntime();
 
   const config = useMemo<ResourceListConfig<Idea>>(() => {
@@ -128,7 +128,7 @@ export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
       rowHref: (row) => paths.formHref(row.id),
       fetcher,
       exporter,
-      searchPlaceholder: 'Search merged ideas…',
+      searchPlaceholder: 'Search merged feedback…',
       searchHints: ['Title', 'Submitter'],
       // Lineage list - no Active/Trashed segmentation (there is no trashed view).
       enableStatusViews: false,
@@ -156,7 +156,7 @@ export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
     return (
       <Card>
         <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          No merged ideas.
+          No merged feedback.
         </CardContent>
       </Card>
     );

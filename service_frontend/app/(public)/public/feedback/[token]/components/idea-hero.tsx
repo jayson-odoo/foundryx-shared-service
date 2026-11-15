@@ -22,6 +22,7 @@ import {
 } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { formatDate } from '@/lib/datetime';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 export interface IdeaHeroProps {
   ideaNumber: string | null;
@@ -61,7 +62,7 @@ export function IdeaHero({
 
   return (
     <div className="flex flex-col gap-2" data-testid="idea-hero">
-      <p className="text-sm font-medium text-muted-foreground">{ideaNumber}</p>
+      <p className="text-sm font-medium text-muted-foreground">{formatFeedbackNumber(ideaNumber)}</p>
       {title ? (
         // `role="heading"` (not a literal `<h1>`) so the `problem` fallback
         // below can reuse the SAME heading slot with `ClampedText`, whose
@@ -78,7 +79,7 @@ export function IdeaHero({
       )}
       {mergedInto && (
         <p className="text-sm text-muted-foreground">
-          Merged into {mergedInto.ideaNumber ?? mergedInto.title}
+          Merged into {formatFeedbackNumber(mergedInto.ideaNumber) ?? mergedInto.title}
         </p>
       )}
       <div>

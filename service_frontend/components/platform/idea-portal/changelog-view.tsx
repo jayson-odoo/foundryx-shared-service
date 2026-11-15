@@ -9,6 +9,7 @@ import { parseUtc } from '@/lib/datetime';
 import type { PortalChangelogItem } from '@/types/idea-portal';
 import { PortalStatusPill } from './portal-status-pill';
 import { PortalLoading, PortalMessage } from './portal-states';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 function monthKey(iso: string, timeZone: string): string {
   const d = parseUtc(iso);
@@ -46,7 +47,7 @@ export function ChangelogView() {
                   <CardContent className="flex flex-col gap-1.5 py-4">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       {item.statusLabel && <PortalStatusPill label={item.statusLabel} color={item.statusColor} />}
-                      {item.ideaNumber && <span>{item.ideaNumber}</span>}
+                      {item.ideaNumber && <span>{formatFeedbackNumber(item.ideaNumber)}</span>}
                       <span>{formatDate(item.deliveredAt)}</span>
                     </div>
                     <h2 className="font-heading font-semibold">{item.title}</h2>

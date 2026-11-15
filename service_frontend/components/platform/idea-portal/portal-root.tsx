@@ -37,7 +37,7 @@ function Gate({
   );
   if (session.status === 'loading') return <PortalLoading />;
   if (session.status === 'signin' || !runtime) {
-    return mode === 'embed' ? <PortalMessage text="Ideas are not available." /> : <PortalSignIn />;
+    return mode === 'embed' ? <PortalMessage text="Feedback is not available." /> : <PortalSignIn />;
   }
   return (
     <IdeaPortalContext.Provider value={runtime}>
@@ -46,7 +46,7 @@ function Gate({
   );
 }
 
-/** The shared-service portal (`/portal/ideas/*`). */
+/** The shared-service portal (`/portal/feedback/*`). */
 export function PortalRoot({ children }: { children: ReactNode }) {
   const session = usePortalSession();
   return (
@@ -56,7 +56,7 @@ export function PortalRoot({ children }: { children: ReactNode }) {
   );
 }
 
-/** Inside the Sorento iframe (`/embed/ideas/portal/*`), behind the embed session. */
+/** Inside the Sorento iframe (`/embed/feedback/portal/*`), behind the embed session. */
 export function EmbedPortalRoot({ embedToken, children }: { embedToken: string | null; children: ReactNode }) {
   const session = useEmbedPortalSession(embedToken);
   return (

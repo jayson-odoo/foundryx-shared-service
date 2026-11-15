@@ -1,7 +1,7 @@
 'use client';
 
 import { useParams, useSearchParams } from 'next/navigation';
-import { IdeaFormView } from '@/app/(protected)/ideation/ideas/components/idea-form-view';
+import { IdeaFormView } from '@/app/(protected)/feedback/components/idea-form-view';
 import { EmbedIdeationShell } from '../embed-app';
 
 /**

@@ -22,8 +22,8 @@ describe('sidebar menu: feedback wording', () => {
   });
 
   it('has a Feedback section pointing at /feedback', () => {
-    const feedback = entries.find((e) => e.path === '/feedback');
-    expect(feedback?.title).toBe('Feedback');
+    expect(entries.some((e) => e.title === 'Feedback' && !e.path)).toBe(true);
+    expect(entries.find((e) => e.path === '/feedback')?.title).toBe('All feedback');
     expect(entries.some((e) => e.path === '/feedback/board')).toBe(true);
   });
 });

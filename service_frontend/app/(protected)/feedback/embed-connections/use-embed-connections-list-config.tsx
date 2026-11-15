@@ -67,7 +67,7 @@ export function useEmbedConnectionsListConfig(
 
   const productName = useMemo(() => {
     const byId = new Map(products.map((p) => [p.id, p.name]));
-    return (id: string | null) => (id ? (byId.get(id) ?? id) : 'All ideas');
+    return (id: string | null) => (id ? (byId.get(id) ?? id) : 'All feedback');
   }, [products]);
 
   const actions = useMemo<ResourceAction<EmbedConnectionItem>[]>(

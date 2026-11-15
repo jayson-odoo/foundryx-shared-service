@@ -63,7 +63,7 @@ export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDi
       });
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not capture the idea.');
+      setError(e instanceof Error ? e.message : 'Could not capture the feedback.');
       setSaving(false);
     }
   };
@@ -72,7 +72,7 @@ export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDi
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Capture idea</DialogTitle>
+          <DialogTitle>Capture feedback</DialogTitle>
           <DialogDescription>
             The rawest capture - a structured Business Requirement comes later.
           </DialogDescription>
@@ -94,7 +94,7 @@ export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDi
             <Input
               id="idea-title"
               value={title}
-              placeholder="A short name for the idea"
+              placeholder="A short name for the feedback"
               onChange={(e) => setTitle(e.target.value)}
             />
           </div>
@@ -156,7 +156,7 @@ export function IdeaCaptureDialog({ products, onClose, onCreate }: IdeaCaptureDi
             Cancel
           </Button>
           <Button onClick={() => void handleSave()} disabled={!valid || saving}>
-            {saving ? 'Capturing…' : 'Capture idea'}
+            {saving ? 'Capturing…' : 'Capture feedback'}
           </Button>
         </DialogFooter>
       </DialogContent>

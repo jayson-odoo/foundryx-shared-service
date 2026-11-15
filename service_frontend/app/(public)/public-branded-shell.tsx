@@ -43,8 +43,8 @@ export function usePublicPageBranding(): PublicBranding | null {
 function ownsChromePath(pathname: string | null): boolean {
   return Boolean(
     pathname?.startsWith('/public/webchat/') ||
-      pathname?.startsWith('/public/ideas/') ||
-      pathname?.startsWith('/portal/ideas'),
+      pathname?.startsWith('/public/feedback/') ||
+      pathname?.startsWith('/portal/feedback'),
   );
 }
 

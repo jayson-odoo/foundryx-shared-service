@@ -9,7 +9,7 @@ export const ideaTypeKey = (i: Idea): string => i.type || 'idea';
 
 /** Display word for a type key (`issue` -> `Issue`). */
 export const ideaTypeLabel = (key: string): string =>
-  key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Idea';
+  key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Feedback';
 const time = (iso: string): number => {
   const t = Date.parse(iso);
   return Number.isNaN(t) ? 0 : t;

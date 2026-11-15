@@ -42,17 +42,17 @@ export interface IdeaPortalRuntime {
 }
 
 export const PORTAL_PATHS: IdeaPortalPaths = {
-  roadmap: '/portal/ideas',
-  feedback: '/portal/ideas/feedback',
-  changelog: '/portal/ideas/changelog',
-  idea: (id) => `/portal/ideas/${encodeURIComponent(id)}`,
+  roadmap: '/portal/feedback',
+  feedback: '/portal/feedback/list',
+  changelog: '/portal/feedback/changelog',
+  idea: (id) => `/portal/feedback/${encodeURIComponent(id)}`,
 };
 
 export const EMBED_PORTAL_PATHS: IdeaPortalPaths = {
-  roadmap: '/embed/ideas/portal',
-  feedback: '/embed/ideas/portal/feedback',
-  changelog: '/embed/ideas/portal/changelog',
-  idea: (id) => `/embed/ideas/portal/${encodeURIComponent(id)}`,
+  roadmap: '/embed/feedback/portal',
+  feedback: '/embed/feedback/portal/list',
+  changelog: '/embed/feedback/portal/changelog',
+  idea: (id) => `/embed/feedback/portal/${encodeURIComponent(id)}`,
 };
 
 export const IdeaPortalContext = createContext<IdeaPortalRuntime | null>(null);
@@ -128,7 +128,7 @@ export function usePortalSession(): UsePortalSession {
     ideaPortalAuth.set(null);
     setPrincipal(null);
     setStatus('signin');
-    void nextAuthSignOut({ callbackUrl: '/portal/ideas' });
+    void nextAuthSignOut({ callbackUrl: '/portal/feedback' });
   }, []);
 
   return { status, principal, signOut };
@@ -355,7 +355,7 @@ export function usePortalSubmit(): UsePortalSubmit {
     try {
       return await ideaPortalService.submit(input);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not submit the idea.');
+      setError(err instanceof Error ? err.message : 'Could not submit the feedback.');
       return null;
     } finally {
       setSubmitting(false);

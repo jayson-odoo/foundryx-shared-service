@@ -33,9 +33,9 @@ export function IdeaFormView({ ideaId, initialEditing }: IdeaFormViewProps) {
     return (
       <Container width="fluid">
         <div className="flex flex-col items-center gap-3 py-24 text-center">
-          <p className="text-sm font-medium">Idea not found.</p>
+          <p className="text-sm font-medium">Feedback not found.</p>
           <Button variant="outline" size="sm" asChild>
-            <Link href={paths.listHref}>Back to ideas</Link>
+            <Link href={paths.listHref}>Back to feedback</Link>
           </Button>
         </div>
       </Container>

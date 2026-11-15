@@ -120,7 +120,7 @@ export function EmbedConnectionCreateDialog({
                 <Input
                   id="conn-id"
                   autoFocus
-                  placeholder="e.g. sorento-ideation"
+                  placeholder="e.g. sorento-feedback"
                   value={connectionId}
                   onChange={(e) => setConnectionId(e.target.value)}
                 />
@@ -137,7 +137,7 @@ export function EmbedConnectionCreateDialog({
                   options={products.map((p) => ({ label: p.name, value: p.id }))}
                   value={productId}
                   onChange={setProductId}
-                  placeholder="All ideas (no product scope)"
+                  placeholder="All feedback (no product scope)"
                 />
               </div>
 

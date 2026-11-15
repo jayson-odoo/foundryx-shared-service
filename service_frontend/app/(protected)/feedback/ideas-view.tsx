@@ -14,6 +14,7 @@ import { useIdeasListConfig } from './use-ideas-list-config';
 import { IdeaCaptureDialog } from './idea-capture-dialog';
 import { MergeIdeasDialog } from './merge-ideas-dialog';
 import { promoteIdeasToBr } from './promote-to-br';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 /**
  * The Ideas repository grid - the SINGLE list/grid component used by BOTH the
@@ -72,7 +73,7 @@ export function IdeasView() {
           await setStatus(idea.id, target.toStatusId);
           toast.success(`Moved to ${target.toStatusLabel}.`);
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not advance the idea.');
+          toast.error(e instanceof Error ? e.message : 'Could not advance the feedback.');
         }
       },
       onRestore: async (idea: Idea) => {
@@ -80,17 +81,17 @@ export function IdeasView() {
         if (!target) return;
         try {
           await setStatus(idea.id, target.toStatusId);
-          toast.success('Idea restored.');
+          toast.success('Feedback restored.');
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not restore the idea.');
+          toast.error(e instanceof Error ? e.message : 'Could not restore the feedback.');
         }
       },
       onDelete: async (idea: Idea) => {
         try {
           await remove(idea.id);
-          toast.success('Idea deleted.');
+          toast.success('Feedback deleted.');
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not delete the idea.');
+          toast.error(e instanceof Error ? e.message : 'Could not delete the feedback.');
         }
       },
       onPromote: (selected: Idea[]) => promoteIdeasToBr(selected, router, { runtime }),
@@ -99,9 +100,9 @@ export function IdeasView() {
         if (!unmerge) return;
         try {
           await unmerge(id);
-          toast.success('Idea unmerged.');
+          toast.success('Feedback unmerged.');
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not unmerge the idea.');
+          toast.error(e instanceof Error ? e.message : 'Could not unmerge the feedback.');
         }
       },
     }),
@@ -112,14 +113,14 @@ export function IdeasView() {
 
   const handleCreate = async (input: IdeaCreateInput) => {
     await create(input);
-    toast.success('Idea captured.');
+    toast.success('Feedback captured.');
   };
 
   if (error && ideas.length === 0) {
     return <p className="text-sm text-destructive">{error}</p>;
   }
   if (loading && ideas.length === 0) {
-    return <p className="text-sm text-muted-foreground">Loading ideas…</p>;
+    return <p className="text-sm text-muted-foreground">Loading feedback…</p>;
   }
 
   return (
@@ -156,7 +157,7 @@ export function IdeasView() {
               mergeRows.map((r) => r.id),
               fields,
             );
-            toast.success(`Merged into ${survivor.ideaNumber ?? survivor.title ?? survivor.problem}.`);
+            toast.success(`Merged into ${formatFeedbackNumber(survivor.ideaNumber) ?? survivor.title ?? survivor.problem}.`);
           }}
         />
       )}

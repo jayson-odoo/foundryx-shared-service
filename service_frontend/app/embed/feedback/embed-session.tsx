@@ -110,7 +110,7 @@ export function EmbedExpired() {
 export function EmbedLoading() {
   return (
     <div className="flex min-h-screen w-full items-center justify-center p-8">
-      <p className="text-sm text-muted-foreground">Loading ideas…</p>
+      <p className="text-sm text-muted-foreground">Loading feedback…</p>
     </div>
   );
 }
