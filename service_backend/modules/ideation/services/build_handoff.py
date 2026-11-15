@@ -53,6 +53,7 @@ from app.form_engine.validation import visible_input_fields
 
 from .business_requirements import is_blank_answer, missing_labels
 from .issue_body import clean_text, render_issue_body
+from .numbering import display_idea_number
 from .statuses import BR_ENTITY, BR_SEND_EDGE_PREFIX, BR_STATUS_IDS
 
 # Test seam: the httpx transport GitHub calls ride (None = the real network).
@@ -283,7 +284,7 @@ class BuildHandoffService:
             ):
                 ideas.append(
                     {
-                        "number": idea.idea_number or "",
+                        "number": display_idea_number(idea.idea_number) or "",
                         "title": idea.title or idea.problem or "",
                         "up": idea.upvotes,
                     }

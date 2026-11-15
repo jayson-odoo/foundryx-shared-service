@@ -83,7 +83,7 @@ def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
             IDEA_ID_PLACEHOLDER, str(idea.id)
         )
     base = (tenant_base or settings.frontend_url).rstrip("/")
-    return f"{base}/public/ideas/{idea.status_token}"
+    return f"{base}/public/feedback/{idea.status_token}"
 
 
 def ideation_on_complete_sink(

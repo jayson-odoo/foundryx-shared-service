@@ -139,7 +139,7 @@ def _unauthorized() -> PortalError:
 
 
 def _not_found() -> PortalError:
-    return PortalError(404, "not_found", "Idea not found.")
+    return PortalError(404, "not_found", "Feedback not found.")
 
 
 def _forbidden() -> PortalError:
@@ -312,11 +312,11 @@ def session_for_staff(db: Session, user: User, *, impersonating: bool = False) -
     the target would attribute the admin's votes/comments to the target and
     outlive the impersonation session."""
     if impersonating:
-        raise PortalError(403, "impersonating", "Stop impersonating to open the ideas portal.")
+        raise PortalError(403, "impersonating", "Stop impersonating to open the feedback portal.")
     if not _tenant_ok(db, user.tenant_id):
-        raise PortalError(403, "module_inactive", "Ideas are not available.")
+        raise PortalError(403, "module_inactive", "Feedback is not available.")
     if _staff_user(db, user.tenant_id, user.id) is None:
-        raise PortalError(403, "forbidden", "You do not have access to ideas.")
+        raise PortalError(403, "forbidden", "You do not have access to feedback.")
     p = PortalPrincipal(
         tenant_id=user.tenant_id,
         kind=KIND_STAFF,
@@ -483,7 +483,7 @@ class IdeaPortalService:
             raise _not_found()
         if row.merged_into_id:
             if not follow_merge:
-                raise PortalError(409, "merged", "This idea was merged into another idea.")
+                raise PortalError(409, "merged", "This feedback was merged into another one.")
             idea_id = row.merged_into_id
         idea = self._visible(include_closed=True).filter(Idea.id == idea_id).first()
         if idea is None:
@@ -1006,7 +1006,7 @@ class IdeaPortalService:
         try:
             throttle.enforce_idea_portal_submit(principal_key=key)
         except Throttled as exc:
-            raise PortalError(429, "too_many_ideas", "Too many ideas. Try again later.", exc.retry_after_seconds)
+            raise PortalError(429, "too_many_ideas", "Too much feedback sent. Try again later.", exc.retry_after_seconds)
         product_id = p.product_id or product_id
         if not product_id or product_id not in {x["id"] for x in self.products()}:
             raise PortalError(422, "invalid_product", "Choose a product.")

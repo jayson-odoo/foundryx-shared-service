@@ -468,7 +468,7 @@ def test_link_refuses_test_idea(ideation_client):
         json={"ideaIds": [test_idea]},
     )
     assert res.status_code == 422, res.text
-    assert "test idea" in res.json()["detail"].lower()
+    assert "test feedback" in res.json()["detail"].lower()
     lineage = ideation_client.get(
         f"/ideation/business-requirements/{br['id']}/ideas", headers=h
     ).json()
@@ -535,7 +535,7 @@ def test_mixed_test_and_real_promote_refused(ideation_client):
         json={"productId": pid, "ideaIds": [real_idea, test_idea]},
     )
     assert res.status_code == 422, res.text
-    assert res.json()["detail"] == "Test and real ideas cannot be promoted together."
+    assert res.json()["detail"] == "Test and real feedback cannot be promoted together."
 
     rows = ideation_client.get(
         "/ideation/business-requirements?includeTest=true", headers=h
@@ -565,7 +565,7 @@ def test_real_idea_cannot_link_to_test_br(ideation_client):
         json={"ideaIds": [real_idea]},
     )
     assert res.status_code == 422, res.text
-    assert "real idea" in res.json()["detail"].lower()
+    assert "real feedback" in res.json()["detail"].lower()
 
 
 def test_client_is_test_ignored_on_manual_create(ideation_client):

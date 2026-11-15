@@ -392,7 +392,7 @@ def test_confirm_completes_with_link(setup, monkeypatch):
     assert body["status"] == "complete"
     token = _idea_field(s["factory"], draft_id, "status_token")
     assert token is not None
-    assert body["link"] == f"https://fe.example.test/public/ideas/{token}"
+    assert body["link"] == f"https://fe.example.test/public/feedback/{token}"
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
     # On completion the captured answers are promoted to first-class Idea columns.
@@ -430,7 +430,7 @@ def test_confirm_on_captured_is_idempotent(setup, monkeypatch):
     body = r3.json()
     assert body["status"] == "complete"
     token = _idea_field(s["factory"], draft_id, "status_token")
-    assert body["link"] == f"https://fe.example.test/public/ideas/{token}"
+    assert body["link"] == f"https://fe.example.test/public/feedback/{token}"
     assert _idea_count(s["factory"]) == 1
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
@@ -547,7 +547,7 @@ def test_reply_text_deterministic(setup, monkeypatch):
         draft_id=draft_id, confirm=True,
     )
     token = _idea_field(s["factory"], draft_id, "status_token")
-    assert f"https://fe.example.test/public/ideas/{token}" in r3.json()["reply_text"]
+    assert f"https://fe.example.test/public/feedback/{token}" in r3.json()["reply_text"]
 
 
 # ── WS-A / AC-CAP-1..3 - submitter_name stored verbatim ───────────────────────
@@ -769,7 +769,7 @@ def test_is_test_persists_on_create_and_survives_turns(setup, monkeypatch):
     )
     assert r3.json()["status"] == "complete"
     token = _idea_field(s["factory"], draft_id, "status_token")
-    assert r3.json()["link"] == f"https://fe.example.test/public/ideas/{token}"
+    assert r3.json()["link"] == f"https://fe.example.test/public/feedback/{token}"
     assert _idea_status_key(s["factory"], draft_id) == "captured"
     assert _idea_field(s["factory"], draft_id, "is_test") is True
 

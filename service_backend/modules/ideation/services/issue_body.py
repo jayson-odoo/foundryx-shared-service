@@ -96,7 +96,7 @@ def render_issue_body(
         f"## Links\n\nBusiness requirement: {br_url}\n\n"
         f"<!-- br-id: {br_id} -->\n<!-- br-product: {product_id} -->\n"
     )
-    ideas_section = "## Linked ideas\n\n" + "\n".join(idea_lines)
+    ideas_section = "## Linked feedback\n\n" + "\n".join(idea_lines)
 
     def head_for(cap: int) -> str:
         parts = [f"## {label}\n\n{_cap(text, cap) or NOT_PROVIDED}" for label, text in fields]

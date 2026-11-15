@@ -390,7 +390,7 @@ def test_ac_1604_is_test_idea_still_gets_token_and_link(setup, monkeypatch):
         assert token is not None
         link = mint_idea_link(db, idea)
         assert link is not None
-        assert link == f"https://fe.example.test/public/ideas/{token}"
+        assert link == f"https://fe.example.test/public/feedback/{token}"
     finally:
         db.close()
 
@@ -789,7 +789,7 @@ def test_product_and_contact_lookups_tenant_scoped(setup):
 def test_next_step_copy_and_fallback(setup):
     """AC-90-108: a known platform status key gets its authored copy; a
     tenant-added key unknown to ``PUBLIC_NEXT_STEP`` falls back on trait
-    flags (``is_terminal``/``is_archived`` -> "This idea is closed.")."""
+    flags (``is_terminal``/``is_archived`` -> "This feedback is closed.")."""
     s = setup
     token = "tok90_" + "i" * 18
     _make_captured_idea(
@@ -798,7 +798,7 @@ def test_next_step_copy_and_fallback(setup):
     )
     res = s["client"].get(f"/public/ideas/{token}")
     assert res.status_code == 200, res.text
-    assert res.json()["nextStep"] == "Your idea is in. The team will review it soon."
+    assert res.json()["nextStep"] == "Your feedback is in. The team will review it soon."
 
     # A tenant-added terminal status with a key PUBLIC_NEXT_STEP has never
     # heard of.
@@ -850,7 +850,7 @@ def test_next_step_copy_and_fallback(setup):
 
     res2 = s["client"].get(f"/public/ideas/{token2}")
     assert res2.status_code == 200, res2.text
-    assert res2.json()["nextStep"] == "This idea is closed."
+    assert res2.json()["nextStep"] == "This feedback is closed."
 
 
 def test_public_status_no_store_header(setup):

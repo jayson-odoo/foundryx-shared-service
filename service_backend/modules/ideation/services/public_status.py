@@ -53,17 +53,17 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 # behaviour branch on a tenant-added key). Tenant-editable copy is deferred
 # (BL-SS-277). Plain, hyphen-free, never "Foundryx" (white-label).
 PUBLIC_NEXT_STEP: Dict[str, str] = {
-    "captured": "Your idea is in. The team will review it soon.",
-    "triaged": "The team has reviewed your idea and is deciding where it fits.",
-    "linked": "Your idea is now part of a planned requirement.",
-    "building": "Your idea is being built.",
-    "delivered": "Your idea has been delivered.",
-    "closed": "This idea is complete. Thank you.",
-    "duplicate": "A similar idea already exists, so this one was merged into it.",
-    "rejected": "This idea will not go ahead for now.",
-    "archived": "This idea is on hold.",
+    "captured": "Your feedback is in. The team will review it soon.",
+    "triaged": "The team has reviewed your feedback and is deciding where it fits.",
+    "linked": "Your feedback is now part of a planned requirement.",
+    "building": "Your feedback is being built.",
+    "delivered": "Your feedback has been delivered.",
+    "closed": "This feedback is complete. Thank you.",
+    "duplicate": "Similar feedback already exists, so this one was merged into it.",
+    "rejected": "This feedback will not go ahead for now.",
+    "archived": "This feedback is on hold.",
 }
-_NEXT_STEP_CLOSED = "This idea is closed."
+_NEXT_STEP_CLOSED = "This feedback is closed."
 _NEXT_STEP_DEFAULT = "The team will review it and update this page."
 
 

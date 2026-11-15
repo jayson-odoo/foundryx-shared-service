@@ -266,7 +266,7 @@ class IdeationGrillService:
     def _definition(self) -> GrillDefinition:
         definition = get_grill_definition(GRILL_DEFINITION_KEY)
         if definition is None:  # boot-registered - a missing one is a config bug
-            raise HTTPException(500, "The idea→BR grill definition is not registered.")
+            raise HTTPException(500, "The feedback→BR grill definition is not registered.")
         return definition
 
     def state(self, tenant_id: str, br_id: str) -> GrillStateOut:

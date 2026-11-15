@@ -168,7 +168,7 @@ def test_ac_19_14_issue_body_lists_upvotes_only(ideation_client, monkeypatch):
     )
     assert res.status_code == 200, res.text
     body, _ = _body_of_send(ideation_client, monkeypatch, s)
-    section = body.split("## Linked ideas", 1)[1].split("\n## ", 1)[0]
-    assert "IDEA-0042" in section
+    section = body.split("## Linked feedback", 1)[1].split("\n## ", 1)[0]
+    assert "FB-0042" in section
     assert "+4" in section
     assert not re.search(r"/\s*-\d", section), section

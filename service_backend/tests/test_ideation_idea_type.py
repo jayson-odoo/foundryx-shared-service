@@ -147,7 +147,7 @@ def test_turn_flow_idea_reply_unchanged(setup):
     r1 = _create_idea(c, key, cid, pid, fields=_FULL_FIELDS)
     r2 = _create_idea(c, key, cid, pid, draft_id=r1.json()["draft_id"], confirm=True)
     assert r2.json()["status"] == "complete", r2.json()
-    assert "Idea " in r2.json()["reply_text"]
+    assert "Feedback FB-" in r2.json()["reply_text"]
     assert _idea_row(setup["factory"], r1.json()["draft_id"]).type == "idea"
 
 

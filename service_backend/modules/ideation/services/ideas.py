@@ -623,7 +623,7 @@ class IdeaReadService:
             .first()
         )
         if idea is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
         return self.serialize_one(
             idea, voter_id, tenant_id=tenant_id, product_id=product_id, actor=actor
         )
@@ -638,7 +638,7 @@ class IdeaReadService:
             .first()
         )
         if row is None:
-            raise HTTPException(422, "Select at least one idea to promote.")
+            raise HTTPException(422, "Select at least one feedback item to promote.")
         return row.product_id
 
     def merged_children(
@@ -657,7 +657,7 @@ class IdeaReadService:
             .first()
         )
         if survivor is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
         children = (
             self.db.query(Idea)
             .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id == survivor_id)
