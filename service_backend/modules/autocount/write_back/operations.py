@@ -22,6 +22,7 @@ import html
 import json
 import logging
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -55,7 +56,7 @@ from modules.autocount.write_back.frame import (
 )
 from modules.autocount.write_back.doc_kinds import KINDS, WIRE_SLUGS
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
-from modules.autocount.write_back.link_lock import SoRowBusy, so_row_locks
+from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.primitives import VENDOR_REFUSED, PrimitiveResult, PrimitiveService
 from modules.autocount.write_back.reader import DocReadError
@@ -338,20 +339,28 @@ class OperationService:
         if company is None:
             return OperationResult(row.id, REFUSED, WRITE_DISABLED)
         was = row.status
+        # a resume re-reads and may PUT the PO: it holds the per-PO-document lock from before the claim to the
+        # end; not won = DOC_BUSY with the row untouched (still resumable)
+        locks = ExitStack()
         try:
-            claimed = self.ops.claim(tenant_id, company_id, row.id, (NEEDS_ATTENTION, PENDING))
-            self.db.commit()
-        except IntegrityError:  # another operation holds the document
-            self.db.rollback()
+            locks.enter_context(link_locks(self.db, company.id, po_doc_keys=[row.doc_key] if row.doc_type == "PO" else []))
+        except SoRowBusy:
             return OperationResult(row.id, REFUSED, DOC_BUSY)
-        if not claimed:  # a concurrent resume won the conditional update
-            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
-        self.db.refresh(row)
-        self._mail_allowed = was != NEEDS_ATTENTION  # a failed resume never mails again
-        self._row = row
-        self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
-        self._steps, self._warnings = list(row.steps_json or []), []
-        return self._guarded(row, company, lambda: self._resume(row, company, was), restore=was)
+        with locks:
+            try:
+                claimed = self.ops.claim(tenant_id, company_id, row.id, (NEEDS_ATTENTION, PENDING))
+                self.db.commit()
+            except IntegrityError:  # another operation holds the document
+                self.db.rollback()
+                return OperationResult(row.id, REFUSED, DOC_BUSY)
+            if not claimed:  # a concurrent resume won the conditional update
+                return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
+            self.db.refresh(row)
+            self._mail_allowed = was != NEEDS_ATTENTION  # a failed resume never mails again
+            self._row = row
+            self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
+            self._steps, self._warnings = list(row.steps_json or []), []
+            return self._guarded(row, company, lambda: self._resume(row, company, was), restore=was)
 
     # ── frame ────────────────────────────────────────────────────────────────
 
@@ -480,15 +489,18 @@ class OperationService:
 
     def _execute(self, row: AcWriteOperation, company: AcCompany, op: str, spec: _Spec,
                  params: Dict[str, Any]) -> OperationResult:
-        """Link-type operations run under a per-SO-row lock (``link_lock``): the over-link guard and the
-        write that follows must not interleave with another caller's on the same SO row."""
-        if op in (SPLIT_LINK, "link_row", "relink_row") and spec.target_dtl_key:
-            try:
-                with so_row_locks(self.db, company.id, [spec.target_dtl_key]):
-                    return self._execute_unlocked(row, company, op, spec, params)
-            except SoRowBusy:
-                raise _Done(REFUSED, DOC_BUSY) from None
-        return self._execute_unlocked(row, company, op, spec, params)
+        """Every row operation that writes a PO (the document primitives keep the action / operation indexes)
+        runs under the per-PO-document lock, and a link-type operation
+        also under its per-SO-row lock (``link_lock``, PO first): the read, the over-link guard and the write
+        that follows must not interleave with another caller's on the same PO or the same SO row. A lock not
+        won is ``DOC_BUSY`` (never stored under the key)."""
+        po_keys = [spec.doc_key] if row.doc_type == "PO" else []
+        so_keys = [spec.target_dtl_key] if op in (SPLIT_LINK, "link_row", "relink_row") and spec.target_dtl_key else []
+        try:
+            with link_locks(self.db, company.id, po_doc_keys=po_keys, so_dtl_keys=so_keys):
+                return self._execute_unlocked(row, company, op, spec, params)
+        except SoRowBusy:  # this lock, or a nested one (the batch's SO rows), was not won: nothing sent
+            raise _Done(REFUSED, DOC_BUSY) from None
 
     def _execute_unlocked(self, row: AcWriteOperation, company: AcCompany, op: str, spec: _Spec,
                           params: Dict[str, Any]) -> OperationResult:
@@ -544,14 +556,16 @@ class OperationService:
             raise _Done(restore or REFUSED, exc.code) from None
 
     def _check_not_busy(self, company: AcCompany, doc_key: int, kind: str) -> None:
-        """Standalone actions and young pending operations hold the document; an
-        operation's own actions do not (the operation row carries its age, AC-57-43)."""
+        """Standalone actions, young pending operations and other ``in_progress`` operations hold the
+        document; an operation's own actions and its own row do not (the row carries its age, AC-57-43)."""
         window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
         if self.prims.actions.expire_stale_in_flight(company.tenant_id, company.id, doc_key, window):
             self.db.commit()
         if self.prims.actions.has_open(
             company.tenant_id, company.id, doc_key, window, standalone_only=True
-        ) or self.ops.has_recent_pending(company.tenant_id, company.id, kind, doc_key, window):
+        ) or self.ops.has_recent_pending(company.tenant_id, company.id, kind, doc_key, window) or self.ops.has_in_progress(
+            company.tenant_id, company.id, kind, doc_key, window, exclude_id=self._row.id if self._row else None,
+        ):
             raise _Done(REFUSED, DOC_BUSY)
 
     def _read(self, company: AcCompany, kind: str, doc_key: int,
@@ -1089,7 +1103,8 @@ class OperationService:
         mode, _received = self._receipt(company, defn, doc, old)
         if mode == "partial":
             raise _Done(REFUSED, ROW_RECEIVED)
-        free = _dec(old.get("Qty"))
+        # the PO row's qty that pending link operations on it may already have taken (outcome unknown) is not free
+        free = _dec(old.get("Qty")) - self._po_row_pending_qty(company, spec, doc)
         # Owner rule (plan 62, 12 Nov): a bad line never fails the batch. Each line is checked on its own,
         # in request order; a failing line is skipped and named, the rest are linked.
         sources: Dict[int, Doc] = {}
@@ -1147,6 +1162,38 @@ class OperationService:
                                   f"{company.database_name}:{spec.doc_key}", res.document)
         self.db.commit()  # the next guard sees these links before the lock is released
         return snapshot, res.document
+
+    def _po_row_pending_qty(self, company: AcCompany, spec: _Spec, doc: Doc) -> Decimal:
+        """Qty of the PO row that unresolved link operations on it (``pending_verification`` or
+        ``needs_attention``: they may have landed) would cover and that the fresh read does not show yet (a
+        landed link is already in the fresh rows: never counted twice, and one fresh row answers for one link
+        only). A whole-row link that has not landed covers the whole row (less any received qty)."""
+        total = Decimal(0)
+        rows = doc.get("Details") or []
+        pool = list(rows)
+        for op in self.ops.pending_po_row_links(company.tenant_id, company.id, spec.doc_key, spec.dtl_key,
+                                                exclude_id=self._row.id if self._row else None):
+            snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
+            if snap.get("mode") in ("batch", "split"):  # a part-row link_row runs as a split: its snapshot says
+                known = set(snap.get("knownKeys") or [])
+                for link in snap.get("links") or []:
+                    want, qty = int(link.get("soDtlKey") or 0), _dec(link.get("qty"))
+                    match = next((r for r in pool if r.get("DtlKey") not in known and _link_of("PO", r) == want
+                                  and _dec(r.get("Qty")) == qty), None)
+                    if match is None:
+                        total += qty
+                    else:
+                        pool.remove(match)
+                continue
+            if op.status != PENDING or not any(r.get("DtlKey") == op.dtl_key for r in rows):
+                # the row was replaced (the whole-row link landed), or a person is resolving an operation whose
+                # row still stands (its replace never landed): nothing of the row is reserved
+                continue
+            qty = _dec((snap.get("row") or {}).get("Qty"))
+            if snap.get("received") is not None:
+                qty -= _dec(snap["received"])
+            total += qty
+        return total
 
     def _line_skip(self, company: AcCompany, doc: Doc, old: Doc, link: Dict[str, Any], sources: Dict[int, Doc],
                    free: Decimal, running: Decimal) -> Optional[str]:
