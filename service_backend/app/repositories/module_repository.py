@@ -1,5 +1,5 @@
 """Module catalog + per-tenant install-state queries (plan 08). Pure SQLAlchemy."""
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,10 @@ class ModuleRepository:
         self.db = db
 
     # ---- catalog ----
+
+    def titles_by_name(self) -> Dict[str, str]:
+        """``{module name: display title}`` for every catalog row."""
+        return {name: title for name, title in self.db.query(Module.name, Module.title).all()}
 
     def get_by_name(self, name: str) -> Optional[Module]:
         return self.db.query(Module).filter(Module.name == name).first()

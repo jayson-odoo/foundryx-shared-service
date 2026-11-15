@@ -1,5 +1,5 @@
 """Seed the ``grill-me-business`` skill (platform-tier) + the per-tenant
-``Ideation grill`` agent (AC-BI-28 / AC-BI-20b).
+``Feedback grill`` agent (AC-BI-28 / AC-BI-20b).
 
 Both are INSERT-IF-MISSING so an operator's edits survive a reseed. The skill is
 a **business-register** rewrite of Claude's developer ``grill-me`` - the
@@ -18,7 +18,13 @@ from app.ai.client import any_llm_connection
 from app.models.ai import AiAgent, AiSkill, AiSkillVersion
 from app.repositories.ai_repository import AgentRepository, SkillRepository
 
-from .grill import GRILL_AGENT_KEY, GRILL_AGENT_NAME, GRILL_MODEL, GRILL_SKILL_KEY
+from .grill import (
+    GRILL_AGENT_KEY,
+    GRILL_AGENT_NAME,
+    GRILL_MODEL,
+    GRILL_SKILL_KEY,
+    LEGACY_GRILL_AGENT_NAME,
+)
 
 GRILL_SKILL_NAME = "Business grill"
 
@@ -101,7 +107,7 @@ def seed_grill_skill(db: Session) -> None:
 
 
 def seed_grill_agent(db: Session, tenant_id: str) -> Optional[AiAgent]:
-    """Idempotent per-tenant seed of the ``Ideation grill`` agent (AC-BI-20b).
+    """Idempotent per-tenant seed of the ``Feedback grill`` agent (AC-BI-20b).
 
     Insert-if-missing (survives reseed). Bound to the resolved LLM connection
     (tenant → platform → None) via ``any_llm_connection`` - NOT
@@ -117,6 +123,11 @@ def seed_grill_agent(db: Session, tenant_id: str) -> Optional[AiAgent]:
     repo = AgentRepository(db)
     existing = repo.get_by_key(tenant_id, GRILL_AGENT_KEY)
     if existing is not None:
+        # Backfill (lane FEEDBACK-RENAME): a tenant seeded before the rename
+        # still reads "Ideation grill"; a deliberate rename is kept.
+        if existing.name == LEGACY_GRILL_AGENT_NAME:
+            existing.name = GRILL_AGENT_NAME
+            db.flush()
         return existing
     skill = SkillRepository(db).get_by_key(tenant_id, GRILL_SKILL_KEY)
     connection = any_llm_connection(db, tenant_id)

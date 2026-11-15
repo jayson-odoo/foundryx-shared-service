@@ -301,7 +301,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     IntakeDefinition binding + register the ``software`` product-kind here
     (AC-A-03). The scaffold slice has no per-tenant artifacts to seed.
 
-    Phase B-i slice 3 (AC-BI-20b): auto-seed the default ``Ideation grill`` agent
+    Phase B-i slice 3 (AC-BI-20b): auto-seed the default ``Feedback grill`` agent
     (insert-if-missing) so grilling is zero-config. If no LLM connection resolves
     yet it is seeded connectionless and lights up when a key is later added."""
     from .services.grill_seed import seed_grill_agent

@@ -174,3 +174,33 @@ def test_stored_number_accepts_the_shown_form():
     assert stored_idea_number("IDEA-0016") == "IDEA-0016"
     assert stored_idea_number(None) is None
     assert display_idea_number(stored_idea_number("FB-10000")) == "FB-10000"
+
+
+def test_permission_catalog_carries_a_human_module_label(db):
+    """Crew pass 34455d5: the Roles editor printed the raw module key
+    ("IDEATION") as the section header. The catalog now carries the module's
+    Services title; core keeps a plain word."""
+    from app.services.permission_service import PermissionService
+
+    rows = PermissionService(db).catalog()
+    by_module = {r.module: r.moduleLabel for r in rows}
+    assert by_module["ideation"] == "Feedback"
+    assert by_module["core"] == "Core"
+    for label in by_module.values():
+        assert not IDEA_WORD.search(label) and "ideation" not in label.lower()
+
+
+def test_seeded_grill_agent_is_named_feedback_and_legacy_rows_move(db):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.ideation.services.grill import GRILL_AGENT_KEY, GRILL_AGENT_NAME
+    from modules.ideation.services.grill_seed import seed_grill_agent
+
+    assert not IDEA_WORD.search(GRILL_AGENT_NAME) and "ideation" not in GRILL_AGENT_NAME.lower()
+    agent = seed_grill_agent(db, DEFAULT_TENANT_ID)
+    assert agent is not None and agent.key == GRILL_AGENT_KEY
+    agent.name = "Ideation grill"  # a tenant seeded before the rename
+    db.flush()
+    assert seed_grill_agent(db, DEFAULT_TENANT_ID).name == GRILL_AGENT_NAME
+    agent.name = "Our BR coach"  # a deliberate rename survives
+    db.flush()
+    assert seed_grill_agent(db, DEFAULT_TENANT_ID).name == "Our BR coach"
