@@ -41,6 +41,7 @@ from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaStatusEvent
 from .numbering import mint_idea_identity
+from .crm_poke import queue_crm_poke
 from .feedback_links import mint_board_link
 from .sinks import mint_idea_link
 from .statuses import IDEA_ENTITY
@@ -148,6 +149,11 @@ def _write_event(
         "is_test": bool(recipient.is_test),
     }
     db.flush()
+    # Owner ruling 15 Nov (CRM #2433, c): poke the tenant's CRM right after
+    # this commit so the dealer's WhatsApp update goes out now (fire and
+    # forget; the CRM's 15-minute safety check covers a miss). Test ideas never.
+    if not recipient.is_test:
+        queue_crm_poke(db, tenant_id, row.id, row.seq)
 
 
 # ── 1. the CRUD event-bus subscriber (status_changed) ───────────────────────

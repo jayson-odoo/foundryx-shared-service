@@ -134,7 +134,7 @@ def test_5xx_retried_once_4xx_not_retried(ideation_client, calls):
     assert len(calls.requests) == 2
     calls.requests.clear()
     calls.queue.extend([401])
-    assert _transition(ideation_client, s["h"], s["idea_id"], "building").status_code == 200
+    assert _transition(ideation_client, s["h"], s["idea_id"], "linked").status_code == 200
     assert len(calls.requests) == 1
 
 
@@ -193,6 +193,7 @@ def test_rolled_back_change_never_pokes(ideation_client, calls):
     _sorento_connection(ideation_client._factory)
     db = ideation_client._factory()
     try:
+        db.query(Idea).count()  # a live transaction, as when _write_event queues
         crm_poke.queue_crm_poke(db, DEFAULT_TENANT_ID, "evt-1", 1)
         db.rollback()
         db.query(Idea).count()
