@@ -302,7 +302,7 @@ class BuildHandoffService:
             dict(br.answers_json or {}),
             ideas,
             messages,
-            f"{base}/ideation/business-requirements/{br.id}",
+            f"{base}/feedback/business-requirements/{br.id}",
             br.id,
             br.product_id,
         )

@@ -82,7 +82,7 @@ def seed_grill_skill(db: Session) -> None:
         tenant_id=None,
         key=GRILL_SKILL_KEY,
         name=GRILL_SKILL_NAME,
-        description="Grills a rough idea into a well-formed Business Requirement.",
+        description="Grills rough feedback into a well-formed Business Requirement.",
         is_system=True,
     )
     db.add(skill)
@@ -125,7 +125,7 @@ def seed_grill_agent(db: Session, tenant_id: str) -> Optional[AiAgent]:
         key=GRILL_AGENT_KEY,
         is_system=True,
         name=GRILL_AGENT_NAME,
-        description="Auto-configured agent that grills ideas into business requirements.",
+        description="Auto-configured agent that grills feedback into business requirements.",
         connection_id=connection.id if connection is not None else None,
         model=GRILL_MODEL,
         temperature=0.0,

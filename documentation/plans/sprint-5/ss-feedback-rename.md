@@ -38,11 +38,18 @@ Item number (crew answer 1a): shown as `FB-0016` through ONE formatter per layer
 (`lib/feedback-number.ts formatFeedbackNumber`, `numbering.display_idea_number`); the
 stored value and the wire field stay `IDEA-0016`.
 
-Backend: the status link the service mails / sends (`sinks.py public_status_url`) now
-points at `/public/feedback/{token}`; old links still resolve through the redirect.
+Backend status link (`sinks.py mint_idea_link`): on the shared-service default origin it
+now points at `/public/feedback/{token}` (old `/public/ideas` 308s). A tenant
+`public_link_base_url` is the tenant's own host and config: a `{token}` template is used
+as written, and a plain origin keeps `/public/ideas/{token}` so no link breaks on a host
+we do not serve (the CRM redirects its own old paths; editing the setting is config).
+
+Known follow-up (CRM side): the intake response and status-event payloads keep the
+stored `idea_number` (`IDEA-0016`) by design; a consumer that prints it formats it as
+`FB-0016` itself (crew lane FEEDBACK-RENAME-CRM).
 
 ## Tests (red first)
 
-- `lib/feedback-redirects.test.ts`: every old URL maps to its new URL, permanent.
+- `lib/feedback-routes.test.ts` (+ `lib/feedback-redirects.wiring.test.ts`): every old URL maps to its new URL, permanent.
 - Rendered-text tests on the list, detail, board, portal, public status page: no "Idea".
 - Backend: status link path, reply/email text and the displayed number.

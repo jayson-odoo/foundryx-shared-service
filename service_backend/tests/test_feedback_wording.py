@@ -87,8 +87,13 @@ def test_reply_noun_for_idea_type_is_feedback(db):
 def test_build_issue_links_feedback_br_page():
     from modules.ideation.services import issue_body
 
+    from modules.ideation.services import build_handoff
+
     src = open(issue_body.__file__).read()
     assert "## Linked ideas" not in src
+    handoff = open(build_handoff.__file__).read()
+    assert "/feedback/business-requirements/" in handoff
+    assert "/ideation/business-requirements/" not in handoff
 
 
 def test_services_catalog_card_says_feedback():

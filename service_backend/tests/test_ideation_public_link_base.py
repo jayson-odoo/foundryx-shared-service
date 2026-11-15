@@ -96,7 +96,7 @@ def test_tenant_base_as_origin_replaces_shared_service_domain(db):
     from modules.ideation.services.sinks import mint_idea_link
 
     _set_link_base(db, "https://crm.sorento.my/")
-    assert mint_idea_link(db, _idea()) == f"https://crm.sorento.my/public/feedback/{TOKEN}"
+    assert mint_idea_link(db, _idea()) == f"https://crm.sorento.my/public/ideas/{TOKEN}"
 
 
 def test_tenant_base_crm_portal_token_template(db):

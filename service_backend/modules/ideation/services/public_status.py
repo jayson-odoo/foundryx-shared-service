@@ -42,6 +42,7 @@ from app.repositories.status_repository import StatusRepository
 from ..models import Idea
 from ..schemas import PublicIdeaStatusOut, PublicIdeaTimelineStepOut, PublicMergedIntoOut
 from .statuses import IDEA_ENTITY
+from .numbering import display_idea_number
 
 # 16-64 chars, URL-safe - matches ``secrets.token_urlsafe(24)`` output shape
 # (AC-1603). Anything outside this shape is rejected before ever touching the
@@ -184,7 +185,7 @@ class PublicIdeaStatusService:
                 # this public page.
                 merged_into = PublicMergedIntoOut(
                     ideaNumber=survivor.idea_number,
-                    title=survivor.title or survivor.idea_number,
+                    title=survivor.title or display_idea_number(survivor.idea_number),
                 )
 
         # Scoped by the DISPLAY idea's OWN tenant_id (review round 2 nit) - a

@@ -1071,7 +1071,7 @@ def test_public_merged_into_title_falls_back_to_idea_number_never_problem(setup)
 
     res = s["client"].get(f"/public/ideas/{child_token}")
     assert res.status_code == 200, res.text
-    assert res.json()["mergedInto"] == {"ideaNumber": "IDEA-9410", "title": "IDEA-9410"}
+    assert res.json()["mergedInto"] == {"ideaNumber": "IDEA-9410", "title": "FB-9410"}
 
 
 # ── Migration existence: 0010 chains onto 0009 ────────────────────────────────

@@ -44,7 +44,7 @@ export async function promoteIdeasToBr(
   if (ideas.length === 0) return;
   const productIds = new Set(ideas.map((i) => i.productId));
   if (productIds.size > 1) {
-    toast.error('Select feedback from a single product to promote it together.');
+    toast.error("Feedback from different products can't be promoted together.");
     return;
   }
   try {

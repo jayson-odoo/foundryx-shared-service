@@ -72,7 +72,7 @@ def _unknown(value: str, db: Session) -> ApiError:
     return ApiError(
         422,
         "unknown_type",
-        f"type '{value}' is not a known idea type (allowed: {allowed}).",
+        f"type '{value}' is not a known feedback type (allowed: {allowed}).",
     )
 
 

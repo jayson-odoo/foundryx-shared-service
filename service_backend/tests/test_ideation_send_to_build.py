@@ -433,7 +433,7 @@ def test_ac_stb_10_links_section_and_markers_last(ideation_client, monkeypatch):
     body, _ = _body_of_send(ideation_client, monkeypatch, s)
     links = body.split("## Links", 1)[1]
     base = settings.frontend_url.rstrip("/")
-    assert f"{base}/ideation/business-requirements/{s['br_id']}" in links
+    assert f"{base}/feedback/business-requirements/{s['br_id']}" in links
     lines = [ln for ln in body.rstrip().splitlines() if ln.strip()]
     assert lines[-2:] == [
         f"<!-- br-id: {s['br_id']} -->",

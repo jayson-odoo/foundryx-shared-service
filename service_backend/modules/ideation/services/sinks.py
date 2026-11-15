@@ -82,8 +82,13 @@ def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
         return tenant_base.replace(TOKEN_PLACEHOLDER, idea.status_token).replace(
             IDEA_ID_PLACEHOLDER, str(idea.id)
         )
-    base = (tenant_base or settings.frontend_url).rstrip("/")
-    return f"{base}/public/feedback/{idea.status_token}"
+    if tenant_base:
+        # A foreign host (e.g. the CRM) owns its own routes: keep the path it
+        # has always been sent, so no link breaks there; that host redirects
+        # its old paths itself (lane FEEDBACK-RENAME).
+        return f"{tenant_base.rstrip('/')}/public/ideas/{idea.status_token}"
+    # Our own frontend: the feedback page (old /public/ideas 308-redirects).
+    return f"{settings.frontend_url.rstrip('/')}/public/feedback/{idea.status_token}"
 
 
 def ideation_on_complete_sink(
