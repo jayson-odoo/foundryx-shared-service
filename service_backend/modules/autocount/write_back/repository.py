@@ -244,6 +244,41 @@ class OperationRepository:
             is not None
         )
 
+    def has_in_progress(
+        self, tenant_id: str, company_id: str, doc_type: str, doc_key: int, since: datetime,
+        *, exclude_id: Optional[str] = None,
+    ) -> bool:
+        """Another operation on the document is ``in_progress`` and moved after ``since`` (an older one is a
+        crashed run, flipped to ``pending_verification`` by ``expire_stale_in_progress``)."""
+        query = self.db.query(AcWriteOperation.id).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.doc_type == doc_type,
+            AcWriteOperation.doc_key == doc_key,
+            AcWriteOperation.status == "in_progress",
+            AcWriteOperation.updated_at >= since,
+        )
+        if exclude_id is not None:
+            query = query.filter(AcWriteOperation.id != exclude_id)
+        return query.first() is not None
+
+    def pending_po_row_links(
+        self, tenant_id: str, company_id: str, doc_key: int, dtl_key: int, *, exclude_id: Optional[str] = None,
+    ) -> List[AcWriteOperation]:
+        """The ``pending_verification`` link operations (outcome unknown, they may have landed) on one PO row."""
+        query = self.db.query(AcWriteOperation).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.doc_type == "PO",
+            AcWriteOperation.doc_key == doc_key,
+            AcWriteOperation.dtl_key == dtl_key,
+            AcWriteOperation.status == OUTCOME_PENDING,
+            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
+        )
+        if exclude_id is not None:
+            query = query.filter(AcWriteOperation.id != exclude_id)
+        return query.all()
+
     def claim(self, tenant_id: str, company_id: str, operation_id: str, from_statuses: "tuple[str, ...]") -> bool:
         """Conditional update to ``in_progress``: True only for the one caller whose
         update matched a row still in ``from_statuses`` (resume claims, AC-57-47)."""
