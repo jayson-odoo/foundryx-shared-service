@@ -19,17 +19,15 @@ import hashlib
 import hmac
 import json
 import logging
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
-import anyio
-import httpx
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import release_read_transactions
+from app.services import webhook_post as _core_post
 from app.services.url_guard import GuardedAsyncTransport as GuardedTransport
 from app.services.url_guard import UrlGuardError
 
@@ -48,8 +46,8 @@ MAX_ATTEMPTS = len(_BACKOFF) + 1  # 6 total attempts before dead-letter
 # at call time. An httpx timeout is per read, so the total is enforced here.
 DELIVERY_DEADLINE_SECONDS = 10
 # Most response-body bytes read; the status code alone decides success.
-RESPONSE_BYTE_CAP = 65536
-DEADLINE_ERROR = "Consumer did not answer within {seconds} seconds."
+RESPONSE_BYTE_CAP = _core_post.RESPONSE_BYTE_CAP
+DEADLINE_ERROR = _core_post.DEADLINE_ERROR
 # Below the worker's 300 second soft limit (app/workflow_engine/worker.py:84-85).
 DUE_RUN_BUDGET_SECONDS = 240
 # Reject a timestamp older than this on the consumer side (advisory - documented).
@@ -237,66 +235,11 @@ def enqueue_workspace_event(
     )
 
 
-class DeliveryDeadlineError(Exception):
-    """The attempt ran past its total deadline."""
-
-
-class _Reply:
-    """What one attempt needs from a response."""
-
-    def __init__(self, status_code: int) -> None:
-        self.status_code = status_code
-
-
-def _run_under_deadline(make_coro: Callable[[], Any], timeout: float) -> Any:
-    """Run one coroutine on a fresh loop, cancelled at ``timeout`` (cancelling
-    closes the connection in every phase). Raises DeliveryDeadlineError at the
-    deadline. From inside a running loop (an async route reaching an eager
-    task) the same work runs on a short-lived thread with its own loop.
-    The loop's default executor is not joined: a host lookup cannot be
-    interrupted and may finish on its own, but nothing is sent after the deadline."""
-
-    def run() -> Any:
-        async def bounded() -> Any:
-            # Level-triggered: keeps cancelling until the work really ends, even
-            # if something inside swallows one cancellation.
-            with anyio.fail_after(timeout):
-                return await make_coro()
-
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(bounded())
-        except TimeoutError:
-            raise DeliveryDeadlineError() from None
-        finally:
-            try:
-                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                loop.run_until_complete(loop.shutdown_asyncgens())
-            finally:
-                loop.close()
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return run()
-    box: Dict[str, Any] = {}
-
-    def in_thread() -> None:
-        try:
-            box["value"] = run()
-        except BaseException as exc:  # noqa: BLE001 - handed to the caller
-            box["error"] = exc
-
-    worker = threading.Thread(target=in_thread, name="webhook-post", daemon=True)
-    worker.start()
-    worker.join()
-    if "error" in box:
-        raise box["error"]
-    return box["value"]
+# The attempt mechanics live in core since plan 64 (R5) so Lead Capture runs
+# the same POST; the old names stay here for existing callers and tests.
+DeliveryDeadlineError = _core_post.DeliveryDeadlineError
+_Reply = _core_post.PostReply
+_run_under_deadline = _core_post.run_under_deadline
 
 
 def _check_address(url: str, budget: float) -> float:
@@ -316,23 +259,10 @@ def _check_address(url: str, budget: float) -> float:
 async def _post_async(
     url: str, content: bytes, headers: Dict[str, str], budget: float
 ) -> _Reply:
-    # Building the transport loads the CA bundle (blocking). Do it off the event
-    # loop, inside the attempt's deadline, so a slow build is abandoned at the
-    # deadline instead of stalling the loop past it.
-    transport = await anyio.to_thread.run_sync(
-        lambda: GuardedTransport(subject="Callback URL"), abandon_on_cancel=True
+    # ``GuardedTransport`` is read from this module at call time (tests patch it).
+    return await _core_post.post_async(
+        url, content, headers, budget, lambda: GuardedTransport(subject="Callback URL")
     )
-    async with httpx.AsyncClient(
-        transport=transport, timeout=budget, follow_redirects=False
-    ) as client:
-        async with client.stream("POST", url, content=content, headers=headers) as resp:
-            if not resp.is_stream_consumed:
-                read = 0
-                async for chunk in resp.aiter_raw():
-                    read += len(chunk)
-                    if read >= RESPONSE_BYTE_CAP:
-                        break  # enough; the connection is closed without the rest
-            return _Reply(resp.status_code)
 
 
 def _post(
@@ -400,27 +330,21 @@ def dispatch(db: Session, delivery_id: str) -> str:
     ok = False
     status_code: Optional[int] = None
     error: Optional[str] = None
-    try:
-        # SSRF guard, run inside the deadline and re-run per attempt: the URL passed validation at
-        # registration, but DNS may have been re-pointed since (and the URL is
-        # externally supplied on the API-key surface). Never POST to a target
-        # that resolves internally NOW.
-        left = _check_address(endpoint_url, DELIVERY_DEADLINE_SECONDS)
-        resp = _post(endpoint_url, content=body, headers=headers, timeout=left)
-        status_code = resp.status_code
-        ok = 200 <= resp.status_code < 300
-        if not ok:
-            error = f"Consumer returned {resp.status_code}."
-    except (WebhookError, UrlGuardError) as exc:
-        # Blocked target - a real failure, but never a network call.
-        error = f"Delivery refused: {exc}"  # guard text names no host
-    except (DeliveryDeadlineError, httpx.TimeoutException):
-        error = DEADLINE_ERROR.format(seconds=DELIVERY_DEADLINE_SECONDS)
-    except httpx.HTTPError as exc:
-        error = f"Delivery failed: {type(exc).__name__}."
-    except Exception:  # noqa: BLE001 - any other send error is a failed attempt
-        logger.exception("webhook delivery %s could not be attempted", delivery.id)
-        error = "Delivery could not be attempted."
+    # SSRF guard, run inside the deadline and re-run per attempt: the URL passed
+    # validation at registration, but DNS may have been re-pointed since (and the
+    # URL is externally supplied on the API-key surface). Never POST to a target
+    # that resolves internally NOW. Shared attempt rules: core ``webhook_post``.
+    outcome = _core_post.attempt_post(
+        endpoint_url,
+        body,
+        headers,
+        deadline_seconds=DELIVERY_DEADLINE_SECONDS,
+        check=lambda url, budget: _check_address(url, budget),
+        post=lambda url, **kw: _post(url, **kw),
+        refused=(WebhookError, UrlGuardError),
+        log_ref=delivery_id,  # never the row: reading it would reopen a transaction
+    )
+    ok, status_code, error = outcome.ok, outcome.status_code, outcome.error
 
     delivery.response_status = status_code
     delivery.response_ms = int(

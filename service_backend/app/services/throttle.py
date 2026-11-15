@@ -39,6 +39,8 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_IDEA_PORTAL_COMMENT,
     THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT,
     THROTTLE_SCOPE_IP,
+    THROTTLE_SCOPE_LEAD_GATEWAY,
+    THROTTLE_SCOPE_LEAD_GATEWAY_KEY,
     THROTTLE_SCOPE_PORTAL,
     THROTTLE_SCOPE_PULL,
     THROTTLE_SCOPE_PULL_KEY,
@@ -151,6 +153,18 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_channel_token_max,
             timedelta(minutes=settings.throttle_channel_token_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_LEAD_GATEWAY:
+        return (
+            settings.throttle_lead_gateway_max_fails,
+            timedelta(minutes=settings.throttle_lead_gateway_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_LEAD_GATEWAY_KEY:
+        return (
+            settings.throttle_lead_gateway_key_max_requests,
+            timedelta(minutes=settings.throttle_lead_gateway_key_window_minutes),
             None,
         )
     if scope == THROTTLE_SCOPE_PULL_KEY:
@@ -478,6 +492,24 @@ class ThrottleService:
 
     def record_pull_key_request(self, *, key_id: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_PULL_KEY, key_id)
+
+    # ---- Lead Capture gateway (own buckets, plan 64 AC-64-72) ----
+
+    def enforce_lead_gateway(self, *, ip: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_LEAD_GATEWAY, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_lead_gateway_failure(self, *, ip: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_LEAD_GATEWAY, ip)
+
+    def enforce_lead_gateway_key(self, *, key_id: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_LEAD_GATEWAY_KEY, key_id)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_lead_gateway_key_request(self, *, key_id: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_LEAD_GATEWAY_KEY, key_id)
 
     # ---- Omnichannel replace-token (own bucket, plan 42) ----
 

@@ -127,6 +127,11 @@ class Settings(BaseSettings):
     throttle_idea_portal_comment_window_minutes: int = 60
     throttle_idea_portal_submit_max: int = 10
     throttle_pull_key_window_minutes: int = 5
+    # Lead Capture gateway (plan 64 AC-64-72): 401s per IP, requests per key.
+    throttle_lead_gateway_max_fails: int = 30
+    throttle_lead_gateway_window_minutes: int = 15
+    throttle_lead_gateway_key_max_requests: int = 600
+    throttle_lead_gateway_key_window_minutes: int = 5
     # Omnichannel replace-token attempts per channel (plan 42).
     throttle_channel_token_max: int = 10
     throttle_channel_token_window_minutes: int = 10
