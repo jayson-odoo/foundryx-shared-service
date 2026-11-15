@@ -500,3 +500,102 @@ def test_ac_fb_33_staff_grace_window_action_and_flag(setup):
     finally:
         db.close()
     assert _exchange(s, token).status_code == 401
+
+
+# ── review round 1 ────────────────────────────────────────────────────────────
+
+
+def test_rr1_b1_voter_without_contact_never_gets_the_authors_link(setup):
+    from app.config import settings
+    from modules.ideation.models import Idea
+    from modules.ideation.services.intake import IntakeService
+
+    s = setup
+    author = _contact(s)
+    candidate = _idea(s, 401, token="C" * 32, submitter_contact_id=author)
+    db = s["factory"]()
+    try:
+        idea = db.query(Idea).filter(Idea.id == candidate).first()
+        voter_without_contact = IntakeService(db)._contact_link(idea, recipient=None)
+        other_voter = _contact(s, phone="+60123450777")
+        voter_with_contact = IntakeService(db)._contact_link(idea, recipient=other_voter)
+        db.commit()
+    finally:
+        db.close()
+    assert voter_without_contact == f"{settings.frontend_url.rstrip('/')}/public/ideas/{'C' * 32}"
+    assert _link(s, author) not in voter_with_contact
+    assert voter_with_contact.endswith(f"/public/feedback/{_link(s, other_voter)}/IDEA-0401")
+
+
+def test_rr1_test_ideas_never_mint_a_link(setup):
+    from modules.ideation.models import IdeaContactLink
+
+    s = setup
+    cid = _contact(s)
+    iid = _idea(s, 402, is_test=True, submitter_contact_id=cid)
+    assert _board_link(s, iid) is None
+    db = s["factory"]()
+    try:
+        assert db.query(IdeaContactLink).filter(IdeaContactLink.contact_id == cid).count() == 0
+    finally:
+        db.close()
+
+
+def test_rr1_one_shot_response_keeps_the_per_idea_link(setup):
+    from modules.ideation.models import Idea
+    from modules.ideation.services.intake import IntakeService
+
+    s = setup
+    cid = _contact(s)
+    iid = _idea(s, 403, token="O" * 32, submitter_contact_id=cid)
+    db = s["factory"]()
+    try:
+        out = IntakeService(db)._one_shot_response(db.query(Idea).filter(Idea.id == iid).first())
+    finally:
+        db.close()
+    assert out["link"].endswith(f"/public/ideas/{'O' * 32}")
+
+
+def test_rr1_cancel_reaches_same_phone_siblings(setup):
+    s = setup
+    a = _contact(s, phone="+60123450001")
+    twin = _contact(s, phone="+60 12-345 0001")
+    iid = _idea(s, 404, submitter_contact_id=a)
+    ta, tt = _link(s, a), _link(s, twin)
+    assert s["client"].post(f"/ideation/ideas/{iid}/feedback-link/cancel", headers=s["h"]).status_code == 204
+    assert _exchange(s, ta).status_code == 401
+    assert _exchange(s, tt).status_code == 401
+
+
+def test_rr1_one_live_link_per_contact_enforced_by_the_db(setup):
+    from sqlalchemy.exc import IntegrityError
+
+    from modules.ideation.models import IdeaContactLink
+
+    s = setup
+    cid = _contact(s)
+    _link(s, cid)
+    db = s["factory"]()
+    try:
+        db.add(IdeaContactLink(tenant_id=DEFAULT_TENANT_ID, contact_id=cid, token="D" * 40))
+        with pytest.raises(IntegrityError):
+            db.commit()
+    finally:
+        db.close()
+
+
+def test_rr1_portal_token_subject_must_match_the_links_contact(setup):
+    from modules.ideation.services.portal import KIND_CONTACT, PortalPrincipal, mint_portal_token
+
+    s = setup
+    a = _contact(s)
+    b = _contact(s, phone="+60123450888")
+    _link(s, a)
+    res = _exchange(s, _link(s, a))
+    from jose import jwt
+
+    lid = jwt.get_unverified_claims(res.json()["token"])["lid"]
+    forged = mint_portal_token(
+        PortalPrincipal(tenant_id=DEFAULT_TENANT_ID, kind=KIND_CONTACT, subject=b, link_id=lid)
+    )
+    assert s["client"].get("/portal/ideas/me", headers={"Authorization": f"Bearer {forged}"}).status_code == 401

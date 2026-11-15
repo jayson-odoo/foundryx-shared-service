@@ -83,6 +83,12 @@ def get_or_create_link(db: Session, tenant_id: str, contact_id: str) -> IdeaCont
                 db.flush()
             return row
         except IntegrityError:
+            # A concurrent mint for the same contact won the one-live-link
+            # index (``uq_idea_contact_links_live``): use its row. Otherwise a
+            # (vanishingly unlikely) token collision: try a fresh token.
+            existing = _live(db, tenant_id, contact_id)
+            if existing is not None:
+                return existing
             continue
     raise RuntimeError("Could not mint a unique feedback link after 5 attempts.")
 
@@ -107,14 +113,20 @@ def cancel_links_for_contact(db: Session, tenant_id: str, contact_id: str) -> in
 
 
 def cancel_feedback_link_for_idea(db: Session, tenant_id: str, idea_id: str) -> bool:
-    """Staff action: cancel the link of ``idea_id``'s submitter contact. False
-    when the idea is not in ``tenant_id`` or has no same-tenant contact.
-    Commits."""
+    """Staff action: cancel the links of ``idea_id``'s submitter contact AND
+    every same-tenant contact with the same phone digits - one person, several
+    workspace rows, and "My requests" spans all of them, so a sibling's link
+    must die too (security review #2). False when the idea is not in
+    ``tenant_id`` or has no same-tenant contact. Commits."""
+    from .ownership import find_contacts_by_phone
+
     idea = db.query(Idea).filter(Idea.id == idea_id, Idea.tenant_id == tenant_id).first()
     contact = _contact(db, tenant_id, idea.submitter_contact_id) if idea is not None else None
     if contact is None:
         return False
-    cancel_links_for_contact(db, tenant_id, contact.id)
+    ids = {contact.id} | {c.id for c in find_contacts_by_phone(db, tenant_id, contact.phone)}
+    for cid in sorted(ids):
+        cancel_links_for_contact(db, tenant_id, cid)
     db.commit()
     return True
 
@@ -160,11 +172,23 @@ def board_base(db: Session, tenant_id: str) -> str:
     return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback"
 
 
-def mint_board_link(db: Session, idea: Idea, contact_id: Optional[str] = None) -> Optional[str]:
-    """The personal board link for ``contact_id`` (default: the idea's
-    submitter contact), opening ``idea``. ``None`` when there is no contact in
-    the idea's tenant. Mints the contact's link on first use (flush only)."""
-    contact = _contact(db, idea.tenant_id, contact_id or idea.submitter_contact_id)
+# Sentinel: "the idea's own submitter contact". Distinct from an explicit
+# ``None`` (a recipient with no contact), which must NEVER fall back to the
+# idea's submitter - that would hand the author's personal link to whoever is
+# being replied to (review B1).
+SUBMITTER = object()
+
+
+def mint_board_link(db: Session, idea: Idea, contact_id: object = SUBMITTER) -> Optional[str]:
+    """The personal board link for ``contact_id`` (default: the idea's own
+    submitter contact), opening ``idea``. ``None`` when that recipient has no
+    contact in the idea's tenant, or the idea is a test idea (a test turn never
+    mints a real contact's credential). Mints the contact's link on first use
+    (flush only)."""
+    if idea.is_test:
+        return None
+    target = idea.submitter_contact_id if contact_id is SUBMITTER else contact_id
+    contact = _contact(db, idea.tenant_id, target if isinstance(target, str) else None)
     if contact is None:
         return None
     link = get_or_create_link(db, idea.tenant_id, contact.id)

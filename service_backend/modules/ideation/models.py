@@ -23,7 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 from sqlalchemy.types import JSON
 
 from app.models.catalog import Product
@@ -772,3 +772,16 @@ class IdeaContactLink(IdeationBase):
     token = Column(String, nullable=False, unique=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     revoked_at = Column(UTCDateTime(), nullable=True)
+
+    __table_args__ = (
+        # One LIVE link per contact, enforced by the database (two concurrent
+        # mints cannot both win; the loser re-reads the winner's row).
+        Index(
+            "uq_idea_contact_links_live",
+            "tenant_id",
+            "contact_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
+    )

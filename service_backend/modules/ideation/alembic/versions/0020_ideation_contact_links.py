@@ -37,6 +37,12 @@ def upgrade() -> None:
             ")"
         )
     )
+    bind.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_idea_contact_links_live "
+            f'ON "{s}".idea_contact_links (tenant_id, contact_id) WHERE revoked_at IS NULL'
+        )
+    )
     for col in ("tenant_id", "contact_id"):
         bind.execute(
             text(

@@ -784,7 +784,10 @@ def test_is_test_persists_on_create_and_survives_turns(setup, monkeypatch):
         draft_id=draft_id, confirm=True,
     )
     assert r3.json()["status"] == "complete"
-    assert r3.json()["link"] == _expected_board_link(s["factory"], draft_id)
+    # A test turn never mints a real contact's personal link (security review):
+    # the per-idea status page, as before.
+    token = _idea_field(s["factory"], draft_id, "status_token")
+    assert r3.json()["link"] == f"https://fe.example.test/public/ideas/{token}"
     assert _idea_status_key(s["factory"], draft_id) == "captured"
     assert _idea_field(s["factory"], draft_id, "is_test") is True
 

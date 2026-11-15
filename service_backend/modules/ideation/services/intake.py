@@ -56,7 +56,7 @@ from .intake_definitions import (
     next_field as compute_next_field,
 )
 from .ownership import SubmitterIdentity, find_contacts_by_phone, phone_digits
-from .feedback_links import mint_board_link
+from .feedback_links import SUBMITTER, mint_board_link
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
 from .idea_types import idea_type_label, resolve_idea_type
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
@@ -463,20 +463,20 @@ class IntakeService:
             "status": status.key if status else "",
             "title": idea.title,
             "type": idea.type or "idea",
-            "link": self._contact_link(idea, commit=True),
+            # The one-shot API answers the HOST (CRM chatbot / user), not the
+            # contact's own conversation: never hand out a personal link here
+            # (security review #1) - the per-idea status page, as before.
+            "link": mint_idea_link(self.db, idea),
         }
 
-    def _contact_link(self, idea: Idea, *, contact_id: Optional[str] = None, commit: bool = False) -> Optional[str]:
-        """The link a contact gets about ``idea`` (lane PUBLIC-IDEAS-BOARD):
-        the requester's personal feedback board opening that idea, else (no
-        same-tenant contact) the per-idea status page. Minting a personal link
-        writes a row: the caller commits right after, or passes ``commit``."""
-        link = mint_board_link(self.db, idea, contact_id)
-        if link is None:
-            return mint_idea_link(self.db, idea)
-        if commit:
-            self.db.commit()
-        return link
+    def _contact_link(self, idea: Idea, *, recipient: object = SUBMITTER) -> Optional[str]:
+        """The link the contact in THIS conversation gets about ``idea`` (lane
+        PUBLIC-IDEAS-BOARD): their personal feedback board opening that idea,
+        else (no same-tenant contact, or a test turn) the per-idea status page.
+        ``recipient`` = the replying contact's id (``None`` = no contact; never
+        falls back to the idea's author). Minting writes a row: every caller
+        commits right after."""
+        return mint_board_link(self.db, idea, recipient) or mint_idea_link(self.db, idea)
 
     def similar_own(
         self,
@@ -933,7 +933,7 @@ class IntakeService:
         # #6) - a pure read now (mint_idea_link never mutates), but this keeps
         # the ordering honest regardless.
         cand_number = candidate.idea_number
-        cand_link = self._contact_link(candidate, contact_id=idea.submitter_contact_id)
+        cand_link = self._contact_link(candidate, recipient=idea.submitter_contact_id)
         self.db.commit()
         return _response(
             status="voted",
@@ -983,7 +983,7 @@ class IntakeService:
             candidate = self._resolve_candidate(idea, state.voted_for)
             cand_number = candidate.idea_number if candidate else None
             cand_link = (
-                self._contact_link(candidate, contact_id=idea.submitter_contact_id) if candidate else None
+                self._contact_link(candidate, recipient=idea.submitter_contact_id) if candidate else None
             )
             self.db.commit()
             return _response(

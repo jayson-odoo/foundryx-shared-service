@@ -39,10 +39,14 @@ Tags: [BE] backend pytest, [FE] vitest, [E2E] recorded agent-browser run, [T] co
   `{origin of the template}/feedback/{linkToken}/{ideaNumber}` (the CRM public page).
 - **AC-FB-31 [BE]** Every `idea_status_events` payload carries `board_url` (the requester contact's link) next to the
   unchanged `track_url`.
-- **AC-FB-32 [BE]** The WhatsApp intake reply's "Track it here" link is the board link when the idea has a submitter
-  contact, else the old per-idea link. Old `/public/ideas/{token}` pages keep working.
-- **AC-FB-33 [BE]** `POST /ideation/ideas/{id}/feedback-link/cancel` (`ideation.triage.manage`) cancels the link of
-  the idea's submitter contact; tenant-scoped; 404 for another tenant's idea.
+- **AC-FB-32 [BE]** The WhatsApp intake reply's "Track it here" link is the REPLYING contact's board link (never the
+  idea author's when the replier has no contact), else the old per-idea link. Test ideas never mint a link. The
+  one-shot / own-similar APIs keep the per-idea link (they answer the host). Old `/public/ideas/{token}` pages keep
+  working.
+- **AC-FB-33 [BE]** `POST /ideation/ideas/{id}/feedback-link/cancel` (`ideation.triage.manage`, plus the grace-window
+  action "Cancel feedback link" on the staff idea page) cancels the links of the idea's submitter contact and its
+  same-phone sibling contacts; tenant-scoped; 404 for another tenant's idea. One live link per contact is
+  database-enforced.
 
 ## E. Frontend (shared-service board, link mode)
 - **AC-FB-40 [FE]** `/public/feedback/{token}` exchanges the link once and renders the existing Roadmap / Feedback /
