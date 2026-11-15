@@ -39,19 +39,21 @@ def calls(h) -> List[tuple]:
     return [(c.method, c.leaf) for c in h.vendor.calls]
 
 
-def slow_vendor(h, delay: float = DELAY) -> List[str]:
-    """Every vendor call takes ``delay`` seconds; returns the thread names that served the calls."""
+def slow_vendor(h, delay: float = DELAY) -> List[tuple]:
+    """Every vendor call takes ``delay`` seconds; returns (thread, start, end) per call."""
     inner = h.vendor.transport
-    threads: List[str] = []
+    spans: List[tuple] = []
 
     class Slow(httpx.BaseTransport):
         def handle_request(self, request: httpx.Request) -> httpx.Response:
-            threads.append(threading.current_thread().name)
+            t0 = time.monotonic()
             time.sleep(delay)
-            return inner.handle_request(request)
+            response = inner.handle_request(request)
+            spans.append((threading.current_thread().name, t0, time.monotonic()))
+            return response
 
     h.vendor.transport = Slow()
-    return threads
+    return spans
 
 
 # ============================== AC-SPD-03 the duplicate read is gone ==========================
@@ -95,14 +97,25 @@ def test_spd_03_relink_and_unlink_drop_the_duplicate_read_too(h, world):
 # ============================== AC-SPD-04 parallel first reads ================================
 
 def test_spd_04_the_po_and_so_first_reads_run_at_the_same_time(h, world):
-    threads = slow_vendor(h)
-    started = time.monotonic()
+    spans = slow_vendor(h)
     res = h.run("link_row", world.params["link_row"])
-    took = time.monotonic() - started
     assert res.outcome == "done", res.error_code
-    assert calls(h)[:2] in ([GET_PO, GET_SO], [GET_SO, GET_PO])
-    assert len(set(threads[:2])) == 2  # served on two threads
-    assert took < 7 * DELAY - DELAY / 2, took  # 7 calls, two of them overlapped: about 6 x delay
+    assert sorted(calls(h)[:2]) == sorted([GET_PO, GET_SO])
+    (thread_a, start_a, end_a), (thread_b, start_b, end_b) = sorted(spans, key=lambda s: s[1])[:2]
+    assert thread_a != thread_b
+    assert max(start_a, start_b) < min(end_a, end_b)  # the two reads overlapped in time
+    assert all(t[0] == spans[-1][0] for t in spans[2:])  # every later call on the request's thread
+
+
+@pytest.mark.parametrize("op", ["relink_row", "spo_link_row"])
+def test_spd_04_relink_and_spo_link_read_their_target_beside_too(h, world, op):
+    h.delete_on()  # SPO operations ride the SPO add_line flag (shipped off)
+    spans = slow_vendor(h, 0.02)
+    res = h.run(op, world.params[op])
+    assert res.outcome == "done", (op, res.error_code)
+    (_ta, sa, ea), (_tb, sb, eb) = sorted(spans, key=lambda s: s[1])[:2]
+    assert max(sa, sb) < min(ea, eb), op
+    assert_one_row_per_call(h)
 
 
 def test_spd_04_the_so_read_is_still_logged_once_with_its_own_rows(h, world):

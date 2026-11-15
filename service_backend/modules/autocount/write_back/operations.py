@@ -17,15 +17,17 @@ re-creates the line only when it is still absent.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import html
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, ContextManager, Dict, Iterator, List, Optional, Tuple, Union
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -34,7 +36,7 @@ from modules.autocount.alerts import _safe_subject, alert_recipients
 from modules.autocount.canonical.documents import ENTITY_SALES_ORDER, ENTITY_SHIPPING_ORDER
 from modules.autocount.models import AcCompany, AcWriteOperation
 from modules.autocount.repositories import CompanyRepository
-from modules.autocount.write_back import capabilities, frame, guard, payloads
+from modules.autocount.write_back import call_log as cl, capabilities, frame, guard, payloads
 from modules.autocount.write_back.guard import WriteConnectionError
 from modules.autocount.write_back.constants import EDIT_PO_PATH
 from modules.autocount.write_back.frame import (
@@ -255,6 +257,9 @@ class OperationService:
         self._base_url = ""
         self._row: Optional[AcWriteOperation] = None
         self._op_deadline = 0.0
+        # (kind, doc_key) -> (date, document | the read's exception): a side read made beside another
+        # GET, consumed by the next ``_read`` of that document (SS-AUTOCOUNT-SPEEDUP).
+        self._prefetched: Dict[Tuple[str, int], Tuple[date, Any]] = {}
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -498,6 +503,7 @@ class OperationService:
                 self.prims._log_refused_connection(company, refusal[0], doc_key=spec.doc_key)
             raise _Done(REFUSED, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
+        self._prefetched = {}
         self._check_test_company(company)
         if op == LINK_BATCH:
             return self._batch_link(row, company, spec, params)
@@ -509,7 +515,8 @@ class OperationService:
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
         self._check_not_busy(company, spec.doc_key, defn.kind)
-        doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date)
+        doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date,
+                                   beside=self._target_beside(company, defn, spec))
         if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
             raise _Done(REFUSED, DOC_STALE)
         plan = self._guards(company, defn, spec, doc)
@@ -555,18 +562,64 @@ class OperationService:
             raise _Done(REFUSED, DOC_BUSY)
 
     def _read(self, company: AcCompany, kind: str, doc_key: int,
-              doc_date: Optional[date]) -> Tuple[date, Doc]:
-        """AC-57-20 date, then one fresh GET with no transaction open."""
+              doc_date: Optional[date], *, beside: Optional[ContextManager[None]] = None) -> Tuple[date, Doc]:
+        """AC-57-20 date, then one fresh GET with no transaction open. ``beside`` runs around the GET
+        only (the independent target read, ``_target_beside``); a read it already made is used here."""
+        held = self._prefetched.pop((kind, doc_key), None)
+        if held is not None:
+            found, outcome = held
+            if isinstance(outcome, DocReadError):
+                raise _Done(REFUSED, outcome.code) from None
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return found, outcome
         found, code = self.prims.find_date(company, kind, doc_key, _as_date(doc_date))
         if found is None:
             raise _Done(REFUSED, code)
         doc_no = self.prims.find_doc_no(company, kind, doc_key)
         reader = self._reader(company, self._base_url, kind, doc_key, doc_no)  # before the commit (row ids)
         self.db.commit()
-        try:
-            return found, reader.get_document(kind, doc_key, found, doc_no=doc_no)
-        except DocReadError as exc:
-            raise _Done(REFUSED, exc.code) from None
+        with beside or contextlib.nullcontext():
+            try:
+                return found, reader.get_document(kind, doc_key, found, doc_no=doc_no)
+            except DocReadError as exc:
+                raise _Done(REFUSED, exc.code) from None
+
+    @contextlib.contextmanager
+    def _target_beside(self, company: AcCompany, defn: _OpDef, spec: _Spec) -> Iterator[None]:
+        """SS-AUTOCOUNT-SPEEDUP: the target document's first read (SO for a PO link, PO for an SPO
+        link) does not depend on the document's own, so it runs on a second thread during it. Nothing
+        else moves: the target is still checked in ``_guard_target`` after the document's own guards
+        (same refusal order and codes), every call is still logged (``BufferedCallLog``, written here on
+        this thread), and the live re-read before the write is untouched. No date for the target = no
+        side read (``_guard_target`` refuses it as before)."""
+        key = spec.target_doc_key
+        if not defn.target or key is None:
+            yield
+            return
+        found, _code = self.prims.find_date(company, defn.target, key, _as_date(spec.target_doc_date))
+        if found is None:
+            yield
+            return
+        doc_no = self.prims.find_doc_no(company, defn.target, key)
+        row = self._row
+        log = cl.BufferedCallLog(self.prims.new_call_log(
+            company, kind=defn.target, doc_key=key, doc_no=doc_no, key_id=row.key_id if row else None,
+            operation_id=row.id if row else None,
+        ))
+        reader = self.prims._reader_for(self._base_url, log)  # type: ignore[arg-type]
+        self.db.commit()  # no transaction open during the GETs
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="ac-side-read") as pool:
+            future = pool.submit(reader.get_document, defn.target, key, found, doc_no=doc_no)
+            try:
+                yield
+            finally:
+                try:
+                    outcome: Any = future.result()
+                except BaseException as exc:  # noqa: BLE001 - handed to the target's own _read
+                    outcome = exc
+                log.flush()
+                self._prefetched[(defn.target, key)] = (found, outcome)
 
     # ── guards (AC-57-32, 33): every refusal before any write ────────────────
 

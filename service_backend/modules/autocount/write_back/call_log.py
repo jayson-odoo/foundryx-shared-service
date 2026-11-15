@@ -215,6 +215,30 @@ class CallLog:
             logger.warning("autocount call log write failed (%s)", type(exc).__name__)
 
 
+class BufferedCallLog:
+    """A ``CallLog`` for calls made on another thread (SS-AUTOCOUNT-SPEEDUP parallel reads): each
+    call is held with its real start time and duration, and ``flush`` writes the rows through the
+    wrapped log on the caller's thread (the log's own session never crosses threads). Same rows,
+    same columns, same ``duration_ms`` as a direct record."""
+
+    def __init__(self, log: CallLog) -> None:
+        self._log = log
+        self.context = log.context
+        self._held: "list[tuple[datetime, float, dict[str, Any]]]" = []
+
+    def started(self) -> "tuple[datetime, float]":
+        return self._log.started()
+
+    def record(self, *, started: "tuple[datetime, float]", **fields: Any) -> None:
+        at, t0 = started
+        self._held.append((at, time.monotonic() - t0, fields))
+
+    def flush(self) -> None:
+        held, self._held = self._held, []
+        for at, elapsed, fields in held:
+            self._log.record(started=(at, time.monotonic() - elapsed), **fields)
+
+
 def give_trace(
     target: Any, request_id: Optional[str], person: "tuple[Optional[str], Optional[str]]" = (None, None)
 ) -> None:
