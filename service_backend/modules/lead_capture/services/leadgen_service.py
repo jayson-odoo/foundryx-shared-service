@@ -18,6 +18,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -76,9 +77,41 @@ def handle_leadgen_change(db: Session, obj: str, entry_id: str, value: Any) -> N
     form_id = _clean_id(value.get("form_id"))
     created = value.get("created_time")
     created_time = created if isinstance(created, int) and not isinstance(created, bool) else None
+    _enqueue_after_commit(db, (page_id, leadgen_id, form_id, created_time))
+
+
+_PENDING_KEY = "lead_capture_pending_leadgen"
+
+
+def _enqueue_after_commit(db: Session, args: tuple) -> None:
+    """Queue the task once the ingress COMMITS (the registry commits right after
+    a successful handler; a rolled-back handler queues nothing). Never inside
+    the handler's savepoint: an eager run (dev / test copy) would otherwise
+    work on the same connection mid-transaction."""
+    pending = db.info.setdefault(_PENDING_KEY, [])
+    pending.append(args)
+    if len(pending) == 1:
+        event.listen(db, "after_commit", _fire_pending, once=True)
+        event.listen(db, "after_rollback", _drop_pending, once=True)
+
+
+def _drop_pending(session: Session) -> None:
+    session.info.pop(_PENDING_KEY, None)
+    if event.contains(session, "after_commit", _fire_pending):
+        event.remove(session, "after_commit", _fire_pending)
+
+
+def _fire_pending(session: Session) -> None:
+    pending = session.info.pop(_PENDING_KEY, [])
+    if event.contains(session, "after_rollback", _drop_pending):
+        event.remove(session, "after_rollback", _drop_pending)
     from app.workflow_engine.worker import lead_capture_process_leadgen
 
-    lead_capture_process_leadgen.delay(page_id, leadgen_id, form_id, created_time)
+    for args in pending:
+        try:
+            lead_capture_process_leadgen.delay(*args)
+        except Exception:  # noqa: BLE001 - Meta retries the webhook; backfill recovers
+            logger.exception("leadgen enqueue failed")
 
 
 def _source_token(source: LcSource) -> Optional[Dict[str, Any]]:
