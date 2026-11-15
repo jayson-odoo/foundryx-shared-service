@@ -637,6 +637,16 @@ def test_rb_full_text_only_on_own_items(setup):
     for key in ("submittedAt", "productName"):
         assert key not in cards[theirs], key
         assert key in cards[own], key
+    # Review should-fix 3: roadmap + changelog cards omit them too.
+    road = s["client"].get("/portal/ideas/roadmap", headers=h).json()
+    road_cards = {c["id"]: c for col in road["columns"] for c in col["ideas"]}
+    for key in ("submittedAt", "productName"):
+        assert key not in road_cards[theirs], key
+        assert key in road_cards[own], key
+    _set(s, theirs, status_id=_status_id(s, "delivered"))
+    log = {c["id"]: c for c in s["client"].get("/portal/ideas/changelog", headers=h).json()["items"]}
+    for key in ("submittedAt", "productName"):
+        assert key not in log[theirs], key
     # Staff still read everything.
     staff = s["client"].get(f"/portal/ideas/{theirs}", headers=_staff_session(s)).json()
     assert staff["problem"] == "Customer X pays 12% less"
@@ -718,3 +728,56 @@ def test_rb_intake_vote_by_a_twin_counts_as_the_persons_vote(setup):
     assert s["client"].get(f"/portal/ideas/{iid}", headers=h).json()["myVote"] is True
     off = s["client"].post(f"/portal/ideas/{iid}/vote", headers=h).json()
     assert off["upvotes"] == 0 and off["myVote"] is False
+
+
+
+def _status_id(s, key):
+    from modules.ideation.services.statuses import idea_status_id
+
+    db = s["factory"]()
+    try:
+        return idea_status_id(db, key, DEFAULT_TENANT_ID)
+    finally:
+        db.close()
+
+
+def test_rb_legacy_double_votes_collapse_on_toggle(setup):
+    """Review should-fix 2: a person with up votes under two same-phone
+    contacts (pre-lane data) is one 'on' vote; turning it off removes both."""
+    from modules.ideation.models import IdeaVote
+
+    s = setup
+    a = _contact(s, phone="+60123450001")
+    twin = _contact(s, phone="+60 12-345 0001")
+    iid = _idea(s, 541, upvotes=2)
+    db = s["factory"]()
+    try:
+        for v in (a, twin):
+            db.add(IdeaVote(tenant_id=DEFAULT_TENANT_ID, idea_id=iid, voter_id=v, dir="up"))
+        db.commit()
+    finally:
+        db.close()
+    h = _contact_session(s, a)
+    off = s["client"].post(f"/portal/ideas/{iid}/vote", headers=h).json()
+    assert off == {"id": iid, "upvotes": 0, "myVote": False}
+
+
+def test_rb_whatsapp_vote_after_board_vote_is_not_a_second_vote(setup):
+    """Review should-fix 1: a board vote, then a duplicate WhatsApp submission
+    from the same phone on another contact row = still one vote."""
+    from modules.ideation.models import Idea
+    from modules.ideation.services.intake import IntakeService
+
+    s = setup
+    a = _contact(s, phone="+60123450001")
+    twin = _contact(s, phone="+60 12-345 0001")
+    iid = _idea(s, 542)
+    h = _contact_session(s, twin)
+    assert s["client"].post(f"/portal/ideas/{iid}/vote", headers=h).json()["upvotes"] == 1
+    db = s["factory"]()
+    try:
+        IntakeService(db)._register_submitter_upvote(DEFAULT_TENANT_ID, iid, a)
+        db.commit()
+        assert db.query(Idea).filter(Idea.id == iid).first().upvotes == 1
+    finally:
+        db.close()

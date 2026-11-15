@@ -10,6 +10,9 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/public/feedback/board/LINKTOKEN_abcdefghijklmnopqrstuvwxyz0123',
   useParams: () => ({}),
 }));
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({ timeZone: 'UTC', formatDmyDate: (v: string) => v.slice(0, 10) }),
+}));
 vi.mock('@/hooks/use-branding', () => ({
   useTenantBranding: () => ({
     branding: { isBranded: true, tenantName: 'Tenant', appName: null, slogan: null, logoUrl: null, faviconUrl: null, illustrationUrl: null, tokens: null, version: 0 },
@@ -22,12 +25,14 @@ const svc = vi.hoisted(() => ({
   list: vi.fn(),
   products: vi.fn(),
   me: vi.fn(),
+  changelog: vi.fn(),
 }));
 vi.mock('@/services/idea-portal-service', () => ({ ideaPortalService: svc }));
 
 import { linkPortalPaths, mineFilterLabel } from '@/hooks/use-idea-portal';
 import { LinkPortalRoot } from './portal-root';
 import { FeedbackView } from './feedback-view';
+import { ChangelogView } from './changelog-view';
 
 const TOKEN = 'LINKTOKEN_abcdefghijklmnopqrstuvwxyz0123';
 const contact: PortalPrincipal = { kind: 'contact', name: 'Dealer', role: 'Dealer', productId: null, canManage: false };
@@ -94,6 +99,26 @@ describe('LinkPortalRoot', () => {
     const rows = await screen.findAllByTestId('portal-idea-row');
     expect(rows[0]).toHaveAttribute('href', `/public/feedback/board/${TOKEN}/IDEA-0003`);
     expect(rows[1]).toHaveAttribute('href', `/public/feedback/board/${TOKEN}/row-uuid-2`);
+  });
+
+  it('changelog entries link to the item NUMBER too (review should-fix 4)', async () => {
+    svc.linkSession.mockResolvedValue({ token: 'portal-jwt', principal: contact });
+    svc.changelog.mockResolvedValue({
+      items: [
+        {
+          id: 'row-uuid-9', ideaNumber: 'IDEA-0005', title: 'Bulk tagging', upvotes: 2, commentCount: 0,
+          isMine: false, myVote: false, column: 'complete', statusLabel: 'Delivered', statusColor: 'green',
+          deliveredAt: '2026-11-01T00:00:00Z', note: null,
+        },
+      ],
+    });
+    render(
+      <LinkPortalRoot linkToken={TOKEN}>
+        <ChangelogView />
+      </LinkPortalRoot>,
+    );
+    const title = await screen.findByText('Bulk tagging');
+    expect(title.closest('a')).toHaveAttribute('href', `/public/feedback/board/${TOKEN}/IDEA-0005`);
   });
 
   it('a bad or cancelled link shows the not-valid message', async () => {

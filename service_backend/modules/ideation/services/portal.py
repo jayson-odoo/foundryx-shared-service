@@ -535,10 +535,8 @@ class IdeaPortalService:
         if self.p.kind == KIND_CONTACT:
             # The link's own contact + every same-tenant contact with the same
             # phone digits (one person, several workspace rows). Never by name.
-            from .ownership import find_contacts_by_phone
-
-            ids = {self.p.subject} | {c.id for c in find_contacts_by_phone(self.db, self.p.tenant_id, self.p.phone)}
-            return q.filter(Idea.submitter_contact_id.in_(ids))
+            # Same (cached) set the vote uses.
+            return q.filter(Idea.submitter_contact_id.in_(self._my_voter_ids()))
         return owned_filter(self.db, q, self.p.tenant_id, self.p.identity)
 
     def _resolve(self, idea_id: str, *, follow_merge: bool) -> Idea:
@@ -810,10 +808,9 @@ class IdeaPortalService:
             return [self.p.voter_id]
         cached = getattr(self, "_voter_ids_cache", None)
         if cached is None:
-            from .ownership import find_contacts_by_phone
+            from .ownership import person_contact_ids
 
-            ids = {self.p.subject} | {c.id for c in find_contacts_by_phone(self.db, self.p.tenant_id, self.p.phone)}
-            cached = self._voter_ids_cache = sorted(ids)
+            cached = self._voter_ids_cache = person_contact_ids(self.db, self.p.tenant_id, self.p.subject)
         return cached
 
     def _withhold_card(self, card: Dict[str, Any]) -> Dict[str, Any]:

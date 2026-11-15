@@ -55,7 +55,7 @@ from .intake_definitions import (
     get_intake_definition,
     next_field as compute_next_field,
 )
-from .ownership import SubmitterIdentity, find_contacts_by_phone, phone_digits
+from .ownership import SubmitterIdentity, find_contacts_by_phone, person_contact_ids, phone_digits
 from .feedback_links import SUBMITTER, mint_board_link
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
 from .idea_types import idea_type_label, resolve_idea_type
@@ -721,12 +721,16 @@ class IntakeService:
                 return
         # Tenant-scoped throughout (review round 1, blocking #3) - the vote
         # insert filters on ``tenant_id`` too, never id-alone.
+        # One vote per PERSON (lane PUBLIC-IDEAS-BOARD): a vote by any
+        # same-phone contact of this submitter (e.g. cast on the feedback board)
+        # already counts; a new one is stored under the canonical id.
+        person_ids = person_contact_ids(self.db, tenant_id, submitter_contact_id)
         exists = (
             self.db.query(IdeaVote)
             .filter(
                 IdeaVote.idea_id == idea_id,
                 IdeaVote.tenant_id == tenant_id,
-                IdeaVote.voter_id == submitter_contact_id,
+                IdeaVote.voter_id.in_(person_ids),
             )
             .first()
         )
@@ -735,7 +739,7 @@ class IntakeService:
                 IdeaVote(
                     tenant_id=tenant_id,
                     idea_id=idea_id,
-                    voter_id=submitter_contact_id,
+                    voter_id=person_ids[0],
                     dir="up",
                 )
             )
