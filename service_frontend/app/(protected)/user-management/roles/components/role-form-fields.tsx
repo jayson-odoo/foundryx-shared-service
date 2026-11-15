@@ -20,6 +20,7 @@ import { keysForResource, mergeResourceGrants } from '@/lib/permissions';
 import { roleService } from '@/services/role-service';
 import type { PermissionCatalog, PermissionResource } from '@/types/permission';
 import type { AssignableUser, RoleDetail, RoleUser } from '@/types/role';
+import { groupPermissionsByModule } from './group-permissions';
 import { userFormPath } from '../../users/components/paths';
 import { ASSIGNED_USER_STATUS_REGISTRY } from './assigned-user-status';
 import type { RoleFormValues } from './role-schema';
@@ -168,15 +169,7 @@ export interface PermissionsTabProps {
 
 export function PermissionsTab({ form, editing, catalog }: PermissionsTabProps) {
   // Group resources by owning module for section headers.
-  const groups = useMemo(() => {
-    const byModule = new Map<string, PermissionResource[]>();
-    for (const res of catalog) {
-      const list = byModule.get(res.module) ?? [];
-      list.push(res);
-      byModule.set(res.module, list);
-    }
-    return Array.from(byModule.entries()).map(([module, resources]) => ({ module, resources }));
-  }, [catalog]);
+  const groups = useMemo(() => groupPermissionsByModule(catalog), [catalog]);
 
   return (
     <FormField
@@ -189,7 +182,7 @@ export function PermissionsTab({ form, editing, catalog }: PermissionsTabProps) 
               <Card key={group.module}>
                 <CardContent className="py-1">
                   <p className="border-b border-border py-2.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    {group.module}
+                    {group.label}
                   </p>
                   {group.resources.map((resource) => (
                     <PermissionResourceRow

@@ -37,6 +37,7 @@ from ..services.actions import IdeaActionService
 from ..services.attachments import IdeaAttachmentService
 from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
+from ..services.feedback_links import cancel_feedback_link_for_idea
 from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
 from ..services.idea_types import list_idea_types
 from ..services.ideas import IdeaReadService
@@ -383,6 +384,20 @@ def delete_idea(
 ) -> Response:
     """Hard-delete an idea (and its vote rows). 404 if not found in the tenant."""
     IdeaActionService(db).delete(current_user.tenant_id, idea_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{idea_id}/feedback-link/cancel", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_feedback_link(
+    idea_id: str,
+    current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Cancel the personal feedback link of this idea's submitter contact (lane
+    PUBLIC-IDEAS-BOARD, owner QD a). The next message mints a fresh link. 404
+    when the idea is not in the tenant or has no submitter contact."""
+    if not cancel_feedback_link_for_idea(db, current_user.tenant_id, idea_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

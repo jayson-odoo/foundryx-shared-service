@@ -88,7 +88,7 @@ def _make_llm_connection(db, *, tenant_id=DEFAULT_TENANT_ID):
 def _grill_agent(db, tenant_id=DEFAULT_TENANT_ID):
     return (
         db.query(AiAgent)
-        .filter(AiAgent.tenant_id == tenant_id, AiAgent.name == "Ideation grill")
+        .filter(AiAgent.tenant_id == tenant_id, AiAgent.name == "Feedback grill")
         .first()
     )
 

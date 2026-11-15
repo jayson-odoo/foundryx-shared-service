@@ -66,7 +66,7 @@ export function useIdeas(opts?: { withBoard?: boolean }): UseIdeas {
       setProducts(nextProducts);
       setColumns(board?.columns);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load ideas.');
+      setError(e instanceof Error ? e.message : 'Could not load feedback.');
     } finally {
       setLoading(false);
     }

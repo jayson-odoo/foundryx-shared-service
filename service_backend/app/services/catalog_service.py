@@ -137,7 +137,7 @@ _LINK_BASE_ERROR = (
 def validate_public_link_base(value: Optional[str]) -> Optional[str]:
     """Normalize a tenant ``public_link_base_url``: blank/None clears it (NULL =
     each feature's default origin). Otherwise it is either an absolute http(s)
-    origin/path (links become ``{base}/public/ideas/{token}``; a trailing ``/`` is
+    origin/path (links become ``{base}/public/ideas/{token}`` on a foreign base, ``/public/feedback/{token}`` on the shared-service default; a trailing ``/`` is
     stripped) or a template carrying ``{token}`` (the status-token capability the
     public page is looked up by; ``{ideaId}`` may ride along) in its path/query.
     Rejected: credentials, fragments, whitespace/control chars, a bad port, a

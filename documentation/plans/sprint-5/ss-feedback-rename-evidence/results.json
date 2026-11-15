@@ -1,0 +1,140 @@
+[
+  {
+    "vp": "desktop",
+    "label": "list",
+    "url": "http://localhost:3001/feedback",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "desktop",
+    "label": "detail",
+    "url": "http://localhost:3001/feedback/8695beb6-9f3e-4d9e-b52b-d3ca1591a112?ctx=eyJwYWdlIjowLCJwYWdlU2l6ZSI6MjUsInNlYXJjaCI6IiIsInNvcnQiOnsiaWQiOiJ2b3RlcyIsImRlc2MiOnRydWV9LCJmaWx0ZXIiOm51bGwsInN0YXR1c1ZpZXciOiJhY3RpdmUifQ&i=1&from=8695beb6-9f3e-4d9e-b52b-d3ca1591a112",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "desktop",
+    "label": "board",
+    "url": "http://localhost:3001/feedback/board",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "desktop",
+    "label": "redirect-list",
+    "from": "/ideation/ideas",
+    "landed": "http://localhost:3001/feedback?keep=1",
+    "chain": [
+      "308 http://localhost:3001/ideation/ideas?keep=1"
+    ]
+  },
+  {
+    "vp": "desktop",
+    "label": "redirect-list",
+    "url": "http://localhost:3001/feedback?keep=1",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "desktop",
+    "label": "redirect-board",
+    "from": "/ideation/board",
+    "landed": "http://localhost:3001/feedback/board?keep=1",
+    "chain": [
+      "308 http://localhost:3001/ideation/board?keep=1"
+    ]
+  },
+  {
+    "vp": "desktop",
+    "label": "redirect-board",
+    "url": "http://localhost:3001/feedback/board?keep=1",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "desktop",
+    "label": "redirect-public",
+    "from": "/public/ideas/tokdemofeedback0001xyz",
+    "landed": "http://localhost:3001/public/feedback/tokdemofeedback0001xyz?keep=1",
+    "chain": [
+      "308 http://localhost:3001/public/ideas/tokdemofeedback0001xyz?keep=1"
+    ]
+  },
+  {
+    "vp": "desktop",
+    "label": "redirect-public",
+    "url": "http://localhost:3001/public/feedback/tokdemofeedback0001xyz?keep=1",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "mobile",
+    "label": "list",
+    "url": "http://localhost:3001/feedback",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "mobile",
+    "label": "detail",
+    "url": "http://localhost:3001/feedback/8695beb6-9f3e-4d9e-b52b-d3ca1591a112?ctx=eyJwYWdlIjowLCJwYWdlU2l6ZSI6MjUsInNlYXJjaCI6IiIsInNvcnQiOnsiaWQiOiJ2b3RlcyIsImRlc2MiOnRydWV9LCJmaWx0ZXIiOm51bGwsInN0YXR1c1ZpZXciOiJhY3RpdmUifQ&i=1&from=8695beb6-9f3e-4d9e-b52b-d3ca1591a112",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "mobile",
+    "label": "board",
+    "url": "http://localhost:3001/feedback/board",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "mobile",
+    "label": "redirect-list",
+    "from": "/ideation/ideas",
+    "landed": "http://localhost:3001/feedback?keep=1",
+    "chain": [
+      "308 http://localhost:3001/ideation/ideas?keep=1"
+    ]
+  },
+  {
+    "vp": "mobile",
+    "label": "redirect-list",
+    "url": "http://localhost:3001/feedback?keep=1",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "mobile",
+    "label": "redirect-board",
+    "from": "/ideation/board",
+    "landed": "http://localhost:3001/feedback/board?keep=1",
+    "chain": [
+      "308 http://localhost:3001/ideation/board?keep=1"
+    ]
+  },
+  {
+    "vp": "mobile",
+    "label": "redirect-board",
+    "url": "http://localhost:3001/feedback/board?keep=1",
+    "ideaHits": [],
+    "hScroll": false
+  },
+  {
+    "vp": "mobile",
+    "label": "redirect-public",
+    "from": "/public/ideas/tokdemofeedback0001xyz",
+    "landed": "http://localhost:3001/public/feedback/tokdemofeedback0001xyz?keep=1",
+    "chain": [
+      "308 http://localhost:3001/public/ideas/tokdemofeedback0001xyz?keep=1"
+    ]
+  },
+  {
+    "vp": "mobile",
+    "label": "redirect-public",
+    "url": "http://localhost:3001/public/feedback/tokdemofeedback0001xyz?keep=1",
+    "ideaHits": [],
+    "hScroll": false
+  }
+]

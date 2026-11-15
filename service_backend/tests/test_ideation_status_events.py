@@ -288,7 +288,7 @@ def test_event_payload_exact_keys(ideation_client):
         "event_id", "seq", "kind", "occurred_at", "idea_id", "idea_number",
         "idea_title", "product_id", "status_label", "from_status_label",
         "track_url", "requester_phone", "merged_into", "separated_from", "is_test",
-        "idea_type",
+        "idea_type", "board_url",
     }
     assert payload["kind"] == "status_changed"
     assert payload["status_label"] == "Triaged"
@@ -299,6 +299,7 @@ def test_event_payload_exact_keys(ideation_client):
     assert payload["separated_from"] is None
     assert payload["is_test"] is False
     assert payload["track_url"]
+    assert "/public/feedback/board/" in payload["board_url"]
 
 
 # ── AC-94-64 ───────────────────────────────────────────────────────────────

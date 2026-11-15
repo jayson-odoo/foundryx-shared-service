@@ -5,6 +5,7 @@
  * preview.
  */
 import type { Idea, MergeFieldChoices, MergeFieldKey } from '@/types/ideation';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 export type MergeValue = string | string[] | null;
 
@@ -35,7 +36,7 @@ export const MERGE_ROWS: MergeRow[] = [
 ];
 
 export const ideaLabel = (idea: Idea): string =>
-  idea.ideaNumber ?? text(idea.title) ?? 'another idea';
+  formatFeedbackNumber(idea.ideaNumber) ?? text(idea.title) ?? 'another feedback item';
 
 /** True when at least one column has something to pick in this row. */
 export function rowHasContent(row: MergeRow, ideas: Idea[]): boolean {

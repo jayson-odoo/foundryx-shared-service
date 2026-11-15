@@ -18,6 +18,8 @@ vi.mock('@/hooks/use-datetime', () => ({
     formatDate: (v: string) => v.slice(0, 10),
     formatDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
     formatTime: (v: string) => v.slice(11, 16),
+    formatDmyDate: (v: string) => v.slice(0, 10),
+    formatDmyDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
   }),
 }));
 vi.mock('@/hooks/use-branding', () => ({
@@ -136,12 +138,33 @@ describe('IdeaPage', () => {
     const p = mockPage();
     render(<IdeaPage ideaId="i10" />);
     const hero = screen.getByTestId('portal-idea-hero');
-    expect(within(hero).getByText('IDEA-0010')).toBeInTheDocument();
+    expect(within(hero).getByText('FB-0010')).toBeInTheDocument();
     expect(within(hero).getByRole('heading', { level: 1 })).toHaveTextContent('Order status tracking for dealers');
     expect(within(hero).getByText('New')).toBeInTheDocument();
-    expect(within(hero).getByText('Your idea')).toBeInTheDocument();
+    expect(within(hero).getByText('Yours')).toBeInTheDocument();
     await userEvent.click(within(hero).getByRole('button', { name: /upvote \(2\)/i }));
     expect(p.vote).toHaveBeenCalledTimes(1);
+  });
+
+  it('owner ruling (b): another dealer item (text withheld by the API) shows no free-text section', () => {
+    // Strict (b): the API OMITS the text, submitter and product keys.
+    const omitted = new Set([
+      'problem', 'desiredOutcome', 'useCases', 'currentWorkaround', 'submitterFirstName', 'submittedAt', 'productName',
+    ]);
+    const withheld = {
+      ...(Object.fromEntries(Object.entries(idea).filter(([k]) => !omitted.has(k))) as PortalIdea),
+      isMine: false,
+    };
+    mockPage({ idea: q<PortalIdea>(withheld) });
+    render(<IdeaPage ideaId="i10" />);
+    expect(screen.getByTestId('portal-idea-hero')).toHaveTextContent('Order status tracking for dealers');
+    expect(screen.queryByTestId('portal-idea-fields')).not.toBeInTheDocument();
+    expect(screen.queryByText('Business problem')).not.toBeInTheDocument();
+    expect(screen.queryByText('Current workaround')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Submitted by/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Product')).not.toBeInTheDocument();
+    expect(screen.queryByText('2026-10-02')).not.toBeInTheDocument();
+    expect(screen.getByTestId('portal-activity')).toBeInTheDocument();
   });
 
   it('activity feed: status change, threaded reply, grouped upvotes, submitted', () => {
@@ -204,7 +227,7 @@ describe('IdeaPage', () => {
   it('not found → the uniform message', () => {
     mockPage({ idea: { ...q<PortalIdea>(idea), data: null, notFound: true } });
     render(<IdeaPage ideaId="nope" />);
-    expect(screen.getByText('This idea isn’t available.')).toBeInTheDocument();
+    expect(screen.getByText('This feedback isn’t available.')).toBeInTheDocument();
   });
 });
 
@@ -219,10 +242,11 @@ describe('RoadmapBoard', () => {
     render(<RoadmapBoard columns={columns} ideaHref={(id) => `/portal/ideas/${id}`} onVote={onVote} />);
     const sections = screen.getAllByRole('region');
     expect(sections.map((s) => s.getAttribute('aria-label'))).toEqual(['Under review', 'Planned']);
-    expect(within(sections[1]).getByText('No ideas')).toBeInTheDocument();
+    expect(within(sections[1]).getByText('No feedback')).toBeInTheDocument();
     expect(within(sections[0]).getByText('7')).toBeInTheDocument(); // the column total, not the capped card count
     const link = within(sections[0]).getByTestId('portal-idea-card');
-    expect(link).toHaveAttribute('href', '/portal/ideas/a');
+    // Crew-pass fix (4): the address bar shows the item number, never the row id.
+    expect(link).toHaveAttribute('href', '/portal/ideas/IDEA-0010');
     const box = within(link).getByRole('button', { name: /remove upvote \(4\)/i });
     expect(box).toHaveAttribute('aria-pressed', 'true');
     await userEvent.click(box);

@@ -7,6 +7,7 @@ retry loop on the single-connection SQLite test engine).
 """
 import re
 import secrets
+from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -40,6 +41,30 @@ def _next_number_fallback(db: Session) -> int:
         if m:
             best = max(best, int(m.group(1)))
     return best + 1
+
+
+def display_idea_number(number: Optional[str]) -> Optional[str]:
+    """What a user reads for a stored ``IDEA-0016``: ``FB-0016`` (lane
+    FEEDBACK-RENAME, owner ruling 15 Nov - users never see "idea"). The stored
+    value and the wire field stay ``IDEA-...``; anything else passes through.
+    The frontend twin is ``lib/feedback-number.ts formatFeedbackNumber``."""
+    if not number:
+        return number
+    m = _NUMBER_RE.match(number)
+    return f"FB-{m.group(1)}" if m else number
+
+
+_DISPLAY_RE = re.compile(r"^FB-(\d+)$", re.IGNORECASE)
+
+
+def stored_idea_number(value: Optional[str]) -> Optional[str]:
+    """The stored form of a number a user typed or a link carries: ``FB-0016``
+    (any case) -> ``IDEA-0016``; anything else passes through. The inverse of
+    ``display_idea_number`` so a lookup accepts both forms."""
+    if not value:
+        return value
+    m = _DISPLAY_RE.match(value.strip())
+    return f"IDEA-{m.group(1)}" if m else value
 
 
 def next_idea_number(db: Session) -> str:

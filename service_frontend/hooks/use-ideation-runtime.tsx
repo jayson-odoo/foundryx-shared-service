@@ -6,7 +6,7 @@ import {
   ideaFormHref,
   ideaNewPath,
   ideasListPath,
-} from '@/app/(protected)/ideation/ideas/components/paths';
+} from '@/app/(protected)/feedback/components/paths';
 
 /**
  * Ideation runtime - the "one component, two modes" seam (WS-C1 / AC-CAP-9/10).
