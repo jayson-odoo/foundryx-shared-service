@@ -33,6 +33,7 @@ FIXTURES = ROOT / "documentation" / "plans" / "meta-leads" / "fixtures"
 PAGE_ID = "300000000000001"
 LEAD_ID = "100000000000001"
 FORM_ID = "400000000000001"
+FORM_NAME = "S-META test 1"
 SYSTEM_TOKEN = "SYSUSERtok3n0123456789abcdefSECRET"
 PAGE_TOKEN = "PAGEtok3n0123456789abcdefSECRETvalue"
 APP_SECRET = "app-s3cret"
@@ -58,6 +59,9 @@ class FakeGraph:
         self.page_status = page_status
         self.calls: list[httpx.Request] = []
         self.subscribed: list[str] = []
+        self.form_status = 200
+        self.form_name = FORM_NAME
+        self.extra_leads: dict = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
@@ -71,6 +75,13 @@ class FakeGraph:
             if self.page_status != 200:
                 return httpx.Response(self.page_status, json={"error": {"message": f"(#10) bad {SYSTEM_TOKEN}", "code": 10}})
             return httpx.Response(200, json={"access_token": PAGE_TOKEN, "name": "Foundryx Test Page", "id": PAGE_ID})
+        if path.endswith(f"/{FORM_ID}") and request.method == "GET":
+            if self.form_status != 200:
+                return httpx.Response(self.form_status, json={"error": {"message": "nope", "code": 2}})
+            return httpx.Response(200, json={"id": FORM_ID, "name": self.form_name})
+        for lead_id, body in self.extra_leads.items():
+            if path.endswith(f"/{lead_id}"):
+                return httpx.Response(200, json=body)
         if path.endswith(f"/{FORM_ID}/test_leads"):
             return httpx.Response(200, json={"data": [{"id": i} for i in self.test_ids]})
         if path.endswith(f"/{LEAD_ID}"):
@@ -888,3 +899,70 @@ def test_fields_and_field_map_over_the_gateway(client, lc, graph):
     assert unknown.status_code == 422 and unknown.json()["error"]["code"] == "invalid_field_map"
     missing = client.put("/api/v1/lead-capture/sources/not-mine/field-map", json={"formId": "*", "map": {}}, headers=key)
     assert missing.status_code == 404 and missing.json()["error"]["code"] == "source_not_found"
+
+
+
+# ── live-run finding 1: formName on the Lead (additive, nullable) ───────────
+
+def _form_reads(graph):
+    return [c for c in graph.calls if c.url.path.endswith(f"/{FORM_ID}") and c.method == "GET"]
+
+
+def test_lead_carries_form_name_in_push_pull_and_notice(client, lc, graph, posts):
+    headers = _login(client)
+    assert _connect(client, headers).status_code == 201
+    key = _key(client, headers)
+    _register(client, key)
+    _signed_webhook(client, _fixture("leadgen-webhook-test-lead.json"))
+    (lead,) = _leads(lc)
+    assert lead.form_name == FORM_NAME
+    pushed = json.loads(posts[0]["body"])["data"]
+    assert pushed["formId"] == FORM_ID and pushed["formName"] == FORM_NAME
+    pulled = client.get("/api/v1/lead-capture/leads?since=2026-01-01T00:00:00Z", headers={"Authorization": f"Bearer {key}"}).json()["data"]
+    assert pulled[0]["formName"] == FORM_NAME
+    src = client.get("/lead-capture/sources", headers=headers).json()["data"][0]
+    assert src["needsMapping"] == [{"formId": FORM_ID, "formName": FORM_NAME, "unmappedCount": 1}]
+    # read with the Page token, in the header, asking for the name only
+    (read,) = _form_reads(graph)
+    assert read.headers["Authorization"] == f"Bearer {PAGE_TOKEN}" and read.url.params.get("fields") == "name"
+
+
+def test_form_name_is_read_once_per_form(lc, graph):
+    second = "100000000000002"
+    graph.extra_leads[second] = {**graph.lead, "id": second}
+    db = lc()
+    try:
+        connect_service.connect_facebook(db, DEFAULT_TENANT_ID, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+        leadgen_service.process_leadgen(db, PAGE_ID, second, FORM_ID)
+    finally:
+        db.close()
+    assert [lead.form_name for lead in _leads(lc)] == [FORM_NAME, FORM_NAME]
+    assert len(_form_reads(graph)) == 1
+
+
+def test_form_name_read_failure_never_blocks_the_lead(lc, graph, posts):
+    graph.form_status = 500
+    second = "100000000000002"
+    graph.extra_leads[second] = {**graph.lead, "id": second}
+    db = lc()
+    try:
+        connect_service.connect_facebook(db, DEFAULT_TENANT_ID, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        delivery_service.create_endpoint(db, DEFAULT_TENANT_ID, "https://consumer.example/leads", ["lead.created"])
+        leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+        graph.form_status = 200  # a failed read is not cached: the next lead retries it
+        leadgen_service.process_leadgen(db, PAGE_ID, second, FORM_ID)
+    finally:
+        db.close()
+    names = {lead.platform_lead_id: lead.form_name for lead in _leads(lc)}
+    assert names == {LEAD_ID: None, second: FORM_NAME}
+    first_push = json.loads(posts[0]["body"])["data"]
+    assert first_push["formName"] is None and first_push["formId"] == FORM_ID
+    assert len(_form_reads(graph)) == 2
+
+
+def test_form_name_migration_is_additive():
+    text = (ROOT / "service_backend/modules/lead_capture/alembic/versions/0002_lc_lead_form_name.py").read_text()
+    rev = text.split('revision = "', 1)[1].split('"', 1)[0]
+    assert len(rev) <= 32 and 'down_revision = "0001_lead_capture_init"' in text
+    assert "IF NOT EXISTS" in text and "form_name" in text
