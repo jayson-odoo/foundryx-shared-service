@@ -17,6 +17,11 @@ free PO row instead of adding a new one when it can (section 4.2); the retry rul
 changed: a key whose first call provably changed nothing is released for a resend (section 4.0). Existing
 bodies and statuses are unchanged.
 
+2026-11-15 (plan 64, `64-autocount-po-link-at-so-location-acceptance-criteria.md`): `po-links` answers a new
+top-level `detail` object on `done`: the PO row the link landed on, as read back, so `detail.Location` is where
+AutoCount holds the linked row (the SO row's location once the move landed). `ROW_RECEIVED` now carries a plain
+`message`. Additive: no other field, status or route changes (section 4.5).
+
 ## 1. What it is
 
 Four routes on the existing public gateway (`/api/v1/autocount/*`) that change the link between a
@@ -255,6 +260,26 @@ rules in 57 contract sections 2a.1 and 8. Absent or invalid = stored empty, neve
 | `errorCode` | string or null | Null on a clean `done`; `LOCATION_NOT_MOVED` on a `done` whose location move did not land (section 5); else a code from section 5 |
 | `document` | object or null | On `done` only: the whole document as AutoCount reads back after the write (PO, or SPO), in the vendor's field names (`DocKey`, `DocNo`, `LastModified`, `Details[]` with `DtlKey`, `ItemCode`, `Location`, `UOM`, `Qty`, `FromSODtlKey`, `FromDocDtlKey`, ...). Null otherwise |
 
+| `detail` | object or null | `po-links` only (plan 64): on `done`, the PO row the link landed on, as read back, in the vendor's field names (`DtlKey`, `Location`, `Qty`, `FromSODtlKey`, ...). Whole row: the new row named in `replacedLines`; split, or a partly received row cut to its received quantity: the new linked row. `detail.Location` is where AutoCount holds the row: the SO row's location when the move landed; with `LOCATION_NOT_MOVED` in `warnings` it is the location the row really sits at. Null on every other outcome. No other route carries the key |
+
+`po-links` `done` (whole row, PO row at BR1, SO row at BRW-AM):
+
+```json
+{ "actionId": null, "outcome": "done", "errorCode": null, "operationId": "5b0c...", "message": "",
+  "warnings": [], "docKey": 12008, "docNo": "202602-S0007",
+  "replacedLines": [{ "oldDtlKey": 12009, "newDtlKey": 12031 }],
+  "detail": { "DtlKey": 12031, "ItemCode": "SRTKS7090", "Qty": 1.0, "Location": "BRW-AM", "FromSODtlKey": 11990, "...": "..." },
+  "document": { "...": "the PO as read back" } }
+```
+
+`po-links` refused, goods received on the row (nothing sent, the key is released):
+
+```json
+409 { "actionId": null, "outcome": "refused", "errorCode": "ROW_RECEIVED", "operationId": "7a1d...",
+      "message": "Goods have already been received on this purchase order line at BR1, so it cannot be changed or moved here. Handle the received goods in AutoCount, then try again.",
+      "warnings": [], "docKey": 12008, "docNo": null, "replacedLines": [], "detail": null, "document": null }
+```
+
 The same JSON is returned for every outcome, with only the HTTP status differing. Responses are
 `Cache-Control: no-store`.
 
@@ -294,7 +319,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `UOM_MISMATCH` | Different units of measure | Do not offer this pair |
 | `QTY_INVALID` | `qty` is zero or negative, above 1,000,000,000, or has more than 8 decimal places (checked before AutoCount is read) | Fix the input |
 | `QTY_ABOVE_FREE` | `qty` is above the PO row qty | Lower `qty` |
-| `ROW_RECEIVED` | The PO row has goods received against it | Handle it in AutoCount |
+| `ROW_RECEIVED` | The PO row has goods received against it (the whole row, or any receipt when the partial-receipt split is off). A PARTLY received row is not refused: it is cut to the received quantity at its own location and the open remainder is linked and moved (owner ruling Q2). `message` is a plain reason to show as is | Show `message` and "Try again" |
 | `IDEMPOTENCY_CONFLICT` | The `Idempotency-Key` was used for a different body or route and its first call did not release it | Use a new key for a new change |
 | `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
