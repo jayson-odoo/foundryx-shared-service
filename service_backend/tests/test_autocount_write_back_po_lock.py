@@ -388,3 +388,82 @@ def test_pol_pg_a_nested_take_reuses_the_held_connection_and_releases_only_its_o
         freed = _in_thread(lambda: _enter(so_row_locks(pg_db, "c1", [33])))
         assert freed.get("value") == "got", freed  # the nested level gave its own lock back
     assert _held_tokens(pg_db.engine) == 0
+
+
+# ============================== review round 1 ====================================================
+
+def _pending_op(h, key: str, op: str, dtl_key: int, snapshot: Dict[str, Any], status="pending_verification"):
+    row = AcWriteOperation(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, key_id=KEY_ID, idempotency_key=key, request_hash="x",
+        op=op, doc_type="PO", doc_key=7001, dtl_key=dtl_key, status=status, snapshot_json=snapshot,
+        updated_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    h.db.add(row)
+    h.db.commit()
+    return row
+
+
+def test_pol_05_a_pending_part_row_link_row_counts_against_the_free_qty(h, rig):
+    """A link_row below the row qty runs as the split: its snapshot is a split snapshot."""
+    h.vendor.timeout_next("PUT", "EditPurchaseOrderbydockey")
+    first = h.run("link_row", dict(doc_key=7001, dtl_key=rig.w.p_free, so_doc_key=7005, so_dtl_key=rig.s5[0], qty=3),
+                  key="pl-n")
+    assert first.outcome == "pending_verification", (first.outcome, first.error_code)
+    _age(h, first)
+    second = h.run(OP, rig.params([(7006, rig.s6[0], 2)]), key="pl-o")  # 2 > the 1 left free
+    assert second.error_code == "ALL_LINKS_SKIPPED", (second.outcome, second.error_code)
+    assert [s["code"] for s in second.batch["skipped"]] == ["QTY_ABOVE_FREE"], second.batch
+
+
+def test_pol_05_a_needs_attention_batch_counts_against_the_free_qty(h, rig):
+    _pending_op(h, "pl-p", OP, rig.w.p_free, {"mode": "batch", "knownKeys": [],
+                "links": [{"soDtlKey": rig.s5[0], "qty": "3"}]}, status="needs_attention")
+    second = h.run(OP, rig.params([(7006, rig.s6[0], 2)]), key="pl-q")
+    assert [s["code"] for s in second.batch["skipped"]] == ["QTY_ABOVE_FREE"], (second.error_code, second.batch)
+
+
+def test_pol_05_one_landed_row_answers_for_one_pending_link_only(h, rig):
+    """World's p_linked row (qty 4 on so_a) is the one landed split; the second identical split did not land."""
+    for key in ("pl-r", "pl-s"):
+        _pending_op(h, key, "split_link", rig.w.p_free, {"mode": "split", "links": [{"soDtlKey": rig.w.so_a, "qty": "4"}]})
+    second = h.run(OP, rig.params([(7006, rig.s6[0], 1)]), key="pl-t")
+    assert [s["code"] for s in second.batch["skipped"]] == ["QTY_ABOVE_FREE"], (second.error_code, second.batch)
+
+
+def test_pol_03_a_lock_connection_that_breaks_before_the_body_is_busy_and_not_stored(h, rig, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import OperationalError
+
+    orig = h.db.get_bind
+
+    class Conn:
+        def execute(self, *a, **k):
+            raise OperationalError("SELECT", {}, Exception("server closed the connection unexpectedly"))
+
+        def close(self):
+            pass
+
+        def invalidate(self):
+            pass
+
+    class Engine:
+        dialect = SimpleNamespace(name="postgresql")
+
+        @property
+        def engine(self):
+            return self
+
+        def connect(self):
+            return Conn()
+
+    def get_bind(*a, **k):
+        if sys._getframe(1).f_globals.get("__name__") == "modules.autocount.write_back.link_lock":
+            return Engine()
+        return orig(*a, **k)
+
+    monkeypatch.setattr(h.db, "get_bind", get_bind)
+    res = h.run(OP, rig.params(rig.three()), key="pl-u")
+    assert res.outcome == "refused" and res.error_code == "DOC_BUSY", (res.outcome, res.error_code)
+    assert h.vendor.writes() == [] and _stored(h, "pl-u") == 0

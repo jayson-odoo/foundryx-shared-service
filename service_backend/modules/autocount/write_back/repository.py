@@ -265,14 +265,15 @@ class OperationRepository:
     def pending_po_row_links(
         self, tenant_id: str, company_id: str, doc_key: int, dtl_key: int, *, exclude_id: Optional[str] = None,
     ) -> List[AcWriteOperation]:
-        """The ``pending_verification`` link operations (outcome unknown, they may have landed) on one PO row."""
+        """The unresolved link operations on one PO row: ``pending_verification`` (outcome unknown) and
+        ``needs_attention`` (may have landed in part); both may already have taken some of the row."""
         query = self.db.query(AcWriteOperation).filter(
             AcWriteOperation.tenant_id == tenant_id,
             AcWriteOperation.company_id == company_id,
             AcWriteOperation.doc_type == "PO",
             AcWriteOperation.doc_key == doc_key,
             AcWriteOperation.dtl_key == dtl_key,
-            AcWriteOperation.status == OUTCOME_PENDING,
+            AcWriteOperation.status.in_((OUTCOME_PENDING, "needs_attention")),
             AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
         )
         if exclude_id is not None:

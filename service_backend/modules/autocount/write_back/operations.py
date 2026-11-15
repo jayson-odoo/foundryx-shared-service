@@ -489,7 +489,8 @@ class OperationService:
 
     def _execute(self, row: AcWriteOperation, company: AcCompany, op: str, spec: _Spec,
                  params: Dict[str, Any]) -> OperationResult:
-        """Every operation that writes a PO runs under the per-PO-document lock, and a link-type operation
+        """Every row operation that writes a PO (the document primitives keep the action / operation indexes)
+        runs under the per-PO-document lock, and a link-type operation
         also under its per-SO-row lock (``link_lock``, PO first): the read, the over-link guard and the write
         that follows must not interleave with another caller's on the same PO or the same SO row. A lock not
         won is ``DOC_BUSY`` (never stored under the key)."""
@@ -1163,22 +1164,26 @@ class OperationService:
         return snapshot, res.document
 
     def _po_row_pending_qty(self, company: AcCompany, spec: _Spec, doc: Doc) -> Decimal:
-        """Qty of the PO row that ``pending_verification`` link operations on it would cover and that the fresh
-        read does not show yet (a landed link is already in the fresh rows: never counted twice). A whole-row
-        link that has not landed covers the whole row (less any received qty)."""
+        """Qty of the PO row that unresolved link operations on it (``pending_verification`` or
+        ``needs_attention``: they may have landed) would cover and that the fresh read does not show yet (a
+        landed link is already in the fresh rows: never counted twice, and one fresh row answers for one link
+        only). A whole-row link that has not landed covers the whole row (less any received qty)."""
         total = Decimal(0)
         rows = doc.get("Details") or []
+        pool = list(rows)
         for op in self.ops.pending_po_row_links(company.tenant_id, company.id, spec.doc_key, spec.dtl_key,
                                                 exclude_id=self._row.id if self._row else None):
             snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
-            if op.op in (LINK_BATCH, SPLIT_LINK):
+            if snap.get("mode") in ("batch", "split"):  # a part-row link_row runs as a split: its snapshot says
                 known = set(snap.get("knownKeys") or [])
                 for link in snap.get("links") or []:
                     want, qty = int(link.get("soDtlKey") or 0), _dec(link.get("qty"))
-                    landed = any(r.get("DtlKey") not in known and _link_of("PO", r) == want
-                                 and _dec(r.get("Qty")) == qty for r in rows)
-                    if not landed:
+                    match = next((r for r in pool if r.get("DtlKey") not in known and _link_of("PO", r) == want
+                                  and _dec(r.get("Qty")) == qty), None)
+                    if match is None:
                         total += qty
+                    else:
+                        pool.remove(match)
                 continue
             if not any(r.get("DtlKey") == op.dtl_key for r in rows):
                 continue  # the row was replaced: the whole-row link landed (its row is gone)

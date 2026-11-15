@@ -108,7 +108,12 @@ def link_locks(
         deadline = time.monotonic() + WAIT_SECONDS
         for token in tokens:
             while True:
-                got = conn.execute(text("SELECT pg_try_advisory_lock(hashtextextended(:t, 0))"), {"t": token}).scalar()
+                try:
+                    got = conn.execute(
+                        text("SELECT pg_try_advisory_lock(hashtextextended(:t, 0))"), {"t": token}).scalar()
+                except Exception:  # noqa: BLE001 - a lock connection that broke before the body ran: busy, nothing sent
+                    logger.warning("autocount write lock take failed")
+                    raise SoRowBusy() from None
                 if got:
                     taken.append(token)
                     break
