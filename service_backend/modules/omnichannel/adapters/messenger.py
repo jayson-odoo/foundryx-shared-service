@@ -51,22 +51,18 @@ Sources (cited per CLAUDE.md, section 10 of the plan):
 """
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.config import settings
 from app.services.url_guard import GuardedTransport, UrlGuardError, assert_deliverable
-from .base import CodeExchangeError, ConnectionStatus, SendError
+from app.integrations.meta.pages import MetaPagesMixin, register_page_fields
+from .base import ConnectionStatus, SendError
 from .meta_graph import (
-    MetaGraphMixin,
     _meta_error_detail,
-    _meta_error_obj,
     _meta_error_text,
-    _dict_items,
     _json_obj,
-    _list_field,
     _str_field,
     is_rate_limited_error,
     meta_error_code,
@@ -92,26 +88,12 @@ class _TransientFetchError(Exception):
 # subscribing early costs nothing and avoids a second Meta App Review pass.
 # Source: https://developers.facebook.com/docs/messenger-platform/webhooks
 _SUBSCRIBED_FIELDS = "messages,messaging_postbacks,message_reads,message_deliveries,message_reactions"
+# Declared to core so a subscribe whose current-set read fails still keeps
+# omnichannel's fields (plan 64 D15 fallback).
+register_page_fields("omnichannel", _SUBSCRIBED_FIELDS)
 
-# Dev-safe canned Facebook Pages (mirrors the S0 frontend mock's
-# MOCK_META_PAGES ids/names 1:1 so a manual dev run and the mock behave the
-# same) - returned by `list_pages` whenever the Meta app is unconfigured or
-# the session's exchanged token carries `dev` (AC-CHN-35).
-_DEV_PAGES: List[Dict[str, Any]] = [
-    {
-        "id": "pg-701",
-        "name": "Foundryx Events Co.",
-        "access_token": "dev-page-token-701",
-        "instagram_business_account": {"id": "ig-701", "username": "foundryx.events"},
-    },
-    {
-        "id": "pg-702",
-        "name": "Foundryx Concierge",
-        "access_token": "dev-page-token-702",
-        "instagram_business_account": {"id": "ig-702", "username": "foundryx.concierge"},
-    },
-    {"id": "pg-703", "name": "Foundryx VIP Desk", "access_token": "dev-page-token-703"},
-]
+# `_DEV_PAGES` moved to core with `list_pages` (plan 64 D3) - re-exported.
+from app.integrations.meta.pages import _DEV_PAGES  # noqa: E402,F401
 
 # Messenger `attachment.type` -> the house canonical message-type vocabulary
 # (plan §5.6). `file` (document) is Messenger-only - Instagram never carries
@@ -195,126 +177,32 @@ def _error_detail_with_usage(resp: httpx.Response) -> str:
     return detail
 
 
-class MessengerAdapter(MetaGraphMixin):
+class MessengerAdapter(MetaPagesMixin):
     channel_type = "FACEBOOK"
 
     # ── Onboarding (plan 32 S3 - Facebook Login for Business) ───────────────
-    def exchange_code(self, code: str, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
-        """Exchange the popup's auth code for a (short-lived) user access
-        token - byte-for-byte the WhatsApp Embedded Signup exchange
-        (`WhatsAppCloudAdapter.exchange_code`), since both ride the SAME Meta
-        app/client credentials (D-A7-1).
-
-        Source: https://developers.facebook.com/docs/facebook-login/guides/access-tokens/get-long-lived
-        """
-        if not self._configured:
-            return {"access_token": f"dev-token-{code}", "dev": True}
-        params = {
-            "client_id": settings.meta_app_id,
-            "client_secret": settings.meta_app_secret,
-            "code": code,
-        }
-        if redirect_uri:
-            params["redirect_uri"] = redirect_uri
-
-        client = self._http()
-        try:
-            try:
-                resp = client.get(f"{self._base}/oauth/access_token", params=params)
-            except httpx.HTTPError as exc:
-                raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
-            if resp.status_code == 200:
-                return {"access_token": _str_field(_json_obj(resp), "access_token")}
-            err = _meta_error_obj(resp) or {"raw": resp.text[:300]}
-            detail = _meta_error_text(resp) or f"Meta returned {resp.status_code}."
-            logger.warning(
-                "Messenger code exchange failed (redirect_uri=%r): %s", redirect_uri, err
-            )
-            raise CodeExchangeError(detail)
-        finally:
-            if self._client is None:
-                client.close()
-
-    def exchange_long_lived_token(self, credentials: Dict[str, Any]) -> Dict[str, Any]:
-        """Trade the short-lived user token for a long-lived one (~60 days) so
-        the Page access tokens `list_pages` returns are effectively
-        non-expiring (Meta: "Long-lived Page access tokens do not have an
-        expiration date"). Dev / unconfigured -> the credentials unchanged.
-
-        Source: https://developers.facebook.com/docs/facebook-login/guides/access-tokens/get-long-lived
-        """
-        token = credentials.get("access_token", "")
-        if not token or credentials.get("dev") or not self._configured:
-            return credentials
-        client = self._http()
-        try:
-            resp = client.get(
-                f"{self._base}/oauth/access_token",
-                params={
-                    "grant_type": "fb_exchange_token",
-                    "client_id": settings.meta_app_id,
-                    "client_secret": settings.meta_app_secret,
-                    "fb_exchange_token": token,
-                },
-            )
-            if resp.status_code == 200:
-                return {"access_token": _str_field(_json_obj(resp), "access_token", token)}
-            return credentials
-        except httpx.HTTPError:
-            return credentials
-        finally:
-            if self._client is None:
-                client.close()
-
-    def list_pages(self, credentials: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """List the Pages this user token administers, with each Page's OWN
-        access token and (when linked) its Instagram professional account -
-        `meta_connect_service` maps this into `MetaPageOption` (AC-CHN-32/44).
-
-        Source: https://developers.facebook.com/docs/graph-api/reference/user/accounts/
-        https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
-        """
-        if not self._configured or credentials.get("dev"):
-            return [dict(p) for p in _DEV_PAGES]
-        client = self._http()
-        try:
-            resp = client.get(
-                f"{self._base}/me/accounts",
-                params={
-                    "fields": "id,name,access_token,instagram_business_account{id,username}",
-                    "access_token": credentials.get("access_token", ""),
-                },
-            )
-            if resp.status_code != 200:
-                raise CodeExchangeError(_meta_error_detail(resp))
-            return _dict_items(_list_field(_json_obj(resp), "data"))
-        except httpx.HTTPError as exc:
-            raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
-        finally:
-            if self._client is None:
-                client.close()
+    # `exchange_code`, `exchange_long_lived_token` and `list_pages` moved to
+    # core `app/integrations/meta/pages.py` (`MetaPagesMixin`, plan 64 D3) and
+    # are inherited unchanged.
 
     def subscribe_webhook(self, credentials: Dict[str, Any], page_id: str, callback_url: str) -> None:
-        """Best-effort `subscribed_apps` subscription - byte-for-byte the
-        WhatsApp `subscribe_webhook` shape (no try/except here; a
-        subscription failure must never block the connect, AC-CHN-33, so the
-        CALLER, `meta_connect_service.connect`, wraps this call in
-        try/except). ``credentials`` carries the PAGE access token (the
-        channel's own stored credentials, not the connect session's user
-        token) - `page_id` is the Facebook Page id even for an Instagram
-        channel (IG messaging is page-linked, D-A7-14/45)."""
-        if not self._configured or credentials.get("dev"):
-            return  # best-effort; no-op in dev
-        client = self._http()
-        try:
-            client.post(
-                f"{self._base}/{page_id}/subscribed_apps",
-                params={"subscribed_fields": _SUBSCRIBED_FIELDS},
-                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
-            )
-        finally:
-            if self._client is None:
-                client.close()
+        """Best-effort `subscribed_apps` subscription. Since plan 64 (D15) this
+        ADDS the Messenger fields to the app's current Page subscription via
+        core `subscribe_page_fields` (read current, post the union) instead of
+        replacing it, so another feature's field (Lead Capture `leadgen`) is
+        never dropped. No try/except here; a subscription failure must never
+        block the connect, AC-CHN-33, so the CALLER,
+        `meta_connect_service.connect`, wraps this call in try/except.
+        ``credentials`` carries the PAGE access token (the channel's own stored
+        credentials, not the connect session's user token) - `page_id` is the
+        Facebook Page id even for an Instagram channel (IG messaging is
+        page-linked, D-A7-14/45)."""
+        self.subscribe_page_fields(
+            credentials.get("access_token", ""),
+            page_id,
+            _SUBSCRIBED_FIELDS,
+            dev=bool(credentials.get("dev")),
+        )
 
     def fetch_phone_details(self, credentials: Dict[str, Any], phone_number_id: str) -> Dict[str, Any]:
         return {}  # No phone concept on Messenger.

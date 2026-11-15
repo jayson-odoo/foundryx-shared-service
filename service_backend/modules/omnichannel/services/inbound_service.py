@@ -18,6 +18,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.integrations.meta.webhook_registry import dispatch_meta_changes
+
 from ..adapters import get_adapter
 from ..adapters.meta_graph import provider_error_text, sanitise_stored_pricing
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
@@ -78,6 +80,13 @@ class InboundService:
         number) - falling back to the URL id for the single-channel/legacy case.
         This is what makes multi-number correct: number #2's inbound is attributed
         to number #2's channel, not the URL's."""
+        # Plan 64 D5: hand every `entry[].changes[]` item another Service owns
+        # (e.g. Page `leadgen`) to that Service FIRST - before the channel
+        # lookup and the omnichannel module-active check, so it arrives even
+        # for a Page with no channel here. Never raises; a no-op when nothing
+        # is registered.
+        dispatch_meta_changes(self.db, payload)
+
         channel = self._resolve_channel(channel_id, payload)
         if channel is None:
             logger.warning("webhook for unknown channel %s dropped", channel_id)

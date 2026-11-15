@@ -50,6 +50,15 @@ def register_capabilities() -> None:
         )
     )
 
+    # Plan 64 D15: declare the Messenger Page fields at boot as well as at
+    # adapter import, so a subscribe whose current-set read fails keeps them
+    # in any process. Idempotent.
+    from app.integrations.meta.pages import register_page_fields
+
+    from .adapters.messenger import _SUBSCRIBED_FIELDS
+
+    register_page_fields(MODULE_NAME, _SUBSCRIBED_FIELDS)
+
 
 def register_public_cors() -> None:
     """Boot-time public-CORS registration (plan 34 review round 1, S9).
