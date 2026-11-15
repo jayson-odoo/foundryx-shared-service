@@ -74,6 +74,14 @@ been covered.\
 """
 
 
+# Stock descriptions seeded before lane FEEDBACK-RENAME. A row still carrying
+# one moves to the new wording at the next seed; an operator's own text stays.
+SKILL_DESCRIPTION = "Grills rough feedback into a well-formed Business Requirement."
+LEGACY_SKILL_DESCRIPTION = "Grills a rough idea into a well-formed Business Requirement."
+AGENT_DESCRIPTION = "Auto-configured agent that grills feedback into business requirements."
+LEGACY_AGENT_DESCRIPTION = "Auto-configured agent that grills ideas into business requirements."
+
+
 def seed_grill_skill(db: Session) -> None:
     """Idempotent global seed of the platform-tier ``grill-me-business`` skill +
     its v1 version (insert-if-missing; an operator's edits survive a reseed)."""
@@ -83,12 +91,15 @@ def seed_grill_skill(db: Session) -> None:
         .first()
     )
     if existing is not None:
+        if existing.description == LEGACY_SKILL_DESCRIPTION:
+            existing.description = SKILL_DESCRIPTION
+            db.flush()
         return
     skill = AiSkill(
         tenant_id=None,
         key=GRILL_SKILL_KEY,
         name=GRILL_SKILL_NAME,
-        description="Grills rough feedback into a well-formed Business Requirement.",
+        description=SKILL_DESCRIPTION,
         is_system=True,
     )
     db.add(skill)
@@ -127,7 +138,9 @@ def seed_grill_agent(db: Session, tenant_id: str) -> Optional[AiAgent]:
         # still reads "Ideation grill"; a deliberate rename is kept.
         if existing.name == LEGACY_GRILL_AGENT_NAME:
             existing.name = GRILL_AGENT_NAME
-            db.flush()
+        if existing.description == LEGACY_AGENT_DESCRIPTION:
+            existing.description = AGENT_DESCRIPTION
+        db.flush()
         return existing
     skill = SkillRepository(db).get_by_key(tenant_id, GRILL_SKILL_KEY)
     connection = any_llm_connection(db, tenant_id)
@@ -136,7 +149,7 @@ def seed_grill_agent(db: Session, tenant_id: str) -> Optional[AiAgent]:
         key=GRILL_AGENT_KEY,
         is_system=True,
         name=GRILL_AGENT_NAME,
-        description="Auto-configured agent that grills feedback into business requirements.",
+        description=AGENT_DESCRIPTION,
         connection_id=connection.id if connection is not None else None,
         model=GRILL_MODEL,
         temperature=0.0,

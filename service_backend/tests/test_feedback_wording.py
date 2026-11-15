@@ -199,8 +199,24 @@ def test_seeded_grill_agent_is_named_feedback_and_legacy_rows_move(db):
     agent = seed_grill_agent(db, DEFAULT_TENANT_ID)
     assert agent is not None and agent.key == GRILL_AGENT_KEY
     agent.name = "Ideation grill"  # a tenant seeded before the rename
+    agent.description = "Auto-configured agent that grills ideas into business requirements."
     db.flush()
-    assert seed_grill_agent(db, DEFAULT_TENANT_ID).name == GRILL_AGENT_NAME
+    moved = seed_grill_agent(db, DEFAULT_TENANT_ID)
+    assert moved.name == GRILL_AGENT_NAME
+    assert not IDEA_WORD.search(moved.description)
     agent.name = "Our BR coach"  # a deliberate rename survives
     db.flush()
     assert seed_grill_agent(db, DEFAULT_TENANT_ID).name == "Our BR coach"
+
+
+def test_seeded_grill_skill_legacy_description_moves(db):
+    from modules.ideation.services.grill import GRILL_SKILL_KEY
+    from modules.ideation.services.grill_seed import seed_grill_skill
+    from app.models.ai import AiSkill
+
+    seed_grill_skill(db)
+    skill = db.query(AiSkill).filter(AiSkill.tenant_id.is_(None), AiSkill.key == GRILL_SKILL_KEY).one()
+    skill.description = "Grills a rough idea into a well-formed Business Requirement."
+    db.flush()
+    seed_grill_skill(db)
+    assert not IDEA_WORD.search(skill.description)
