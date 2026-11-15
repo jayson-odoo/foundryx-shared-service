@@ -240,8 +240,10 @@ export function useIdeasListConfig(
         </div>
       ), 340),
       col('type', 'Type', (i) => ideaTypeKey(i), ({ row }) => (
-        <Badge variant="outline" appearance="light">{ideaTypeLabel(ideaTypeKey(row.original))}</Badge>
-      ), 100),
+        <Badge variant="outline" appearance="light" className="whitespace-nowrap">
+          {ideaTypeLabel(ideaTypeKey(row.original))}
+        </Badge>
+      ), 150),
       col('submitter', 'Submitter', (i) => i.submitterName, ({ row }) => (
         <span className="text-muted-foreground">{row.original.submitterName}</span>
       ), 130),
