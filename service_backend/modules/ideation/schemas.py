@@ -109,6 +109,10 @@ class IdeaOut(ApiModel):
     submitterName: str
     # The submitter's tier (e.g. ``dealer``, S1 AC-1115) - null when not set.
     submitterTier: Optional[str] = None
+    # Lane PUBLIC-IDEAS-BOARD: the idea has a submitter contact, so a personal
+    # feedback link exists for it (drives the staff "Cancel feedback link"
+    # action; the contact id itself is never on the wire).
+    hasSubmitterContact: bool = False
     upvotes: int
     downvotes: int = 0
     myVote: Optional[Literal["up"]] = None

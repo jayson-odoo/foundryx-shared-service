@@ -479,3 +479,24 @@ def test_ac_fb_32_whatsapp_reply_carries_the_board_link(setup):
     finally:
         db.close()
     assert link == f"{settings.frontend_url.rstrip('/')}/public/ideas/{'T' * 32}"
+
+
+def test_ac_fb_33_staff_grace_window_action_and_flag(setup):
+    from modules.ideation.deferred_actions import IDEAS_CANCEL_FEEDBACK_LINK
+
+    s = setup
+    cid = _contact(s)
+    iid = _idea(s, 333, submitter_contact_id=cid)
+    bare = _idea(s, 334)
+    got = s["client"].get(f"/ideation/ideas/{iid}", headers=s["h"]).json()
+    assert got["hasSubmitterContact"] is True
+    assert s["client"].get(f"/ideation/ideas/{bare}", headers=s["h"]).json()["hasSubmitterContact"] is False
+    assert "submitterContactId" not in got
+    token = _link(s, cid)
+    db = s["factory"]()
+    try:
+        assert IDEAS_CANCEL_FEEDBACK_LINK.permission == "ideation.triage.manage"
+        IDEAS_CANCEL_FEEDBACK_LINK.execute(db, DEFAULT_TENANT_ID, iid, {}, "")
+    finally:
+        db.close()
+    assert _exchange(s, token).status_code == 401
