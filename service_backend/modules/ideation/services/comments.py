@@ -24,6 +24,9 @@ from ..schemas import IdeaCommentOut, IdeaSourceOut
 AUTHOR_USER = "user"
 AUTHOR_EMBED = "embed"
 AUTHOR_PUBLIC = "public"
+# A dealer commenting through a personal feedback link (lane PUBLIC-IDEAS-BOARD);
+# ``author_id`` = the contact id.
+AUTHOR_CONTACT = "contact"
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,7 @@ class IdeaCommentService:
             AUTHOR_USER: "Team member",
             AUTHOR_EMBED: "Portal user",
             AUTHOR_PUBLIC: "Submitter",
+            AUTHOR_CONTACT: "Dealer",
         }
         out: List[IdeaCommentOut] = []
         for c in rows:

@@ -29,10 +29,10 @@ export function RoadmapBoard({ columns, ideaHref, onVote }: RoadmapBoardProps) {
           </header>
           <div className="flex flex-col gap-2">
             {col.ideas.length === 0 ? (
-              <p className="py-4 text-center text-xs text-muted-foreground">No ideas</p>
+              <p className="py-4 text-center text-xs text-muted-foreground">No feedback</p>
             ) : (
               col.ideas.map((idea) => (
-                <IdeaCard key={idea.id} idea={idea} href={ideaHref(idea.id)} onVote={onVote} />
+                <IdeaCard key={idea.id} idea={idea} href={ideaHref(idea.ideaNumber ?? idea.id)} onVote={onVote} />
               ))
             )}
           </div>

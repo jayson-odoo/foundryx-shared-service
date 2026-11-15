@@ -127,6 +127,7 @@ class IdeaReadService:
             source=idea.source,
             submitterName=submitter,
             submitterTier=idea.submitter_tier,
+            hasSubmitterContact=bool(idea.submitter_contact_id),
             upvotes=idea.upvotes or 0,
             downvotes=0,  # plan 19: upvote only; legacy 'down' rows are ignored
             myVote="up" if my_vote == "up" else None,

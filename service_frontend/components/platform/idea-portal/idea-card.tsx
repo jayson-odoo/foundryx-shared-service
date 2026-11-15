@@ -31,7 +31,7 @@ export function IdeaCard({ idea, href, onVote, variant = 'card' }: IdeaCardProps
             <span>
               {idea.commentCount} {idea.commentCount === 1 ? 'comment' : 'comments'}
             </span>
-            {idea.isMine && <span className="text-primary">Your idea</span>}
+            {idea.isMine && <span className="text-primary">Yours</span>}
           </div>
         </div>
       </Link>
