@@ -19,7 +19,7 @@ function monthKey(iso: string, timeZone: string): string {
 /** Changelog (Q3 a): delivered ideas, grouped by month, newest first. */
 export function ChangelogView() {
   const { paths } = useIdeaPortal();
-  const { formatDate, timeZone } = useDatetime();
+  const { formatDmyDate: formatDate, timeZone } = useDatetime();
   const log = usePortalChangelog();
 
   const groups: { month: string; items: PortalChangelogItem[] }[] = [];

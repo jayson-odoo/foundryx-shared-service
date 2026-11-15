@@ -18,6 +18,8 @@ vi.mock('@/hooks/use-datetime', () => ({
     formatDate: (v: string) => v.slice(0, 10),
     formatDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
     formatTime: (v: string) => v.slice(11, 16),
+    formatDmyDate: (v: string) => v.slice(0, 10),
+    formatDmyDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
   }),
 }));
 vi.mock('@/hooks/use-branding', () => ({

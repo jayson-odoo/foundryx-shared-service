@@ -4,8 +4,10 @@ import { useMemo } from 'react';
 import { useSession } from 'next-auth/react';
 import {
   browserTimeZone,
+  dateKey,
   formatDate,
   formatDateTime,
+  formatDmyDate,
   formatDmyDateTime,
   formatTime,
 } from '@/lib/datetime';
@@ -18,6 +20,8 @@ export interface UseDatetimeReturn {
   formatTime: (iso: string | null | undefined) => string;
   /** "05/11/2026, 3:04 pm" */
   formatDmyDateTime: (iso: string | null | undefined) => string;
+  /** "05/11/2026" */
+  formatDmyDate: (iso: string | null | undefined) => string;
 }
 
 /**
@@ -38,6 +42,8 @@ export function useDatetime(): UseDatetimeReturn {
       formatDateTime: (iso) => formatDateTime(iso, { timeZone: preferred }),
       formatTime: (iso) => formatTime(iso, { timeZone: preferred }),
       formatDmyDateTime: (iso) => formatDmyDateTime(iso, { timeZone: preferred }),
+      // A backend timestamp -> its calendar day in the viewer's zone -> 05/11/2026.
+      formatDmyDate: (iso) => formatDmyDate(dateKey(iso, { timeZone: preferred })),
     };
   }, [preferred]);
 }

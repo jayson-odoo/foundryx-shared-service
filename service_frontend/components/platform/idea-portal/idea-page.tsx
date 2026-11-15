@@ -107,7 +107,7 @@ function CommentItem({
   onReply?: () => void;
   small?: boolean;
 }) {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
   if (c.isDeleted) {
     return <p className="text-sm text-muted-foreground italic">Comment deleted</p>;
   }
@@ -165,7 +165,7 @@ function ActivityItem({
   onDelete: (id: string) => void;
   onReply: (parentId: string, body: string) => Promise<void>;
 }) {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
   const [replying, setReplying] = useState(false);
   if (e.kind === 'comment' && e.comment) {
     const top = e.comment;
@@ -260,7 +260,7 @@ export function groupFeed(events: PortalActivity[], timeZone: string): FeedRow[]
 }
 
 function UpvoteRow({ row }: { row: Extract<FeedRow, { kind: 'upvotes' }> }) {
-  const { formatDate } = useDatetime();
+  const { formatDmyDate: formatDate } = useDatetime();
   const named = row.names.slice(0, 3);
   const others = row.count - named.length;
   return (
@@ -372,7 +372,7 @@ export interface IdeaPageProps {
 export function IdeaPage({ ideaId }: IdeaPageProps) {
   const { mode, paths, principal } = useIdeaPortal();
   const back = mode === 'link' ? { href: paths.feedback, label: 'Feedback' } : { href: paths.roadmap, label: 'Roadmap' };
-  const { formatDate, timeZone } = useDatetime();
+  const { formatDmyDate: formatDate, timeZone } = useDatetime();
   const page = usePortalIdeaPage(ideaId);
   const idea = page.idea.data;
 
