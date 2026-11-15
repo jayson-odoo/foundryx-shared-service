@@ -121,6 +121,24 @@ class MetaLeadClient(MetaGraphMixin):
             raise MetaLeadError("Meta answered with another lead.")
         return body
 
+    def form_name(self, page_token: str, form_id: str, *, dev: bool = False) -> Optional[str]:
+        """The Instant Form's name (``GET /{form_id}?fields=name``, Page token),
+        or None when it cannot be read. Never raises: a missing name must never
+        block a lead."""
+        if not form_id:
+            return None
+        if not self._configured or dev:
+            return f"Dev form {form_id}"
+        try:
+            resp = self._get(form_id, page_token, {"fields": "name"})
+        except MetaLeadError:
+            return None
+        if resp.status_code != 200:
+            logger.info("form name read returned %s", resp.status_code)
+            return None
+        name = _str_field(_json_obj(resp), "name").strip()
+        return name[:200] or None
+
     def test_lead_ids(self, page_token: str, form_id: str, *, dev: bool = False) -> Optional[Set[str]]:
         """Ids of the form's Meta test leads, or None when they cannot be read."""
         if not form_id:

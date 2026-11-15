@@ -81,7 +81,7 @@ Every gateway error has one shape:
   "pageId": "300000000000001",
   "pageName": "Foundryx",
   "formsMode": "all",
-  "needsMapping": [{"formId": "400000000000001", "formName": null, "unmappedCount": 1}],
+  "needsMapping": [{"formId": "400000000000001", "formName": "S-META test 1", "unmappedCount": 1}],
   "fieldMap": {"*": {"interest": "product_interest"}},
   "lastLeadAt": "2026-11-15T05:19:16Z",
   "createdAt": "2026-11-15T05:00:00Z"
@@ -156,6 +156,7 @@ The same object is the webhook `data` and every `/leads` item.
   "platformLeadId": "100000000000001",
   "pageId": "300000000000001",
   "formId": "400000000000001",
+  "formName": "S-META test 1",
   "receivedAt": "2026-11-15T05:19:16Z",
   "createdAt": "2026-11-15T05:19:11Z",
   "isTest": true,
@@ -187,6 +188,9 @@ The same object is the webhook `data` and every `/leads` item.
 - `fields` has exactly your field keys (section 3, Field), each a string or `null`. The example uses the defaults.
 - `answers` are the form's questions exactly as Facebook sent them.
 - `isTest` is `true` for a Meta test lead (Lead Ads Testing Tool or the test-lead API).
+- `formName` is the Instant Form's name as Facebook shows it (added 15 Nov 2026, additive). It is `null` when
+  Facebook did not give it (the lead is never held back for it); a later lead of the same form may then carry it.
+  Leads stored before 15 Nov 2026 have `null`. Treat it as display text; `formId` stays the stable key.
 - `createdAt` is when the person submitted the form; `receivedAt` is when Lead Capture stored it. Both are UTC, ISO
   8601, `Z`-suffixed. `createdAt` may be `null`.
 - `duplicateOf` is always `null` in release 1.

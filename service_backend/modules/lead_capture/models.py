@@ -125,6 +125,7 @@ class LcLead(LeadCaptureBase):
     platform = Column(String(32), nullable=False)
     platform_lead_id = Column(String(64), nullable=False)
     form_id = Column(String(64), nullable=True)
+    form_name = Column(String(200), nullable=True)  # migration 0002; null = Meta gave none
     received_at = Column(UTCDateTime(), nullable=False)
     platform_created_at = Column(UTCDateTime(), nullable=True)
     fields_encrypted = Column(Text, nullable=True)  # Fernet {"fields": {...}, "answers": [...]}

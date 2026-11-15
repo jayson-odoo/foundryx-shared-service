@@ -1,6 +1,6 @@
 {
   "module_name": "lead_capture",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Foundryx",
   "title": "Lead Capture",
   "description": "Capture leads from Facebook and Instagram lead forms and deliver them to your CRM.",

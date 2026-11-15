@@ -391,7 +391,7 @@ def test_signed_fixture_webhook_creates_one_test_lead_and_replay_creates_none(cl
     assert len(_leads(lc)) == 1 and len(posts) == 1
     # map-fields notice data (AC-64-35)
     src = client.get("/lead-capture/sources", headers=headers).json()["data"][0]
-    assert src["needsMapping"] == [{"formId": FORM_ID, "formName": None, "unmappedCount": 1}]
+    assert src["needsMapping"] == [{"formId": FORM_ID, "formName": FORM_NAME, "unmappedCount": 1}]
     # no token, no personal value in any log line (AC-64-71)
     for secret in (SYSTEM_TOKEN, PAGE_TOKEN, "lead.test@example.com", "+60120000000", key):
         assert secret not in caplog.text
@@ -865,7 +865,7 @@ def test_each_product_maps_to_its_own_fields(client, lc, graph, posts):
         b_row = db.get(LcSource, src_b.id)
         a_row = db.get(LcSource, src_a.id)
         assert a_row.needs_mapping_json is None  # mapped: no notice
-        assert b_row.needs_mapping_json == {FORM_ID: {"formId": FORM_ID, "formName": None, "unmappedCount": 1}}
+        assert b_row.needs_mapping_json == {FORM_ID: {"formId": FORM_ID, "formName": FORM_NAME, "unmappedCount": 1}}
     finally:
         db.close()
     by_url = {p["url"]: json.loads(p["body"])["data"]["fields"] for p in posts}

@@ -190,6 +190,7 @@ def process_leadgen(
     now = datetime.now(timezone.utc)
     created_ids: List[str] = []
     delivery_ids: List[str] = []
+    form_name = _form_name(meta, todo, token_used, lead_form, dev)
     target_cache: Dict[str, List] = {}
     for source in todo:
         if source.tenant_id not in target_cache:
@@ -203,6 +204,7 @@ def process_leadgen(
             platform=PLATFORM_FACEBOOK,
             platform_lead_id=leadgen_id,
             form_id=lead_form or None,
+            form_name=form_name,
             received_at=now,
             platform_created_at=platform_created,
             fields_encrypted=encrypt_secret({"fields": fields, "answers": answers}),
@@ -221,7 +223,7 @@ def process_leadgen(
         source.last_lead_at = now
         if lead_form and not has_map and unmapped:
             notice = dict(source.needs_mapping_json or {})
-            notice[lead_form] = {"formId": lead_form, "formName": None, "unmappedCount": unmapped}
+            notice[lead_form] = {"formId": lead_form, "formName": form_name, "unmappedCount": unmapped}
             source.needs_mapping_json = notice
         body = mapping.lead_body(
             lead_id=lead.id,
@@ -231,6 +233,7 @@ def process_leadgen(
             platform_lead_id=leadgen_id,
             page_id=page_id,
             form_id=lead_form or None,
+            form_name=form_name,
             received_at=now,
             platform_created_at=platform_created,
             is_test=is_test,
@@ -246,6 +249,37 @@ def process_leadgen(
     db.commit()
     delivery_service.enqueue(delivery_ids)
     return created_ids
+
+
+_FORM_NAMES_KEY = "formNames"
+
+
+def _form_name(
+    meta: MetaLeadClient, sources: List[LcSource], token: Dict[str, Any], form_id: str, dev: bool
+) -> Optional[str]:
+    """The form's name, cached per source in ``config_json["formNames"]`` (each
+    tenant's own row; a shared Page reads it once and every source on the Page
+    keeps a copy). Only a name actually read is cached, so a failed read is
+    retried with the next lead. No commit here: the lead transaction owns it."""
+    if not form_id:
+        return None
+    for source in sources:
+        cached = ((source.config_json or {}).get(_FORM_NAMES_KEY) or {}).get(form_id)
+        if isinstance(cached, str) and cached:
+            name = cached
+            break
+    else:
+        name = meta.form_name(token["pageToken"], form_id, dev=dev)
+        if not name:
+            return None
+    for source in sources:
+        config = dict(source.config_json or {})
+        names = dict(config.get(_FORM_NAMES_KEY) or {})
+        if names.get(form_id) != name:
+            names[form_id] = name
+            config[_FORM_NAMES_KEY] = names
+            source.config_json = config  # fresh dict: in-place JSON edits are not tracked
+    return name
 
 
 def lead_item(lead: LcLead, source: LcSource) -> Dict[str, Any]:
@@ -267,6 +301,7 @@ def lead_item(lead: LcLead, source: LcSource) -> Dict[str, Any]:
         platform_lead_id=lead.platform_lead_id,
         page_id=attribution.get("pageId") or source.account_ref,
         form_id=lead.form_id,
+        form_name=lead.form_name,
         received_at=lead.received_at,
         platform_created_at=lead.platform_created_at,
         is_test=lead.is_test,
