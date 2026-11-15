@@ -46,9 +46,23 @@ def source_item(row: LcSource) -> schemas.SourceItem:
         pageName=row.account_name,
         formsMode=(row.config_json or {}).get("formsMode"),
         needsMapping=notices,
+        fieldMap=dict(row.field_map_json or {}),
         lastLeadAt=row.last_lead_at,
         createdAt=row.created_at,
     )
+
+
+def fields_item(db: Session, tenant_id: str) -> schemas.ConsumerFieldList:
+    from ..mapping import DEFAULT_FIELDS
+    from .field_service import list_fields
+
+    rows = list_fields(db, tenant_id)
+    if not rows:
+        labels = {"name": "Name", "phone": "Phone", "email": "Email", "notes": "Lead notes"}
+        return schemas.ConsumerFieldList(
+            data=[schemas.ConsumerField(key=k, label=labels[k], type=t) for k, t in DEFAULT_FIELDS], isDefault=True
+        )
+    return schemas.ConsumerFieldList(data=[schemas.ConsumerField(key=r.key, label=r.label, type=r.type) for r in rows])
 
 
 def settings_item(db: Session, tenant_id: str) -> schemas.SettingsItem:

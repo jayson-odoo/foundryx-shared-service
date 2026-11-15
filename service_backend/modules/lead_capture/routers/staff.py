@@ -2,6 +2,8 @@
 HTTP only; every call is tenant-scoped from the signed-in user."""
 from __future__ import annotations
 
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
@@ -10,7 +12,7 @@ from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
 from .. import schemas
-from ..services import connect_service, delivery_service, key_service, read_service
+from ..services import connect_service, delivery_service, field_service, key_service, read_service
 
 router = APIRouter()
 
@@ -94,3 +96,35 @@ def redeliver(delivery_id: str, user: User = Depends(_MANAGE), db: Session = Dep
     except delivery_service.DeliveryError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message)
     return read_service.delivery_item(row)
+
+
+@router.get("/fields", response_model=schemas.ConsumerFieldList)
+def get_fields(user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.ConsumerFieldList:
+    return read_service.fields_item(db, user.tenant_id)
+
+
+@router.put("/fields", response_model=schemas.ConsumerFieldList)
+def put_fields(
+    body: List[schemas.ConsumerField],
+    user: User = Depends(_MANAGE),
+    db: Session = Depends(get_db),
+) -> schemas.ConsumerFieldList:
+    try:
+        field_service.set_fields(db, user.tenant_id, [f.model_dump() for f in body])
+    except field_service.FieldError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+    return read_service.fields_item(db, user.tenant_id)
+
+
+@router.put("/sources/{source_id}/field-map", response_model=schemas.SourceItem)
+def put_field_map(
+    source_id: str,
+    body: schemas.FieldMapUpdate,
+    user: User = Depends(_MANAGE),
+    db: Session = Depends(get_db),
+) -> schemas.SourceItem:
+    try:
+        row = field_service.set_field_map(db, user.tenant_id, source_id, body.formId, body.map)
+    except field_service.FieldError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+    return read_service.source_item(row)

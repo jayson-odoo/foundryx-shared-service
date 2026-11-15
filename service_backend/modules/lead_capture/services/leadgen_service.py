@@ -29,7 +29,7 @@ from app.secrets import decrypt_secret, encrypt_secret
 from .. import mapping
 from ..meta_leads import MetaLeadClient, MetaLeadError
 from ..models import PLATFORM_FACEBOOK, SOURCE_LIVE, LcLead, LcSource
-from . import delivery_service
+from . import delivery_service, field_service
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +190,13 @@ def process_leadgen(
     now = datetime.now(timezone.utc)
     created_ids: List[str] = []
     delivery_ids: List[str] = []
+    target_cache: Dict[str, List] = {}
     for source in todo:
-        form_map = ((source.field_map_json or {}).get(lead_form) or {}) if lead_form else {}
-        fields, unmapped = mapping.map_answers(answers, form_map)
+        if source.tenant_id not in target_cache:
+            target_cache[source.tenant_id] = field_service.targets(db, source.tenant_id)
+        targets = target_cache[source.tenant_id]
+        form_map, has_map = mapping.form_map_for(source.field_map_json, lead_form)
+        fields, unmapped = mapping.map_answers(answers, form_map, targets)
         lead = LcLead(
             tenant_id=source.tenant_id,
             source_id=source.id,
@@ -204,8 +208,8 @@ def process_leadgen(
             fields_encrypted=encrypt_secret({"fields": fields, "answers": answers}),
             raw_encrypted=encrypt_secret({"raw": raw}),
             attribution_json=attribution,
-            phone_e164=mapping.normalise_phone(fields.get("phone")),
-            email=mapping.normalise_email(fields.get("email")),
+            phone_e164=mapping.normalise_phone(mapping.typed_value(fields, targets, "phone")),
+            email=mapping.normalise_email(mapping.typed_value(fields, targets, "email")),
             is_test=is_test,
         )
         try:
@@ -215,7 +219,7 @@ def process_leadgen(
         except IntegrityError:
             continue  # a parallel run stored it first (AC-64-27)
         source.last_lead_at = now
-        if lead_form and not form_map:
+        if lead_form and not has_map and unmapped:
             notice = dict(source.needs_mapping_json or {})
             notice[lead_form] = {"formId": lead_form, "formName": None, "unmappedCount": unmapped}
             source.needs_mapping_json = notice
@@ -246,7 +250,7 @@ def process_leadgen(
 
 def lead_item(lead: LcLead, source: LcSource) -> Dict[str, Any]:
     """Rebuild the documented lead body from a stored row (pull API)."""
-    fields: Dict[str, Any] = {t: None for t in mapping.DEFAULT_TARGETS}
+    fields: Dict[str, Any] = {}
     answers: List[Dict[str, Any]] = []
     if lead.fields_encrypted and lead.purged_at is None:
         try:

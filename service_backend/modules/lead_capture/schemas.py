@@ -28,6 +28,22 @@ class FormNotice(BaseModel):
     unmappedCount: int = 0
 
 
+class ConsumerField(BaseModel):
+    key: str = Field(min_length=1, max_length=64)
+    label: str = Field(default="", max_length=200)
+    type: str = "text"
+
+
+class ConsumerFieldList(BaseModel):
+    data: List[ConsumerField]
+    isDefault: bool = False
+
+
+class FieldMapUpdate(BaseModel):
+    formId: str = Field(min_length=1, max_length=64)
+    map: Dict[str, Optional[str]]
+
+
 class SourceItem(ApiModel):
     id: str
     platform: str
@@ -37,6 +53,7 @@ class SourceItem(ApiModel):
     pageName: Optional[str] = None
     formsMode: Optional[str] = None
     needsMapping: List[FormNotice] = []
+    fieldMap: Dict[str, Dict[str, str]] = {}
     lastLeadAt: Optional[datetime] = None
     createdAt: datetime
 

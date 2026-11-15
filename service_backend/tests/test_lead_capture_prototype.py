@@ -824,3 +824,67 @@ def test_rolled_back_ingress_enqueues_nothing(lc, graph, monkeypatch):
     finally:
         db.close()
     assert called == []
+
+
+# ── per-product mapping (owner 15 Nov: Sorento and EcoHub fields differ) ──────
+
+def test_each_product_maps_to_its_own_fields(client, lc, graph, posts):
+    """Two products on one shared Page: each publishes its own field list and
+    map; each delivery carries only that product's field keys."""
+    from modules.lead_capture.services import field_service
+
+    _second_tenant(lc, True)
+    db = lc()
+    try:
+        connect_service.set_allow_shared_pages(db, DEFAULT_TENANT_ID, True, None)
+        src_a = connect_service.connect_facebook(db, DEFAULT_TENANT_ID, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        src_b = connect_service.connect_facebook(db, TENANT_B, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        field_service.set_fields(db, DEFAULT_TENANT_ID, [
+            {"key": "contact_name", "label": "Contact", "type": "name"},
+            {"key": "mobile_no", "label": "Mobile", "type": "phone"},
+            {"key": "email_address", "label": "Email", "type": "email"},
+            {"key": "product_interest", "label": "Interest", "type": "text"},
+            {"key": "remarks", "label": "Remarks", "type": "notes"},
+        ])
+        field_service.set_field_map(db, DEFAULT_TENANT_ID, src_a.id, "*", {"interest": "product_interest"})
+        # product B keeps the defaults
+        delivery_service.create_endpoint(db, DEFAULT_TENANT_ID, "https://a.example/hook", ["lead.created"])
+        delivery_service.create_endpoint(db, TENANT_B, "https://b.example/hook", ["lead.created"])
+        leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+        b_row = db.get(LcSource, src_b.id)
+        a_row = db.get(LcSource, src_a.id)
+        assert a_row.needs_mapping_json is None  # mapped: no notice
+        assert b_row.needs_mapping_json == {FORM_ID: {"formId": FORM_ID, "formName": None, "unmappedCount": 1}}
+    finally:
+        db.close()
+    by_url = {p["url"]: json.loads(p["body"])["data"]["fields"] for p in posts}
+    assert by_url["https://a.example/hook"] == {
+        "contact_name": "Test Lead",
+        "mobile_no": "+60120000000",
+        "email_address": "lead.test@example.com",
+        "product_interest": "test answer",
+        "remarks": None,
+    }
+    assert by_url["https://b.example/hook"] == {
+        "name": "Test Lead", "phone": "+60120000000", "email": "lead.test@example.com", "notes": "interest: test answer",
+    }
+    a_lead = _leads(lc, DEFAULT_TENANT_ID)[0]
+    assert a_lead.email == "lead.test@example.com" and a_lead.phone_e164 == "+60120000000"
+
+
+def test_fields_and_field_map_over_the_gateway(client, lc, graph):
+    headers = _login(client)
+    src = _connect(client, headers).json()
+    key = {"Authorization": f"Bearer {_key(client, headers)}"}
+    default = client.get("/api/v1/lead-capture/fields", headers=key).json()
+    assert default["isDefault"] is True and [f["key"] for f in default["data"]] == ["name", "phone", "email", "notes"]
+    res = client.put("/api/v1/lead-capture/fields", json=[{"key": "full_name", "label": "Name", "type": "name"}, {"key": "memo", "label": "Memo", "type": "notes"}], headers=key)
+    assert res.status_code == 200 and res.json()["isDefault"] is False
+    bad = client.put("/api/v1/lead-capture/fields", json=[{"key": "x", "type": "colour"}], headers=key)
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "invalid_fields"
+    ok = client.put(f"/api/v1/lead-capture/sources/{src['id']}/field-map", json={"formId": FORM_ID, "map": {"interest": "memo"}}, headers=key)
+    assert ok.status_code == 200 and ok.json()["fieldMap"] == {FORM_ID: {"interest": "memo"}}
+    unknown = client.put(f"/api/v1/lead-capture/sources/{src['id']}/field-map", json={"formId": FORM_ID, "map": {"interest": "nope"}}, headers=key)
+    assert unknown.status_code == 422 and unknown.json()["error"]["code"] == "invalid_field_map"
+    missing = client.put("/api/v1/lead-capture/sources/not-mine/field-map", json={"formId": "*", "map": {}}, headers=key)
+    assert missing.status_code == 404 and missing.json()["error"]["code"] == "source_not_found"

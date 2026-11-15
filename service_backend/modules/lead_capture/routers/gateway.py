@@ -7,7 +7,7 @@ without a guide change fails review (AC-64-66).
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
@@ -17,7 +17,7 @@ from app.database import get_db
 
 from .. import schemas
 from ..gateway_auth import AuditedRoute, LeadGatewayKey, get_lead_gateway_key
-from ..services import connect_service, delivery_service, read_service
+from ..services import connect_service, delivery_service, field_service, read_service
 
 router = APIRouter(route_class=AuditedRoute)
 
@@ -101,3 +101,35 @@ def redeliver(
     except delivery_service.DeliveryError as exc:
         raise _api(exc)
     return read_service.delivery_item(row)
+
+
+@router.get("/fields", response_model=schemas.ConsumerFieldList)
+def get_fields(key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)) -> schemas.ConsumerFieldList:
+    return read_service.fields_item(db, key.tenant_id)
+
+
+@router.put("/fields", response_model=schemas.ConsumerFieldList)
+def put_fields(
+    body: List[schemas.ConsumerField],
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.ConsumerFieldList:
+    try:
+        field_service.set_fields(db, key.tenant_id, [f.model_dump() for f in body])
+    except field_service.FieldError as exc:
+        raise _api(exc)
+    return read_service.fields_item(db, key.tenant_id)
+
+
+@router.put("/sources/{source_id}/field-map", response_model=schemas.SourceItem)
+def put_field_map(
+    source_id: str,
+    body: schemas.FieldMapUpdate,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.SourceItem:
+    try:
+        row = field_service.set_field_map(db, key.tenant_id, source_id, body.formId, body.map)
+    except field_service.FieldError as exc:
+        raise _api(exc)
+    return read_service.source_item(row)

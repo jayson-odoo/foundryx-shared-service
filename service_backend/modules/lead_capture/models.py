@@ -137,6 +137,19 @@ class LcLead(LeadCaptureBase):
     purged_at = Column(UTCDateTime(), nullable=True)
 
 
+class LcConsumerField(LeadCaptureBase):
+    """The consumer CRM's own lead fields (AC-64-61), per product (tenant):
+    the map targets. None stored = the default targets name/phone/email/notes."""
+
+    __tablename__ = "lc_consumer_field"
+
+    tenant_id = Column(String, primary_key=True)
+    key = Column(String(64), primary_key=True)
+    label = Column(String(200), nullable=False)
+    type = Column(String(16), nullable=False, default="text")
+    sort = Column(Integer, nullable=False, default=0)
+
+
 class LcWebhookEndpoint(LeadCaptureBase):
     __tablename__ = "lc_webhook_endpoint"
     __table_args__ = (Index("ix_lc_webhook_endpoint_tenant", "tenant_id"),)

@@ -11,14 +11,18 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_TARGETS = ("name", "phone", "email", "notes")
+FIELD_TYPES = ("name", "phone", "email", "notes", "text")
+# (key, type) of the default targets, used when a product published no field list.
+DEFAULT_FIELDS: Tuple[Tuple[str, str], ...] = (("name", "name"), ("phone", "phone"), ("email", "email"), ("notes", "notes"))
 
-# Meta standard Instant Form question keys -> default target.
+# Meta standard Instant Form question keys -> the field TYPE they fill.
 STANDARD_KEYS = {
     "full_name": "name",
     "email": "email",
     "phone_number": "phone",
 }
 NAME_PARTS = ("first_name", "last_name")
+ANY_FORM = "*"
 
 
 def iso_z(dt: Optional[datetime]) -> Optional[str]:
@@ -62,13 +66,36 @@ def answers_from(field_data: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def form_map_for(field_map: Optional[Dict[str, Any]], form_id: Optional[str]) -> Tuple[Dict[str, str], bool]:
+    """``(question -> target, has_explicit_map)``: the "*" (every form) map,
+    overlaid by the form's own map."""
+    field_map = field_map or {}
+    base = field_map.get(ANY_FORM) or {}
+    own = (field_map.get(form_id) or {}) if form_id else {}
+    merged = {**base, **own}
+    return merged, bool(base or own)
+
+
 def map_answers(
-    answers: List[Dict[str, Any]], form_map: Optional[Dict[str, str]] = None
+    answers: List[Dict[str, Any]],
+    form_map: Optional[Dict[str, str]] = None,
+    targets: Optional[List[Tuple[str, str]]] = None,
 ) -> Tuple[Dict[str, Optional[str]], int]:
-    """Return ``(fields, unmapped_count)``. ``form_map`` (question key -> target)
-    wins over the standard keys; with none, standard keys map by name."""
+    """Return ``(fields, unmapped_count)``.
+
+    ``targets`` are the product's own fields as ``(key, type)`` (default:
+    name/phone/email/notes). An answer goes to the target the map names; else
+    a Meta standard question goes to the first target of its type; else it is
+    one ``key: value`` line in the first ``notes``-type target and counts as
+    unmapped. ``fields`` always has every target key."""
     form_map = form_map or {}
-    fields: Dict[str, Optional[str]] = {t: None for t in DEFAULT_TARGETS}
+    targets = list(targets or DEFAULT_FIELDS)
+    keys = [k for k, _t in targets]
+    by_type: Dict[str, str] = {}
+    for key, typ in targets:
+        by_type.setdefault(typ, key)
+    notes_key = by_type.get("notes")
+    fields: Dict[str, Optional[str]] = {k: None for k in keys}
     notes: List[str] = []
     name_parts: Dict[str, str] = {}
     unmapped = 0
@@ -76,20 +103,35 @@ def map_answers(
         key, value = ans["key"], ", ".join(ans["values"]).strip()
         if not value:
             continue
-        target = form_map.get(key) or STANDARD_KEYS.get(key)
-        if target is None and key in NAME_PARTS:
-            name_parts[key] = value
+        target = form_map.get(key)
+        if target in fields and target != notes_key:
+            fields[target] = value if fields[target] is None else f"{fields[target]}, {value}"
             continue
-        if target in fields and target != "notes" and fields[target] is None:
-            fields[target] = value
-            continue
-        notes.append(f"{key}: {value}")
-        if key not in form_map:
+        if target is None:
+            std = STANDARD_KEYS.get(key)
+            std_target = by_type.get(std) if std else None
+            if std_target and fields[std_target] is None:
+                fields[std_target] = value
+                continue
+            if key in NAME_PARTS and by_type.get("name"):
+                name_parts[key] = value
+                continue
             unmapped += 1
-    if fields["name"] is None and name_parts:
-        fields["name"] = " ".join(name_parts[p] for p in NAME_PARTS if p in name_parts)
-    fields["notes"] = "\n".join(notes) or None
+        notes.append(f"{key}: {value}")
+    name_key = by_type.get("name")
+    if name_key and fields[name_key] is None and name_parts:
+        fields[name_key] = " ".join(name_parts[p] for p in NAME_PARTS if p in name_parts)
+    if notes_key:
+        fields[notes_key] = "\n".join(notes) or None
     return fields, unmapped
+
+
+def typed_value(fields: Dict[str, Optional[str]], targets: Optional[List[Tuple[str, str]]], typ: str) -> Optional[str]:
+    """The value of the first target of ``typ`` (for email / phone search)."""
+    for key, t in targets or DEFAULT_FIELDS:
+        if t == typ:
+            return fields.get(key)
+    return None
 
 
 def normalise_email(value: Optional[str]) -> Optional[str]:
