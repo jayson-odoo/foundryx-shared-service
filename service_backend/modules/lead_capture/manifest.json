@@ -9,7 +9,7 @@
   "schema": "app_lead_capture",
   "alembic_version_table": "alembic_version_lead_capture",
   "requires": [],
-  "optional": ["omnichannel"],
+  "optional": [{"name": "omnichannel"}],
   "provides": [],
   "routers": [
     {"name": "staff", "prefix": "/lead-capture"},

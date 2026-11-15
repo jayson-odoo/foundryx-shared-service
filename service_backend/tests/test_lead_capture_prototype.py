@@ -224,7 +224,7 @@ def test_manifest_and_permissions_have_no_collision():
 
     manifest = json.loads((ROOT / "service_backend/modules/lead_capture/manifest.json").read_text())
     assert manifest["schema"] == "app_lead_capture"
-    assert manifest["optional"] == ["omnichannel"]
+    assert manifest["optional"] == [{"name": "omnichannel"}]
     routers = {r["name"]: r for r in manifest["routers"]}
     assert routers["gateway"]["prefix"] == "/api/v1/lead-capture" and routers["gateway"]["public"] is True
     assert not routers["staff"].get("public")
