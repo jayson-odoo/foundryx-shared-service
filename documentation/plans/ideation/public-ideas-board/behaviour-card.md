@@ -3,7 +3,7 @@
 Owner ask (15 Nov): a Canny-like public page, no login, where a contact sees all items with their status and also
 "my issue / my feature / my request / my feedback". Every link we send a contact about an idea goes there.
 
-Mock: `mock-v1.html` (5 screens in the top bar, width toggle 1280 / 375). Screenshots: `evidence/mock-v1-*-{1280,375}.png` (v2 mock follows this card).
+Mock: `mock-v2.html` (5 screens in the top bar, width toggle 1280 / 375; same masked rows as the examples below). Screenshots: `evidence/mock-v2-*-{1280,375}.png`. `mock-v1.html` kept for history.
 Examples come from masked dev rows (crew extract 15 Nov: main dev DB + two lane copies; no production data).
 
 ## What exists today (cited on origin/main)
