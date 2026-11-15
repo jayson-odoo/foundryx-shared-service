@@ -203,7 +203,11 @@ def test_h3b_reader_maps_url_guard_failure_to_read_failed(monkeypatch):
     def boom(*a, **k):
         raise UrlGuardError("blocked")
 
-    monkeypatch.setattr("modules.autocount.write_back.reader.autocount_guarded_client", boom)
+    # SS-AUTOCOUNT-SPEEDUP: the reader / writer build the pooled client through http_client
+    from modules.autocount import http_client
+
+    http_client.reset_shared_autocount_client()
+    monkeypatch.setattr(http_client, "autocount_guarded_client", boom)
     reader = AutoCountDocReader(DB3)
     with pytest.raises(DocReadError) as exc:
         reader.get_document("PO", 12008, datetime(2026, 2, 1).date())
@@ -224,7 +228,11 @@ def test_h3b_write_client_maps_url_guard_failure_to_write_connect(monkeypatch):
     def boom(*a, **k):
         raise UrlGuardError("blocked")
 
-    monkeypatch.setattr("modules.autocount.write_back.client.autocount_guarded_client", boom)
+    # SS-AUTOCOUNT-SPEEDUP: the reader / writer build the pooled client through http_client
+    from modules.autocount import http_client
+
+    http_client.reset_shared_autocount_client()
+    monkeypatch.setattr(http_client, "autocount_guarded_client", boom)
     client = AutoCountWriteClient(DB3)
     with pytest.raises(WriteTransportError) as exc:
         client.put("/EditPurchaseOrderbydockey", {"DocKey": 1})

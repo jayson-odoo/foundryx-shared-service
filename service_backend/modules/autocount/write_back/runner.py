@@ -23,6 +23,7 @@ import argparse
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -866,6 +867,11 @@ class _Tap:
     def __init__(self) -> None:
         self.http = 0
         self.writes: List[Dict[str, object]] = []
+        self._lock = threading.Lock()  # a link's target read runs on a side thread (SS-AUTOCOUNT-SPEEDUP)
+
+    def count(self) -> None:
+        with self._lock:
+            self.http += 1
 
 
 class _TapClient:
@@ -879,7 +885,7 @@ class _TapClient:
         auth.attach_headers(self._inner, headers)
 
     def _send(self, method: str, path: str, body: object):
-        self._tap.http += 1
+        self._tap.count()
         entry: Dict[str, object] = {"method": method, "path": path, "requestBody": body}
         self._tap.writes.append(entry)
         try:
@@ -901,7 +907,7 @@ class _TapClient:
 
     def delete_query(self, path: str, params: Dict[str, str]):
         """Plan 61 cancel: DELETE with the query string, no body."""
-        self._tap.http += 1
+        self._tap.count()
         entry: Dict[str, object] = {"method": "DELETE", "path": path, "requestBody": None,
                                     "requestQuery": dict(params)}
         self._tap.writes.append(entry)
@@ -925,19 +931,19 @@ class _TapReader:
         auth.attach_headers(self._inner, headers)
 
     def get_document(self, *args, **kwargs):
-        self._tap.http += 1
+        self._tap.count()
         return self._inner.get_document(*args, **kwargs)
 
     def find_by_doc_no(self, *args, **kwargs):
-        self._tap.http += 1
+        self._tap.count()
         return self._inner.find_by_doc_no(*args, **kwargs)
 
     def get_by_doc_no(self, *args, **kwargs):
-        self._tap.http += 1
+        self._tap.count()
         return self._inner.get_by_doc_no(*args, **kwargs)
 
     def list_day(self, *args, **kwargs):
-        self._tap.http += 1
+        self._tap.count()
         return self._inner.list_day(*args, **kwargs)
 
 

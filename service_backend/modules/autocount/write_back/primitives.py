@@ -13,6 +13,7 @@ is open (every outcome is committed as it is reached).
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import time
@@ -138,6 +139,9 @@ class _Call:
     stage: bool = True
     doc_no: Optional[str] = None
     merge_key: Optional[int] = None  # unlink_merge: the free row that takes the quantity
+    # SS-AUTOCOUNT-SPEEDUP: the document as the previous step of the SAME operation just read
+    # it back (no vendor call since). It stands in for the fresh GET; None = read it.
+    fresh_doc: Optional[Dict[str, Any]] = None
 
 
 # AC-57-47: what marks the start of an internal detail. The text is cut at the FIRST one:
@@ -235,11 +239,14 @@ class PrimitiveService(WriteFrame):
         header_changes: Dict[str, Any], line_changes: Sequence[Dict[str, Any]],
         doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None, operation_id: Optional[str] = None, step: Optional[str] = None,
-        stage: bool = True,
+        stage: bool = True, fresh_doc: Optional[Doc] = None,
     ) -> PrimitiveResult:
+        """``fresh_doc`` (operations only): the operation's own read-back of this document,
+        taken with no vendor call since, used instead of a second identical GET."""
         call = _Call(EDIT, kind, tenant_id, doc_key=doc_key, key_id=key_id, operation_id=operation_id,
                      step=step, doc_date=doc_date, expected_last_modified=expected_last_modified,
-                     header_changes=header_changes, line_changes=line_changes, stage=stage)
+                     header_changes=header_changes, line_changes=line_changes, stage=stage,
+                     fresh_doc=fresh_doc)
         return self._run(call, company_id)
 
     def add_line(
@@ -466,10 +473,13 @@ class PrimitiveService(WriteFrame):
         self._log_doc(call.doc_no)
         self._check_deadline(row)
         self.db.commit()  # no transaction open during the GET
-        try:
-            doc = reader.get_document(call.kind, call.doc_key, doc_date, doc_no=call.doc_no)
-        except DocReadError as exc:
-            raise self._refuse(row, exc.code) from None
+        if self._reusable(call):
+            doc = copy.deepcopy(call.fresh_doc)
+        else:
+            try:
+                doc = reader.get_document(call.kind, call.doc_key, doc_date, doc_no=call.doc_no)
+            except DocReadError as exc:
+                raise self._refuse(row, exc.code) from None
         self._log_doc(doc.get("DocNo"))
         if call.expected_last_modified and doc.get("LastModified") != call.expected_last_modified:
             raise self._refuse(row, DOC_STALE)
@@ -486,6 +496,15 @@ class PrimitiveService(WriteFrame):
             except WriteRefusal as exc:
                 raise self._refuse(row, exc.code, str(exc)) from None
         return doc, request, doc_date  # type: ignore[return-value]
+
+    @staticmethod
+    def _reusable(call: _Call) -> bool:
+        """The operation's own read-back may replace the fresh GET: only inside an operation
+        (which holds the document, ``uq_ac_write_operation_one_in_progress``), only for an
+        edit, and only for the very document asked for."""
+        doc = call.fresh_doc
+        return (call.operation_id is not None and call.primitive == EDIT and isinstance(doc, dict)
+                and doc.get("DocKey") == call.doc_key and isinstance(doc.get("Details"), list))
 
     def _log_doc(self, doc_no: Any, doc_key: Optional[int] = None) -> None:
         """The document the next logged calls belong to (plan 61 section 4.8)."""
