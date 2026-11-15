@@ -41,9 +41,10 @@ common platforms that can support integration".
   New/Proposal/Won/Lost (`lib/constants/filter-options.ts:1`); Company Settings tabs in
   `components/company-settings-form.tsx:724-739` (has "Leads Settings"); menu `config/menu.ts` (Sales Lifecycle >
   Leads, Settings > Company Settings). EcoHub already consumes the omnichannel gateway with a workspace key.
-- F10 UNVERIFIED (to confirm in spike S-META before D4 is final): exact current Meta permission names and whether
-  `ads_read` is needed to name campaigns; test-lead edge availability for a dev-mode app; Login for Business config id
-  requirement. Facts on TikTok, LinkedIn, Snapchat and Pinterest delivery are UNVERIFIED until their spikes.
+- F10 Meta facts checked in spike S-META (15/11/2026, `documentation/plans/meta-leads/S-META-result.md`): the five
+  D4 permission names, the test-lead edge, the leadgen payload, subscribe-replaces-list (R1), system-user tokens and
+  Graph versions. Still open: whether `business_management` / `ads_management` are needed, Instagram routing (needs
+  a running ad), the person-based token's lifetime, and the Login for Business system-user config. Facts on TikTok, LinkedIn, Snapchat and Pinterest delivery are UNVERIFIED until their spikes.
 
 ## 3. Decisions
 
@@ -56,7 +57,8 @@ common platforms that can support integration".
   the opener with `postMessage` to the session's `returnOrigin` only.
 - D3 **Meta plumbing moves to core** `app/integrations/meta/` (code exchange, long-lived token, `/me/accounts`,
   `subscribed_apps`, signature check, Graph error classification). Pure move first (slice S0): omnichannel imports it,
-  its suites pass UNEDITED. Lead Capture uses it directly; no cross-module import.
+  its suites pass UNEDITED. Lead Capture uses it directly; no cross-module import. One Graph version: pin v25.0 (the
+  app's default; Meta already runs the backend's v19.0 and the frontend's v23.0 as v25.0, latest is v27.0; S-META F1).
 - D4 **One Foundryx Meta app.** Scopes requested by Lead Capture's login config (owner 14 Nov, D4 = b):
   `pages_show_list`, `pages_manage_metadata`, `pages_read_engagement`, `leads_retrieval`, `pages_manage_ads`
   (Meta's retrieving-leads page lists it for full lead data). `business_management` only if S-META shows the
