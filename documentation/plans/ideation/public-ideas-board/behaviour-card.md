@@ -1,10 +1,10 @@
-# PUBLIC-IDEAS-BOARD behaviour card v1 (waiting for owner answers)
+# PUBLIC-IDEAS-BOARD behaviour card v2 (waiting for owner answers)
 
 Owner ask (15 Nov): a Canny-like public page, no login, where a contact sees all items with their status and also
 "my issue / my feature / my request / my feedback". Every link we send a contact about an idea goes there.
 
-Mock: `mock-v1.html` (5 screens in the top bar, width toggle 1280 / 375). Screenshots: `evidence/mock-v1-*-{1280,375}.png`. Examples below are SHAPE ONLY until crew sends masked dev rows (data request
-posted on the PR).
+Mock: `mock-v1.html` (5 screens in the top bar, width toggle 1280 / 375). Screenshots: `evidence/mock-v1-*-{1280,375}.png` (v2 mock follows this card).
+Examples come from masked dev rows (crew extract 15 Nov: main dev DB + two lane copies; no production data).
 
 ## What exists today (cited on origin/main)
 - Per-IDEA public page `/public/ideas/{status_token}`, no login (`routers/public_ideas.py:37`,
@@ -52,17 +52,28 @@ posted on the PR).
 7. **Links we send:** `mint_idea_link` returns `/public/ideas/board/{contactToken}?idea={ideaNumber}` when the idea has a
    `submitter_contact_id`; otherwise the old per-idea link. Old `/public/ideas/{status_token}` links keep working
    unchanged. No message wording changes.
+8. **Ideas with no number** (staff, web and embed creates are not numbered today; only WhatsApp captures are) still
+   list, with Number "-", and open by click. Only numbered ideas can be opened straight from a link.
+9. **Draft and test ideas never show, not even in My requests.** A contact's own draft or test idea is left out.
 
-## Examples (shape only; real masked rows to follow)
-1. Dealer A filed IDEA-0012 (issue, Building) and IDEA-0019 (idea, Captured) on WhatsApp. Link opens the board with
-   IDEA-0019's popup; My requests lists 2 rows; All lists 14 tenant ideas, none showing a phone.
-2. Dealer B has no ideas yet (only chatted). A link is never sent to them, but if a staff-shared one is opened:
-   My requests shows "No requests yet"; All works.
-3. Dealer A's IDEA-0021 was merged into IDEA-0008. My requests shows IDEA-0021 with IDEA-0008's status and "Merged into
-   IDEA-0008"; All shows IDEA-0008 only.
-4. Staff hid IDEA-0015 (internal detail). It is missing from All for everyone, but still in its submitter's My requests.
-5. Dealer A uses two numbers' worth of workspaces: same phone in "Sales" and "Service" workspaces = 2 contact rows. My
-   requests shows ideas from both.
+## Examples (masked dev rows)
+1. **WhatsApp dealer, one idea.** Dealer A sent "Remind me before a DO SLA breaches" (Feature request, New). Their link
+   opens the board with that idea's popup. My requests: 1 row. All: every non-hidden tenant idea, first names only.
+2. **Same phone, two contacts.** Dealer B's phone belongs to 2 contact rows (two workspaces). Dealer B filed "I want a
+   mobile app so field staff can log deliveries offline" from one of them. Opening Dealer B's link from either contact
+   shows it under My requests (exact phone match, never name).
+3. **Two ideas, shared phone.** Dealer C filed "add an Export-to-Excel button on the orders list" and "a dark mode
+   toggle for the whole app"; their phone is also on a second contact. My requests: 2 rows.
+4. **Test ideas are never public.** Dealer E's two WhatsApp ideas (IDEA-0016 "The AI assistant currently cannot
+   retrieve or provide invoices..." Feature request; IDEA-0049 "Asking for the <Brand> promo returns the <Brand B>
+   promo instead." Issue) are both marked test. Dealer E's My requests: "No requests yet". All: neither row.
+5. **Drafts are never public.** "a brand new test idea about export scheduling" is a Draft linked to a contact: it is
+   not in that contact's My requests and not in All.
+6. **Staff / web ideas with no contact.** "Let CS bulk-export orders to Excel - with column presets" (manual) and the
+   four "ZZT CP2 235 ..." rows (manual, no number) have a submitter name but no contact: they show in All (Number "-",
+   first name only) and in nobody's My requests (see Q4).
+7. **Rows titled "test" that are not marked test** (manual / embed rows, `is_test` off): they show in All like any idea.
+   The board never guesses from the title; staff mark them test or hide them.
 
 ## Edge cases
 - **Token expiry / revoke:** no expiry (same as `status_token` today, links in old chats keep working); staff revoke
@@ -71,7 +82,8 @@ posted on the PR).
 - **Private / internal items:** `portal_hidden`, draft, `is_test` never on All. See Q2.
 - **Filed by staff on behalf of a contact:** shows in My requests only when the idea's `submitter_contact_id` is set;
   a staff create with only `submitter_name` is not linked to anyone (no joining by name). See Q4.
-- **Multiple contacts, same phone:** joined by exact `phone_digits` within the tenant (rule 6).
+- **Multiple contacts, same phone:** real in dev (2 of 5 linked dealers share a phone with another contact); joined by
+  exact `phone_digits` within the tenant (rule 6).
 - **One contact, many companies:** companies live in the CRM, the board knows the contact only: all of that contact's
   ideas show, whatever company they were raised for.
 - **Forwarded link:** whoever holds it sees that contact's My requests (same exposure as today's per-idea link). No
