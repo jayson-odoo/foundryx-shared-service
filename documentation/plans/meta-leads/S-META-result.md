@@ -27,9 +27,18 @@ Legend: **Confirmed** = matches section 3. **Changed** = section 3 was wrong or 
 App roles: 2 administrators, 1 developer (`GET /{app}/roles`); only they get real data while permissions are at
 Standard access.
 
-## State left behind (to clean up after the lane)
+## Lane 2 (#237) check with a real delivery
 
-- App: `page` webhook object, field `leadgen`, callback = temporary tunnel. Removed at lane end with
-  `DELETE /{app}/subscriptions?object=page` (back to WhatsApp only).
-- Page: Foundryx WA App subscribed with `[leadgen]`; forms "S-META test 1" and "S-META test 2"; one test lead on
-  form 2. Kept for lanes 2 and 6 unless the owner wants them gone.
+A real signed `leadgen` delivery was forwarded byte for byte to the #237 test copy (backend restarted with the real
+app secret): **200 `{"status":"queued"}`**; the same body with a tampered or missing `X-Hub-Signature-256` = **403
+`Invalid signature`**. The worker hand-off was not observable (no `leadgen` handler until lane 3). PR #237 comment
+6889747683.
+
+## State after the lane (15/11/2026 ~13:30)
+
+- App: test `page` webhook object **removed** (`DELETE /{app}/subscriptions?object=page`); `GET /{app}/subscriptions`
+  again lists only `whatsapp_business_account` -> chat.foundryx.my. Tunnel and receiver stopped.
+- Page Foundryx: Foundryx WA App stays subscribed with `[leadgen]`; forms "S-META test 1" and "S-META test 2" stay
+  (ACTIVE), each with one Meta test lead. Kept for lanes 2 and 6. Leads now go nowhere until lane 6 sets the
+  production Page webhook.
+- System user "TehJayson" keeps the Foundryx Page asset (owner's step A).
