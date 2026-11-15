@@ -174,6 +174,7 @@ def _session_factory_template():
     # module's `statuses` must not collide with the core `statuses`, plan 07).
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
+    from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
@@ -194,6 +195,7 @@ def _session_factory_template():
         "app_ideation": "omni",
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
+        LEAD_CAPTURE_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -329,6 +331,7 @@ def _ideation_session_factory_template():
     """
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
+    from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -343,6 +346,7 @@ def _ideation_session_factory_template():
         IDEATION_SCHEMA: "ideation",
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
+        LEAD_CAPTURE_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -615,6 +619,7 @@ def _meetings_session_factory_template():
     """
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
+    from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -628,6 +633,7 @@ def _meetings_session_factory_template():
         IDEATION_SCHEMA: "ideation",
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
+        LEAD_CAPTURE_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -724,6 +730,7 @@ def connector_session_factory():
     default tenant (mirrors ``ideation_session_factory``)."""
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
+    from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -739,6 +746,7 @@ def connector_session_factory():
             IDEATION_SCHEMA: "ideation",
             MEETINGS_SCHEMA: "meetings",
             CONNECTOR_SCHEMA: "connector",
+            LEAD_CAPTURE_SCHEMA: "connector",
         }
     )
     with engine.connect() as conn:
