@@ -148,6 +148,25 @@ def _whole_row(plan: "_Plan", doc: Doc) -> bool:
     return po_row is not None and plan.qty is not None and _dec(po_row.get("Qty")) == plan.qty
 
 
+def linked_detail(document: Optional[Doc], po_dtl_key: int, replaced: List[Tuple[int, int]]) -> Optional[Doc]:
+    """Plan 64: the PO row a whole-row link landed on, from ``replaced`` (old -> new), as
+    read back in ``document``. Used when the flow did not name the row itself (a replay
+    of an operation stored before plan 64). None when it cannot be named exactly."""
+    rows = [r for r in (document or {}).get("Details") or [] if isinstance(r, dict)]
+    for old, new in replaced:
+        if old == po_dtl_key:
+            return next((r for r in rows if r.get("DtlKey") == new), None)
+    return None
+
+
+def row_of(document: Optional[Doc], dtl_key: Optional[int]) -> Optional[Doc]:
+    """The row ``dtl_key`` of ``document`` as read back, or None."""
+    if dtl_key is None:
+        return None
+    return next((r for r in (document or {}).get("Details") or [] if isinstance(r, dict)
+                 and r.get("DtlKey") == dtl_key), None)
+
+
 def _expected_link(row: Doc, is_spo: bool) -> int:
     """The link key the row must read back with: on a PO row AutoCount moves an
     SO link into ``FromSODtlKey``; an SPO row keeps ``FromDocDtlKey``."""
@@ -289,7 +308,37 @@ class WriteBackService(WriteFrame):
     ) -> WriteActionResult:
         """Part of a row: the plan 55 split link (idempotent when a key is given).
         The whole row: the ``link_row`` operation (delete + add, plan 57). The gateway
-        passes ``operations`` (the plan 57 service); without it the plan 55 flow runs."""
+        passes ``operations`` (the plan 57 service); without it the plan 55 flow runs.
+        Plan 64: a ``done`` answer carries ``detail``, the PO row the link landed on."""
+        result = self._link(
+            tenant_id=tenant_id, company_id=company_id, po_doc_key=po_doc_key, po_dtl_key=po_dtl_key,
+            so_doc_key=so_doc_key, so_dtl_key=so_dtl_key, qty=qty, expected_last_modified=expected_last_modified,
+            key_id=key_id, idempotency_key=idempotency_key, operations=operations, so_doc_date=so_doc_date,
+            doc_date=doc_date,
+        )
+        if result.outcome != OUTCOME_DONE:
+            result.detail = None
+        elif result.detail is None:
+            result.detail = linked_detail(result.document, po_dtl_key, result.replaced_lines)
+        return result
+
+    def _link(
+        self,
+        *,
+        tenant_id: str,
+        company_id: str,
+        po_doc_key: int,
+        po_dtl_key: int,
+        so_doc_key: int,
+        so_dtl_key: int,
+        qty: Decimal,
+        expected_last_modified: Optional[str],
+        key_id: Optional[str],
+        idempotency_key: Optional[str],
+        operations: Optional["OperationService"],
+        so_doc_date: Optional[date],
+        doc_date: Optional[date],
+    ) -> WriteActionResult:
         if operations is not None:
             op = self._link_operation(operations, tenant_id, company_id, key_id, idempotency_key,
                                       po_doc_key, po_dtl_key, qty, doc_date)
@@ -372,6 +421,7 @@ class WriteBackService(WriteFrame):
             None, result.outcome, result.error_code, result.message, result.document,
             operation_id=result.operation_id, warnings=result.warnings,
             replaced_lines=result.replaced_lines, doc_key=result.doc_key, doc_no=result.doc_no,
+            detail=result.detail,
         )
 
     def unlink(
@@ -761,6 +811,7 @@ class WriteBackService(WriteFrame):
         restore = payloads.transfer_row_drift(wanted, new_row) if new_row is not None else {}
         if not restore:
             result = self._finish(row, OUTCOME_DONE, document=after1)
+            result.detail = new_row
             self._stage(company, plan.kind[0], after1)
             return result
         new_key = int(new_row["DtlKey"])  # type: ignore[index]
@@ -808,6 +859,7 @@ class WriteBackService(WriteFrame):
             self.db.commit()  # restored, but something else moved
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
         result = self._finish(row, OUTCOME_DONE, code, document=final)
+        result.detail = row_of(final, new_key)
         self._stage(company, plan.kind[0], final)
         return result
 

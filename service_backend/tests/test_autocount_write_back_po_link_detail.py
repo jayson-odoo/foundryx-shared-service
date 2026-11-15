@@ -156,3 +156,31 @@ def test_ac_64_07_other_routes_keep_their_body(client, gw, far):
                     json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": far.p_linked}, headers=gw.hdr())
     assert r.status_code == 200, r.text
     assert "detail" not in r.json()
+
+
+# ---- owner Q2 (crew answer a): a PARTLY received row is not refused - cut, remainder moved -----------------
+
+def test_partly_received_row_is_cut_and_the_remainder_lands_at_the_so_location(client, gw, far):
+    _received(gw, 1)  # 1 of 4 received
+    r = client.post(LINK, json=_whole(far), headers=gw.hdr())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    detail = body["detail"]
+    assert detail["DtlKey"] != far.p_free and detail["FromSODtlKey"] == far.so_a
+    assert Decimal(str(detail["Qty"])) == 3 and detail["Location"] == "BRW-AM"
+    kept = _row(body["document"]["Details"], far.p_free)
+    assert Decimal(str(kept["Qty"])) == 1 and kept["Location"] == "BR1"  # received goods stay where they are
+
+
+# ---- AC-64-05: an answer stored before plan 64 (no "detail") still answers the row ------------------------
+
+def test_ac_64_05_replay_of_an_answer_stored_before_detail_existed(client, gw, far):
+    from modules.autocount.models import AcWriteOperation
+
+    first = client.post(LINK, json=_whole(far), headers=gw.hdr())
+    op = gw.db.query(AcWriteOperation).filter(AcWriteOperation.id == first.json()["operationId"]).one()
+    op.result_json = {k: v for k, v in op.result_json.items() if k != "detail"}
+    gw.db.commit()
+    again = client.post(LINK, json=_whole(far), headers=gw.hdr())
+    assert again.status_code == 200
+    assert again.json()["detail"] == first.json()["detail"]
