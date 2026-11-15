@@ -24,8 +24,9 @@ function initials(name: string | null): string {
  * Portal chrome: tenant brand + Submit + the signed-in person, then the
  * Roadmap / Feedback / Changelog tabs (each its own route). Inside the Sorento
  * iframe (`mode: 'embed'`) only the tabs render - Sorento owns the header. On a
- * dealer's personal link (`mode: 'link'`) the brand shows, with no submit and
- * no sign-out (there is no login).
+ * dealer's personal link (`mode: 'link'`) only the tabs render too: the public
+ * page shell already carries the tenant brand, and there is no submit and no
+ * sign-out (there is no login).
  */
 export function PortalShell({ children }: PortalShellProps) {
   const { mode, paths, principal, signOut } = useIdeaPortal();
@@ -51,11 +52,6 @@ export function PortalShell({ children }: PortalShellProps) {
   return (
     <div className="flex min-h-full w-full grow flex-col bg-muted/20">
       <header className="border-b border-border bg-background">
-        {mode === 'link' && (shellBranding || isResolved) && (
-          <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 py-3">
-            <BrandMark branding={branding} />
-          </div>
-        )}
         {mode === 'portal' && (
           <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 py-3">
             {(shellBranding || isResolved) && <BrandMark branding={branding} />}
