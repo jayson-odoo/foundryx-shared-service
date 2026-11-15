@@ -16,21 +16,42 @@ from app.api_errors import ApiError
 from ..models import IdeaType
 
 # (key, label, sort_order, is_default). Insert-if-missing seed + migration 0019.
+# Labels match the Sorento CRM (sorento-crm #2434) so both apps read the same:
+# users never read "idea" (lane FEEDBACK-RENAME, owner ruling 15 Nov); the
+# stored KEY stays ``idea`` / ``issue``. English only: SS carries no ms/zh labels.
 DEFAULT_IDEA_TYPES = (
-    ("idea", "Idea", 0, True),
-    ("issue", "Issue", 1, False),
+    ("idea", "Feature request", 0, True),
+    ("issue", "Problem report", 1, False),
 )
+# The stock labels shipped before the relabel. A catalog row still carrying one
+# of these is moved to the new label (migration 0020 + every install()); a row
+# someone deliberately relabelled is left alone.
+LEGACY_IDEA_TYPE_LABELS = {"idea": "Idea", "issue": "Issue"}
 FALLBACK_DEFAULT_TYPE = "idea"
 
 
 def seed_idea_types(db: Session) -> None:
     """Insert-if-missing the catalog rows (idempotent; an existing row's label is
     left as-is so a later relabel survives a reseed)."""
-    existing = {r.key for r in db.query(IdeaType.key).all()}
+    existing = {r.key: r for r in db.query(IdeaType).all()}
     for key, label, order, is_default in DEFAULT_IDEA_TYPES:
-        if key not in existing:
+        row = existing.get(key)
+        if row is None:
             db.add(IdeaType(key=key, label=label, sort_order=order, is_default=is_default))
+        elif row.label == LEGACY_IDEA_TYPE_LABELS.get(key):
+            row.label = label
     db.commit()
+
+
+def relabel_idea_types_sql(schema: str) -> List[str]:
+    """Guarded relabel for migration 0020: only a row still on its stock legacy
+    label moves to the new default label (idempotent, value untouched)."""
+    new = {k: label for k, label, _o, _d in DEFAULT_IDEA_TYPES}
+    return [
+        f'UPDATE "{schema}".idea_types SET label = \'{new[k]}\' '
+        f"WHERE key = '{k}' AND label = '{old}'"
+        for k, old in LEGACY_IDEA_TYPE_LABELS.items()
+    ]
 
 
 def list_idea_types(db: Session) -> List[IdeaType]:
@@ -69,7 +90,11 @@ def resolve_idea_type(db: Session, value: Optional[str]) -> str:
 
 def idea_type_label(db: Session, key: Optional[str]) -> str:
     row = db.query(IdeaType).filter(IdeaType.key == (key or "")).first()
-    return row.label if row is not None else (key or FALLBACK_DEFAULT_TYPE).capitalize()
+    if row is not None:
+        return row.label
+    defaults = {k: label for k, label, _o, _d in DEFAULT_IDEA_TYPES}
+    k = key or FALLBACK_DEFAULT_TYPE
+    return defaults.get(k, k.capitalize())
 
 
 def resolve_idea_type_filter(

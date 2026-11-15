@@ -7,9 +7,18 @@ const votes = (i: Idea): number => i.upvotes ?? 0;
 /** The idea's type key (`idea` when a payload predates the field). */
 export const ideaTypeKey = (i: Idea): string => i.type || 'idea';
 
-/** Display word for a type key (`issue` -> `Issue`). */
-export const ideaTypeLabel = (key: string): string =>
-  key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Feedback';
+/** What a user reads for a stored type key. The values stay `idea` / `issue`;
+ * the labels match the Sorento CRM and the backend catalog
+ * (`idea_types.DEFAULT_IDEA_TYPES`) - a user never reads "idea" (lane
+ * FEEDBACK-RENAME). An unknown key shows capitalised. */
+const IDEA_TYPE_LABELS: Record<string, string> = {
+  idea: 'Feature request',
+  issue: 'Problem report',
+};
+export const ideaTypeLabel = (key: string): string => {
+  const k = key || 'idea';
+  return IDEA_TYPE_LABELS[k] ?? k.charAt(0).toUpperCase() + k.slice(1);
+};
 const time = (iso: string): number => {
   const t = Date.parse(iso);
   return Number.isNaN(t) ? 0 : t;

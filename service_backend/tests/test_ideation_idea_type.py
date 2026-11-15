@@ -138,7 +138,7 @@ def test_turn_flow_issue_stored_kept_and_reply_says_issue(setup):
     assert r2.json()["status"] == "review", r2.json()
     r3 = _create_idea(c, key, cid, pid, draft_id=draft_id, confirm=True)
     assert r3.json()["status"] == "complete", r3.json()
-    assert "Issue " in r3.json()["reply_text"]
+    assert "Problem report FB-" in r3.json()["reply_text"]
     assert _idea_row(setup["factory"], draft_id).type == "issue"
 
 
@@ -183,7 +183,7 @@ def test_issue_does_not_dedup_against_an_idea(setup):
     r2 = _create_idea(c, key, "+60122222222", pid, message_text=text, type="issue")
     assert r2.json()["status"] == "duplicate_candidate", r2.json()
     assert r2.json()["duplicate_candidate"]["idea_number"] == issue["idea_number"]
-    assert "Similar issue exists" in r2.json()["reply_text"]
+    assert "Similar problem report exists" in r2.json()["reply_text"]
 
 
 def test_status_event_payload_carries_idea_type(setup):
@@ -250,8 +250,8 @@ def test_operator_types_endpoint(setup):
     res = c.get("/ideation/ideas/types", headers=_auth(c))
     assert res.status_code == 200, res.text
     assert res.json() == [
-        {"key": "idea", "label": "Idea", "isDefault": True},
-        {"key": "issue", "label": "Issue", "isDefault": False},
+        {"key": "idea", "label": "Feature request", "isDefault": True},
+        {"key": "issue", "label": "Problem report", "isDefault": False},
     ]
 
 

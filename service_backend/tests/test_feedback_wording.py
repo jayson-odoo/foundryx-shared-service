@@ -81,7 +81,7 @@ def test_reply_noun_for_idea_type_is_feedback(db):
 
     svc = IntakeService(db)
     assert svc._noun(Idea(type="idea")) == "Feedback"
-    assert svc._noun(Idea(type="issue")) == "Issue"
+    assert svc._noun(Idea(type="issue")) == "Problem report"
 
 
 def test_build_issue_links_feedback_br_page():
@@ -122,3 +122,40 @@ def test_statuses_entity_label_is_feedback():
 
     entity = get_status_entity(IDEA_ENTITY)
     assert entity is not None and entity.label == "Feedback"
+
+
+def test_type_labels_match_the_crm_and_values_stay(db):
+    from modules.ideation.services.idea_types import idea_type_label, list_idea_types
+
+    rows = {r.key: r.label for r in list_idea_types(db)}
+    assert rows == {"idea": "Feature request", "issue": "Problem report"}
+    assert idea_type_label(db, "idea") == "Feature request"
+
+
+def test_relabel_only_moves_stock_labels(db):
+    from modules.ideation.models import IdeaType
+    from modules.ideation.services.idea_types import seed_idea_types
+
+    idea = db.get(IdeaType, "idea")
+    issue = db.get(IdeaType, "issue")
+    idea.label = "Idea"  # stock legacy label -> moves
+    issue.label = "Bug"  # a deliberate relabel -> stays
+    db.commit()
+    seed_idea_types(db)
+    assert db.get(IdeaType, "idea").label == "Feature request"
+    assert db.get(IdeaType, "issue").label == "Bug"
+
+
+def test_relabel_migration_sql_is_guarded():
+    from modules.ideation.services.idea_types import relabel_idea_types_sql
+
+    stmts = relabel_idea_types_sql("app_ideation")
+    assert any("label = 'Idea'" in s and "'Feature request'" in s for s in stmts)
+    assert any("label = 'Issue'" in s and "'Problem report'" in s for s in stmts)
+
+
+def test_problem_report_reply_noun(db):
+    from modules.ideation.models import Idea
+    from modules.ideation.services.intake import IntakeService
+
+    assert IntakeService(db)._noun(Idea(type="issue")) == "Problem report"

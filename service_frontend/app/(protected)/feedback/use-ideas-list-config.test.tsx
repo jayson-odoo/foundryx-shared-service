@@ -374,8 +374,8 @@ describe('useIdeasListConfig - plan 15 list shape', () => {
     expect(type.type).toBe('enum');
     expect(type.options).toEqual(
       expect.arrayContaining([
-        { label: 'Issue', value: 'issue' },
-        { label: 'Idea', value: 'idea' },
+        { label: 'Problem report', value: 'issue' },
+        { label: 'Feature request', value: 'idea' },
       ]),
     );
     expect(type.options).toHaveLength(2);

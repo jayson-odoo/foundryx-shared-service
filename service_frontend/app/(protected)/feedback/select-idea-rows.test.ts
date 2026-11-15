@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Idea, IdeaAttachment } from '@/types/ideation';
 import type { FilterGroup, ListQuery } from '@/types/resource';
-import { selectIdeaRows } from './select-idea-rows';
+import { ideaTypeLabel, selectIdeaRows } from './select-idea-rows';
 
 type Query = Parameters<typeof selectIdeaRows>[1];
 
@@ -195,3 +195,16 @@ describe('types - IdeaAttachment.contentPath (AC-15-19)', () => {
 // Compile-time guard that the query shape the pager passes is accepted.
 const _queryShape: Pick<ListQuery, 'search' | 'statusView' | 'filter' | 'sort'> = q();
 void _queryShape;
+
+// Lane FEEDBACK-RENAME (owner ruling 15 Nov): a user never reads "idea"; the
+// stored type value stays. Labels match the Sorento CRM (sorento-crm #2434).
+describe('ideaTypeLabel - feedback wording', () => {
+  it('shows the CRM labels for the stored type values', () => {
+    expect(ideaTypeLabel('idea')).toBe('Feature request');
+    expect(ideaTypeLabel('issue')).toBe('Problem report');
+  });
+  it('never returns the word idea, and capitalises an unknown key', () => {
+    expect(ideaTypeLabel('')).toBe('Feature request');
+    expect(ideaTypeLabel('praise')).toBe('Praise');
+  });
+});
