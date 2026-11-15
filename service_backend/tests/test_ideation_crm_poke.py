@@ -235,3 +235,112 @@ def test_fan_out_is_one_poke_per_commit(ideation_client, calls):
     assert len(calls.requests) == 1
     body = json.loads(calls.requests[0].content)
     assert len(body["event_ids"]) == 2
+
+
+# ── review round 1 ────────────────────────────────────────────────────────────
+
+
+def test_rr1_b1_send_waits_past_the_feed_settle_window(monkeypatch):
+    """The feed withholds rows younger than SETTLE_WINDOW_SECONDS; a poke sent
+    sooner makes the CRM pull nothing. The real spawner delays past it."""
+    from modules.ideation.services import crm_poke
+    from modules.ideation.services.status_events import SETTLE_WINDOW_SECONDS
+
+    started = []
+
+    class FakeTimer:
+        def __init__(self, interval, fn):
+            started.append(interval)
+            self.daemon = False
+
+        def start(self):
+            started.append("started")
+
+    monkeypatch.setattr(crm_poke.threading, "Timer", FakeTimer)
+    crm_poke._spawn(lambda: None)
+    assert started[0] > SETTLE_WINDOW_SECONDS
+    assert started[-1] == "started"
+
+
+def test_rr1_s1_savepoint_release_never_sends_early(ideation_client, calls):
+    """A savepoint inside the transaction must neither send nor drop the
+    queued poke: the outer rollback sends nothing ..."""
+    from modules.ideation.models import Idea
+    from modules.ideation.services import crm_poke
+
+    _sorento_connection(ideation_client._factory)
+    db = ideation_client._factory()
+    try:
+        db.query(Idea).count()
+        crm_poke.queue_crm_poke(db, DEFAULT_TENANT_ID, "evt-a", 1)
+        with db.begin_nested():
+            db.query(Idea).count()
+        assert calls.requests == []  # the savepoint release did not send
+        db.rollback()
+        db.query(Idea).count()
+        db.commit()
+    finally:
+        db.close()
+    assert calls.requests == []
+
+
+def test_rr1_s1_savepoint_rollback_never_drops_earlier_events(ideation_client, calls):
+    """... and a savepoint rollback keeps what was queued before it."""
+    from modules.ideation.models import Idea
+    from modules.ideation.services import crm_poke
+
+    _sorento_connection(ideation_client._factory)
+    db = ideation_client._factory()
+    try:
+        db.query(Idea).count()
+        crm_poke.queue_crm_poke(db, DEFAULT_TENANT_ID, "evt-b", 2)
+        nested = db.begin_nested()
+        db.query(Idea).count()
+        nested.rollback()
+        crm_poke.queue_crm_poke(db, DEFAULT_TENANT_ID, "evt-c", 3)
+        db.commit()
+    finally:
+        db.close()
+    assert len(calls.requests) == 1
+    assert json.loads(calls.requests[0].content)["event_ids"] == ["evt-b", "evt-c"]
+
+
+def test_rr1_s1_fan_out_with_unnumbered_child_is_still_one_poke(ideation_client, calls):
+    """Real path: the merged child has no number / link yet, so writing its
+    event opens savepoints (numbering + link mint) mid fan-out."""
+    from modules.ideation.models import Idea
+
+    s = _setup_with_contact(ideation_client)
+    factory = ideation_client._factory
+    c2 = _make_contact(factory, phone="+60123459877")
+    child = _insert_idea(factory, s["product_id"], problem="unnumbered child", status_key="captured", submitter_contact_id=c2)
+    assert ideation_client.post(
+        "/ideation/ideas/merge", headers=s["h"], json={"survivorId": s["idea_id"], "ideaIds": [s["idea_id"], child]}
+    ).status_code in (200, 201)
+    db = factory()
+    try:
+        row = db.query(Idea).filter(Idea.id == child).first()
+        row.idea_number, row.status_token = None, None
+        db.commit()
+    finally:
+        db.close()
+    _sorento_connection(factory)
+    calls.requests.clear()
+    assert _transition(ideation_client, s["h"], s["idea_id"], "triaged").status_code == 200
+    assert len(calls.requests) == 1
+    assert len(json.loads(calls.requests[0].content)["event_ids"]) == 2
+
+
+def test_rr1_inactive_connection_is_skipped(ideation_client, calls):
+    from app.models.connection import Connection
+
+    s = _setup_with_contact(ideation_client)
+    cid = _sorento_connection(ideation_client._factory)
+    db = ideation_client._factory()
+    try:
+        db.query(Connection).filter(Connection.id == cid).first().is_active = False
+        db.commit()
+    finally:
+        db.close()
+    assert _transition(ideation_client, s["h"], s["idea_id"], "triaged").status_code == 200
+    assert calls.requests == []
