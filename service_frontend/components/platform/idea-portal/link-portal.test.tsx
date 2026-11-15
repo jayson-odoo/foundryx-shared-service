@@ -7,7 +7,7 @@ import type { PortalPrincipal, PortalSession } from '@/types/idea-portal';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
-  usePathname: () => '/public/feedback/LINKTOKEN_abcdefghijklmnopqrstuvwxyz0123',
+  usePathname: () => '/public/feedback/board/LINKTOKEN_abcdefghijklmnopqrstuvwxyz0123',
   useParams: () => ({}),
 }));
 vi.mock('@/hooks/use-branding', () => ({
@@ -42,10 +42,10 @@ beforeEach(() => {
 describe('linkPortalPaths', () => {
   it('puts the link token in every path and lands on feedback', () => {
     const p = linkPortalPaths(TOKEN);
-    expect(p.feedback).toBe(`/public/feedback/${TOKEN}`);
-    expect(p.roadmap).toBe(`/public/feedback/${TOKEN}/roadmap`);
-    expect(p.changelog).toBe(`/public/feedback/${TOKEN}/changelog`);
-    expect(p.idea('IDEA-0003')).toBe(`/public/feedback/${TOKEN}/IDEA-0003`);
+    expect(p.feedback).toBe(`/public/feedback/board/${TOKEN}`);
+    expect(p.roadmap).toBe(`/public/feedback/board/${TOKEN}/roadmap`);
+    expect(p.changelog).toBe(`/public/feedback/board/${TOKEN}/changelog`);
+    expect(p.idea('IDEA-0003')).toBe(`/public/feedback/board/${TOKEN}/IDEA-0003`);
   });
 
   it('labels the mine toggle per viewer', () => {

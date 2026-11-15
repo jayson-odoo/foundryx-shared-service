@@ -22,7 +22,7 @@ not installed in the cloud sandbox), evidence in `evidence/live/live-*-{1280,375
 | AC-FB-23 | Comment, delete own only | staff comment exists | post, delete others', delete own | role Dealer; others' 403/404; own 204 | as expected; live comment shows "Dealer / Dealer" | PASS |
 | AC-FB-24 | No submit / hide / note | - | POST idea, PUT hidden, PUT note | 403 each | as expected; live: no Submit form, no sign-out | PASS |
 | AC-FB-25 | Detail 404s | hidden-not-mine, draft | GET | 404 | as expected | PASS |
-| AC-FB-30 | Link shape | contact idea / CRM template base / plain base / foreign contact | `mint_board_link` | `/public/feedback/{t}/{n}`; CRM `/feedback/{t}/{n}`; plain base; null | as expected | PASS |
+| AC-FB-30 | Link shape | contact idea / CRM template base / plain base / foreign contact | `mint_board_link` | `/public/feedback/board/{t}/{n}`; CRM `/feedback/board/{t}/{n}`; plain base; null | as expected | PASS |
 | AC-FB-31 | `board_url` on status events | contact idea | status change | payload board_url = requester's link, track_url unchanged | as expected | PASS |
 | AC-FB-32 | WhatsApp reply link | conversational intake | confirm / re-confirm / voted | replier's own board link; never the author's (B1); test turn + one-shot keep the per-idea link | as expected (`test_rr1_*`, create-idea + intake-contract suites) | PASS |
 | AC-FB-33 | Staff cancel | contact idea + same-phone sibling | endpoint + grace-window action | both links 401; 404 foreign/no contact; 401 unauthenticated; one live link enforced by DB | as expected | PASS |

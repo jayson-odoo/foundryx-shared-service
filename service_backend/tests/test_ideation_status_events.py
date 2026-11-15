@@ -299,7 +299,7 @@ def test_event_payload_exact_keys(ideation_client):
     assert payload["separated_from"] is None
     assert payload["is_test"] is False
     assert payload["track_url"]
-    assert "/public/feedback/" in payload["board_url"]
+    assert "/public/feedback/board/" in payload["board_url"]
 
 
 # ── AC-94-64 ───────────────────────────────────────────────────────────────

@@ -34,7 +34,7 @@ Tags: [BE] backend pytest, [FE] vitest, [E2E] recorded agent-browser run, [T] co
 - **AC-FB-25 [BE]** Detail of an item from another tenant, or a draft/test/hidden-not-mine item -> 404.
 
 ## D. Links we send
-- **AC-FB-30 [BE]** `mint_board_link(idea)` = `{base}/public/feedback/{linkToken}/{ideaNumber}` for an idea with a
+- **AC-FB-30 [BE]** `mint_board_link(idea)` = `{base}/public/feedback/board/{linkToken}/{ideaNumber}` for an idea with a
   same-tenant submitter contact; `None` when the idea has no contact. Tenant base with a `{token}` template ->
   `{origin of the template}/feedback/{linkToken}/{ideaNumber}` (the CRM public page).
 - **AC-FB-31 [BE]** Every `idea_status_events` payload carries `board_url` (the requester contact's link) next to the
@@ -49,11 +49,11 @@ Tags: [BE] backend pytest, [FE] vitest, [E2E] recorded agent-browser run, [T] co
   database-enforced.
 
 ## E. Frontend (shared-service board, link mode)
-- **AC-FB-40 [FE]** `/public/feedback/{token}` exchanges the link once and renders the existing Roadmap / Feedback /
+- **AC-FB-40 [FE]** `/public/feedback/board/{token}` exchanges the link once and renders the existing Roadmap / Feedback /
   Changelog / item views; the Submit form is absent; the toggle reads "My requests"; wording says "Feedback".
-- **AC-FB-41 [FE]** `/public/feedback/{token}/{number}` opens that item; a bad link shows "This link is not valid".
+- **AC-FB-41 [FE]** `/public/feedback/board/{token}/{number}` opens that item; a bad link shows "This link is not valid".
 - **AC-FB-42 [FE]** The token is kept in memory only (never localStorage).
 - **AC-FB-43 [E2E]** Real clicks at 375 and 1280: open a link -> item -> upvote on/off -> My requests -> comment.
 
 ## F. Contract
-- **AC-FB-50 [T]** `board_url` documented for lane FEEDBACK-STATUS-WA; CRM `/feedback/{token}` page contract written.
+- **AC-FB-50 [T]** `board_url` documented for lane FEEDBACK-STATUS-WA; CRM `/feedback/board/{token}` page contract written.

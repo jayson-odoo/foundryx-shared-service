@@ -18,11 +18,11 @@ Contract: `acceptance-criteria.md`. Reuse decision: `reuse-proposal.md`.
 
 ## Frontend
 6. `LinkPortalRoot` (third root next to `PortalRoot` / `EmbedPortalRoot`) + `useLinkPortalSession(token)`, memory-only
-   token, `LINK_PORTAL_PATHS(token)`; routes `app/(public)/public/feedback/[token]/{page,roadmap,changelog,[id]}`.
+   token, `LINK_PORTAL_PATHS(token)`; routes `app/(public)/public/feedback/board/[token]/{page,roadmap,changelog,[id]}`.
    Feedback view hides Submit when `principal.kind === 'contact'`; "My requests" label for contacts.
 7. Staff idea page action "Cancel feedback link" (only when the idea has a submitter contact).
 
 ## Out of scope / follow-ups
 - Contact picker on the staff form (QE b) -> backlog.
 - Sorento blue = tenant Branding settings (QA a), no code.
-- CRM `/feedback/[token]` page iframing `/public/feedback/{token}` -> sorento-crm PR.
+- CRM `/feedback/board/[token]` page iframing `/public/feedback/board/{token}` -> sorento-crm PR.

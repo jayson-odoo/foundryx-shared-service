@@ -565,7 +565,7 @@ def _idea_field(factory, idea_id, attr):
 
 def _expected_board_link(factory, idea_id, base="https://fe.example.test"):
     """Lane PUBLIC-IDEAS-BOARD: a contact's link is their personal feedback board
-    opening the idea (``/public/feedback/{link token}/{idea number}``)."""
+    opening the idea (``/public/feedback/board/{link token}/{idea number}``)."""
     from modules.ideation.models import Idea, IdeaContactLink
 
     db = factory()
@@ -576,7 +576,7 @@ def _expected_board_link(factory, idea_id, base="https://fe.example.test"):
             .filter(IdeaContactLink.contact_id == idea.submitter_contact_id, IdeaContactLink.revoked_at.is_(None))
             .one()
         )
-        return f"{base}/public/feedback/{link.token}/{idea.idea_number}"
+        return f"{base}/public/feedback/board/{link.token}/{idea.idea_number}"
     finally:
         db.close()
 

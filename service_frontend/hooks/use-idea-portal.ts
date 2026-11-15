@@ -59,7 +59,9 @@ export const EMBED_PORTAL_PATHS: IdeaPortalPaths = {
 /** A dealer's personal feedback link (lane PUBLIC-IDEAS-BOARD): the board
  * opens on Feedback; the link token is part of every path. */
 export function linkPortalPaths(linkToken: string): IdeaPortalPaths {
-  const base = `/public/feedback/${encodeURIComponent(linkToken)}`;
+  // `/public/feedback/board/...`: `/public/feedback/{statusToken}` is the
+  // per-item status page (lane FEEDBACK-RENAME), so the board has its own segment.
+  const base = `/public/feedback/board/${encodeURIComponent(linkToken)}`;
   return {
     roadmap: `${base}/roadmap`,
     feedback: base,

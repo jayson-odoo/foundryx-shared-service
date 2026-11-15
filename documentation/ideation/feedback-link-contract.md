@@ -13,8 +13,8 @@ Plan + UAC: `documentation/plans/ideation/public-ideas-board/`.
   when the idea has none; the board then opens on its Feedback tab).
 - Board base, from the tenant `public_link_base_url` (core catalog settings):
   - a `{token}` / `{ideaId}` template (the CRM portal) ->
-    `{scheme}://{host of that template}/feedback` (the CRM public page, section 3);
-  - a plain URL, or unset -> `{that URL or frontend_url}/public/feedback`
+    `{scheme}://{host of that template}/feedback/board` (the CRM public page, section 3);
+  - a plain URL, or unset -> `{that URL or frontend_url}/public/feedback/board`
     (the shared-service page).
 - Where it is sent: the WhatsApp intake "Track it here" reply for the
   contact's own idea or the idea they voted for, and `board_url` on every
@@ -38,9 +38,9 @@ Plan + UAC: `documentation/plans/ideation/public-ideas-board/`.
 - Items open by id or by idea number: `GET /portal/ideas/IDEA-0042`.
 
 ## 3. Sorento CRM public page (second PR, sorento-crm)
-- Route `/feedback/{linkToken}` and `/feedback/{linkToken}/{ideaNumber}`, no
+- Route `/feedback/board/{linkToken}` and `/feedback/board/{linkToken}/{ideaNumber}`, no
   login, CRM portal header.
-- Body = an iframe of `{shared-service frontend}/public/feedback/{linkToken}`
+- Body = an iframe of `{shared-service frontend}/public/feedback/board/{linkToken}`
   (+ `/{ideaNumber}`), same as `/ideas` iframes the board for signed-in users.
 - The page must send `Referrer-Policy: no-referrer`, `Cache-Control: no-store`
   and `X-Robots-Tag: noindex`, and must not log the path.

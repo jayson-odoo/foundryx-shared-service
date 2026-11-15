@@ -1,8 +1,10 @@
 """Personal feedback links (lane PUBLIC-IDEAS-BOARD).
 
 A contact (dealer) opens the EXISTING idea portal with no login through a
-personal link: ``/public/feedback/{token}`` on the shared-service frontend, or
-``/feedback/{token}`` on the Sorento CRM public page that iframes it. Contract:
+personal link: ``/public/feedback/board/{token}`` on the shared-service frontend, or
+``/feedback/board/{token}`` on the Sorento CRM public page that iframes it
+(``/public/feedback/{statusToken}`` is the per-item status page after lane
+FEEDBACK-RENAME, so the board has its own ``board`` segment). Contract:
 ``documentation/plans/ideation/public-ideas-board/acceptance-criteria.md``.
 
 Security model (owner 15 Nov):
@@ -163,13 +165,13 @@ def resolve_link_by_id(db: Session, tenant_id: str, link_id: str) -> Optional[Tu
 def board_base(db: Session, tenant_id: str) -> str:
     """Where the board lives for this tenant. A tenant ``public_link_base_url``
     that is a TEMPLATE (``{token}``/``{ideaId}``) points at the Sorento CRM: the
-    board is the CRM public page ``{origin}/feedback``. A plain tenant base (or
-    none) is the shared-service frontend: ``{base}/public/feedback``."""
+    board is the CRM public page ``{origin}/feedback/board``. A plain tenant
+    base (or none) is the shared-service frontend: ``{base}/public/feedback/board``."""
     tenant_base = tenant_public_link_base(db, tenant_id)
     if tenant_base and any(p in tenant_base for p in LINK_PLACEHOLDERS):
         parts = urlsplit(tenant_base)
-        return f"{parts.scheme}://{parts.netloc}/feedback"
-    return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback"
+        return f"{parts.scheme}://{parts.netloc}/feedback/board"
+    return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback/board"
 
 
 # Sentinel: "the idea's own submitter contact". Distinct from an explicit
