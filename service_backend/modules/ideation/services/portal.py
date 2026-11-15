@@ -61,7 +61,7 @@ from ..models import (
     IdeaStatusEvent,
     IdeaVote,
 )
-from .comments import AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
+from .comments import AUTHOR_CONTACT, AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
 from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
 from .statuses import IDEA_ENTITY
@@ -71,14 +71,22 @@ PORTAL_AUD = "ideation-portal"
 # Security review: the staff token is bound to the staff login on the client
 # and re-checked per request; the CRM token lives in iframe memory and is
 # re-exchanged on every load, so it stays close to the embed token's own TTL.
-PORTAL_TTL = {"staff": timedelta(hours=12), "crm": timedelta(hours=2)}
+# A contact token (lane PUBLIC-IDEAS-BOARD) lives in page memory and is
+# re-exchanged from the personal link on every load; the link itself is
+# re-checked on every request, so cancelling it ends the session at once.
+PORTAL_TTL = {"staff": timedelta(hours=12), "crm": timedelta(hours=2), "contact": timedelta(hours=2)}
 ROADMAP_COLUMN_CAP = 100
 CHANGELOG_CAP = 200
 
 KIND_STAFF = "staff"
 KIND_CRM = "crm"
-# Everyone on the portal is staff (Q1); the role label is the same for both.
-ROLE_BY_KIND = {KIND_STAFF: "Staff", KIND_CRM: "Staff"}
+# A dealer / WhatsApp contact opening the portal through a personal feedback
+# link (lane PUBLIC-IDEAS-BOARD, owner 15 Nov) - view, upvote, comment; never
+# submit or manage. "Dealer" is the label the portal already gives a contact
+# voter (``voters`` below).
+KIND_CONTACT = "contact"
+DEALER_ROLE = "Dealer"
+ROLE_BY_KIND = {KIND_STAFF: "Staff", KIND_CRM: "Staff", KIND_CONTACT: DEALER_ROLE}
 STAFF_ROLE = "Staff"
 
 VIEW_PERMISSION = "ideation.ideas.view"
@@ -163,6 +171,8 @@ class PortalPrincipal:
     phone: Optional[str] = None
     connection_id: Optional[str] = None
     can_manage: bool = False
+    # kind=contact: the personal link row the session was minted from.
+    link_id: Optional[str] = None
 
     @property
     def role(self) -> str:
@@ -175,6 +185,10 @@ class PortalPrincipal:
         iframe already vote with, so a person's vote is one vote everywhere."""
         if self.kind == KIND_STAFF:
             return self.subject
+        if self.kind == KIND_CONTACT:
+            # The bare contact id: the SAME voter id the WhatsApp intake upvote
+            # uses, so a dealer has one vote per item everywhere.
+            return self.subject
         return f"embed-user:{self.subject}"
 
     @property
@@ -185,6 +199,8 @@ class PortalPrincipal:
 
     @property
     def comment_kind(self) -> str:
+        if self.kind == KIND_CONTACT:
+            return AUTHOR_CONTACT
         return AUTHOR_USER if self.kind == KIND_STAFF else AUTHOR_EMBED
 
     @property
@@ -209,6 +225,7 @@ def mint_portal_token(p: PortalPrincipal, extra: Optional[Dict[str, Any]] = None
         "sub": p.subject,
         "pid": p.product_id,
         "cid": p.connection_id,
+        "lid": p.link_id,
         "iat": int(now.timestamp()),
         "exp": int((now + PORTAL_TTL[p.kind]).timestamp()),
     })
@@ -268,6 +285,16 @@ def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
             raise _unauthorized()
         p.name = first_name(user.name) or "Staff"
         p.can_manage = _can_manage_staff(user)
+    elif kind == KIND_CONTACT:
+        from .feedback_links import resolve_link_by_id
+
+        resolved = resolve_link_by_id(db, tenant_id, claims.get("lid") or "")
+        if resolved is None or resolved[1].id != sub:
+            raise _unauthorized()
+        _link, contact = resolved
+        p.link_id = _link.id
+        p.name = first_name(contact.first_name)
+        p.phone = contact.phone
     else:
         from ..models import EmbedConnection
 
@@ -352,6 +379,35 @@ def session_for_embed(db: Session, embed_token: str) -> Dict[str, Any]:
         can_manage=ep.ideas_manage is True,
     )
     return _session_out(p, extra={"nm": name, "ph": ep.phone, "mg": ep.ideas_manage is True})
+
+
+def session_for_link(db: Session, token: str, *, ip: str) -> Dict[str, Any]:
+    """A dealer opens the portal through a personal feedback link (lane
+    PUBLIC-IDEAS-BOARD). Every failure is the same 401 (no enumeration) and is
+    counted against the caller's IP; over the limit = 429."""
+    from app.services.throttle import Throttled, ThrottleService
+
+    from .feedback_links import resolve_link
+
+    throttle = ThrottleService(db)
+    try:
+        throttle.enforce_idea_feedback_link(ip=ip)
+    except Throttled as exc:
+        raise PortalError(429, "too_many_attempts", "Too many attempts. Try again later.", exc.retry_after_seconds)
+    resolved = resolve_link(db, token)
+    if resolved is None or not _tenant_ok(db, resolved[0].tenant_id):
+        throttle.record_idea_feedback_link(ip=ip)
+        raise _unauthorized()
+    link, contact = resolved
+    p = PortalPrincipal(
+        tenant_id=link.tenant_id,
+        kind=KIND_CONTACT,
+        subject=contact.id,
+        name=first_name(contact.first_name),
+        phone=contact.phone,
+        link_id=link.id,
+    )
+    return _session_out(p)
 
 
 # ── status map ────────────────────────────────────────────────────────────────
@@ -468,19 +524,33 @@ class IdeaPortalService:
         q = self.db.query(Idea.id).filter(Idea.tenant_id == self.p.tenant_id)
         if self.p.kind == KIND_STAFF:
             return q.filter(Idea.submitter_user_id == self.p.subject)
+        if self.p.kind == KIND_CONTACT:
+            # The link's own contact + every same-tenant contact with the same
+            # phone digits (one person, several workspace rows). Never by name.
+            from .ownership import find_contacts_by_phone
+
+            ids = {self.p.subject} | {c.id for c in find_contacts_by_phone(self.db, self.p.tenant_id, self.p.phone)}
+            return q.filter(Idea.submitter_contact_id.in_(ids))
         return owned_filter(self.db, q, self.p.tenant_id, self.p.identity)
 
     def _resolve(self, idea_id: str, *, follow_merge: bool) -> Idea:
         """A visible idea by id, or 404. ``follow_merge``: a merged child
         resolves to its survivor (scoped by the child's own tenant); without
         it a merged child is a 409 (writes always target the survivor)."""
+        # ``idea_id`` is the row id, or the idea number a personal feedback
+        # link carries (lane PUBLIC-IDEAS-BOARD: no internal ids in links).
         row = (
             self.db.query(Idea)
-            .filter(Idea.id == idea_id, Idea.tenant_id == self.p.tenant_id, Idea.is_test.is_(False))
+            .filter(
+                or_(Idea.id == idea_id, Idea.idea_number == idea_id),
+                Idea.tenant_id == self.p.tenant_id,
+                Idea.is_test.is_(False),
+            )
             .first()
         )
         if row is None:
             raise _not_found()
+        idea_id = row.id
         if row.merged_into_id:
             if not follow_merge:
                 raise PortalError(409, "merged", "This idea was merged into another idea.")
@@ -794,7 +864,7 @@ class IdeaPortalService:
                 return None, STAFF_ROLE
             if r.voter_id in users:
                 return users[r.voter_id], STAFF_ROLE
-            return contacts.get(r.voter_id), "Dealer"
+            return contacts.get(r.voter_id), DEALER_ROLE
 
         out = []
         for r in rows:
@@ -824,7 +894,12 @@ class IdeaPortalService:
         out = []
         for r in rows:
             d = r.model_dump()
-            d["authorRole"] = STAFF_ROLE if r.authorKind in (AUTHOR_USER, AUTHOR_EMBED) else "Submitter"
+            if r.authorKind in (AUTHOR_USER, AUTHOR_EMBED):
+                d["authorRole"] = STAFF_ROLE
+            elif r.authorKind == AUTHOR_CONTACT:
+                d["authorRole"] = DEALER_ROLE
+            else:
+                d["authorRole"] = "Submitter"
             if d["authorName"]:
                 d["authorName"] = first_name(d["authorName"]) or d["authorRole"]
             d["likeCount"] = counts.get(r.id, 0)
@@ -1001,6 +1076,9 @@ class IdeaPortalService:
         from app.services.throttle import Throttled, ThrottleService
 
         p = self.p
+        if p.kind == KIND_CONTACT:
+            # Owner 15 Nov, QB a: dealers submit on WhatsApp, never on the board.
+            raise _forbidden()
         throttle = ThrottleService(self.db)
         key = hashlib.sha256(f"{p.tenant_id}:{p.voter_id}".encode("utf-8")).hexdigest()
         try:

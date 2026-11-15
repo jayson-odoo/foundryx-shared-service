@@ -449,3 +449,33 @@ def test_ac_fb_33_staff_cancel_endpoint(setup):
     bare = _idea(s, 332)
     assert s["client"].post(f"/ideation/ideas/{bare}/feedback-link/cancel", headers=s["h"]).status_code == 404
     assert s["client"].post(f"/ideation/ideas/{iid}/feedback-link/cancel").status_code == 401
+
+
+def test_ac_fb_41_item_opens_by_number(setup):
+    s = setup
+    iid = _idea(s, 261)
+    h = _contact_session(s, _contact(s))
+    page = s["client"].get("/portal/ideas/IDEA-0261", headers=h)
+    assert page.status_code == 200 and page.json()["id"] == iid
+    assert s["client"].post("/portal/ideas/IDEA-0261/vote", headers=h).json()["myVote"] is True
+    assert s["client"].get("/portal/ideas/IDEA-9999", headers=h).status_code == 404
+
+
+def test_ac_fb_32_whatsapp_reply_carries_the_board_link(setup):
+    """The 'Track it here' reply is the personal board link when the idea has
+    a submitter contact (asserted end to end in test_ideation_create_idea /
+    test_ideation_intake_contract via ``_expected_board_link``); here: no
+    contact = the old per-idea page, unchanged."""
+    from app.config import settings
+    from modules.ideation.models import Idea
+    from modules.ideation.services.intake import IntakeService
+
+    s = setup
+    iid = _idea(s, 321, token="T" * 32)
+    db = s["factory"]()
+    try:
+        idea = db.query(Idea).filter(Idea.id == iid).first()
+        link = IntakeService(db)._contact_link(idea)
+    finally:
+        db.close()
+    assert link == f"{settings.frontend_url.rstrip('/')}/public/ideas/{'T' * 32}"

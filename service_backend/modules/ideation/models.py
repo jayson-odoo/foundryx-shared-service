@@ -752,3 +752,23 @@ class BrBuildKey(IdeationBase):
     revoked_at = Column(UTCDateTime(), nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
+class IdeaContactLink(IdeationBase):
+    """A contact's personal feedback link (lane PUBLIC-IDEAS-BOARD): the token
+    opens the idea portal for that contact with no login (owner 15 Nov, QD a:
+    valid until staff cancel it). ``token`` is ``secrets.token_urlsafe(32)``,
+    looked up across tenants (it IS the credential, like ``Idea.status_token``);
+    everything it unlocks is then resolved with THIS row's ``tenant_id``.
+    ``contact_id`` is a plain indexed column, no FK into the omnichannel module
+    (cross-module = no FK; a contact delete must never be blocked by a link).
+    At most one live row per contact; ``revoked_at`` set = cancelled forever."""
+
+    __tablename__ = "idea_contact_links"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    contact_id = Column(String, nullable=False, index=True)
+    token = Column(String, nullable=False, unique=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    revoked_at = Column(UTCDateTime(), nullable=True)

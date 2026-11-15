@@ -970,7 +970,12 @@ def test_ac_1114_1118_complete_link_and_reply_text(setup, monkeypatch):
     row = _idea_row(s["factory"], final["draft_id"])
     token = getattr(row, "status_token", None)
     assert token is not None, "status_token not minted"
-    assert final["link"] == f"https://fe.example.test/public/ideas/{token}"
+    # Lane PUBLIC-IDEAS-BOARD: a WhatsApp submitter gets their personal
+    # feedback board link (opening this idea); the status page stays live.
+    from tests.test_ideation_create_idea import _expected_board_link
+
+    assert final["link"] == _expected_board_link(s["factory"], final["draft_id"])
+    assert s["client"].get(f"/public/ideas/{token}").status_code == 200
     assert "/ideation/ideas/" not in (final["link"] or "")
 
     lines = final["reply_text"].split("\n")

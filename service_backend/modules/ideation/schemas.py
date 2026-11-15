@@ -819,7 +819,7 @@ class SimilarOwnIn(ApiModel):
 
 
 class PortalPrincipalOut(ApiModel):
-    kind: Literal["staff", "crm"]
+    kind: Literal["staff", "crm", "contact"]
     name: Optional[str] = None
     role: str
     productId: Optional[str] = None
@@ -834,6 +834,13 @@ class PortalSessionOut(ApiModel):
 
 class PortalEmbedSessionIn(ApiModel):
     token: str = Field(min_length=1, max_length=4096)
+
+
+class PortalLinkSessionIn(ApiModel):
+    """A personal feedback link (lane PUBLIC-IDEAS-BOARD). No min length: a
+    blank or malformed token gets the same uniform 401 as an unknown one."""
+
+    token: str = Field(default="", max_length=128)
 
 
 class PortalCardOut(ApiModel):
