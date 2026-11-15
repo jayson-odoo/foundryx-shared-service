@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, or_
@@ -19,6 +19,10 @@ from .connect_service import get_settings
 from .leadgen_service import lead_item
 
 MAX_PAGE = 100
+# Leads younger than this are held back from the pull: the time a lead is
+# stamped and the time its transaction commits differ slightly, and a cursor
+# must never move past a lead that is still committing (it would be skipped).
+PULL_SETTLE_SECONDS = 5
 
 
 class ReadError(Exception):
@@ -98,7 +102,7 @@ def _decode_cursor(cursor: str) -> Tuple[datetime, str]:
         parsed = datetime.fromisoformat(when)
         if parsed.tzinfo is None or not isinstance(lead_id, str):
             raise ValueError
-        return parsed, lead_id
+        return _bounded_utc(parsed), lead_id
     except Exception:  # noqa: BLE001
         raise ReadError(422, "invalid_cursor", "The cursor is not valid.") from None
 
@@ -108,9 +112,23 @@ def _parse_since(since: str) -> datetime:
         parsed = datetime.fromisoformat(since.replace("Z", "+00:00"))
     except ValueError:
         parsed = parse_meta_time(since)
-    if parsed is None:
-        raise ReadError(422, "invalid_since", "since must be an ISO-8601 time, e.g. 2026-11-15T00:00:00Z.")
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except OverflowError:
+        parsed = None
+    try:
+        if parsed is None:
+            raise ValueError
+        return _bounded_utc(parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc))
+    except (ValueError, OverflowError):
+        raise ReadError(422, "invalid_since", "since must be an ISO-8601 time, e.g. 2026-11-15T00:00:00Z.") from None
+
+
+def _bounded_utc(value: datetime) -> datetime:
+    """Aware UTC within 1970-9000; an edge date that would overflow on the
+    UTC conversion is a ValueError (a 422), never a 500."""
+    utc = value.astimezone(timezone.utc)
+    if not 1970 <= utc.year <= 9000:
+        raise ValueError("out of range")
+    return utc
 
 
 def pull_leads(
@@ -128,6 +146,7 @@ def pull_leads(
     q = db.query(LcLead, LcSource).join(
         LcSource, and_(LcSource.id == LcLead.source_id, LcSource.tenant_id == tenant_id)
     ).filter(LcLead.tenant_id == tenant_id)
+    q = q.filter(LcLead.received_at <= datetime.now(timezone.utc) - timedelta(seconds=PULL_SETTLE_SECONDS))
     if source_id:
         q = q.filter(LcLead.source_id == source_id)
     if cursor:

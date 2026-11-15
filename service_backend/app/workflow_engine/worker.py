@@ -336,8 +336,14 @@ def retry_due_webhooks_task() -> dict:
 # ── Lead Capture (plan 64 L3/L4) - module-owned work on the deployed workflow
 # worker (no extra process). Each task opens its own session; a missing module
 # is a no-op. Only ids ever cross the queue (leads are personal data).
-@celery_app.task(name="lead_capture.process_leadgen")
-def lead_capture_process_leadgen(page_id: str, leadgen_id: str, form_id: str = "", created_time=None) -> dict:
+LEADGEN_RETRY_COUNTDOWNS = [60, 300, 900, 1800, 3600, 7200]
+
+
+@celery_app.task(bind=True, name="lead_capture.process_leadgen", max_retries=len(LEADGEN_RETRY_COUNTDOWNS))
+def lead_capture_process_leadgen(self, page_id: str, leadgen_id: str, form_id: str = "", created_time=None) -> dict:
+    """The ingress already answered Meta 200, so Meta will not resend: a failed
+    Graph read is retried HERE (1 min .. 2 h) until the lead is stored.
+    Idempotent on (source, leadgen id), so a retry never doubles a lead."""
     from app.database import SessionLocal
 
     try:
@@ -347,9 +353,13 @@ def lead_capture_process_leadgen(page_id: str, leadgen_id: str, form_id: str = "
     db = SessionLocal()
     try:
         return {"leads": len(process_leadgen(db, page_id, leadgen_id, form_id, created_time))}
-    except Exception:  # noqa: BLE001 - logged with ids only; Meta's own retry + backfill recover
-        logger.exception("lead_capture leadgen processing failed")
+    except Exception as exc:  # noqa: BLE001 - logged with ids only
         db.rollback()
+        retries = self.request.retries or 0
+        if not settings.celery_task_always_eager and retries < len(LEADGEN_RETRY_COUNTDOWNS):
+            logger.warning("lead_capture leadgen processing failed (%s), retry %s", type(exc).__name__, retries + 1)
+            raise self.retry(countdown=LEADGEN_RETRY_COUNTDOWNS[retries])
+        logger.exception("lead_capture leadgen processing failed for good")
         return {"leads": 0, "error": "processing failed"}
     finally:
         db.close()

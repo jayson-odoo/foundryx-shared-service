@@ -148,13 +148,14 @@ def process_leadgen(
         return []
 
     meta = client or MetaLeadClient()
+    configured = meta.configured
     raw: Optional[Dict[str, Any]] = None
     token_used: Optional[Dict[str, Any]] = None
     last_error: Optional[MetaLeadError] = None
     for source in sources:  # first healthy token on the Page (AC-64-37)
         creds = _source_token(source)
-        if creds is None:
-            continue
+        if creds is None or (configured and creds.get("dev")):
+            continue  # a dev credential never answers once a real Meta app is set
         try:
             raw = meta.get_lead(creds["pageToken"], leadgen_id, form_id, dev=bool(creds.get("dev")))
             token_used = creds
@@ -165,7 +166,7 @@ def process_leadgen(
     if raw is None or token_used is None:
         raise last_error or MetaLeadError("No usable Page token for this Page.")
 
-    dev = bool(token_used.get("dev")) or not meta._configured
+    dev = bool(token_used.get("dev")) or not meta.configured
     lead_form = _clean_id(raw.get("form_id")) or form_id
     ad_id = _clean_id(raw.get("ad_id"))
     if dev:

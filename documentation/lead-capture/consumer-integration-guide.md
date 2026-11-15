@@ -39,6 +39,7 @@ Every gateway error has one shape:
 | 404 | `endpoint_not_found` | Webhook id not found for this tenant |
 | 404 | `delivery_not_found` | Delivery id not found for this tenant |
 | 409 | `endpoint_limit` | Already 5 webhook endpoints |
+| 409 | `lead_purged` | Redeliver of a lead whose personal data was deleted |
 | 422 | `invalid_url` | Callback URL is not public `https://` |
 | 422 | `invalid_events` | No event, or an unknown event |
 | 422 | `invalid_cursor` | `cursor` is not one this API returned |
@@ -86,7 +87,9 @@ whose leads arrived with no field map: those leads were still delivered, with ev
 ```
 
 `allowSharedPages` (default `false`): allow a Facebook Page another product on this Shared Service also uses. A Page
-joins only when every product on it allows sharing; otherwise connecting answers `PAGE_IN_USE`.
+joins only when every product on it allows sharing; otherwise connecting answers `PAGE_IN_USE`. Any holder of a
+key can change this setting (owner ruling D13: the consumer shows it in its own settings); every change is audited
+with the key id.
 
 ### Webhook
 

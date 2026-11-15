@@ -109,8 +109,11 @@ def lc(session_factory, monkeypatch):
     import app.database as database
     from app.services.app_store_service import AppStoreService
 
+    from modules.lead_capture.services import read_service
+
     monkeypatch.setattr(database, "SessionLocal", session_factory)
     monkeypatch.setattr(gateway_auth, "_audit_session", session_factory)
+    monkeypatch.setattr(read_service, "PULL_SETTLE_SECONDS", 0)
     db = session_factory()
     try:
         AppStoreService(db).install(DEFAULT_TENANT_ID, "lead_capture")
@@ -521,6 +524,8 @@ def test_500_retries_on_the_ladder_then_fails(lc, graph, posts):
             assert row.status == "PENDING" and row.attempt == n and row.last_code == 500
             actual = (row.next_at - row.last_attempt_at).total_seconds()
             assert gap - 5 <= actual <= gap + 5, (n, actual)
+            row.next_at = row.last_attempt_at  # time travel to the next rung
+            db.commit()
             assert delivery_service.dispatch(db, delivery_id) == ("dead" if n == len(expected_gaps) else "retry")
         db.expire_all()
         row = db.get(LcDelivery, delivery_id)
@@ -616,7 +621,7 @@ def test_gateway_key_auth_audit_and_cross_tenant_pull(client, lc, graph, posts):
     assert client.get("/api/v1/lead-capture/leads", headers={"Authorization": f"Bearer {key_a}"}).status_code == 401
     # listing shows the masked key only
     listed = client.get("/lead-capture/keys", headers=headers).json()["data"][0]
-    assert listed["keyMasked"].endswith("****") and key_a not in json.dumps(listed)
+    assert listed["keyMasked"] == "fxl_live_****" + key_a[-4:] and key_a not in json.dumps(listed)
 
     db = lc()
     try:
@@ -685,3 +690,137 @@ def test_settings_toggle_via_gateway(client, lc):
     assert client.get("/api/v1/lead-capture/settings", headers=key).json()["allowSharedPages"] is False
     res = client.put("/api/v1/lead-capture/settings", json={"allowSharedPages": True}, headers=key)
     assert res.json()["allowSharedPages"] is True
+
+
+# ── security review round 1 ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("since", ["0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-14:00", "not-a-time"])
+def test_edge_since_and_cursor_are_422_not_500(client, lc, since):
+    import base64
+
+    headers = _login(client)
+    key = {"Authorization": f"Bearer {_key(client, headers)}"}
+    res = client.get("/api/v1/lead-capture/leads", params={"since": since}, headers=key)
+    assert res.status_code == 422 and res.json()["error"]["code"] == "invalid_since"
+    raw = json.dumps(["0001-01-01T00:00:00+14:00", "x"]).encode()
+    cursor = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    res = client.get("/api/v1/lead-capture/leads", params={"cursor": cursor}, headers=key)
+    assert res.status_code == 422 and res.json()["error"]["code"] == "invalid_cursor"
+
+
+def test_purged_lead_is_not_redelivered(lc, graph, posts):
+    from datetime import datetime, timezone
+
+    delivery_id, _ = _lead_and_delivery(lc)
+    db = lc()
+    try:
+        lead = db.query(LcLead).one()
+        lead.purged_at = datetime.now(timezone.utc)
+        db.commit()
+        with pytest.raises(delivery_service.DeliveryError) as exc:
+            delivery_service.redeliver(db, DEFAULT_TENANT_ID, delivery_id)
+        assert exc.value.code == "lead_purged"
+    finally:
+        db.close()
+    assert len(posts) == 1
+
+
+def test_dev_credential_is_ignored_once_meta_is_configured(lc, graph):
+    """A source connected with no Meta app (dev stub) never serves canned
+    leads after the real app is configured; a real source still works."""
+    from app.secrets import encrypt_secret
+
+    db = lc()
+    try:
+        connect_service.connect_facebook(db, DEFAULT_TENANT_ID, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        src = db.query(LcSource).one()
+        src.credentials_encrypted = encrypt_secret({"pageToken": "dev-page-token", "dev": True})
+        db.commit()
+        with pytest.raises(meta_leads.MetaLeadError):
+            leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+    finally:
+        db.close()
+    assert _leads(lc) == []
+
+
+# ── code review round 1 ─────────────────────────────────────────────────────
+
+def test_a_claimed_delivery_is_sent_once(lc, graph, posts):
+    """The task's reschedule and the due tick reaching one row together send
+    it ONCE (atomic claim)."""
+    posts.state["status"] = 500
+    delivery_id, _ = _lead_and_delivery(lc)
+    db = lc()
+    try:
+        row = db.get(LcDelivery, delivery_id)
+        row.next_at = row.last_attempt_at
+        db.commit()
+        stale = lc()  # a second worker that read the row before the claim
+        stale_row = stale.get(LcDelivery, delivery_id)
+        assert delivery_service.dispatch(db, delivery_id) == "retry"
+        assert stale_row.status == "PENDING"
+        assert delivery_service.dispatch(stale, delivery_id) == "skip"
+        stale.close()
+        db.expire_all()
+        assert db.get(LcDelivery, delivery_id).attempt == 2
+    finally:
+        db.close()
+    assert len(posts) == 2
+
+
+def test_pull_holds_back_a_lead_still_settling(client, lc, graph, posts, monkeypatch):
+    from modules.lead_capture.services import read_service
+
+    db = lc()
+    try:
+        connect_service.connect_facebook(db, DEFAULT_TENANT_ID, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+    finally:
+        db.close()
+    headers = _login(client)
+    key = {"Authorization": f"Bearer {_key(client, headers)}"}
+    monkeypatch.setattr(read_service, "PULL_SETTLE_SECONDS", 60)
+    assert client.get("/api/v1/lead-capture/leads?since=2026-01-01T00:00:00Z", headers=key).json()["data"] == []
+    monkeypatch.setattr(read_service, "PULL_SETTLE_SECONDS", 0)
+    assert len(client.get("/api/v1/lead-capture/leads?since=2026-01-01T00:00:00Z", headers=key).json()["data"]) == 1
+
+
+def test_per_key_budget_is_429(client, lc, monkeypatch):
+    monkeypatch.setattr(settings, "throttle_lead_gateway_key_max_requests", 2)
+    headers = _login(client)
+    key = {"Authorization": f"Bearer {_key(client, headers)}"}
+    codes = [client.get("/api/v1/lead-capture/sources", headers=key).status_code for _ in range(4)]
+    assert codes[:2] == [200, 200] and codes[-1] == 429
+
+
+def test_cross_tenant_webhook_delete_is_404(client, lc):
+    from modules.lead_capture.services import key_service
+
+    headers = _login(client)
+    key_a = {"Authorization": f"Bearer {_key(client, headers)}"}
+    ep = _register(client, key_a["Authorization"].split(" ", 1)[1])
+    _second_tenant(lc, False)
+    db = lc()
+    try:
+        _row, key_b = key_service.issue(db, TENANT_B, name="B", created_by=None)
+    finally:
+        db.close()
+    res = client.delete(f"/api/v1/lead-capture/webhooks/{ep['id']}", headers={"Authorization": f"Bearer {key_b}"})
+    assert res.status_code == 404 and res.json()["error"]["code"] == "endpoint_not_found"
+    assert len(client.get("/api/v1/lead-capture/webhooks", headers=key_a).json()["data"]) == 1
+
+
+def test_rolled_back_ingress_enqueues_nothing(lc, graph, monkeypatch):
+    called = []
+    import app.workflow_engine.worker as w
+
+    monkeypatch.setattr(w.lead_capture_process_leadgen, "delay", lambda *a, **k: called.append(a))
+    db = lc()
+    try:
+        connect_service.connect_facebook(db, DEFAULT_TENANT_ID, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        leadgen_service.handle_leadgen_change(db, "page", PAGE_ID, {"leadgen_id": LEAD_ID})
+        db.rollback()
+        db.commit()
+    finally:
+        db.close()
+    assert called == []

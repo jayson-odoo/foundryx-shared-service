@@ -44,6 +44,7 @@ from ..models import (
     DELIVERY_PENDING,
     DELIVERY_SUCCESS,
     LcDelivery,
+    LcLead,
     LcWebhookEndpoint,
 )
 
@@ -57,6 +58,7 @@ MAX_ENDPOINTS = 5
 RETRY_LADDER = [60, 300, 1800, 7200, 21600, 86400]
 MAX_ATTEMPTS = len(RETRY_LADDER) + 1
 DELIVERY_DEADLINE_SECONDS = 10
+CLAIM_MARGIN_SECONDS = 60
 DUE_RUN_BUDGET_SECONDS = 240
 SECRET_SCHEME = "whsec_"
 
@@ -270,10 +272,32 @@ def dispatch(db: Session, delivery_id: str) -> str:
         "X-Lead-Capture-Signature": sign(secret, timestamp, body),
     }
     url = endpoint.url
-    delivery.attempt += 1
-    delivery.last_attempt_at = datetime.now(timezone.utc)
-    attempt = delivery.attempt
+    # Atomic claim: the task's own reschedule and the due tick can reach the
+    # same row together; only the one whose UPDATE matches sends. The claim
+    # parks next_at past this attempt's deadline, so a crash mid-POST is
+    # re-driven by the tick afterwards.
+    now = datetime.now(timezone.utc)
+    claimed = (
+        db.query(LcDelivery)
+        .filter(
+            LcDelivery.id == delivery_id,
+            LcDelivery.status == DELIVERY_PENDING,
+            LcDelivery.attempt == delivery.attempt,
+            LcDelivery.next_at <= now,
+        )
+        .update(
+            {
+                "attempt": LcDelivery.attempt + 1,
+                "last_attempt_at": now,
+                "next_at": now + timedelta(seconds=DELIVERY_DEADLINE_SECONDS + CLAIM_MARGIN_SECONDS),
+            },
+            synchronize_session=False,
+        )
+    )
+    attempt = delivery.attempt + 1
     db.commit()
+    if claimed != 1:
+        return "skip"
     release_read_transactions()
 
     outcome = webhook_post.attempt_post(
@@ -287,14 +311,19 @@ def dispatch(db: Session, delivery_id: str) -> str:
         log_ref=delivery_id,
     )
 
+    db.expire_all()
     delivery = db.query(LcDelivery).filter(LcDelivery.id == delivery_id).first()
-    if delivery is None:
-        return "skip"
+    if delivery is None or delivery.status != DELIVERY_PENDING:
+        return "skip"  # removed / failed by staff while the POST ran
     delivery.last_code = outcome.status_code
     delivery.last_error = outcome.error
     if outcome.ok:
         delivery.status, delivery.next_at = DELIVERY_SUCCESS, None
-        endpoint = db.query(LcWebhookEndpoint).filter(LcWebhookEndpoint.id == delivery.endpoint_id).first()
+        endpoint = (
+            db.query(LcWebhookEndpoint)
+            .filter(LcWebhookEndpoint.id == delivery.endpoint_id, LcWebhookEndpoint.tenant_id == tenant_id)
+            .first()
+        )
         if endpoint is not None:
             endpoint.last_success_at = datetime.now(timezone.utc)
         db.commit()
@@ -317,6 +346,10 @@ def redeliver(db: Session, tenant_id: str, delivery_id: str) -> LcDelivery:
     )
     if row is None:
         raise DeliveryError(404, "delivery_not_found", "Delivery not found.")
+    if row.lead_id:
+        lead = db.query(LcLead).filter(LcLead.id == row.lead_id, LcLead.tenant_id == tenant_id).first()
+        if lead is not None and lead.purged_at is not None:
+            raise DeliveryError(409, "lead_purged", "This lead's personal data was deleted; it cannot be resent.")
     row.status, row.attempt, row.next_at = DELIVERY_PENDING, 0, datetime.now(timezone.utc)
     row.last_error = None
     db.commit()

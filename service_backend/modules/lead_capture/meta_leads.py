@@ -75,6 +75,11 @@ def dev_lead(leadgen_id: str, form_id: str) -> Dict[str, Any]:
 
 
 class MetaLeadClient(MetaGraphMixin):
+    @property
+    def configured(self) -> bool:
+        """A real Meta app is set (else every call is the dev stub)."""
+        return self._configured
+
     def _get(self, path: str, token: str, params: Optional[Dict[str, str]] = None) -> httpx.Response:
         client = self._http()
         try:

@@ -193,6 +193,7 @@ class LcApiKey(LeadCaptureBase):
     name = Column(String(200), nullable=False, default="")
     key_prefix = Column(String(16), nullable=False)
     key_hash = Column(String(64), nullable=False)
+    key_last4 = Column(String(4), nullable=False, default="")
     created_by = Column(String, nullable=True)
     created_at = _created()
     last_used_at = Column(UTCDateTime(), nullable=True)

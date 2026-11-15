@@ -113,7 +113,7 @@ def connect_facebook(
         raise ConnectError(422, "invalid_token", "Enter the system user token.")
 
     meta = client or MetaLeadClient()
-    dev = not meta._configured
+    dev = not meta.configured
     try:
         page = meta.page_token(token, page_id, dev=dev)
     except MetaLeadError as exc:

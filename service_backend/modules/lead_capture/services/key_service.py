@@ -33,7 +33,8 @@ def _prefix(full_key: str) -> str:
 
 
 def masked(row: LcApiKey) -> str:
-    return f"{KEY_SCHEME}{row.key_prefix}****"
+    """AC-64-71: ``****`` + the last 4 characters only."""
+    return f"{KEY_SCHEME}****{row.key_last4}"
 
 
 def issue(db: Session, tenant_id: str, *, name: str, created_by: Optional[str]) -> Tuple[LcApiKey, str]:
@@ -43,6 +44,7 @@ def issue(db: Session, tenant_id: str, *, name: str, created_by: Optional[str]) 
         name=(name or "").strip()[:200] or "Lead Capture key",
         key_prefix=_prefix(full_key),
         key_hash=_hash(full_key),
+        key_last4=full_key[-4:],
         created_by=created_by,
     )
     db.add(row)
