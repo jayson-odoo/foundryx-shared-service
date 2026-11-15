@@ -292,3 +292,24 @@ def test_spd_06_before_after_table(h, world, capsys):
     assert res.outcome == "done"
     with capsys.disabled():
         print(f"\nSPEEDUP link_row: calls={len(calls(h))} wall={took * 1000:.0f}ms delay={DELAY * 1000:.0f}ms/call")
+
+
+# ============================== AC-SPD-03 the reuse is narrow =================================
+
+def test_spd_03_a_standalone_edit_always_reads_the_document_fresh(h):
+    doc = h.seed_doc("SO", 5001, [{"ItemCode": "A", "Qty": 1.0, "UnitPrice": 1.0, "UOM": "UNIT", "Location": "HQ"}])
+    res = h.edit("SO", 5001, {"Remark1": "x"}, fresh_doc=doc)  # no operation: the read is never skipped
+    assert res.outcome == "done", res.error_code
+    assert calls(h)[0] == ("GET", "salesorderbydocno")
+
+
+def test_spd_03_a_read_back_of_another_document_is_never_reused(h, world):
+    from modules.autocount.write_back.primitives import EDIT, PrimitiveService, _Call
+
+    other = dict(world.so)  # SO 7002, not the PO the move edits
+    call = _Call(EDIT, "PO", "t", doc_key=7001, operation_id="op-1", fresh_doc=other)
+    assert not PrimitiveService._reusable(call)
+    call.fresh_doc = dict(world.po)
+    assert PrimitiveService._reusable(call)
+    call.operation_id = None
+    assert not PrimitiveService._reusable(call)
