@@ -114,7 +114,7 @@ export function FeedbackView() {
               <p className="p-6 text-center text-sm text-muted-foreground">No feedback</p>
             ) : (
               list.data.items.map((idea) => (
-                <IdeaCard key={idea.id} idea={idea} variant="row" href={paths.idea(idea.id)} onVote={onVote} />
+                <IdeaCard key={idea.id} idea={idea} variant="row" href={paths.idea(idea.ideaNumber ?? idea.id)} onVote={onVote} />
               ))
             )}
           </Card>

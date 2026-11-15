@@ -148,17 +148,13 @@ describe('IdeaPage', () => {
 
   it('owner ruling (b): another dealer item (text withheld by the API) shows no free-text section', () => {
     // Strict (b): the API OMITS the text, submitter and product keys.
-    const {
-      problem: _p,
-      desiredOutcome: _d,
-      useCases: _u,
-      currentWorkaround: _c,
-      submitterFirstName: _s,
-      submittedAt: _t,
-      productName: _n,
-      ...rest
-    } = idea;
-    const withheld: PortalIdea = { ...rest, isMine: false };
+    const omitted = new Set([
+      'problem', 'desiredOutcome', 'useCases', 'currentWorkaround', 'submitterFirstName', 'submittedAt', 'productName',
+    ]);
+    const withheld = {
+      ...(Object.fromEntries(Object.entries(idea).filter(([k]) => !omitted.has(k))) as PortalIdea),
+      isMine: false,
+    };
     mockPage({ idea: q<PortalIdea>(withheld) });
     render(<IdeaPage ideaId="i10" />);
     expect(screen.getByTestId('portal-idea-hero')).toHaveTextContent('Order status tracking for dealers');

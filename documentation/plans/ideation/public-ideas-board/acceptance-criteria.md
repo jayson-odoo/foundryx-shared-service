@@ -26,17 +26,22 @@ Tags: [BE] backend pytest, [FE] vitest, [E2E] recorded agent-browser run, [T] co
   `portal_hidden` item (QC a); same tenant only.
 - **AC-FB-21 [BE]** `mine=true` = items whose `submitter_contact_id` is the contact or any same-tenant contact with the
   same phone digits; never by name; a hidden own item IS listed; `isMine` marks them.
-- **AC-FB-22 [BE]** Upvote toggles one vote per contact (voter id = the contact id, the same id the WhatsApp intake
-  votes with); voting twice removes it; the count matches.
+- **AC-FB-22 [BE]** Upvote = one vote per PERSON: the contact plus every same-tenant contact with the same exact
+  phone (the My-requests rule) count as one voter, so a second contact row cannot add a second vote; a WhatsApp
+  vote by any of them is "my vote"; voting again removes it; new votes are stored under one canonical contact id so
+  two of the person's links racing still collide on the unique vote guard.
 - **AC-FB-23 [BE]** The contact can comment (role "Dealer", first name) and delete its own comment; cannot delete
   others'.
 - **AC-FB-24 [BE]** Submit, hide, and changelog-note are refused for a contact (403) (QB a).
 - **AC-FB-25 [BE]** Detail of an item from another tenant, or a draft/test/hidden-not-mine item -> 404.
 
-- **AC-FB-26 [BE][FE]** Owner ruling (b), 15 Nov: on items the link owner did not create, the API returns NO
-  `problem` / `desiredOutcome` / `useCases` / `currentWorkaround` (null), the card title never falls back to the
-  problem text (the number stands in), and search never matches others' text. Own items keep full text; staff
-  unchanged. The item page then shows only title, status, steps, votes and comments.
+- **AC-FB-26 [BE][FE]** Owner ruling (b), strict (15 Nov + crew-pass): on items the link owner did not create the
+  API OMITS (never null) `problem`, `desiredOutcome`, `useCases`, `currentWorkaround`, `submitterFirstName`,
+  `submittedAt`, `productName` (cards: `submittedAt`, `productName`), drops the "submitted by" activity line, never
+  falls back to the problem text as a title (the number stands in), and search never matches others' text. The page
+  then shows only title, status, steps, votes and comments. Own items and staff unchanged.
+- **AC-FB-27 [FE]** Item links in the Feedback list, Roadmap and Changelog carry the item NUMBER (the row id only
+  for an item with no number yet).
 
 ## D. Links we send
 - **AC-FB-30 [BE]** `mint_board_link(idea)` = `{base}/public/feedback/board/{linkToken}/{ideaNumber}` for an idea with a

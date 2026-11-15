@@ -115,6 +115,14 @@ CORE_FIELDS = (
 
 MAX_PAGE_SIZE = 100
 
+# Owner ruling (b), strict: on an item a dealer (contact principal) did not
+# create, these keys never leave the server. Cards drop the submitter/product
+# keys; the item page additionally drops the free text and the submitter name.
+WITHHELD_CARD_KEYS = ("submittedAt", "productName")
+WITHHELD_DETAIL_KEYS = WITHHELD_CARD_KEYS + (
+    "problem", "desiredOutcome", "useCases", "currentWorkaround", "submitterFirstName",
+)
+
 
 def as_use_case_list(value: Any) -> Optional[List[str]]:
     """``use_cases`` as a list of non-empty strings (IDEA-CORE stores JSON
@@ -581,7 +589,7 @@ class IdeaPortalService:
             for r in self.db.query(IdeaVote.idea_id)
             .filter(
                 IdeaVote.idea_id.in_(ids),
-                IdeaVote.voter_id == self.p.voter_id,
+                IdeaVote.voter_id.in_(self._my_voter_ids()),
                 IdeaVote.dir == "up",
             )
             .all()
@@ -613,6 +621,8 @@ class IdeaPortalService:
                     "submittedAt": i.created_at,
                 }
             )
+            if self._text_withheld(i.id in mine):
+                self._withhold_card(out[-1])
         return out
 
     def _product_names(self, ids: Iterable[str]) -> Dict[str, str]:
@@ -778,14 +788,38 @@ class IdeaPortalService:
             out[wire] = self._core_field(idea, attr)
         out["note"] = idea.portal_note
         if self._text_withheld(card["isMine"]):
-            # Owner ruling (b), 15 Nov: a dealer sees the full text only on
-            # their own items; on everyone else's only title, status, steps,
-            # votes and comments (the text can carry another customer's
-            # details).
-            out["problem"] = None
-            for wire, _attr in CORE_FIELDS:
-                out[wire] = None
+            # Owner ruling (b), strict (15 Nov + crew-pass): a dealer sees the
+            # full text only on their own items; on everyone else's ONLY title,
+            # status, steps, votes and comments. The keys are OMITTED (never
+            # sent as null); the routes serialize with exclude_unset.
+            for key in WITHHELD_DETAIL_KEYS:
+                out.pop(key, None)
         return out
+
+    def _is_owned(self, idea_id: str) -> bool:
+        return self._owned_q().filter(Idea.id == idea_id).first() is not None
+
+    def _my_voter_ids(self) -> List[str]:
+        """Every voter id that is THIS person. A dealer = their contact plus every
+        same-tenant contact with the same exact phone digits (the "My requests"
+        rule), so a second contact row cannot add a second vote (crew-pass fix
+        3). Sorted: the first id is the canonical one a new vote is stored
+        under, so two of the person's links racing on the same item collide on
+        ``uq_idea_vote_voter`` instead of both landing."""
+        if self.p.kind != KIND_CONTACT:
+            return [self.p.voter_id]
+        cached = getattr(self, "_voter_ids_cache", None)
+        if cached is None:
+            from .ownership import find_contacts_by_phone
+
+            ids = {self.p.subject} | {c.id for c in find_contacts_by_phone(self.db, self.p.tenant_id, self.p.phone)}
+            cached = self._voter_ids_cache = sorted(ids)
+        return cached
+
+    def _withhold_card(self, card: Dict[str, Any]) -> Dict[str, Any]:
+        for key in WITHHELD_CARD_KEYS:
+            card.pop(key, None)
+        return card
 
     def _text_withheld(self, is_mine: bool) -> bool:
         """A dealer on a personal link never reads another submitter's free
@@ -816,16 +850,24 @@ class IdeaPortalService:
         from .actions import IdeaActionService
 
         idea = self._resolve(idea_id, follow_merge=False)
-        existing = (
+        mine_ids = self._my_voter_ids()
+        rows = (
             self.db.query(IdeaVote)
-            .filter(IdeaVote.idea_id == idea.id, IdeaVote.voter_id == self.p.voter_id)
-            .first()
+            .filter(IdeaVote.idea_id == idea.id, IdeaVote.voter_id.in_(mine_ids))
+            .order_by(IdeaVote.voter_id.asc())
+            .all()
         )
+        # One person = one vote (a dealer's same-phone contacts included): any
+        # up-vote of theirs means "on", and turning it off removes every one of
+        # them (legacy double votes from two contact rows collapse too).
+        ups = [r for r in rows if r.dir == "up"]
+        existing = ups[0] if ups else (rows[0] if rows else None)
         # Decided BEFORE the row changes (review: reading ``existing.dir``
         # after switching a legacy down-vote to up reported the vote as off).
-        voted = existing is None or existing.dir != "up"
-        if existing is not None and existing.dir == "up":
-            self.db.delete(existing)
+        voted = not ups
+        if ups:
+            for r in ups:
+                self.db.delete(r)
         elif existing is not None:
             existing.dir = "up"
             existing.voter_name, existing.voter_role = self.p.name, self.p.role
@@ -834,7 +876,7 @@ class IdeaPortalService:
                 IdeaVote(
                     tenant_id=idea.tenant_id,
                     idea_id=idea.id,
-                    voter_id=self.p.voter_id,
+                    voter_id=mine_ids[0],
                     dir="up",
                     voter_name=self.p.name,
                     voter_role=self.p.role,
@@ -895,9 +937,10 @@ class IdeaPortalService:
             return contacts.get(r.voter_id), DEALER_ROLE
 
         out = []
+        mine = set(self._my_voter_ids())
         for r in rows:
             name, role = _who(r)
-            out.append({"name": name, "role": role, "isMe": r.voter_id == self.p.voter_id})
+            out.append({"name": name, "role": role, "isMe": r.voter_id in mine})
         return out
 
     # ---- comments ----------------------------------------------------------
@@ -1019,18 +1062,21 @@ class IdeaPortalService:
     def activity(self, idea_id: str, *, order: str = "desc") -> List[Dict[str, Any]]:
         idea = self._resolve(idea_id, follow_merge=True)
         events: List[Tuple[datetime, int, Dict[str, Any]]] = []
-        events.append(
-            (
-                idea.created_at,
-                0,
-                {
-                    "kind": "submitted",
-                    "at": idea.created_at,
-                    "by": PublicIdeaStatusService(self.db)._first_name(idea),
-                    "source": idea.source,
-                },
+        # Strict ruling (b): who submitted it (and when, over which channel)
+        # is not shown on another dealer's item.
+        if not self._text_withheld(self._is_owned(idea.id)):
+            events.append(
+                (
+                    idea.created_at,
+                    0,
+                    {
+                        "kind": "submitted",
+                        "at": idea.created_at,
+                        "by": PublicIdeaStatusService(self.db)._first_name(idea),
+                        "source": idea.source,
+                    },
+                )
             )
-        )
         for a in (
             self.db.query(IdeaActivity)
             .filter(IdeaActivity.idea_id == idea.id, IdeaActivity.tenant_id == idea.tenant_id)

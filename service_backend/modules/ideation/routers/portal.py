@@ -179,9 +179,12 @@ def me(p: PortalPrincipal = Depends(require_portal_principal)):
 
 
 # ── reads ─────────────────────────────────────────────────────────────────────
+# Card / item reads serialize with ``exclude_unset``: a key the service left
+# out (owner ruling (b) on another dealer's item) is OMITTED, never sent as
+# null. Every other caller gets every key, exactly as before.
 
 
-@router.get("/roadmap", response_model=PortalRoadmapOut)
+@router.get("/roadmap", response_model=PortalRoadmapOut, response_model_exclude_unset=True)
 def roadmap(
     productId: Optional[str] = None,
     mine: bool = False,
@@ -191,7 +194,7 @@ def roadmap(
     return _svc(db, p).roadmap(product_id=productId, mine=mine)
 
 
-@router.get("/changelog", response_model=PortalChangelogOut)
+@router.get("/changelog", response_model=PortalChangelogOut, response_model_exclude_unset=True)
 def changelog(p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
     return _svc(db, p).changelog()
 
@@ -201,7 +204,7 @@ def products(p: PortalPrincipal = Depends(require_portal_principal), db: Session
     return _svc(db, p).products()
 
 
-@router.get("", response_model=PortalListOut)
+@router.get("", response_model=PortalListOut, response_model_exclude_unset=True)
 def list_ideas(
     q: Optional[str] = Query(default=None, max_length=200),
     column: Optional[List[str]] = Query(default=None),
@@ -241,7 +244,7 @@ def submit_idea(
         _raise(exc)
 
 
-@router.get("/{idea_id}", response_model=PortalIdeaOut)
+@router.get("/{idea_id}", response_model=PortalIdeaOut, response_model_exclude_unset=True)
 def idea_detail(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
     try:
         return _svc(db, p).detail(idea_id)
