@@ -1185,8 +1185,10 @@ class OperationService:
                     else:
                         pool.remove(match)
                 continue
-            if not any(r.get("DtlKey") == op.dtl_key for r in rows):
-                continue  # the row was replaced: the whole-row link landed (its row is gone)
+            if op.status != PENDING or not any(r.get("DtlKey") == op.dtl_key for r in rows):
+                # the row was replaced (the whole-row link landed), or a person is resolving an operation whose
+                # row still stands (its replace never landed): nothing of the row is reserved
+                continue
             qty = _dec((snap.get("row") or {}).get("Qty"))
             if snap.get("received") is not None:
                 qty -= _dec(snap["received"])

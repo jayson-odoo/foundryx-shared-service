@@ -467,3 +467,17 @@ def test_pol_03_a_lock_connection_that_breaks_before_the_body_is_busy_and_not_st
     res = h.run(OP, rig.params(rig.three()), key="pl-u")
     assert res.outcome == "refused" and res.error_code == "DOC_BUSY", (res.outcome, res.error_code)
     assert h.vendor.writes() == [] and _stored(h, "pl-u") == 0
+
+
+def test_pol_05_a_needs_attention_whole_row_link_whose_row_still_stands_reserves_nothing(h, rig):
+    _pending_op(h, "pl-v", "link_row", rig.w.p_free, {"mode": "delete", "row": {"Qty": 4}, "received": None,
+                "newLink": {"FromDocDtlKey": rig.s5[0]}}, status="needs_attention")
+    res = h.run(OP, rig.params([(7006, rig.s6[0], 1)]), key="pl-w")
+    assert res.outcome == "done", (res.outcome, res.error_code, res.batch)
+
+
+def test_pol_05_a_pending_whole_row_link_whose_row_still_stands_reserves_the_row(h, rig):
+    _pending_op(h, "pl-x", "link_row", rig.w.p_free, {"mode": "delete", "row": {"Qty": 4}, "received": None,
+                "newLink": {"FromDocDtlKey": rig.s5[0]}})
+    res = h.run(OP, rig.params([(7006, rig.s6[0], 1)]), key="pl-y")
+    assert [s["code"] for s in res.batch["skipped"]] == ["QTY_ABOVE_FREE"], (res.error_code, res.batch)
