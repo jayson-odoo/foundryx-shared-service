@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from jose import JWTError, jwt
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -595,7 +595,13 @@ class IdeaPortalService:
                 {
                     "id": i.id,
                     "ideaNumber": i.idea_number,
-                    "title": (i.title or i.problem or "").strip(),
+                    # A dealer never gets another submitter's problem text as a
+                    # title fallback (owner ruling (b)): the number stands in.
+                    "title": (
+                        (i.title or "").strip() or (i.idea_number or "")
+                        if self._text_withheld(i.id in mine)
+                        else (i.title or i.problem or "").strip()
+                    ),
                     "upvotes": i.upvotes or 0,
                     "commentCount": counts.get(i.id, 0),
                     "isMine": i.id in mine,
@@ -675,8 +681,17 @@ class IdeaPortalService:
             query = self._mine_filter(query)
         if q and q.strip():
             like = f"%{q.strip().lower()}%"
+            text_match = func.lower(Idea.problem).like(like)
+            if self.p.kind == KIND_CONTACT:
+                # Ruling (b): a dealer's search must not probe other
+                # submitters' problem text - only their own items' text.
+                text_match = and_(text_match, Idea.id.in_(self._owned_q().subquery()))
             query = query.filter(
-                or_(func.lower(func.coalesce(Idea.title, "")).like(like), func.lower(Idea.problem).like(like))
+                or_(
+                    func.lower(func.coalesce(Idea.title, "")).like(like),
+                    func.lower(func.coalesce(Idea.idea_number, "")).like(like),
+                    text_match,
+                )
             )
         if columns:
             wanted: Set[str] = set()
@@ -762,7 +777,20 @@ class IdeaPortalService:
         for wire, attr in CORE_FIELDS:
             out[wire] = self._core_field(idea, attr)
         out["note"] = idea.portal_note
+        if self._text_withheld(card["isMine"]):
+            # Owner ruling (b), 15 Nov: a dealer sees the full text only on
+            # their own items; on everyone else's only title, status, steps,
+            # votes and comments (the text can carry another customer's
+            # details).
+            out["problem"] = None
+            for wire, _attr in CORE_FIELDS:
+                out[wire] = None
         return out
+
+    def _text_withheld(self, is_mine: bool) -> bool:
+        """A dealer on a personal link never reads another submitter's free
+        text (owner ruling (b), security review #3)."""
+        return self.p.kind == KIND_CONTACT and not is_mine
 
     def set_hidden(self, idea_id: str, hidden: bool) -> Dict[str, Any]:
         """Q5: managers hide/show an idea on the portal."""

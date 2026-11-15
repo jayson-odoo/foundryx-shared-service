@@ -599,3 +599,42 @@ def test_rr1_portal_token_subject_must_match_the_links_contact(setup):
         PortalPrincipal(tenant_id=DEFAULT_TENANT_ID, kind=KIND_CONTACT, subject=b, link_id=lid)
     )
     assert s["client"].get("/portal/ideas/me", headers={"Authorization": f"Bearer {forged}"}).status_code == 401
+
+
+# ── owner ruling (b): free text only on the dealer's own items ────────────────
+
+
+def test_rb_full_text_only_on_own_items(setup):
+    s = setup
+    me = _contact(s)
+    other = _contact(s, phone="+60123450999")
+    own = _idea(s, 501, title="My item", problem="My own business detail", submitter_contact_id=me)
+    theirs = _idea(s, 502, title="Their item", problem="Customer X pays 12% less", submitter_contact_id=other)
+    untitled = _idea(s, 503, problem="Untitled secret problem text", submitter_contact_id=other)
+    _set(s, theirs, desired_outcome="secret outcome", current_workaround="secret workaround", use_cases=["secret"])
+    h = _contact_session(s, me)
+    mine = s["client"].get(f"/portal/ideas/{own}", headers=h).json()
+    assert mine["problem"] == "My own business detail"
+    other_page = s["client"].get(f"/portal/ideas/{theirs}", headers=h).json()
+    assert other_page["title"] == "Their item" and other_page["statusLabel"]
+    assert other_page["problem"] is None
+    assert other_page["desiredOutcome"] is None and other_page["currentWorkaround"] is None
+    assert not other_page["useCases"]
+    cards = {c["id"]: c for c in s["client"].get("/portal/ideas", headers=h).json()["items"]}
+    assert cards[untitled]["title"] == "IDEA-0503"
+    assert "secret" not in str(cards).lower()
+    # Staff still read everything.
+    staff = s["client"].get(f"/portal/ideas/{theirs}", headers=_staff_session(s)).json()
+    assert staff["problem"] == "Customer X pays 12% less"
+
+
+def test_rb_search_never_probes_others_text(setup):
+    s = setup
+    me = _contact(s)
+    other = _contact(s, phone="+60123450998")
+    _idea(s, 511, title="Theirs", problem="needle in their text", submitter_contact_id=other)
+    own = _idea(s, 512, title="Mine", problem="needle in my text", submitter_contact_id=me)
+    by_title = _idea(s, 513, title="needle in a title")
+    h = _contact_session(s, me)
+    ids = {i["id"] for i in s["client"].get("/portal/ideas?q=needle", headers=h).json()["items"]}
+    assert ids == {own, by_title}
