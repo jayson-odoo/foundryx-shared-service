@@ -1,0 +1,81 @@
+'use client';
+
+import { useRouter } from 'next/navigation';
+import { toast } from '@/lib/toast';
+import { businessRequirementService } from '@/services/business-requirement-service';
+import { brFormHref } from '@/app/(protected)/feedback/business-requirements/components/paths';
+import {
+  NO_TEMPLATE_MESSAGE,
+  isBrTemplateUnavailable,
+} from '@/app/(protected)/feedback/business-requirements/components/br-template-error';
+import type { IdeationRuntime } from '@/hooks/use-ideation-runtime';
+import { ApiError } from '@/lib/api-client';
+import type { Idea } from '@/types/ideation';
+
+type Router = ReturnType<typeof useRouter>;
+
+export interface PromoteOptions {
+  /** Cluster label → the new BR's title (AC-BI-32b). Omitted for a single-idea /
+   * bulk promote - the backend derives the title from the representative idea's
+   * problem so the BR is never "Untitled BR". */
+  title?: string;
+  /** The active ideation runtime. Embed -> `runtime.service.promoteToBr` and stay
+   * in the iframe (no BR surface there); omitted / operator -> create via the BR
+   * service and land on the Grill tab. */
+  runtime?: IdeationRuntime;
+}
+
+const FORBIDDEN_MESSAGE = 'You do not have permission to promote feedback.';
+
+/**
+ * Promote a set of ideas to a NEW draft BR and land on its Grill tab (AC-BI-32 /
+ * 32b). All ideas must share ONE product (a BR links same-product ideas,
+ * AC-BI-17). The BR absorbs the idea (warm start): its problem_statement is
+ * pre-filled server-side and the grill auto-opens on arrival (AC-BI-29b).
+ *
+ * Shared by every promote surface - the ideas-list row/bulk menu, the cluster
+ * suggestions, and the idea form/detail view - so the flow stays identical.
+ */
+export async function promoteIdeasToBr(
+  ideas: Idea[],
+  router: Router,
+  opts: PromoteOptions = {},
+): Promise<void> {
+  if (ideas.length === 0) return;
+  const productIds = new Set(ideas.map((i) => i.productId));
+  if (productIds.size > 1) {
+    toast.error("Feedback from different products can't be promoted together.");
+    return;
+  }
+  try {
+    if (opts.runtime?.mode === 'embed') {
+      const promote = opts.runtime.service.promoteToBr;
+      if (!promote) throw new Error('Promote is not available here.');
+      const br = await promote(
+        ideas.map((i) => i.id),
+        opts.title,
+      );
+      toast.success(`Draft requirement created: ${br.brNumber ?? br.title}`);
+      return;
+    }
+    const created = await businessRequirementService.create({
+      productId: ideas[0].productId,
+      ideaIds: ideas.map((i) => i.id),
+      ...(opts.title ? { title: opts.title } : {}),
+    });
+    toast.success('Draft requirement created - start grilling.');
+    router.push(brFormHref(created.id, { tab: 'grill' }));
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 403) {
+      toast.error(FORBIDDEN_MESSAGE);
+      return;
+    }
+    if (isBrTemplateUnavailable(e)) {
+      toast.error(NO_TEMPLATE_MESSAGE);
+      return;
+    }
+    toast.error(
+      e instanceof Error ? e.message : 'Could not promote to a business requirement.',
+    );
+  }
+}

@@ -299,23 +299,23 @@ export const MENU_SIDEBAR: MenuConfig = [
     path: '/products',
     permission: 'products.read',
   },
-  // Ideation module (plan: documentation/plans/ideation/, Phase A). Ungated for
+  // Feedback (the ideation module; plan: documentation/plans/ideation/, Phase A). Ungated for
   // the Phase-1 prototype; TODO(Phase 2): add `module: 'ideation'` + per-child
   // `permission` once the ideation App-Store module + permissions are seeded.
   {
-    title: 'Ideation',
+    title: 'Feedback',
     icon: Lightbulb,
     children: [
-      { title: 'Ideas', path: '/ideation/ideas' },
+      { title: 'All feedback', path: '/feedback' },
       {
         title: 'Business requirements',
-        path: '/ideation/business-requirements',
+        path: '/feedback/business-requirements',
         permission: 'ideation.business_requirements.read',
       },
-      { title: 'Triage board', path: '/ideation/board' },
+      { title: 'Triage board', path: '/feedback/board' },
       {
         title: 'Embed connections',
-        path: '/ideation/embed-connections',
+        path: '/feedback/embed-connections',
         permission: 'ideation.triage.manage',
       },
     ],

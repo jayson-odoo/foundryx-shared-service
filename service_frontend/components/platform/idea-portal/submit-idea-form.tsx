@@ -60,7 +60,7 @@ export function SubmitIdeaForm() {
     <Card id="submit" data-testid="portal-submit">
       <CardContent className="py-4">
         <form className="flex flex-col gap-3" onSubmit={onSubmit}>
-          <h2 className="font-heading font-semibold">Submit an idea</h2>
+          <h2 className="font-heading font-semibold">Submit feedback</h2>
           <Field id="portal-title" label="Title" required>
             <Input id="portal-title" value={title} maxLength={120} onChange={(e) => setTitle(e.target.value)} />
           </Field>

@@ -47,7 +47,7 @@ class IdeaAttachmentService:
             .first()
         )
         if idea is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
 
     def upload(
         self,
@@ -68,7 +68,7 @@ class IdeaAttachmentService:
             .scalar()
         )
         if (existing or 0) >= MAX_ATTACHMENTS_PER_IDEA:
-            raise HTTPException(422, "This idea has reached its attachment limit.")
+            raise HTTPException(422, "This feedback has reached its attachment limit.")
         attachment_id = str(uuid.uuid4())
         storage_key = storage_for_tenant(self.db, tenant_id).save(
             f"ideation/ideas/{idea_id}/{attachment_id}", content, mime

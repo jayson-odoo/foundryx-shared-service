@@ -28,7 +28,7 @@ from ..schemas import IdeaOut
 from .actions import IdeaActionService
 from .card_fields import clean_text, clean_use_cases
 from .ideas import IdeaReadService
-from .numbering import mint_idea_identity
+from .numbering import display_idea_number, mint_idea_identity
 from .status_events import record_flatten_events, record_merge_events, record_unmerge_events
 
 
@@ -51,7 +51,7 @@ def _merged_at_key(idea: Idea) -> datetime:
 
 
 def _source_label(idea: Idea) -> str:
-    return idea.idea_number or clean_text(idea.title) or "another idea"
+    return display_idea_number(idea.idea_number) or clean_text(idea.title) or "another feedback item"
 
 
 def combine_field(attr: str, chosen: List[Idea]) -> Any:
@@ -108,7 +108,7 @@ class IdeaMergeService:
         nothing (AC-94-04)."""
         ids = list(dict.fromkeys(idea_ids))
         if len(ids) < 2:
-            raise HTTPException(422, "Merge needs at least two ideas.")
+            raise HTTPException(422, "Merge needs at least two feedback items.")
         if survivor_id not in ids:
             raise HTTPException(422, "survivorId must be one of ideaIds.")
 
@@ -133,7 +133,7 @@ class IdeaMergeService:
         )
         ideas_by_id = {i.id: i for i in locked_rows if i.id in ids}
         if any(i not in ideas_by_id for i in ids):
-            raise HTTPException(404, "One or more ideas were not found.")
+            raise HTTPException(404, "One or more feedback items were not found.")
 
         self._validate_merge_set(ideas_by_id.values())
 
@@ -264,9 +264,9 @@ class IdeaMergeService:
             if attr is None:
                 raise HTTPException(422, f"Unknown merge field: {key}.")
             if not chosen_ids or len(set(chosen_ids)) != len(chosen_ids):
-                raise HTTPException(422, f"Merge field {key} needs distinct idea ids.")
+                raise HTTPException(422, f"Merge field {key} needs distinct feedback ids.")
             if any(i not in ids for i in chosen_ids):
-                raise HTTPException(422, f"Merge field {key} names an idea outside the merge.")
+                raise HTTPException(422, f"Merge field {key} names feedback outside the merge.")
             value = combine_field(attr, [ideas_by_id[i] for i in chosen_ids])
             if attr == "problem" and not value:
                 continue
@@ -277,12 +277,12 @@ class IdeaMergeService:
         """D6 - refuse a mixed/invalid selection, no writes (AC-94-04)."""
         ideas = list(ideas)
         if len({i.product_id for i in ideas}) > 1:
-            raise HTTPException(422, "All merged ideas must be on the same product.")
+            raise HTTPException(422, "All merged feedback must be on the same product.")
         if len({bool(i.is_test) for i in ideas}) > 1:
-            raise HTTPException(422, "Cannot mix test and real ideas in a merge.")
+            raise HTTPException(422, "Cannot mix test and real feedback in a merge.")
         if any(i.merged_into_id for i in ideas):
             raise HTTPException(
-                422, "One or more ideas are already merged into another idea."
+                422, "One or more feedback items are already merged into another one."
             )
         status_ids = {i.status_id for i in ideas}
         archived_ids = {
@@ -292,7 +292,7 @@ class IdeaMergeService:
             .all()
         } if status_ids else set()
         if any(i.status_id in archived_ids for i in ideas):
-            raise HTTPException(422, "An archived idea cannot be merged.")
+            raise HTTPException(422, "Archived feedback cannot be merged.")
 
     def _move_votes(self, from_id: str, to_id: str) -> int:
         """D4 - move ``from_id``'s vote rows onto ``to_id``. A voter who
@@ -385,7 +385,7 @@ class IdeaMergeService:
             .first()
         )
         if initial is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
         root = initial.merged_into_id or initial.id
 
         # Lock the WHOLE group (the root plus every CURRENT child) in ONE
@@ -407,7 +407,7 @@ class IdeaMergeService:
         # above (which could be stale by the time the lock is granted).
         idea = by_id.get(idea_id)
         if idea is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
         children = [r for r in locked_rows if r.id != root and r.merged_into_id == root]
         if idea.merged_into_id:
             targets = [idea]
@@ -415,7 +415,7 @@ class IdeaMergeService:
             targets = children
         else:
             raise HTTPException(
-                422, "This idea is neither merged nor the survivor of a merge."
+                422, "This feedback is neither merged nor the survivor of a merge."
             )
 
         # Captured BEFORE the loop clears the pointer - the requester-event

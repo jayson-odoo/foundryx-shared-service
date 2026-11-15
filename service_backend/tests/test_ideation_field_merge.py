@@ -79,12 +79,12 @@ def test_field_merge_picks_and_combines(ideation_client):
     assert body["id"] == a
     assert body["title"] == "Dealer portal"
     assert body["problem"] == (
-        "Dealers cannot track order status\n\n--- from IDEA-0004 ---\nNo self-service order view"
+        "Dealers cannot track order status\n\n--- from FB-0004 ---\nNo self-service order view"
     )
     assert body["desiredOutcome"] == "Self-service status"
     assert body["useCases"] == ["Check shipping", "Reorder", "Tell customer ship date"]
     assert body["currentWorkaround"] is None
-    assert body["rawText"] == "msg a\n\n--- from IDEA-0017 ---\nmsg c"
+    assert body["rawText"] == "msg a\n\n--- from FB-0017 ---\nmsg c"
     # Absorbed ideas keep their own text untouched.
     row_b = _idea_row(client._factory, b)
     assert row_b.title == "Dealer portal" and row_b.problem == "No self-service order view"

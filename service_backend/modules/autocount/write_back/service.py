@@ -15,7 +15,7 @@ import logging
 from contextlib import ExitStack
 import time
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -71,7 +71,7 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
-from modules.autocount.write_back.link_lock import SoRowBusy, so_row_locks
+from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
 from modules.autocount.write_back.primitives import vendor_message
@@ -461,6 +461,7 @@ class WriteBackService(WriteFrame):
             self._check_test_company(row, company)
             self._check_capability(plan, row)
             self._check_not_busy(row, tenant_id, company.id, plan.doc_key)
+            self._check_no_operation(row, tenant_id, company.id, plan)
             row.outcome = OUTCOME_IN_FLIGHT
             try:
                 self.db.commit()
@@ -472,7 +473,15 @@ class WriteBackService(WriteFrame):
             return stop.result
         row_id = row.id
         self._lock_stack = ExitStack()
+        po_lock = ExitStack()  # held to the end of the flow (the SO row lock is released after PUT 1)
         try:
+            if plan.kind[0] == "PO":
+                # the per-PO-document lock first (link_lock: PO, then SO rows); inside an operation that already
+                # holds it, the held lock connection is reused
+                try:
+                    po_lock.enter_context(link_locks(self.db, company.id, po_doc_keys=[plan.doc_key]))
+                except SoRowBusy:
+                    return self._finish(row, OUTCOME_REFUSED, DOC_BUSY)
             if plan.action == ACTION_LINK and plan.so_dtl_key and not self.so_lock_held:
                 # the over-link guard and PUT 1 run under the per-SO-row lock (link_lock), released once PUT 1
                 # is verified and the index follows it; an operation that already holds it (split_link)
@@ -492,7 +501,17 @@ class WriteBackService(WriteFrame):
             return self._finish(row, outcome, INTERNAL_ERROR)
         finally:
             self._lock_stack.close()
+            po_lock.close()
             self.db.rollback()
+
+    def _check_no_operation(self, row: AcWriteAction, tenant_id: str, company_id: str, plan: _Plan) -> None:
+        """An ``in_progress`` operation on the document (other than the one running this flow) holds it: its
+        steps are not always ``in_flight`` actions, so the action busy check alone does not see it."""
+        window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+        if OperationRepository(self.db).has_in_progress(
+            tenant_id, company_id, plan.kind[0], plan.doc_key, window, exclude_id=self._operation_id,
+        ):
+            raise self._refuse(row, DOC_BUSY)
 
     def _check_capability(self, plan: _Plan, row: AcWriteAction) -> None:
         """Unlink and SPO unlink are refused outright while the vendor does not

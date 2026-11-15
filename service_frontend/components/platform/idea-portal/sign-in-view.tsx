@@ -11,7 +11,7 @@ import { Card, CardContent } from '@/components/ui/card';
 /** Portal sign-in: staff only - salespeople and office staff sign in with
  * their staff login (owner Q1, 13 Oct). */
 export function PortalSignIn() {
-  const pathname = usePathname() ?? '/portal/ideas';
+  const pathname = usePathname() ?? '/portal/feedback';
   const shellBranding = usePublicPageBranding();
   const { branding: live } = useTenantBranding();
   const branding = shellBranding ?? live;

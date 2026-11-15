@@ -78,7 +78,7 @@ class SimilarIdeasService:
             .first()
         )
         if idea is None:
-            raise HTTPException(404, "Idea not found.")
+            raise HTTPException(404, "Feedback not found.")
         candidates = self._candidates(tenant_id, idea)
         if not candidates:
             return SimilarIdeasOut(available=True, ideas=[])

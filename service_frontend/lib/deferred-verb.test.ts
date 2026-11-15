@@ -65,3 +65,16 @@ describe('deferredDoneMessage', () => {
     expect(deferredDoneMessage('Trash', 'user', 3)).toBe('3 users trashed.');
   });
 });
+
+// Lane FEEDBACK-RENAME (crew pass 34455d5): an archived/deleted feedback item
+// never reads "idea" in the settle toast.
+describe('deferredDoneMessage - feedback items', () => {
+  it('says feedback, singular and plural', () => {
+    const one = deferredDoneMessage('Archive', 'ideation_idea', 1);
+    const many = deferredDoneMessage('Delete', 'ideation_idea', 3);
+    expect(one).not.toMatch(/idea/i);
+    expect(many).not.toMatch(/idea/i);
+    expect(one.toLowerCase()).toContain('feedback');
+    expect(many).toContain('3 feedback items');
+  });
+});

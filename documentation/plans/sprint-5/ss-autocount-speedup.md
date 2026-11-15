@@ -24,14 +24,15 @@ Option (c) of the AutoCount latency scout: no change a user can see except a sho
 | 2 | The move edit takes the previous step's read-back instead of an identical second GET: only inside an operation, only for an edit, only for the same DocKey. | `primitives._reusable` / `_prepare`, `operations._move_rows` |
 | 3 | The link target's first read (SO for a PO link, PO for an SPO link) runs on a second thread during the document's own first read. Refusal order unchanged (target still checked after the document's own guards); its calls are held and logged on the request thread with their real duration. | `operations._target_beside`, `call_log.BufferedCallLog` |
 
-Who can write the PO between the replace read-back and the move PUT: another SS operation or
-gateway primitive cannot (`uq_ac_write_operation_one_in_progress` holds the document for every step
-of an operation). The plan-55 `WriteBackService` path and an AutoCount desktop user can: their check
-(`frame._check_not_busy`) only sees in-flight actions, and between steps there is none. Before, the
-move's own GET would have picked such a write up; now the move PUT is built from the read-back, so a
-header change made in that gap (for example Description) would be sent back as it was. The gap grows
-by about one GET plus a few local commits (tens of ms to ~1 s); the same race already existed between
-the old GET and the PUT. Closing it fully would need a re-read, which is the call this change removes.
+Who can write the PO between the replace read-back and the move PUT: another SS operation or the
+plan-55 `WriteBackService` link flow cannot (both hold the per-PO-document lock for the whole flow,
+`link_lock.link_locks`, #244, plus `uq_ac_write_operation_one_in_progress` for operations). A standalone
+SS document primitive (it takes no PO lock, its `frame._check_not_busy` only sees in-flight actions) and
+an AutoCount desktop user can. Before, the move's own GET would have picked such a write up; now the move
+PUT is built from the read-back, so a header change made in that gap (for example Description) would be
+sent back as it was. The gap grows by about one GET plus a few local commits (tens of ms to ~1 s); the
+same race already existed between the old GET and the PUT. Closing it fully would need a re-read, which
+is the call this change removes.
 
 Not changed: the live re-read right before the first PUT, `expectedLastModified` (DOC_STALE),
 refusal codes and their order, unknown-outcome / resume / recovery outcomes, response shapes, the
