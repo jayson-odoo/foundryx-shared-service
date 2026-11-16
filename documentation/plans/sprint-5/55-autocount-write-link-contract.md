@@ -29,7 +29,8 @@ and is resumable (section 4.0a); the single part-row link keeps `done` + `LOCATI
 `ROW_NEEDS_ATTENTION` and skip `FOC_ON_ROW`; the AutoCount Remark mirror is not a mismatch (section 5).
 
 2026-11-17 (plan 65 part B): unlink and relink refuse `FOC_ON_ROW` for a row with a free quantity; Resume clears a
-stale `in_progress` run on the same PO first (section 4.0a).
+stale `in_progress` run on the same PO first (section 4.0a). A resend under the key of any `recovered`
+operation runs fresh (the key is released), not only `OPERATION_NOT_APPLIED`.
 
 ## 1. What it is
 
@@ -97,10 +98,10 @@ resend does:
 | Stored outcome of the first call | A resend with the same key |
 |---|---|
 | `refused` (any code), or `vendor_error` with `errorCode` `VENDOR_REFUSED` (AutoCount itself said no) | Nothing reached AutoCount, so the key is released: the resend runs fresh, with the same or a corrected body |
-| `recovered` with `errorCode` `OPERATION_NOT_APPLIED` (a resume found the write never landed) | The key is released, like the first row: the resend runs fresh |
+| `recovered`, any `errorCode` (the PO is back as it was: a resume found the write never landed, or a failed write was undone; plan 65 B3) | The key is released, like the first row: the resend runs fresh |
 | `pending_verification` and the same body | Reconciles: the server re-reads the document. If the first call landed, it is finished and answered (`done`); if it provably never landed, the key is released and the resend runs fresh. Never a second write |
 | `done` | Locked: the stored answer is replayed (same `operationId`), nothing is written again |
-| `mismatch`, any other `recovered`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
+| `mismatch`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
 | any stored outcome, but a DIFFERENT body or route | `409 IDEMPOTENCY_CONFLICT` (`outcome` `refused`) unless the stored outcome released the key (first two rows) |
 | first call still running | `409 OPERATION_IN_PROGRESS` |
 
