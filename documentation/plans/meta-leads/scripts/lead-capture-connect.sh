@@ -32,8 +32,8 @@ GRAPH_BASE="${GRAPH_BASE:-https://graph.facebook.com}"
 : "${CRM_HOOK_URL:?set CRM_HOOK_URL}" "${FB_PAGE_ID:?set FB_PAGE_ID}"
 SS_BASE="${SS_BASE%/}"
 [ -f "$IN" ] || { echo "missing $IN"; exit 1; }
-META_SYSTEM_USER_TOKEN="$(grep -E '^META_SYSTEM_USER_TOKEN=' "$IN" | head -1 | cut -d= -f2-)"
-[ -n "$META_SYSTEM_USER_TOKEN" ] || { echo "META_SYSTEM_USER_TOKEN not set in $IN"; exit 1; }
+META_SYSTEM_USER_TOKEN="$(grep -E '^META_SYSTEM_USER_TOKEN=' "$IN" | head -1 | cut -d= -f2- || true)"
+[ -n "$META_SYSTEM_USER_TOKEN" ] || { echo "STOP: $IN has no line META_SYSTEM_USER_TOKEN=<token> (one line, no spaces around =). Add it and re-run."; exit 1; }
 export META_SYSTEM_USER_TOKEN SS_TENANT SS_EMAIL CRM_HOOK_URL FB_PAGE_ID
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -56,7 +56,8 @@ call() {
   local args=(-sS -o "$5" -w '%{http_code}' -X "$1" "$2" --max-time 30)
   [ "$3" != "-" ] && args+=(-H @"$3")
   [ "$4" != "-" ] && args+=(-H 'Content-Type: application/json' --data-binary @"$4")
-  HTTP_CODE="$(curl "${args[@]}" 2>/dev/null || echo 000)"
+  HTTP_CODE="$(curl "${args[@]}" 2>/dev/null || true)"
+  [ -n "$HTTP_CODE" ] || HTTP_CODE=000
 }
 must2xx() { [ "${HTTP_CODE:0:1}" = "2" ] || fail "$1: HTTP $HTTP_CODE $(errtext "$2")"; }
 
