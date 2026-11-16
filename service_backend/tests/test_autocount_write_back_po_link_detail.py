@@ -80,13 +80,13 @@ def test_ac_64_02_the_move_is_inside_the_same_po_links_call(client, gw, far):
 
 # ---- AC-64-03: move not landed -> today's LOCATION_NOT_MOVED, detail tells the truth ---------------------
 
-def test_ac_64_03_move_not_landed_keeps_location_not_moved_and_detail_is_the_real_location(client, gw, far):
+def test_ac_64_03_move_not_landed_is_needs_attention_and_names_no_detail(client, gw, far):
     gw.h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
     r = client.post(LINK, json=_whole(far), headers=gw.hdr())
-    assert r.status_code == 200, r.text
+    assert r.status_code == 502, r.text  # the gateway's existing status for needs_attention
     body = r.json()
-    assert body["outcome"] == "done" and "LOCATION_NOT_MOVED" in body["warnings"]
-    assert body["detail"]["Location"] == "HQ"  # where it really sits, never the SO location it missed
+    assert (body["outcome"], body["errorCode"]) == ("needs_attention", "RESTORE_NOT_LANDED")  # plan 65 R2: resumable, never done with warnings
+    assert body.get("detail") is None  # never the SO location it missed
 
 
 # ---- AC-64-04: goods received -> plain refusal, nothing sent, key released --------------------------------
@@ -194,15 +194,16 @@ def test_ac_64_05_replay_of_a_split_link_answers_the_same_detail(client, gw, far
     assert again.json()["detail"] is not None and again.json()["detail"] == first.json()["detail"]
 
 
-def test_ac_64_06_split_link_with_nothing_to_restore_answers_the_new_row(client, gw):
+def test_ac_64_06_split_link_with_only_the_note_to_restore_answers_the_new_row(client, gw):
     """The vendor already put the new row where and as it should be (SO row at HQ, no price,
-    no date): no second write, the new row is still named."""
+    no date): the second write carries only the note, the new row is still named."""
     w = World(gw.h, so_loc="HQ")
     row = _row(w.po_rows(), w.p_free)
     row["UnitPrice"], row["DeliveryDate"] = 0.0, "0001-01-01T00:00:00"
     r = client.post(LINK, json=_whole(w, qty=1), headers=_hdr(gw.plain))
     assert r.status_code == 200, r.text
-    assert len(gw.h.vendor.writes()) == 1  # no restore write
+    # plan 65 D4: the note is never read back, so the restore write always follows (the note only)
+    assert len(gw.h.vendor.writes()) == 2 and "FurtherDescription" in gw.h.vendor.writes()[1].body["Details"][0]
     detail = r.json()["detail"]
     assert detail["DtlKey"] != w.p_free and detail["FromSODtlKey"] == w.so_a and detail["Location"] == "HQ"
 

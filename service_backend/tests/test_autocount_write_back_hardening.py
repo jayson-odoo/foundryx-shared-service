@@ -1010,8 +1010,8 @@ def test_split_response_status_records_both_statuses(vh):
     assert row.response_status == [200, 200]
 
 
-def test_single_write_link_response_status_stays_one_status(vh):
+def test_split_link_response_status_records_the_link_and_the_note_put(vh):
     h = vh
     h.ac.force_hq = False
     res = h.link_split()
-    assert h.action(res).response_status in (200, [200])
+    assert h.action(res).response_status == [200, 200]  # plan 65 D4: the note's restore write always follows

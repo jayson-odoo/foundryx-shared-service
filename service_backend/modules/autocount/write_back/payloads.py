@@ -291,28 +291,131 @@ def same_row_value(field_name: str, want: Any, got: Any) -> bool:
     return _same(want, got)
 
 
-def transfer_restore(source: Mapping[str, Any], location: Optional[str]) -> Doc:
+def transfer_restore(source: Mapping[str, Any], location: Optional[str],
+                     so_link: Optional[Mapping[str, Any]] = None) -> Doc:
     """The ``TRANSFER_RESET_FIELDS`` values a new SO-linked PO row must get back after
     AutoCount reset them (F5): ``source``'s price and delivery date, at ``location``
-    (when given). The one rule the split link and the row operations share."""
+    (when given). The one rule the split link and the row operations share.
+
+    ``so_link`` (plan 65 D2 / D4 / D2a, ``{"soDeliveryDate", "note"}`` as the snapshot keeps
+    them): the row is a NEW row linked to that SO row, so the delivery date is the SO ROW's
+    (omitted when it has none, never ``source``'s), a percentage discount of ``source`` goes
+    back (``link_discount``) and the note goes on as ``FurtherDescription`` (AutoCount RTF)."""
     wanted: Doc = {k: source[k] for k in TRANSFER_RESET_FIELDS if k in source}
     if location:
         wanted["Location"] = location
     else:
         wanted.pop("Location", None)
+    if so_link is None:
+        return wanted
+    wanted.pop("DeliveryDate", None)
+    so_day = so_link.get("soDeliveryDate")
+    if so_day:
+        wanted["DeliveryDate"] = f"{so_day}T00:00:00"
+    discount = link_discount(source.get("Discount"))
+    if discount:
+        wanted["Discount"] = discount
+    note = so_link.get("note")
+    if note:
+        wanted["FurtherDescription"] = autocount_rtf(str(note))
     return wanted
 
 
+# Plan 65 D2a: AutoCount resets a new SO-linked row's discount too (probe P2); the restore
+# sets it back when it is a percentage.
+LINK_RESTORE_FIELDS = TRANSFER_RESET_FIELDS + ("Discount",)
+# Plan 65 P3: accepted on an edit PUT, never returned by a read: always sent, never verified.
+UNREADABLE_ROW_KEYS = ("FurtherDescription",)
+
+
 def transfer_row_drift(sent: Mapping[str, Any], got: Doc) -> Doc:
-    """The ``TRANSFER_RESET_FIELDS`` the read-back row lost: ``{field: sent value}``.
-    A field not sent (or an empty sent date) is never asked back."""
+    """The restore fields the read-back row lost: ``{field: sent value}``. A field not
+    sent (or an empty sent date) is never asked back; a field no read returns
+    (``UNREADABLE_ROW_KEYS``) is always sent."""
     out: Doc = {}
-    for key in TRANSFER_RESET_FIELDS:
+    for key in LINK_RESTORE_FIELDS:
         if key not in sent or (key == "DeliveryDate" and _day(sent[key]) is None):
             continue
         if not same_row_value(key, sent[key], got.get(key)):
             out[key] = sent[key]
+    out.update({k: sent[k] for k in UNREADABLE_ROW_KEYS if sent.get(k)})
     return out
+
+
+_NO_SO_PREFIX = re.compile(r"^SO", re.IGNORECASE)
+
+
+def so_link_note(so: Mapping[str, Any], so_row: Mapping[str, Any]) -> str:
+    """Plan 65 D4: the note on a PO row linked to an SO row, in the shape of the hand-made
+    notes: ``**<DebtorName>[/<Ref>] S/O: <DocNo without a leading SO>[ DD: dd/mm/yyyy]``.
+    The non-blank DebtorName and Ref are joined by "/"; the SO prefix strip ignores case;
+    a missing SO row date is left out (plan 65 R5)."""
+    parts = [str(so.get(k)).strip() for k in ("DebtorName", "Ref") if not _blank(so.get(k))]
+    text = "**" + "/".join(parts) + " S/O: " + _NO_SO_PREFIX.sub("", str(so.get("DocNo") or "").strip())
+    day = _day(so_row.get("DeliveryDate"))
+    if day:
+        year, month, dom = day.split("-")
+        text += f" DD: {dom}/{month}/{year}"
+    return text
+
+
+_RTF_HEAD = (r"{\rtf1\ansi\ansicpg1252\deff0\deflang1033{\fonttbl{\f0\fswiss\fcharset0 Arial;}}"
+             r"\viewkind4\uc1\pard\f0\fs20 ")
+_RTF_TAIL = "\\par\r\n}"
+
+
+def _rtf_char(ch: str) -> str:
+    if ch in "\\{}":
+        return "\\" + ch
+    if ch == "\n":
+        return "\\line "
+    if ch == "\t":
+        return "\\tab "
+    code = ord(ch)
+    if 0x20 <= code < 0x7F:
+        return ch
+    if code < 0x20 or code == 0x7F:
+        return ""  # other control characters carry nothing printable
+    try:
+        raw = ch.encode("cp1252")
+    except UnicodeEncodeError:
+        units = ch.encode("utf-16-be")
+        out = ""
+        for i in range(0, len(units), 2):  # one \uN? per UTF-16 unit, signed as RTF wants
+            unit = int.from_bytes(units[i:i + 2], "big")
+            out += f"\\u{unit - 0x10000 if unit > 0x7FFF else unit}?"
+        return out
+    return "".join(f"\\'{b:02x}" for b in raw)
+
+
+def autocount_rtf(text: str) -> str:
+    """Plan 65 D4: ``text`` in AutoCount's own default RTF wrapper (the shape its stored
+    FurtherDescription carries): ``\\``, ``{``, ``}`` escaped, non-ASCII as ``\\'hh`` (cp1252)
+    or ``\\uN?``."""
+    return _RTF_HEAD + "".join(_rtf_char(ch) for ch in text) + _RTF_TAIL
+
+
+def so_link_values(so: Mapping[str, Any], so_row: Mapping[str, Any]) -> Doc:
+    """Plan 65 D2 / D4: the ``so_link`` of ``transfer_restore`` for a row newly linked to
+    ``so_row``: the SO row's day (None when it has none) and the note text."""
+    return {"soDeliveryDate": _day(so_row.get("DeliveryDate")), "note": so_link_note(so, so_row)}
+
+
+def foc_on_row(row: Mapping[str, Any], taken: Decimal) -> bool:
+    """Plan 65 D2a: a link taking ``taken`` of ``row`` would take all of it while it carries FOC,
+    which hapi cannot put on the new row (``FOC_ON_ROW``: the batch skip and the single link refusal)."""
+    return taken == _dec(row.get("Qty")) and _dec(row.get("FOCQty")) > 0
+
+
+def link_discount(value: Any) -> str:
+    """Plan 65 D2a: the discount a new linked row takes from its source row: the value when
+    every ``+``-term is a percentage (``5%``, ``5%+2%``), else blank (an amount discount
+    would change the PO total when the row is split)."""
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return ""
+    terms = [t.strip() for t in text.split("+")]
+    return text if all(t.endswith("%") and t[:-1].strip() for t in terms) else ""
 
 
 def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any]) -> Doc:
@@ -385,6 +488,9 @@ EDIT_HEADER_KEYS = (
 )
 # Line fields an edit may change, by DtlKey.
 EDIT_LINE_KEYS = ("Qty", "UnitPrice", "Discount", "Location", "Description", "DeliveryDate")
+# Plan 65 D4: the restore of a new SO-linked row (an operation step, never the public edit
+# door) may also send the note and the FOC quantity.
+RESTORE_LINE_KEYS = EDIT_LINE_KEYS + ("FurtherDescription", "FOCQty")
 LINE_KEYS = tuple(k for k in ROW_KEYS if k != "DtlKey") + ("YourPONo",)
 REQUIRED_HEADER = ("DocDate", "DisplayTerm", "CurrencyCode", "CurrencyRate")
 # SS-QTSO-DISPLAYTERM: kinds whose blank DisplayTerm is filled from the debtor's own
@@ -540,9 +646,13 @@ def build_edit(
     doc: Doc,
     header_changes: Mapping[str, Any],
     line_changes: Sequence[Mapping[str, Any]],
+    *,
+    restore: bool = False,
 ) -> VendorRequest:
+    """``restore`` (operations only, plan 65 D4): the line whitelist is ``RESTORE_LINE_KEYS``."""
     kind = kind_of(kind_name)
     _check_kind_doc(kind, doc)
+    line_keys = RESTORE_LINE_KEYS if restore else EDIT_LINE_KEYS
     for key in header_changes:
         if key not in EDIT_HEADER_KEYS:
             raise WriteRefusal("FIELD_NOT_EDITABLE", key)
@@ -553,7 +663,7 @@ def build_edit(
         row = _find_row(doc, change.get("DtlKey"))  # type: ignore[arg-type]
         edits = {k: v for k, v in change.items() if k != "DtlKey"}
         for key in edits:
-            if key not in EDIT_LINE_KEYS:
+            if key not in line_keys:
                 raise WriteRefusal("FIELD_NOT_EDITABLE", key)
         out = _normal(_row_fields(row))
         out.update({k: _plain(v) for k, v in edits.items()})
@@ -722,11 +832,31 @@ def _row_by_key(doc: Doc, dtl_key: Any) -> Optional[Doc]:
     return None
 
 
-def _drifted(before: Doc, after: Doc, skip_header: Sequence[str], skip_rows: Sequence[Any]) -> List[str]:
+_MIRRORED_REMARKS = ("Remark2", "Remark3", "Remark4")
+
+
+# R4: the kinds whose mirror is proven (PO / SPO db3 16 Nov, QT F13); an SO verify stays strict.
+MIRROR_KINDS = ("PO", "SPO", "QT")
+
+
+def _remark_mirror(key: str, after: Doc, kind_name: str, asked: Sequence[str] = ()) -> bool:
+    """AutoCount's wrapper copies Remark1 into Remark2..4 on every edit PUT (db3 6 Nov, QT
+    DocKey 12147, F13; plan 65 probe P1, PO, Remark1 changed or not). A Remark2..4 that reads
+    back equal to the read-back Remark1 is that copy, not drift. Nothing broader: Remark1
+    itself, a Remark2..4 that reads back as anything else, and every other field still count.
+    Plan 65 R4: always for ``MIRROR_KINDS``; any other kind (SO) only when the edit set Remark1
+    (``asked``, the F13 rule as it stood before plan 65)."""
+    return (key in _MIRRORED_REMARKS and (kind_name in MIRROR_KINDS or "Remark1" in asked)
+            and _same(after.get(key), after.get("Remark1")))
+
+
+def _drifted(before: Doc, after: Doc, skip_header: Sequence[str], skip_rows: Sequence[Any],
+             kind_name: str) -> List[str]:
     out: List[str] = []
     for key in _COMPARE_HEADER:
         if key in before and key not in skip_header and not _same(before.get(key), after.get(key)):
-            out.append(key)
+            if not _remark_mirror(key, after, kind_name, skip_header):
+                out.append(key)
     for row in before.get("Details") or []:
         if row.get("DtlKey") in skip_rows:
             continue
@@ -758,36 +888,23 @@ def verify_edit(
         if row is None:
             out.append(f"Details[{dtl}]")
             continue
-        out.extend(f"Details[{dtl}].{k}" for k, v in change.items() if k != "DtlKey" and not _same(row.get(k), v))
+        out.extend(f"Details[{dtl}].{k}" for k, v in change.items()
+                   if k != "DtlKey" and k not in UNREADABLE_ROW_KEYS and not _same(row.get(k), v))
         original = _row_by_key(before, dtl) or {}
         out.extend(
             f"Details[{dtl}].{k}"
             for k in _COMPARE_LINE
             if k in original and k not in change and not _same(original.get(k), row.get(k))
         )
-    out.extend(k for k in _drifted(before, after, list(header_changes), touched) if not _remark_mirror(k, header_changes, after))
+    out.extend(_drifted(before, after, list(header_changes), touched, kind_name))
     return out
-
-
-_MIRRORED_REMARKS = ("Remark2", "Remark3", "Remark4")
-
-
-def _remark_mirror(key: str, header_changes: Mapping[str, Any], after: Doc) -> bool:
-    """AutoCount's wrapper copies Remark1 into Remark2..4 on an edit (db3 6 Nov, QT
-    DocKey 12147, F13). An untouched Remark2..4 that now reads back as the newly set
-    Remark1 is that copy, not a field AutoCount ignored."""
-    return (
-        key in _MIRRORED_REMARKS
-        and "Remark1" in header_changes
-        and _same(after.get(key), header_changes["Remark1"])
-    )
 
 
 def verify_delete_line(kind_name: str, before: Doc, dtl_key: int, after: Doc) -> Verdict:
     kind_of(kind_name)
     if _row_by_key(after, dtl_key) is not None:
         return Verdict(MISMATCH, "LINE_NOT_DELETED")
-    if _drifted(before, after, (), [dtl_key]):
+    if _drifted(before, after, (), [dtl_key], kind_name):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 
@@ -813,7 +930,7 @@ def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after:
         return Verdict(MISMATCH, "ROW_MISMATCH")
     if _link_code(kind_name, line, added[0]):
         return Verdict(MISMATCH, "LINK_MISMATCH")
-    if _drifted(before, after, (), []):
+    if _drifted(before, after, (), [], kind_name):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 
@@ -834,7 +951,7 @@ def verify_row_replace(kind_name: str, before: Doc, old_key: int, line: Mapping[
         return Verdict(MISMATCH, "ROW_MISMATCH")
     if _link_code(kind_name, line, added[0]) or (not line.get("FromDocType") and _link_of_row(kind_name, added[0])):
         return Verdict(MISMATCH, "LINK_MISMATCH")
-    if _drifted(before, after, (), [old_key]):
+    if _drifted(before, after, (), [old_key], kind_name):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 
@@ -866,7 +983,7 @@ def verify_link_batch(
         if match is None:
             return Verdict(MISMATCH, "LINK_MISMATCH")
         left.remove(match)
-    if _drifted(before, after, (), [old_key]):
+    if _drifted(before, after, (), [old_key], kind_name):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 
@@ -883,7 +1000,7 @@ def verify_unlink_merge(kind_name: str, before: Doc, linked_key: int, free_key: 
     known = {r.get("DtlKey") for r in before.get("Details") or []}
     if [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]:
         return Verdict(MISMATCH, "ROWS_UNEXPECTED")
-    if _drifted(before, after, (), [linked_key, free_key]):
+    if _drifted(before, after, (), [linked_key, free_key], kind_name):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 

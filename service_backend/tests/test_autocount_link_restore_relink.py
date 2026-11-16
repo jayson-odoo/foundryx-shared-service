@@ -1,0 +1,173 @@
+"""Plan 65 AC-65-05b (RED): the restore of the new linked row of ``relink_row`` and of a whole-row ``link_row``
+uses the same rule as the batch (D2): Location = the SO row's, UnitPrice = the old row's, DeliveryDate = the SO
+ROW's date (omitted when it has none), Discount only when a percentage, FurtherDescription = the RTF note on
+that row only. Fixtures and the db3-shaped fake vendor come from ``test_autocount_link_restore``.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from tests.test_autocount_link_restore import (  # noqa: F401
+    NOTE, PO_KEY, SO_KEY, Rig65, day, has_day, puts, rtf,
+)
+from tests.test_autocount_write_back_operations import OpHarness, db, h  # noqa: F401
+from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
+
+
+@pytest.fixture
+def rig(h):
+    return Rig65(h)
+
+
+def link_row(h, rig, so_dtl, *, key="r-link", discount="5%"):
+    """Whole-row link of the free row (qty 3, price 2.5, FOC 0) to an SO row."""
+    rig.row(rig.free_a)["Discount"] = discount
+    res = h.run("link_row", dict(doc_key=PO_KEY, dtl_key=rig.free_a, so_doc_key=SO_KEY, so_dtl_key=so_dtl), key=key)
+    assert res.outcome == "done", (res.outcome, res.error_code, res.warnings)
+    (old, new), = res.replaced_lines
+    return res, new
+
+
+def restore_put(h, new_key):
+    sent = puts(h)
+    assert len(sent) == 2, [c.body for c in sent]  # the replace PUT and ONE restore PUT
+    details = sent[-1].body["Details"]
+    assert [r["DtlKey"] for r in details] == [new_key], details  # the new linked row only
+    return details[0]
+
+
+def test_ac_65_05b_whole_row_link_row_restores_the_so_rows_location_date_note_and_a_percentage_discount(h, rig):
+    res, new = link_row(h, rig, rig.so_dated)
+    row = restore_put(h, new)
+    assert (row["Location"], row["UnitPrice"], day(row["DeliveryDate"]), row["Discount"]) == (
+        "BRW-AM", 2.5, "2026-12-31", "5%")
+    assert row.get("FurtherDescription") == rtf(NOTE)
+    final = rig.row(new)
+    assert (final["Location"], final["UnitPrice"], day(final["DeliveryDate"]), final["Discount"]) == (
+        "BRW-AM", 2.5, "2026-12-31", "5%")
+
+
+def test_ac_65_05b_relink_row_restores_the_new_so_rows_values_and_the_note_on_the_new_row_only(h, rig):
+    _res, linked = link_row(h, rig, rig.so_undated, key="r-first")  # a linked row to move
+    rig.row(linked)["Discount"] = "5%"
+    rig.row(linked).update(UnitPrice=2.5)
+    h.vendor.calls.clear()
+    res = h.run("relink_row", dict(doc_key=PO_KEY, dtl_key=linked, so_doc_key=SO_KEY, so_dtl_key=rig.so_dated),
+                key="r-relink")
+    assert res.outcome == "done", (res.outcome, res.error_code, res.warnings)
+    (old, new), = res.replaced_lines
+    assert old == linked
+    row = restore_put(h, new)
+    assert (row["Location"], row["UnitPrice"], day(row["DeliveryDate"]), row["Discount"]) == (
+        "BRW-AM", 2.5, "2026-12-31", "5%")
+    assert row.get("FurtherDescription") == rtf(NOTE)
+
+
+@pytest.mark.parametrize("op", ["link_row", "relink_row"])
+def test_ac_65_05b_an_so_row_without_a_date_sends_no_delivery_date_and_a_note_without_dd(h, rig, op):
+    if op == "link_row":
+        _res, new = link_row(h, rig, rig.so_undated)
+        row = restore_put(h, new)
+    else:
+        _res, linked = link_row(h, rig, rig.so_dated, key="r-first")
+        rig.row(linked).update(UnitPrice=2.5)
+        h.vendor.calls.clear()
+        res = h.run("relink_row", dict(doc_key=PO_KEY, dtl_key=linked, so_doc_key=SO_KEY,
+                                       so_dtl_key=rig.so_undated), key="r-relink")
+        assert res.outcome == "done", (res.outcome, res.error_code)
+        (_old, new), = res.replaced_lines
+        row = restore_put(h, new)
+    assert not has_day(row), row.get("DeliveryDate")  # never the old row's date
+    assert not has_day(rig.row(new))
+    assert row.get("FurtherDescription") == rtf("**CUSTA SDN BHD/PROJECT X S/O: 428480")
+
+
+def test_ac_65_05b_an_amount_discount_is_not_copied_to_the_relinked_row(h, rig):
+    """control: passes on ddb53cbe (the restore never sends a discount); pins that the fix does not copy an amount."""
+    _res, new = link_row(h, rig, rig.so_dated, discount="10")
+    row = restore_put(h, new)
+    assert row.get("Discount", "") == "" and rig.row(new)["Discount"] == ""
+
+
+# ================================ AC-65-05c the single link of part of a row (split_link) ===========
+
+def split(h, rig, so_dtl, *, key="r-split"):
+    """Part-row single link (plan 55 legacy flow wrapped by the op layer): 1 of the free row's 3."""
+    from decimal import Decimal
+
+    rig.row(rig.free_a)["Discount"] = "5%"
+    res = h.run("split_link", dict(po_doc_key=PO_KEY, po_dtl_key=rig.free_a, so_doc_key=SO_KEY, so_dtl_key=so_dtl,
+                                   qty=Decimal(1)), key=key)
+    assert res.outcome == "done", (res.outcome, res.error_code, res.warnings)
+    (new,) = [r for r in rig.linked(so_dtl)]
+    sent = puts(h)
+    assert len(sent) >= 2, [c.body for c in sent]
+    details = sent[-1].body["Details"]
+    assert [r["DtlKey"] for r in details] == [new["DtlKey"]], details  # the restore PUT: the new linked row only
+    return details[0], rig.row(new["DtlKey"])
+
+
+def test_ac_65_05c_a_part_row_single_link_restores_the_so_rows_location_date_note_and_a_percentage_discount(h, rig):
+    sent_row, final = split(h, rig, rig.so_dated)
+    assert (sent_row["Location"], sent_row["UnitPrice"], day(sent_row["DeliveryDate"]), sent_row["Discount"]) == (
+        "BRW-AM", 2.5, "2026-12-31", "5%")
+    assert sent_row.get("FurtherDescription") == rtf(NOTE)
+    assert (final["Location"], final["UnitPrice"], day(final["DeliveryDate"]), final["Discount"]) == (
+        "BRW-AM", 2.5, "2026-12-31", "5%")
+    assert rig.row(rig.free_a)["Qty"] == 2 and rig.row(rig.free_a)["Discount"] == "5%"  # the kept part is untouched
+
+
+def test_ac_65_05c_a_part_row_single_link_to_an_so_row_without_a_date_sends_no_date_and_a_note_without_dd(h, rig):
+    sent_row, final = split(h, rig, rig.so_undated)
+    assert not has_day(sent_row), sent_row.get("DeliveryDate")  # never the old row's date
+    assert not has_day(final)
+    assert sent_row.get("FurtherDescription") == rtf("**CUSTA SDN BHD/PROJECT X S/O: 428480")
+
+
+# ================================ AC-65-01b the legacy plan 55 path tolerates the remark mirror =====
+
+DIFFER = ("FXT R1", "FXT R2", "FXT R3", "FXT R4")  # hand-set remarks; the vendor rewrites Remark2..4 to Remark1
+
+
+def relocate(h, rig):
+    """A PO row linked to an SO row at BRW-AM but sitting at HQ: a relocation is due (plan 55 route po-links/relocate)."""
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.write_back.service import WriteBackService
+
+    row = rig.row(rig.free_a)
+    row.update(FromSODtlKey=rig.so_dated, FromDocDtlKey=rig.so_dated, Location="HQ")
+    return WriteBackService(h.db, **h.factories()).relocate(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=PO_KEY, po_dtl_key=rig.free_a)
+
+
+def test_ac_65_01b_a_part_row_single_link_ends_done_when_only_remark2_to_4_were_mirrored(h):
+    rig = Rig65(h, remarks=DIFFER)
+    sent_row, final = split(h, rig, rig.so_dated)  # asserts the op ended done
+    assert final["Location"] == "BRW-AM" and day(final["DeliveryDate"]) == "2026-12-31"  # the restore applied
+    assert [rig.header()[f"Remark{n}"] for n in (2, 3, 4)] == ["FXT R1"] * 3  # the vendor did rewrite them
+
+
+def test_ac_65_01b_a_relocate_ends_done_when_only_remark2_to_4_were_mirrored(h):
+    rig = Rig65(h, remarks=DIFFER)
+    res = relocate(h, rig)
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert rig.row(rig.free_a)["Location"] == "BRW-AM"
+    assert [rig.header()[f"Remark{n}"] for n in (2, 3, 4)] == ["FXT R1"] * 3
+
+
+@pytest.mark.parametrize("remarks", [DIFFER, ("FXT R1",) * 4], ids=["remarks-differ", "remarks-equal"])
+def test_ac_65_01b_control_any_other_header_drift_on_the_relocate_is_still_not_done(h, remarks):
+    rig = Rig65(h, remarks=remarks, drift_description=True)  # the vendor rewrites Description: not the mirror
+    res = relocate(h, rig)
+    assert res.outcome != "done", (res.outcome, res.error_code)
+
+
+@pytest.mark.parametrize("remarks", [DIFFER, ("FXT R1",) * 4], ids=["remarks-differ", "remarks-equal"])
+def test_ac_65_01b_control_any_other_header_drift_on_the_single_link_is_still_not_done(h, remarks):
+    from decimal import Decimal
+
+    rig = Rig65(h, remarks=remarks, drift_description=True)
+    res = h.run("split_link", dict(po_doc_key=PO_KEY, po_dtl_key=rig.free_a, so_doc_key=SO_KEY,
+                                   so_dtl_key=rig.so_dated, qty=Decimal(1)), key="r-drift")
+    assert res.outcome != "done", (res.outcome, res.error_code)

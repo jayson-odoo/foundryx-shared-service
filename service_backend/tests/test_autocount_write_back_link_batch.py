@@ -122,8 +122,8 @@ def test_ac_62_01_put_2_restores_price_and_date_on_all_new_rows_and_the_links_st
     assert sorted(linked) == sorted(rig.s5)  # all three links survived PUT 2
     sent_keys = sorted(r["DtlKey"] for r in second.body["Details"])
     assert sent_keys == sorted(r["DtlKey"] for r in linked.values())  # PUT 2 covers ALL new rows
-    for row in linked.values():
-        assert row["UnitPrice"] == 5.0 and row["DeliveryDate"] == BASE_DATE
+    for row in linked.values():  # plan 65 D2: the SO row's delivery date, never the PO row's BASE_DATE
+        assert row["UnitPrice"] == 5.0 and row["DeliveryDate"] == "2026-11-04T00:00:00"
     free = next(r for r in h.vendor.rows("PO", 7001) if r["DtlKey"] == rig.w.p_free)
     assert Decimal(str(free["Qty"])) == Decimal(1)
 
@@ -319,11 +319,12 @@ def test_ac_62_05_the_fake_vendor_refuses_a_put_with_one_bad_linked_row_and_land
 
 # ============================== AC-62-06 PUT 2 fails ============================================
 
-def test_ac_62_06_put_2_failure_is_done_with_the_warnings_and_the_links_kept(h, rig):
+def test_ac_62_06_put_2_failure_is_needs_attention_and_the_links_kept(h, rig):
+    """Plan 65 D3: a restore that did not land is ``needs_attention`` (resumable), never done with warnings."""
     h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "restore refused", after=1)
     res = run(h, rig, rig.three())
-    assert res.outcome == "done", (res.outcome, res.error_code)
-    assert "LOCATION_NOT_MOVED" in res.warnings and "ROW_VALUES_NOT_KEPT" in res.warnings
+    assert (res.outcome, res.error_code) == ("needs_attention", "RESTORE_NOT_LANDED"), (res.outcome, res.error_code)
+    assert len(res.batch["links"]) == 3  # the answer still carries the landed links
     assert len(puts(h)) == 2  # PUT 2 is never retried
     assert sorted(batch_rows(h, rig)) == sorted(rig.s5)
 

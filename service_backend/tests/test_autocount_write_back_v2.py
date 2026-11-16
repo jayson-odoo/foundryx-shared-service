@@ -372,24 +372,26 @@ def test_ac_61_12_link_row_operation_is_one_replace_put_plus_a_move_put(h, world
     assert len(puts(h)) == 2
     move = puts(h)[1]
     assert [r["DtlKey"] for r in move.body["Details"]] == [new]
-    assert str(move.body["Details"][0]["DeliveryDate"])[:10] == "2026-12-01"
-    assert str(stored["DeliveryDate"])[:10] == "2026-12-01"
+    assert str(move.body["Details"][0]["DeliveryDate"])[:10] == "2026-11-04"  # plan 65 D2: the SO row's date
+    assert str(stored["DeliveryDate"])[:10] == "2026-11-04"
     assert stored["FromSODtlKey"] == world.so_a  # the link survived the move
 
 
-def test_ac_61_12_link_of_a_row_already_at_hq_without_a_date_is_a_single_put(h):
+def test_ac_61_12_link_of_a_row_already_at_hq_without_a_date_still_sends_the_note(h):
+    """Plan 65 D4: the note is never read back, so the restore PUT always follows the link PUT."""
     world = World(h)
     free = row(h.vendor, "PO", 7001, world.p_free)  # already where the vendor puts a linked row
     free["Location"], free["DeliveryDate"], free["UnitPrice"] = "HQ", "0001-01-01T00:00:00", 0.0
     res = h.run("link_row", world.params["link_row"])
     assert res.outcome == "done", res.error_code
-    assert methods(h) == ["PUT"] and not res.warnings
+    assert methods(h) == ["PUT", "PUT"] and not res.warnings
+    assert "FurtherDescription" in puts(h)[1].body["Details"][0]
 
 
-def test_ac_61_12_move_failure_keeps_the_link_and_warns_location_not_moved(h, world):
+def test_ac_61_12_move_failure_keeps_the_link_and_is_needs_attention_restore_not_landed(h, world):
     h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
     res = h.run("link_row", world.params["link_row"])
-    assert res.outcome == "done" and "LOCATION_NOT_MOVED" in res.warnings
+    assert (res.outcome, res.error_code) == ("needs_attention", "RESTORE_NOT_LANDED")  # plan 65 R2: resumable, never done with warnings
     (_old, new), = res.replaced_lines
     assert row(h.vendor, "PO", 7001, new)["FromSODtlKey"] == world.so_a  # linked, at HQ
     assert row(h.vendor, "PO", 7001, new)["Location"] == "HQ"
@@ -457,7 +459,7 @@ def test_ac_61_14_split_link_is_one_put_cut_row_plus_new_linked_row_then_the_mov
     assert len(rows) == 5 and row(h.vendor, "PO", 7001, world.p_free)["Qty"] == 2
     linked = [r for r in rows if r["DtlKey"] not in (world.p_free, world.p_linked, world.p_spo, world.p_other)]
     assert len(linked) == 1 and linked[0]["FromSODtlKey"] == world.so_a
-    assert str(linked[0]["DeliveryDate"])[:10] == "2026-12-01"  # the move restored what the vendor cleared
+    assert str(linked[0]["DeliveryDate"])[:10] == "2026-11-04"  # the move restored the SO row's date (plan 65 D2)
 
 
 # ============================== AC-61-15 atomic refusal ======================================
@@ -753,7 +755,8 @@ def test_ac_61_41_unlink_and_cancel_and_delete_builders_of_the_old_shapes_are_go
 
 def _row_matches_old(stored, old, *, location=None):
     assert float(stored["UnitPrice"]) == float(old["UnitPrice"]), stored["UnitPrice"]
-    assert str(stored["DeliveryDate"])[:10] == str(old["DeliveryDate"])[:10], stored["DeliveryDate"]
+    # plan 65 D2: the delivery date is the SO row's (World's SO rows: 2026-11-04), never the old PO row's
+    assert str(stored["DeliveryDate"])[:10] == "2026-11-04", stored["DeliveryDate"]
     if location is not None:
         assert stored["Location"] == location
 
@@ -824,11 +827,11 @@ def test_r3_gateway_link_and_relink_end_done_not_recovered(client, h, gw, world)
 
 
 @pytest.mark.parametrize("op", ["link_row", "relink_row"])
-def test_r3_a_failed_move_put_is_done_with_both_warnings_and_no_third_put(h, world, op):
+def test_r3_a_failed_move_put_is_needs_attention_restore_not_landed_and_no_third_put(h, world, op):
+    """Plan 65 R2: a link_row / relink_row restore that did not land is resumable, never done with warnings."""
     h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
     res = h.run(op, world.params[op])
-    assert res.outcome == "done", (res.outcome, res.error_code)
-    assert "LOCATION_NOT_MOVED" in res.warnings and "ROW_VALUES_NOT_KEPT" in res.warnings
+    assert (res.outcome, res.error_code) == ("needs_attention", "RESTORE_NOT_LANDED"), (res.outcome, res.error_code)
     assert len(puts(h)) == 2  # the replace and the failed move: no recovery, no retry
     (_o, new), = res.replaced_lines
     assert row(h.vendor, "PO", 7001, new)["FromSODtlKey"] in (world.so_a, world.so_b)  # the link is kept
