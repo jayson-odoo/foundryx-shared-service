@@ -15,6 +15,10 @@ Tags: [BE] backend pytest.
   `{base}/public/feedback/board/{linkToken}/{ideaNumber}`), and the one-shot API with `reply_to_submitter: true`
   returns it as `board_url`.
 - **AC-TB-02 [BE]** A test idea with no same-tenant contact still gets `None` (unchanged).
+- **AC-TB-03 [BE]** A test idea's board link goes only to the person (contact + same-phone siblings) who submitted the
+  item the board opens (the survivor when merged). Anyone else (a voter on another person's test item, the reporter
+  of a test child merged into another person's test item) gets the per-idea status page instead of a link that
+  would open a "not found" board page.
 
 ## B. The reporter's own board shows their test items
 - **AC-TB-10 [BE]** On a contact link, the reporter's own test items (submitter = the link's contact or a same-phone

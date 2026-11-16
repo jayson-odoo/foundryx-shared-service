@@ -50,7 +50,8 @@ Tags: [BE] backend pytest, [FE] vitest, [E2E] recorded agent-browser run, [T] co
 - **AC-FB-31 [BE]** Every `idea_status_events` payload carries `board_url` (the requester contact's link) next to the
   unchanged `track_url`.
 - **AC-FB-32 [BE]** The WhatsApp intake reply's "Track it here" link is the REPLYING contact's board link (never the
-  idea author's when the replier has no contact), else the old per-idea link. Test ideas never mint a link. The
+  idea author's when the replier has no contact), else the old per-idea link. Test ideas never mint a link
+  (superseded 17 Nov: see `test-filing-board-link-acceptance-criteria.md`). The
   one-shot / own-similar APIs keep the per-idea link (they answer the host). Old `/public/ideas/{token}` pages keep
   working.
 - **AC-FB-33 [BE]** `POST /ideation/ideas/{id}/feedback-link/cancel` (`ideation.triage.manage`, plus the grace-window
