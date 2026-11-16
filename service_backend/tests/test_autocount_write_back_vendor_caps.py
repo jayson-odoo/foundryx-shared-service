@@ -280,7 +280,7 @@ def test_split_action_row_records_both_bodies_and_responses(h):
     assert row.outcome == "done" and row.error_code is None
 
 
-def test_split_vendor_keeping_location_means_no_put2(h):
+def test_split_vendor_keeping_location_means_put2_sends_only_the_note(h):
     h.ac.force_hq = False
     res = _split(h)
     assert res.outcome == "done" and res.error_code is None

@@ -184,10 +184,13 @@ _HEADER_FREE_TOTALS = frozenset({
 
 def _header_unchanged(before: Doc, after: Doc, body: Doc) -> bool:
     """Every header field read before the write (and every one we sent) reads
-    back unchanged, except the audit stamps and the vendor-computed totals."""
+    back unchanged, except the audit stamps, the vendor-computed totals and the
+    vendor's Remark1 mirror (plan 65 D1, the one helper every PO verify uses)."""
     keys = {k for k in list(before) + list(body) if k != "Details"}
     for key in keys:
         if key.startswith(_HEADER_FREE_PREFIXES) or key in _HEADER_FREE_TOTALS:
+            continue
+        if payloads._remark_mirror(key, after):
             continue
         expected = body[key] if key in body else before.get(key)
         if not _same(expected, after.get(key)):

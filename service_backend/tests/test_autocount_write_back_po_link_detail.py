@@ -194,9 +194,9 @@ def test_ac_64_05_replay_of_a_split_link_answers_the_same_detail(client, gw, far
     assert again.json()["detail"] is not None and again.json()["detail"] == first.json()["detail"]
 
 
-def test_ac_64_06_split_link_with_nothing_to_restore_answers_the_new_row(client, gw):
+def test_ac_64_06_split_link_with_only_the_note_to_restore_answers_the_new_row(client, gw):
     """The vendor already put the new row where and as it should be (SO row at HQ, no price,
-    no date): no second write, the new row is still named."""
+    no date): the second write carries only the note, the new row is still named."""
     w = World(gw.h, so_loc="HQ")
     row = _row(w.po_rows(), w.p_free)
     row["UnitPrice"], row["DeliveryDate"] = 0.0, "0001-01-01T00:00:00"

@@ -92,7 +92,7 @@ def test_location_kept_but_price_reset_still_sends_the_restore_write(h):
     assert _new_row(h)["UnitPrice"] == SRC_PRICE
 
 
-def test_no_restore_write_when_the_vendor_kept_everything(h):
+def test_vendor_kept_everything_restore_write_sends_only_the_note(h):
     h.ac.force_hq = False
     h.ac.reset_price = False
     h.ac.server_row(12017)["DeliveryDate"] = EMPTY  # nothing to restore: no date sent

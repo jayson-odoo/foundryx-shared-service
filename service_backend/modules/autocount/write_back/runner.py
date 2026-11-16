@@ -1734,24 +1734,6 @@ _R_SO_DAYS, _R_PO_DAYS = 30, 10
 _R_PRICE = 2.5
 _R_NOTE = "**FXT TEST S/O: 0000 DD: 01/01/2027"
 _R_REMARKS = {f"Remark{i}": f"FXT R{i}" for i in range(1, 5)}
-_RTF_HEAD = r"{\rtf1\ansi\ansicpg1252\deff0\deflang1033{\fonttbl{\f0\fswiss\fcharset0 Arial;}}\viewkind4\uc1\pard\f0\fs20 "
-
-
-def _rtf(text: str) -> str:
-    """AutoCount's own default RTF wrapper around ``text`` (plan 65 D4): ``\\``, ``{``, ``}`` escaped,
-    non-ASCII as ``\\'hh`` (cp1252) or ``\\uN?``."""
-    out: List[str] = []
-    for ch in text:
-        if ch in "\\{}":
-            out.append("\\" + ch)
-        elif ord(ch) < 128:
-            out.append(ch)
-        else:
-            try:
-                out.append("\\'%02x" % ch.encode("cp1252")[0])
-            except UnicodeEncodeError:
-                out.append("\\u%d?" % ord(ch))
-    return _RTF_HEAD + "".join(out) + "\\par\r\n}"
 
 
 class _HaltBeforeRestore(OperationService):
@@ -1935,7 +1917,7 @@ class _RestoreRun(_BatchRun):
         request = payloads.build_edit("PO", doc, {}, [{"DtlKey": self.new_key}])  # the row as read, normal row
         details = request.body["Details"]  # type: ignore[index]
         assert len(details) == 1 and details[0]["DtlKey"] == self.new_key
-        details[0]["FurtherDescription"] = _rtf(_R_NOTE)
+        details[0]["FurtherDescription"] = payloads.autocount_rtf(_R_NOTE)
         response = self._logged_put(case, doc, request)
         after = self._read("PO", int(self.po.doc_key or 0))  # type: ignore[union-attr]
         again = self._po_row(after, self.new_key)
