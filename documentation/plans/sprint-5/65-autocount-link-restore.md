@@ -65,12 +65,22 @@ All through SS's logged client/reader (every call in `ac_api_call_log`), against
   tolerance). A restore that did not land (vendor error, mismatch, deadline) leaves the operation
   `needs_attention` (resumable), not DONE-with-warnings: owner rule "every failed write can be retried"; Resume
   re-runs only the restore.
-- D4 Note: `FurtherDescription` added to the edit row whitelist for the restore only (not to the public edit
-  door). Text "**<CUSTOMER>/<PROJECT> S/O: <SO DocNo> DD: <dd/mm/yyyy>" (owner's hand format). Field
-  sources: crew ask Q1 (recommendation: CUSTOMER = SO DebtorName, PROJECT = SO Ref, SO number = the SO's
-  DocNo as AutoCount holds it, DD = the SO row's delivery date). The note cannot be read back through hapi
-  (P3): verify covers every other restored field; the note's landing is shown once on the db3 screen and
-  recorded in the evidence.
+- D4 Note (crew decision 16 Nov from the owner's real hand-made notes on the incident PO, masked shapes like
+  "**CUSTA/PROJECT X S/O: 425879 DD: 31/12/2026"): text = `**` + SO DebtorName + (`/` + SO Ref when Ref is
+  not blank) + ` S/O: ` + the SO DocNo without a leading `SO` + (` DD: ` + SO row date `dd/mm/yyyy`
+  zero-padded, when the SO row has a date). "DD: ORDER BACK" only when the SO marks the row order-back: the
+  hapi SO read carries no such marker (row keys, db3 16 Nov), so the DD part is left out when there is no
+  date (UNVERIFIED marker source, reported to crew). Stored as RTF in AutoCount's own default wrapper, the shape
+  37 of 40 staged SO-line FurtherDescription samples carry (local staged copy, masked):
+  `{\rtf1\ansi\ansicpg1252\deff0\deflang1033{\fonttbl{\f0\fswiss\fcharset0 Arial;}}\viewkind4\uc1\pard\f0\fs20 <text>\par\r\n}`
+  with `\`, `{`, `}` escaped and non-ASCII as `\'hh` (cp1252) or `\uN?`. `FurtherDescription` (and
+  `FOCQty`) join the edit row whitelist for the restore only, never the public edit door. The note cannot be
+  read back through hapi (P3): verify covers every other restored field; the note's landing is shown once on
+  the db3 screen and recorded in the evidence.
+- D2a FOC / discount (crew decision 16 Nov, option a; the PO total never changes): a PART link puts FOCQty 0
+  on the linked row and the FOC stays on the kept row; a WHOLE-row link (row deleted) moves the old row's FOCQty
+  to the first linked row (request order); Discount is copied to the linked row only when it is a percentage
+  (every `+`-term ends in `%`), else blank.
 - D5 Resume repair (batch): (1) re-judge the stored link PUT (step `link` before_json vs after_json) with
   D1 (pure, no call): still MISMATCH -> stays `needs_attention`, no PUT; (2) fresh read: the kept row at its
   expected qty (or gone when all taken) and one new row per link, nothing else linked to the batch SO rows ->
@@ -106,5 +116,5 @@ automatic joining" (rows matched by FromSODtlKey + qty only).
 
 ## 6. Open
 
-- Q1 note field sources (crew ask). Q2 Discount / FOCQty on the linked row (crew ask after P2).
+- Q1 / Q2 answered by crew 16 Nov (D4, D2a). Order-back marker: not in the hapi SO read (UNVERIFIED source).
 - CRM (sorento_crm, cross-repo): hide Unlink on `ROW_NEEDS_ATTENTION`; Resume wording unchanged.

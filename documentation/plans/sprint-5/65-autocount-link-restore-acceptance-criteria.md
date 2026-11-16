@@ -20,10 +20,13 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
   the old PO row's, DeliveryDate = the SO row's delivery date (not the PO row's). [unit + live]
 - AC-65-06 SO row with no delivery date: the restore sends no date (the row stays blank), never the PO row's
   date. [unit]
-- AC-65-07 The restore PUT carries `FurtherDescription` = "**<CUSTOMER>/<PROJECT> S/O: <SO DocNo> DD:
-  <dd/mm/yyyy>" built from the SO header and SO row (sources per crew answer Q1), on the new linked row only.
-  [unit; live: PUT accepted, row and link kept]
-- AC-65-08 Discount and FOC qty of the new linked row follow crew answer Q2. [unit + live]
+- AC-65-07 The restore PUT carries `FurtherDescription` on the new linked row only: AutoCount's RTF wrapper
+  (plan D4) around `**<DebtorName>/<SO Ref> S/O: <SO DocNo without leading "SO"> DD: <dd/mm/yyyy>`;
+  `/<SO Ref>` left out when Ref is blank; ` DD: ...` left out when the SO row has no date; date zero-padded;
+  `\`, `{`, `}` escaped, non-ASCII encoded. [unit; live: PUT accepted, row and link kept]
+- AC-65-08 Part link: the linked row has FOCQty 0 and the kept row keeps its FOCQty. Whole-row link: the first
+  linked row gets the old row's FOCQty. Discount is copied only when it is a percentage (e.g. "5%",
+  "5%+2%"), else blank. The PO total before and after the link is the same. [unit + live]
 - AC-65-09 The restore PUT's Details hold only the new linked rows; no other row and no header field is sent
   for change. [unit]
 - AC-65-10 The snapshot stores, per link, the SO row's delivery date and the note text at link time. [unit]
