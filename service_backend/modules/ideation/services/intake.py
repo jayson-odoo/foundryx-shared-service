@@ -484,7 +484,8 @@ class IntakeService:
         # out by default. The host opts in PER CALL, and only by stating that
         # its reply goes to the submitter themself (``reply_to_submitter``,
         # owner 16 Nov Q2 a). No key at all otherwise: an old client gets
-        # today's exact body. Null for a test idea or no submitter contact.
+        # today's exact body. Null when the idea has no submitter contact (a
+        # Console test filing gets the link like a real one, owner 17 Nov).
         if reply_to_submitter:
             out["board_url"] = self._submitter_board_link(idea)
         return out
@@ -501,7 +502,7 @@ class IntakeService:
     def _contact_link(self, idea: Idea, *, recipient: object = SUBMITTER) -> Optional[str]:
         """The link the contact in THIS conversation gets about ``idea`` (lane
         PUBLIC-IDEAS-BOARD): their personal feedback board opening that idea,
-        else (no same-tenant contact, or a test turn) the per-idea status page.
+        else (no same-tenant contact) the per-idea status page.
         ``recipient`` = the replying contact's id (``None`` = no contact; never
         falls back to the idea's author). Minting writes a row: every caller
         commits right after."""

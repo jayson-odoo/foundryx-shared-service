@@ -175,6 +175,24 @@ def board_base(db: Session, tenant_id: str) -> str:
     return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback/board"
 
 
+def _owns_test_item(db: Session, idea: Idea, contact_id: str) -> bool:
+    """True when ``contact_id``'s person (same-phone siblings, never by name -
+    the board's own ``_owned_q`` rule) submitted the item the board opens for
+    ``idea``: the idea itself, or its survivor when merged."""
+    from .ownership import person_contact_ids
+
+    opened = idea
+    if idea.merged_into_id:
+        opened = (
+            db.query(Idea)
+            .filter(Idea.id == idea.merged_into_id, Idea.tenant_id == idea.tenant_id)
+            .first()
+        )
+    if opened is None or not opened.submitter_contact_id:
+        return False
+    return opened.submitter_contact_id in person_contact_ids(db, idea.tenant_id, contact_id)
+
+
 # Sentinel: "the idea's own submitter contact". Distinct from an explicit
 # ``None`` (a recipient with no contact), which must NEVER fall back to the
 # idea's submitter - that would hand the author's personal link to whoever is
@@ -185,14 +203,21 @@ SUBMITTER = object()
 def mint_board_link(db: Session, idea: Idea, contact_id: object = SUBMITTER) -> Optional[str]:
     """The personal board link for ``contact_id`` (default: the idea's own
     submitter contact), opening ``idea``. ``None`` when that recipient has no
-    contact in the idea's tenant, or the idea is a test idea (a test turn never
-    mints a real contact's credential). Mints the contact's link on first use
-    (flush only)."""
-    if idea.is_test:
-        return None
+    contact in the idea's tenant. Mints the contact's link on first use (flush
+    only).
+
+    A test idea (Chatbot Console filing, ``is_test``) gets the link like a real
+    filing (owner 17 Nov, lane FEEDBACK-TEST-BOARD-LINK): the reporter's own
+    board lists their own test items, nobody else's does
+    (``portal.IdeaPortalService._visible``). So a test idea's link goes only
+    to the person who owns the item the board would open (its survivor when
+    merged); anyone else would land on a "not found" page and gets ``None``
+    (the per-idea status page applies)."""
     target = idea.submitter_contact_id if contact_id is SUBMITTER else contact_id
     contact = _contact(db, idea.tenant_id, target if isinstance(target, str) else None)
     if contact is None:
+        return None
+    if idea.is_test and not _owns_test_item(db, idea, contact.id):
         return None
     link = get_or_create_link(db, idea.tenant_id, contact.id)
     url = f"{board_base(db, idea.tenant_id)}/{link.token}"

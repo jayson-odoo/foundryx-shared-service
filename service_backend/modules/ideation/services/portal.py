@@ -25,7 +25,8 @@ active), so suspending a tenant or disabling the module kills live portal
 sessions on the next request.
 
 WHAT (visibility, AC-P-10/11): tenant-scoped; never draft (``is_initial``),
-``is_test`` or merged children (a merged child's page resolves to its
+``is_test`` (except a contact's own test items on their own personal board,
+lane FEEDBACK-TEST-BOARD-LINK; never in the changelog) or merged children (a merged child's page resolves to its
 survivor, scoped by the child's own tenant); ``portal_hidden`` ideas only for
 managers and their own submitter; a product-scoped embed connection sees only its
 product. Off-ramp statuses (``is_archived`` and not mapped) are left out of the
@@ -508,12 +509,26 @@ class IdeaPortalService:
 
     # ---- visibility -------------------------------------------------------
 
-    def _visible(self, q=None, *, include_closed: bool = False):
+    def _test_filter(self, *, allow_own: bool = True):
+        """Test ideas (Chatbot Console filings) stay off every portal view,
+        except a contact's OWN test items on their own personal board (owner
+        17 Nov, lane FEEDBACK-TEST-BOARD-LINK: a Console filing behaves like a
+        real one for the link). "Own" = the ``_owned_q`` contact rule (the
+        link's contact + same-phone siblings), never by name; staff and CRM
+        sessions never see a test item."""
+        if not allow_own or self.p.kind != KIND_CONTACT:
+            return Idea.is_test.is_(False)
+        return or_(
+            Idea.is_test.is_(False),
+            Idea.submitter_contact_id.in_(self._my_voter_ids() or ["-"]),
+        )
+
+    def _visible(self, q=None, *, include_closed: bool = False, allow_own_test: bool = True):
         p = self.p
         q = q if q is not None else self.db.query(Idea)
         q = q.filter(
             Idea.tenant_id == p.tenant_id,
-            Idea.is_test.is_(False),
+            self._test_filter(allow_own=allow_own_test),
             Idea.merged_into_id.is_(None),
         )
         allowed = set(self.smap.column_of)
@@ -556,7 +571,7 @@ class IdeaPortalService:
                     Idea.idea_number.in_({idea_id, stored_idea_number(idea_id) or idea_id}),
                 ),
                 Idea.tenant_id == self.p.tenant_id,
-                Idea.is_test.is_(False),
+                self._test_filter(),
             )
             .first()
         )
@@ -731,7 +746,9 @@ class IdeaPortalService:
             sid for sid, st in self.smap.by_id.items() if st.key in CHANGELOG_STATUS_KEYS
         }
         ideas = (
-            self._visible()
+            # The changelog is a public listing: never a test item, even the
+            # viewer's own (FEEDBACK-TEST-BOARD-LINK AC-TB-13).
+            self._visible(allow_own_test=False)
             .filter(Idea.status_id.in_(delivered or {"-"}))
             .order_by(Idea.updated_at.desc())
             .limit(CHANGELOG_CAP)
