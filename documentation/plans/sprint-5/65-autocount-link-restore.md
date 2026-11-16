@@ -127,6 +127,19 @@ All through SS's logged client/reader (every call in `ac_api_call_log`), against
   DONE with `LOCATION_NOT_MOVED` / `ROW_VALUES_NOT_KEPT`. Making it resumable is a follow-up (backlog), not this lane.
   The plan 55 header check (`service.py` `_header_unchanged`) gets the same D1 tolerance (AC-65-01b), so a
   single link or a relocate on a PO with hand-typed remarks does not stop half way either.
+- Review round 1 rulings (lead, 16 Nov, reviewer on e383d608):
+  - R1 (D6): an unlink merge never picks a row covered by an unresolved link op as its merge target (else the
+    kept source row grows and the op's Resume can never match); such a candidate is skipped.
+  - R2 (D3): `link_row` / `relink_row` are resumable operations, so their restore not landing also ends
+    `needs_attention` `RESTORE_NOT_LANDED` (owner rule: a failed write can be retried); Resume re-runs the restore.
+    The split path keeps D3a.
+  - R3 (D5): Resume of a `link_row` / `relink_row` snapshot stored before plan 65 (no SO values) re-reads the SO
+    through the logged reader, like the batch (AC-65-16); never the PO row's date.
+  - R4 (D1): the mirror tolerance applies only to the kinds where it is proven: PO / SPO (db3 16 Nov) and QT
+    (F13); SO verifies stay strict.
+  - R5 (D4): note parts joined by "/" from the non-blank DebtorName and Ref; the leading "SO" strip ignores case.
+  - R6: contract `documentation/plans/sprint-5/55-autocount-write-link-contract.md` updated in this PR (SO row
+    date, note, % discount, RESTORE_NOT_LANDED, ROW_NEEDS_ATTENTION, FOC_ON_ROW, remark mirror).
 - D7 Logging and books: no new vendor door; every call through the logged client/reader; tests and scripts
   db3 only; db1 writes only from the production deploy (unchanged guard).
 - D8 Reuse (owner 12 Nov): `transfer_restore` / `transfer_row_drift` / `_move_rows` stay the one restore path

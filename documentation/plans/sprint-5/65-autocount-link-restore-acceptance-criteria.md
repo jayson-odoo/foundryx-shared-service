@@ -72,6 +72,21 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
   row still runs. [unit]
 - AC-65-20 After Resume ends DONE the refusal lifts. [unit]
 
+## Review round 1 (plan R1-R5)
+
+- AC-65-23 An unlink whose merge candidate is a row covered by an unresolved link op does not merge into it (the
+  covered row's qty never changes); the op's Resume still repairs. [unit]
+- AC-65-24 `link_row` / `relink_row` whose restore does not land ends `needs_attention` `RESTORE_NOT_LANDED`;
+  Resume sends one restore PUT and ends DONE. [unit]
+- AC-65-25 Resume of a `link_row` / `relink_row` op stored without SO values re-reads the SO and restores the SO
+  row's date and the note. [unit]
+- AC-65-26 An SO edit whose read-back shows Remark2..4 equal to Remark1 (not asked) is still flagged; PO, SPO and
+  QT tolerate it. [unit]
+- AC-65-27 Note with a blank DebtorName and a Ref reads "**<Ref> S/O: ..."; an SO numbered "so123" gives "S/O: 123". [unit]
+
+- AC-65-28 A single whole-row link (`link_row`, CRM "po-links") of a row with FOCQty > 0 is refused `FOC_ON_ROW`,
+  no PUT (same rule as the batch skip, owner Q4). [unit]
+
 ## Logging and books (D7)
 
 - AC-65-21 Every GET/PUT of the link, restore and Resume paths writes one `ac_api_call_log` row (operation id,
