@@ -81,3 +81,18 @@ should read `**FXT REF S/O: FXT-1116E-SO DD: 16/12/2026`. Nothing touched that r
 `runner.py` (tester code, not product): R02 now judges the fixed rule (done, no drift, Location BRW-AM, price,
 SO row date, 5% discount, FOCQty 0, link kept, kept row cut by 1) instead of "any drift or not done"; the
 `_drifted` call passes the kind (`"PO"`) after the coder's signature change.
+
+## 5. Note retention probe (run 1116J)
+
+Question: does an edit PUT that does not carry FurtherDescription clear a note already on the row (every link PUT
+echoes the kept source row without it)? Run: SO `FXT-1116J-SO`, PO `FXT-1116J-PO` (DocKey 12117), the real
+`link_batch` (op `86637917-2fe1-4f1c-9342-213b5e40397e`, `done`), whose restore PUT put the note
+`**FXT REF S/O: FXT-1116J-SO DD: 16/12/2026` on the new linked row (DtlKey 12122, Seq 64). Then ONE logged edit PUT
+(Details = that row as read, normal row, no FurtherDescription key, Desc2 changed to "FXT RETAIN"): 200; re-read:
+row kept, link (FromSODtlKey) kept, Desc2 "FXT RETAIN". hapi never returns the note, so whether it survived is
+read on the AutoCount screen.
+
+Rows for the owner to open in the AutoCount screen on db3:
+1. `FXT-1116E-PO`, Seq 80: the note must read `**FXT REF S/O: FXT-1116E-SO DD: 16/12/2026` (landing check).
+2. `FXT-1116J-PO`, Seq 64 (DtlKey 12122): if the note `**FXT REF S/O: FXT-1116J-SO DD: 16/12/2026` is still there,
+   a PUT without the note keeps it. If it is blank, every link PUT wipes the kept row's note (a vendor issue).
