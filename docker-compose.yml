@@ -353,6 +353,9 @@ services:
       HOSTNAME: 0.0.0.0
       # Server-side (NextAuth authorize() + branding SSR) - internal cluster URL.
       BACKEND_API_URL: http://backend:8001
+      # Who may iframe the personal feedback board (/public/feedback/board/**):
+      # the Sorento CRM public page. Bare origins, comma/space separated.
+      FEEDBACK_BOARD_FRAME_ANCESTORS: ${FEEDBACK_BOARD_FRAME_ANCESTORS:-https://fe-sorento.foundryx.my}
       NEXTAUTH_URL: ${NEXTAUTH_URL:?set in .env}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set in .env}
     restart: unless-stopped

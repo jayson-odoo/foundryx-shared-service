@@ -89,3 +89,90 @@ describe('middleware frame-ancestors (web chat panel)', () => {
     );
   });
 });
+
+/**
+ * SS-FEEDBACK-BOARD-LINK - the personal feedback board is framed by the
+ * Sorento CRM public page (`/feedback/board/{token}`), so its pages allow
+ * exactly 'self' + the configured CRM origins, and send no X-Frame-Options
+ * (which would override the CSP in some browsers). No backend call: the
+ * list is deployment config, never a per-request lookup.
+ */
+describe('middleware frame-ancestors (feedback board)', () => {
+  const TOKEN = 'a'.repeat(43);
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  function boardRequest(path = `/public/feedback/board/${TOKEN}`): NextRequest {
+    return new NextRequest(`http://localhost:3001${path}`);
+  }
+
+  it('allows self + the prod CRM origin by default', async () => {
+    vi.stubEnv('FEEDBACK_BOARD_FRAME_ANCESTORS', undefined as unknown as string);
+    const res = await middleware(boardRequest());
+    expect(res.headers.get('Content-Security-Policy')).toBe(
+      "frame-ancestors 'self' https://fe-sorento.foundryx.my",
+    );
+    expect(res.headers.get('X-Frame-Options')).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('covers nested board pages (item by number, roadmap, changelog)', async () => {
+    vi.stubEnv('FEEDBACK_BOARD_FRAME_ANCESTORS', 'https://crm.example.test');
+    for (const sub of ['/FB-0042', '/roadmap', '/changelog']) {
+      const res = await middleware(boardRequest(`/public/feedback/board/${TOKEN}${sub}`));
+      expect(res.headers.get('Content-Security-Policy')).toBe(
+        "frame-ancestors 'self' https://crm.example.test",
+      );
+    }
+  });
+
+  it('reads a configurable list (comma or space separated)', async () => {
+    vi.stubEnv(
+      'FEEDBACK_BOARD_FRAME_ANCESTORS',
+      'https://crm.example.test, https://crm2.example.test  http://localhost:3000',
+    );
+    const res = await middleware(boardRequest());
+    expect(res.headers.get('Content-Security-Policy')).toBe(
+      "frame-ancestors 'self' https://crm.example.test https://crm2.example.test http://localhost:3000",
+    );
+  });
+
+  it('drops invalid entries so config can never widen or inject the policy', async () => {
+    vi.stubEnv(
+      'FEEDBACK_BOARD_FRAME_ANCESTORS',
+      "https://*.example.test * 'unsafe-inline' https://ok.example.test;script-src http://evil.test https://crm.example.test/path",
+    );
+    const res = await middleware(boardRequest());
+    expect(res.headers.get('Content-Security-Policy')).toBe("frame-ancestors 'self'");
+  });
+
+  it('an empty list means same-origin only', async () => {
+    vi.stubEnv('FEEDBACK_BOARD_FRAME_ANCESTORS', '');
+    const res = await middleware(boardRequest());
+    expect(res.headers.get('Content-Security-Policy')).toBe("frame-ancestors 'self'");
+  });
+
+  it('leaves the webchat policy untouched', async () => {
+    vi.stubEnv('FEEDBACK_BOARD_FRAME_ANCESTORS', 'https://crm.example.test');
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ allowedOrigins: ['https://shop.example'] }), { status: 200 }),
+    );
+    const res = await middleware(new NextRequest('http://localhost:3001/public/webchat/key-1'));
+    expect(res.headers.get('Content-Security-Policy')).toBe('frame-ancestors https://shop.example');
+  });
+
+  it('matches only the board routes, not other public pages', async () => {
+    const { config } = await import('./middleware');
+    expect(config.matcher).toContain('/public/feedback/board/:path*');
+    expect(config.matcher).not.toContain('/public/feedback/:path*');
+  });
+});
