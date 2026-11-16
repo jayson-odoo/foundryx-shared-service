@@ -48,27 +48,33 @@ read -r -s -p "Shared Service password for $SS_EMAIL: " SS_PASSWORD; echo; expor
 # 1. Admin session (24h JWT, memory/temp file only)
 json "{'email':os.environ['SS_EMAIL'],'password':os.environ['SS_PASSWORD'],'tenantSlug':os.environ['SS_TENANT']}" > "$TMP/login.json"
 echo "Content-Type: application/json" > "$TMP/noauth"
-JWT="$(post /auth/login "$TMP/noauth" "$TMP/login.json" | field access_token)"
+post /auth/login "$TMP/noauth" "$TMP/login.json" > "$TMP/r1"
+JWT="$(field access_token < "$TMP/r1")"
 unset SS_PASSWORD
 printf 'Authorization: Bearer %s\n' "$JWT" > "$TMP/admin"; unset JWT
 echo "1/3 signed in"
 
-# 2. Lead Capture key (fxl_live_, shown once)
-json "{'name':'Sorento CRM'}" > "$TMP/key.json"
-LC_API_KEY="$(post /lead-capture/keys "$TMP/admin" "$TMP/key.json" | field key)"
-printf 'Authorization: Bearer %s\n' "$LC_API_KEY" > "$TMP/gw"
-
-# 3. Register the CRM receiver (whsec_ secret, shown once)
-json "{'url':os.environ['CRM_HOOK_URL'],'events':['lead.created']}" > "$TMP/hook.json"
-LC_WHSEC_SECRET="$(post /api/v1/lead-capture/webhooks "$TMP/gw" "$TMP/hook.json" | field secret)"
-printf 'LC_API_KEY=%s\nLC_WHSEC_SECRET=%s\n' "$LC_API_KEY" "$LC_WHSEC_SECRET" > "$OUT"; chmod 600 "$OUT"
-unset LC_API_KEY LC_WHSEC_SECRET
-echo "2/3 key created, CRM receiver registered (secrets saved to $OUT)"
+# 2+3. Lead Capture key (fxl_live_) and CRM receiver (whsec_ secret), both shown once.
+# Skipped on a re-run when $OUT already holds them, so a retry never makes a second key or receiver.
+if [ -s "$OUT" ] && grep -q '^LC_WHSEC_SECRET=whsec_' "$OUT"; then
+  echo "2/3 key and CRM receiver already created earlier (kept in $OUT), skipping"
+else
+  json "{'name':'Sorento CRM'}" > "$TMP/key.json"
+  post /lead-capture/keys "$TMP/admin" "$TMP/key.json" > "$TMP/r2"
+  LC_API_KEY="$(field key < "$TMP/r2")"
+  printf 'Authorization: Bearer %s\n' "$LC_API_KEY" > "$TMP/gw"
+  json "{'url':os.environ['CRM_HOOK_URL'],'events':['lead.created']}" > "$TMP/hook.json"
+  post /api/v1/lead-capture/webhooks "$TMP/gw" "$TMP/hook.json" > "$TMP/r3"
+  LC_WHSEC_SECRET="$(field secret < "$TMP/r3")"
+  printf 'LC_API_KEY=%s\nLC_WHSEC_SECRET=%s\n' "$LC_API_KEY" "$LC_WHSEC_SECRET" > "$OUT"; chmod 600 "$OUT"
+  unset LC_API_KEY LC_WHSEC_SECRET
+  echo "2/3 key created, CRM receiver registered (secrets saved to $OUT)"
+fi
 
 # 4. Connect the Foundryx Page with the system-user token
 json "{'pageId':os.environ['FB_PAGE_ID'],'systemUserToken':os.environ['META_SYSTEM_USER_TOKEN'],'formsMode':'all'}" > "$TMP/connect.json"
-post /lead-capture/sources/facebook "$TMP/admin" "$TMP/connect.json" \
-  | python3 -c "import json,sys; d=json.load(sys.stdin); print('3/3 connected:', d.get('pageName') or d.get('name'), '- status', d.get('status'))"
+post /lead-capture/sources/facebook "$TMP/admin" "$TMP/connect.json" > "$TMP/r4"
+python3 -c "import json,sys; d=json.load(sys.stdin); print('3/3 connected:', d.get('pageName') or d.get('name'), '- status', d.get('status'))" < "$TMP/r4"
 unset META_SYSTEM_USER_TOKEN
 rm -f "$IN"
 echo "Done. Token file deleted. Next: paste LC_WHSEC_SECRET from $OUT into the CRM (step 4), then delete $OUT."
