@@ -97,3 +97,18 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
 
 Retry after failure (AC-65-11..13), ERP calls logged (AC-65-21), reuse one restore function (plan D8), no
 borrowed values (AC-65-06), rows matched only by FromSODtlKey + qty (AC-65-15).
+
+## Part B (17 Nov)
+
+- AC-65-29 `unlink_row` of a linked PO row with FOCQty > 0 is refused `FOC_ON_ROW` with no PUT, on both the merge
+  path (a matching free row exists) and the replace path; FOCQty 0 unlinks as today (control). [unit]
+- AC-65-30 `relink_row` of a PO row with FOCQty > 0 is refused `FOC_ON_ROW` with no PUT; FOCQty 0 relinks as
+  today (control). [unit]
+- AC-65-31 Resume of a `needs_attention` op while ANOTHER op on the same PO has been `in_progress` for longer
+  than the busy window: the stale op becomes `pending_verification` (its updated_at unchanged) and the Resume
+  runs as normal. A young `in_progress` op (inside the window) still answers DOC_BUSY and stays untouched
+  (control). [unit]
+- AC-65-32 Resume of the stale `in_progress` op itself: it is expired first and then answered like any
+  `pending_verification` op (no snapshot -> its stored answer, nothing sent; with a snapshot -> the normal
+  resume read). A young `in_progress` op still answers OPERATION_IN_PROGRESS (control). [unit]
+- AC-65-33 db3 regression: the restore suite (fresh link + Resume) still passes on the part B head. [live]
