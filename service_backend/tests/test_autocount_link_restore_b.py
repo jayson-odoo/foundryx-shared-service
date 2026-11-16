@@ -161,3 +161,71 @@ def test_ac_65_32_control_a_young_in_progress_op_still_answers_operation_in_prog
     assert h.vendor.calls == []
     row = op_row(h, young)
     assert row.status == "in_progress" and row.updated_at == before
+
+
+# ================================ AC-65-34 a recovered answer always releases its key (B3) ==========
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+
+
+def stored_op(h, rig, status: str, code, *, key: str = "b-same") -> "tuple[AcWriteOperation, dict]":
+    """A stored ``unlink_row`` op (same key id, key and params as the resend) of a real linked row, settled as
+    ``status`` / ``code``. The vendor is untouched, so a fresh run still has the row to unlink."""
+    res = h.run("link_row", dict(doc_key=PO_KEY, dtl_key=rig.free_a, so_doc_key=SO_KEY, so_dtl_key=rig.so_undated),
+                key="b-setup-link")
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    (row,) = rig.linked(rig.so_undated)
+    params = dict(doc_key=PO_KEY, dtl_key=row["DtlKey"])
+    digest = hashlib.sha256(json.dumps({"op": "unlink_row", "params": params}, sort_keys=True,
+                                       default=str).encode()).hexdigest()
+    op = AcWriteOperation(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, key_id="key-1", idempotency_key=key,
+        request_hash=digest, op="unlink_row", doc_type="PO", doc_key=PO_KEY, dtl_key=row["DtlKey"], status=status,
+        error_code=code, result_json={"outcome": status, "errorCode": code, "message": "", "warnings": []})
+    h.db.add(op)
+    h.db.commit()
+    return op, params
+
+
+@pytest.mark.parametrize("code", ["ROW_MISMATCH", "RESUMED", None, "NOT_APPLIED"],
+                         ids=["row-mismatch", "resumed", "no-code", "constant-name"])
+def test_ac_65_34_a_resend_of_a_recovered_unlink_with_any_stored_code_runs_fresh_and_releases_the_old_key(
+        h, rig, code):
+    old, params = stored_op(h, rig, "recovered", code)
+    old_id, writes = old.id, len(h.vendor.writes())
+    res = h.run("unlink_row", params, key="b-same")
+    assert res.operation_id != old_id and res.outcome == "done", (res.operation_id == old_id, res.outcome,
+                                                                  res.error_code)  # a NEW op ran
+    assert len(h.vendor.writes()) > writes  # the vendor PUT(s) of the fresh run
+    released = op_row(h, old_id)
+    assert released.idempotency_key == f"b-same{chr(31)}released{chr(31)}{old_id}"
+
+
+def test_ac_65_34_control_recovered_operation_not_applied_releases_as_today(h, rig):
+    """control: the value the code really uses (``OPERATION_NOT_APPLIED``) already releases."""
+    old, params = stored_op(h, rig, "recovered", "OPERATION_NOT_APPLIED")
+    old_id = old.id
+    res = h.run("unlink_row", params, key="b-same")
+    assert res.operation_id != old_id and res.outcome == "done", (res.outcome, res.error_code)
+    assert op_row(h, old_id).idempotency_key == f"b-same{chr(31)}released{chr(31)}{old_id}"
+
+
+def test_ac_65_34_control_a_stored_done_replays_its_answer_with_zero_vendor_calls(h, rig):
+    """control: a landed operation is never re-run."""
+    old, params = stored_op(h, rig, "done", None)
+    calls = len(h.vendor.calls)
+    res = h.run("unlink_row", params, key="b-same")
+    assert res.operation_id == old.id and res.outcome == "done", (res.operation_id, res.outcome, res.error_code)
+    assert len(h.vendor.calls) == calls
+    assert op_row(h, old.id).idempotency_key == "b-same"
+
+
+def test_ac_65_34_control_a_stored_needs_attention_replays_and_starts_no_new_op(h, rig):
+    """control: an open operation is a person's to resolve, never silently re-run under the same key."""
+    old, params = stored_op(h, rig, "needs_attention", "COLLATERAL_CHANGE")
+    calls = len(h.vendor.calls)
+    res = h.run("unlink_row", params, key="b-same")
+    assert res.operation_id == old.id and res.outcome == "needs_attention", (res.operation_id, res.outcome)
+    assert len(h.vendor.calls) == calls
+    assert op_row(h, old.id).idempotency_key == "b-same"
