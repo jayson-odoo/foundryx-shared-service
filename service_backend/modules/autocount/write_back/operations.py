@@ -356,6 +356,13 @@ class OperationService:
         row = self.ops.get(tenant_id, company_id, operation_id)
         if row is None:
             raise LookupError("operation not found")
+        if row.doc_key is not None:
+            # plan 65 B2: a request that died mid-way never holds the document (or itself) for ever: the same
+            # expiry as ``run`` (AC-57-43), updated_at kept; a young in_progress op is still respected
+            window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+            if self.ops.expire_stale_in_progress(tenant_id, row.company_id, row.doc_type, row.doc_key, window):
+                self.db.commit()
+                self.db.refresh(row)
         if row.status == IN_PROGRESS:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
         if row.op != SPLIT_LINK and row.op != LINK_BATCH and row.op not in OPS:
@@ -436,9 +443,11 @@ class OperationService:
     @staticmethod
     def _nothing_landed(status: Optional[str], code: Optional[str]) -> bool:
         """Plan 62 D6: the stored outcome proves nothing reached AutoCount: a refusal, or AutoCount's
-        own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed."""
+        own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed.
+        Plan 65 B3 (owner: only a confirmed success locks): every ``recovered`` answer, whatever its code,
+        left the PO as it was; the next press runs fresh (re-read and re-guarded, so it cannot write twice)."""
         return (status == REFUSED or (status == VENDOR_ERROR and code == VENDOR_REFUSED)
-                or (status == RECOVERED and code == NOT_APPLIED))  # resume proved the write never landed
+                or status == RECOVERED)
 
     def _release_key(self, row: AcWriteOperation) -> None:
         """Free the idempotency key of a confirmed not-landed operation: the row is kept for history
@@ -707,8 +716,10 @@ class OperationService:
         mode, received = self._receipt(company, defn, doc, row)
         qty = _dec(row.get("Qty"))
         link_qty = qty - received if mode == "partial" else qty
-        if defn.kind == "PO" and defn.mode == "link" and payloads.foc_on_row(row, link_qty):
-            raise _Done(REFUSED, FOC_ON_ROW)  # plan 65 D2a / AC-65-28: the batch's skip rule, refused here
+        if defn.kind == "PO" and mode == "delete" and payloads.foc_on_row(row, link_qty):
+            # plan 65 D2a / AC-65-28 / B1: a link, unlink (merge or replace) or relink that removes a row carrying
+            # FOC would lose it (hapi cannot write FOCQty): the batch's skip rule, refused before any PUT
+            raise _Done(REFUSED, FOC_ON_ROW)
         target: Optional[Doc] = None
         if defn.target and spec.target_doc_key is not None:
             target = self._guard_target(company, defn, spec, doc, row, link_qty)

@@ -28,6 +28,10 @@ link, a whole-row link and a relink, a restore that does not land ends `needs_at
 and is resumable (section 4.0a); the single part-row link keeps `done` + `LOCATION_NOT_MOVED`. New refusals
 `ROW_NEEDS_ATTENTION` and skip `FOC_ON_ROW`; the AutoCount Remark mirror is not a mismatch (section 5).
 
+2026-11-17 (plan 65 part B): unlink and relink refuse `FOC_ON_ROW` for a row with a free quantity; Resume clears a
+stale `in_progress` run on the same PO first (section 4.0a). A resend under the key of any `recovered`
+operation runs fresh (the key is released), not only `OPERATION_NOT_APPLIED`.
+
 ## 1. What it is
 
 Four routes on the existing public gateway (`/api/v1/autocount/*`) that change the link between a
@@ -94,10 +98,10 @@ resend does:
 | Stored outcome of the first call | A resend with the same key |
 |---|---|
 | `refused` (any code), or `vendor_error` with `errorCode` `VENDOR_REFUSED` (AutoCount itself said no) | Nothing reached AutoCount, so the key is released: the resend runs fresh, with the same or a corrected body |
-| `recovered` with `errorCode` `OPERATION_NOT_APPLIED` (a resume found the write never landed) | The key is released, like the first row: the resend runs fresh |
+| `recovered`, any `errorCode` (the PO is back as it was: a resume found the write never landed, or a failed write was undone; plan 65 B3) | The key is released, like the first row: the resend runs fresh |
 | `pending_verification` and the same body | Reconciles: the server re-reads the document. If the first call landed, it is finished and answered (`done`); if it provably never landed, the key is released and the resend runs fresh. Never a second write |
 | `done` | Locked: the stored answer is replayed (same `operationId`), nothing is written again |
-| `mismatch`, any other `recovered`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
+| `mismatch`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
 | any stored outcome, but a DIFFERENT body or route | `409 IDEMPOTENCY_CONFLICT` (`outcome` `refused`) unless the stored outcome released the key (first two rows) |
 | first call still running | `409 OPERATION_IN_PROGRESS` |
 
@@ -115,6 +119,10 @@ SO rows; if the stored link write still reads back as a mismatch, or the PO is n
 `needs_attention` and nothing is sent. For a `link_row` or `relink_row` whose link write landed it reads the
 current PO and the SO row (an operation stored before plan 65 re-reads the SO). It then sends ONE restore write on
 the new rows only and verifies it; the operation ends `done`. The single part-row link (split) is not resumable.
+Before it claims the operation, Resume clears a stale run on the same PO: an operation left `in_progress` for longer
+than the busy window (600 s, a request that died mid-way) becomes `pending_verification`, so it no longer holds the
+PO; a Resume of that stale operation itself is then answered like any `pending_verification` one. An operation
+`in_progress` inside the window is still respected (`DOC_BUSY` / `OPERATION_IN_PROGRESS`). (Plan 65 part B.)
 
 Creating a document (`POST /documents/{kind}`) follows the same table with one difference, because a failed
 create may still have saved the document. A create AutoCount refused before saving (credit limit, unknown item,
@@ -360,7 +368,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
 | `ROW_NEEDS_ATTENTION` | Unlink, relink or delete line on a PO row that an unresolved link operation covers (its source row, or a new row linked to one of its SO rows); nothing written | Resume that operation (`POST /write-operations/{id}/resume`); hide the action on this code |
-| `FOC_ON_ROW` | A link that would take the whole of a PO row that has a free quantity (AutoCount's API cannot move it). `po-links`: refused, nothing written; `po-links/batch`: the line is skipped and named in `skipped` | Link a smaller quantity, or handle the row in AutoCount |
+| `FOC_ON_ROW` | A write that would remove a PO row that has a free quantity (AutoCount's API cannot write it on another row): a link taking the whole row (`po-links`: refused; `po-links/batch`: the line is skipped and named in `skipped`), and an unlink or relink of such a row (`po-links/unlink`, `po-links/relink`: refused). Nothing written | Link a smaller quantity, or handle the row in AutoCount |
 | `ALL_LINKS_SKIPPED` | `po-links/batch`: every line failed its own check, so nothing was linked; `skipped` names each line and its code | Fix the lines and resend (same key is fine) |
 
 **Split link is two writes.** (A single part-row link on `po-links`; the batch, whole-row link and relink end

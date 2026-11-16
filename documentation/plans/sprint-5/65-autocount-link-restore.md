@@ -168,3 +168,25 @@ automatic joining" (rows matched by FromSODtlKey + qty only).
   hapi SO read (UNVERIFIED source).
 - Owner screen check of the note on db3 (P3): evidence run names the PO, row and note text; crew asks at PR time.
 - CRM (sorento_crm, cross-repo): hide Unlink on `ROW_NEEDS_ATTENTION`; Resume wording unchanged.
+
+## Part B (17 Nov, owner GO ~01:00; branch crew/autocount-link-restore-b, new PR)
+
+Two SS-only fixes found after #247 went live (crew-note on #247, blockers c and e1). Size S.
+- B1 (BL-SS-364 for unlink / relink): `unlink_row` (merge or replace) and `relink_row` delete the linked row
+  ("D"); hapi cannot write FOCQty (probe P2), so a row carrying a free quantity loses it. Owner Q4 (never change
+  PO quantities silently): refuse `FOC_ON_ROW` before any PUT when the row being removed has FOCQty > 0, with
+  the same check as the batch (`payloads.foc_on_row`). Rows without FOC run as today.
+- B2 (stale in_progress): a request that dies mid-way leaves its op `in_progress`; today only a NEW op on that
+  PO expires it (`run`, operations.py:332-334 at 778e2ed8), never Resume (:359-364), so the PO's other open op
+  cannot be resumed (`uq_ac_write_operation_one_in_progress` -> DOC_BUSY) and a Resume of the stuck op answers
+  OPERATION_IN_PROGRESS for ever (17:28 incident, op db9d9b1b). Resume now first runs the same
+  `expire_stale_in_progress` for that document (same 600 s window, updated_at kept), then goes on as today.
+  A young `in_progress` op (< 600 s) is still respected (DOC_BUSY / OPERATION_IN_PROGRESS).
+- Contract 55 gets both rules. Evidence: unit tests (db3 cannot hold FOC, probe P2) + a db3 regression run of the
+  restore suite on the new head.
+- B3 (17 Nov ~01:20, the 01:00 Unlink replay): an operation answered `recovered` left the PO as it was, but only
+  `recovered` + `OPERATION_NOT_APPLIED` released its idempotency key (`_nothing_landed`, operations.py:437-441), so a
+  `recovered` stored with any other code (a failed check undone by `_recover`, or a hand-set row) is replayed for
+  ever to the CRM, which resends the same key for the same line. Owner rule "only a confirmed success locks": every
+  `recovered` answer releases the key; the next press runs fresh (re-read, re-guarded, so it cannot write twice).
+
