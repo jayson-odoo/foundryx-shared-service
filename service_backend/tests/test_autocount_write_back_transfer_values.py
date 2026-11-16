@@ -77,9 +77,9 @@ def test_split_restores_price_and_date_on_the_new_row(h):
     new = _new_row(h)
     assert new["Location"] == "BRW-AM"
     assert new["UnitPrice"] == SRC_PRICE
-    assert new["DeliveryDate"] == SRC_DATE
+    assert new["DeliveryDate"] == EMPTY  # plan 65 D2: the SO row's date (it has none), never SRC_DATE
     put2 = h.ac.put_bodies[1]["Details"][0]
-    assert put2["UnitPrice"] == SRC_PRICE and put2["DeliveryDate"] == SRC_DATE
+    assert put2["UnitPrice"] == SRC_PRICE and put2.get("DeliveryDate") in (None, EMPTY)
     assert put2["Location"] == "BRW-AM"
     assert h.ac.server_row(12017)["UnitPrice"] == SRC_PRICE  # the touched row kept its price
 
@@ -98,7 +98,8 @@ def test_no_restore_write_when_the_vendor_kept_everything(h):
     h.ac.server_row(12017)["DeliveryDate"] = EMPTY  # nothing to restore: no date sent
     res = h.link_split()
     assert res.outcome == "done" and res.error_code is None
-    assert len(h.ac.put_calls) == 1
+    assert len(h.ac.put_calls) == 2  # plan 65 D4: PUT 2 carries the note (never read back)
+    assert "FurtherDescription" in h.ac.put_bodies[1]["Details"][0]
 
 
 # ---- fails loudly: never "done" with a zero-priced transferred row -----------------------

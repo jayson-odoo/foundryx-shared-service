@@ -202,7 +202,8 @@ def test_ac_64_06_split_link_with_nothing_to_restore_answers_the_new_row(client,
     row["UnitPrice"], row["DeliveryDate"] = 0.0, "0001-01-01T00:00:00"
     r = client.post(LINK, json=_whole(w, qty=1), headers=_hdr(gw.plain))
     assert r.status_code == 200, r.text
-    assert len(gw.h.vendor.writes()) == 1  # no restore write
+    # plan 65 D4: the note is never read back, so the restore write always follows (the note only)
+    assert len(gw.h.vendor.writes()) == 2 and "FurtherDescription" in gw.h.vendor.writes()[1].body["Details"][0]
     detail = r.json()["detail"]
     assert detail["DtlKey"] != w.p_free and detail["FromSODtlKey"] == w.so_a and detail["Location"] == "HQ"
 

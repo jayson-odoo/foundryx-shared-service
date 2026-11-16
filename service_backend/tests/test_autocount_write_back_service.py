@@ -410,7 +410,7 @@ def test_ac_55_20_put_goes_to_edit_endpoint_with_s2_body(h):
     expected = build_link(copy.deepcopy(po), 12017, so, 11989, Decimal(10))
     res = h.link_split()
     assert res.outcome == "done", res.error_code
-    assert len(h.ac.put_calls) == 1
+    assert len(h.ac.put_calls) == 2  # plan 65 D4: then the restore write carrying the note
     assert h.ac.put_calls[0].method == "PUT"
     assert h.ac.put_calls[0].url.path.endswith(PUT_PATH)
     assert h.ac.put_bodies[0] == json.loads(json.dumps(expected))
@@ -539,8 +539,8 @@ def test_ac_55_27_no_transaction_open_and_in_flight_committed_before_put(h):
     res = h.link_split()
     assert res.outcome == "done"
     assert h.ac.violations == []
-    assert h.ac.in_flight_seen_at_put == [1]
-    assert len(h.ac.get_calls) >= 1 and len(h.ac.put_calls) == 1
+    assert h.ac.in_flight_seen_at_put == [1, 1]  # plan 65 D4: the link and the note's restore write
+    assert len(h.ac.get_calls) >= 1 and len(h.ac.put_calls) == 2
 
 
 def test_ac_55_27_no_transaction_open_on_timeout_path(h):
@@ -557,8 +557,8 @@ def test_ac_55_28_action_row_fields_and_request_equals_body_sent(h):
     assert row.action == "link" and row.doc_type == "PO"
     assert row.doc_key == 12008 and row.dtl_key == 12017
     assert row.outcome == "done" and row.error_code is None
-    assert row.request_json == h.ac.put_bodies[0]
-    assert row.response_status == 200
+    assert row.request_json == [h.ac.put_bodies[0], h.ac.put_bodies[1]]  # plan 65 D4: + the note's restore write
+    assert row.response_status == [200, 200]
     assert row.before_json and row.after_json
     assert row.created_at is not None and row.updated_at is not None
     assert row.key_id is None

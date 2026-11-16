@@ -831,8 +831,7 @@ class OperationService:
     def _so_link_values(so: Doc, so_row: Doc) -> Doc:
         """Plan 65 D2 / D4: what the restore of a row newly linked to ``so_row`` needs from the SO, kept
         in the snapshot at link time so Resume needs no guess: the SO row's day and the note text."""
-        return {"soDeliveryDate": payloads.day_of(so_row.get("DeliveryDate")),
-                "note": payloads.so_link_note(so, so_row)}
+        return payloads.so_link_values(so, so_row)
 
     def _old_link(self, company: AcCompany, defn: _OpDef, row: Doc) -> Doc:
         """The link fields the row has now, to restore it (a PO row linked to an SO

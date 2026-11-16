@@ -459,7 +459,7 @@ def test_ac_61_14_split_link_is_one_put_cut_row_plus_new_linked_row_then_the_mov
     assert len(rows) == 5 and row(h.vendor, "PO", 7001, world.p_free)["Qty"] == 2
     linked = [r for r in rows if r["DtlKey"] not in (world.p_free, world.p_linked, world.p_spo, world.p_other)]
     assert len(linked) == 1 and linked[0]["FromSODtlKey"] == world.so_a
-    assert str(linked[0]["DeliveryDate"])[:10] == "2026-12-01"  # the move restored what the vendor cleared
+    assert str(linked[0]["DeliveryDate"])[:10] == "2026-11-04"  # the move restored the SO row's date (plan 65 D2)
 
 
 # ============================== AC-61-15 atomic refusal ======================================

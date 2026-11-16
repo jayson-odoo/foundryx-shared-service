@@ -284,9 +284,10 @@ def test_split_vendor_keeping_location_means_no_put2(h):
     h.ac.force_hq = False
     res = _split(h)
     assert res.outcome == "done" and res.error_code is None
-    assert len(h.ac.put_calls) == 1
+    assert len(h.ac.put_calls) == 2  # plan 65 D4: PUT 2 carries only the note
     body0 = h.ac.put_bodies[0]
-    assert h.action(res).request_json in (body0, [body0])
+    assert h.action(res).request_json == [body0, h.ac.put_bodies[1]]
+    assert "FurtherDescription" in h.ac.put_bodies[1]["Details"][0]
     assert h.ac.linked_row(11989)["Location"] == "BRW-AM"
 
 
@@ -517,6 +518,7 @@ def test_deadline_with_a_verified_readback_in_hand_is_not_discarded(h, monkeypat
     monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
     _slow_readback_after_first_put(h)
     res = h.link_split()
-    assert res.outcome == "done" and res.error_code is None
+    # plan 65 D4: the note's restore is due and the deadline skips it: done, the link stands, with the code
+    assert res.outcome == "done" and res.error_code == "LOCATION_NOT_MOVED"
     assert len(h.ac.put_calls) == 1
     assert h.staged_po().raw_json == _expected_staged(h)

@@ -812,11 +812,11 @@ class WriteBackService(WriteFrame):
         SO-transferred row to HQ, price 0 and an empty date (B4). Never retried.
         Only the location not landing is ``done`` with ``LOCATION_NOT_MOVED`` (the
         link stands); a price / date not landing is ``mismatch``
-        ``ROW_VALUES_NOT_KEPT``, never a quiet ``done`` on a zero-priced row."""
-        target = next(
-            (r.get("Location") for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key),
-            None,
-        )
+        ``ROW_VALUES_NOT_KEPT``, never a quiet ``done`` on a zero-priced row. The values are
+        the batch's rule (plan 65 D2 / D4: the SO row's date, a percentage discount, the note)."""
+        so_row = next((r for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key), None)
+        target = so_row.get("Location") if so_row is not None else None
+        so_link = payloads.so_link_values(so_doc, so_row) if so_row is not None else None
         before_keys = {r.get("DtlKey") for r in before.get("Details") or []}
         new_row = next(
             (
@@ -826,7 +826,7 @@ class WriteBackService(WriteFrame):
             None,
         )
         sent_new = next((r for r in body1.get("Details") or [] if not r.get("DtlKey")), {})
-        wanted = payloads.transfer_restore(sent_new, target)
+        wanted = payloads.transfer_restore(sent_new, target, so_link)
         restore = payloads.transfer_row_drift(wanted, new_row) if new_row is not None else {}
         if not restore:
             result = self._finish(row, OUTCOME_DONE, document=after1)
@@ -835,6 +835,9 @@ class WriteBackService(WriteFrame):
             return result
         new_key = int(new_row["DtlKey"])  # type: ignore[index]
         values = {k: v for k, v in restore.items() if k != "Location"}
+        # the note is never read back (plan 65 P3): sent, never judged
+        readable = {k: v for k, v in restore.items() if k not in payloads.UNREADABLE_ROW_KEYS}
+        readable_values = {k: v for k, v in values.items() if k not in payloads.UNREADABLE_ROW_KEYS}
         body2 = payloads.build_restore_transfer_row(after1, new_key, restore)
         first_status = row.response_status
         row.request_json = [body1, body2]
@@ -871,10 +874,10 @@ class WriteBackService(WriteFrame):
                     if verify_relocate(after1, after2, new_key, restore.get("Location"), body2, values):
                         code = None
         landed = next((r for r in final.get("Details") or [] if r.get("DtlKey") == new_key), {})
-        if values and (not verified or payloads.transfer_row_drift(values, landed)):
+        if readable_values and (not verified or payloads.transfer_row_drift(readable_values, landed)):
             self.db.commit()
             return self._finish(row, OUTCOME_MISMATCH, ROW_VALUES_NOT_KEPT, document=final)
-        if verified and code is not None and not payloads.transfer_row_drift(restore, landed):
+        if verified and code is not None and not payloads.transfer_row_drift(readable, landed):
             self.db.commit()  # restored, but something else moved
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
         result = self._finish(row, OUTCOME_DONE, code, document=final)

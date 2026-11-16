@@ -476,7 +476,7 @@ def test_ac_55_43_end_to_end_link_done(client, db, session_factory, setup):
     body = r.json()
     assert body["outcome"] == "done" and body["errorCode"] is None
     assert any(row["DtlKey"] == 12017 for row in body["document"]["Details"])
-    assert len(fake.put_calls) == 1
+    assert len(fake.put_calls) == 2  # plan 65 D4: the link and the restore write carrying the note
 
 
 def test_ac_55_04_response_and_row_never_hold_the_key_or_hash(client, db, session_factory, setup):

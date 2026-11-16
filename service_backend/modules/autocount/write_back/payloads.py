@@ -397,6 +397,12 @@ def autocount_rtf(text: str) -> str:
     return _RTF_HEAD + "".join(_rtf_char(ch) for ch in text) + _RTF_TAIL
 
 
+def so_link_values(so: Mapping[str, Any], so_row: Mapping[str, Any]) -> Doc:
+    """Plan 65 D2 / D4: the ``so_link`` of ``transfer_restore`` for a row newly linked to
+    ``so_row``: the SO row's day (None when it has none) and the note text."""
+    return {"soDeliveryDate": _day(so_row.get("DeliveryDate")), "note": so_link_note(so, so_row)}
+
+
 def link_discount(value: Any) -> str:
     """Plan 65 D2a: the discount a new linked row takes from its source row: the value when
     every ``+``-term is a percentage (``5%``, ``5%+2%``), else blank (an amount discount

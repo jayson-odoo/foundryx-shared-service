@@ -1014,4 +1014,4 @@ def test_single_write_link_response_status_stays_one_status(vh):
     h = vh
     h.ac.force_hq = False
     res = h.link_split()
-    assert h.action(res).response_status in (200, [200])
+    assert h.action(res).response_status == [200, 200]  # plan 65 D4: the note's restore write always follows
