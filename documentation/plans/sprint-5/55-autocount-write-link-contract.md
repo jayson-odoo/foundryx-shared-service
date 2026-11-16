@@ -109,11 +109,12 @@ primitive (a create) it answers `409 OPERATION_NOT_RESUMABLE` and changes nothin
 ### 4.0a Resume of a link that ended `RESTORE_NOT_LANDED` or `needs_attention` (plan 65)
 
 `POST /write-operations/{id}/resume` on a batch link, `link_row` or `relink_row` operation never re-sends the
-link write. It re-checks the stored link write and reads the current PO: the kept row at its expected quantity
-(or gone when the links took all of it) and one new row per link, nothing else linked to those SO rows. If
-that holds it sends ONE restore write on the new rows only and verifies it; the operation then ends `done`.
-If the stored link write itself still reads back as a mismatch, or the PO is not in the expected shape, it
-stays `needs_attention` and nothing is sent. The single part-row link (split) is not resumable.
+link write. For a batch link it re-checks the stored link write and reads the current PO: the kept row at its
+expected quantity (or gone when the links took all of it) and one new row per link, nothing else linked to those
+SO rows; if the stored link write still reads back as a mismatch, or the PO is not in that shape, it stays
+`needs_attention` and nothing is sent. For a `link_row` or `relink_row` whose link write landed it reads the
+current PO and the SO row (an operation stored before plan 65 re-reads the SO). It then sends ONE restore write on
+the new rows only and verifies it; the operation ends `done`. The single part-row link (split) is not resumable.
 
 Creating a document (`POST /documents/{kind}`) follows the same table with one difference, because a failed
 create may still have saved the document. A create AutoCount refused before saving (credit limit, unknown item,
@@ -199,8 +200,8 @@ the lines skipped before the write, and the key is released.
 **Two writes.** The first write is ONE edit of the PO: the PO row is kept with the quantity
 that is left (or removed when the links take all of it) and one new linked row is added per linked line. AutoCount
 accepts or rejects that edit as a whole, so either every valid line is linked or none is. Each new row arrives at
-the default location (HQ), unit price 0, no delivery date and no discount; a second write, only if a
-read-back shows that, restores all the new rows in one edit with the values of section 4.1 (the SO row's
+the default location (HQ), unit price 0, no delivery date and no discount; a second write (always sent: the
+note cannot be read back) restores all the new rows in one edit with the values of section 4.1 (the SO row's
 location, the old PO row's unit price, the SO ROW's delivery date, a percentage discount, the note). If that
 second write does not land (AutoCount error, read-back differs, or the time budget ran out), the answer is
 `needs_attention` with `errorCode` `RESTORE_NOT_LANDED`: the links stand and the operation is resumable
