@@ -123,3 +123,51 @@ def test_ac_65_05c_a_part_row_single_link_to_an_so_row_without_a_date_sends_no_d
     assert not has_day(sent_row), sent_row.get("DeliveryDate")  # never the old row's date
     assert not has_day(final)
     assert sent_row.get("FurtherDescription") == rtf("**CUSTA SDN BHD/PROJECT X S/O: 428480")
+
+
+# ================================ AC-65-01b the legacy plan 55 path tolerates the remark mirror =====
+
+DIFFER = ("FXT R1", "FXT R2", "FXT R3", "FXT R4")  # hand-set remarks; the vendor rewrites Remark2..4 to Remark1
+
+
+def relocate(h, rig):
+    """A PO row linked to an SO row at BRW-AM but sitting at HQ: a relocation is due (plan 55 route po-links/relocate)."""
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.write_back.service import WriteBackService
+
+    row = rig.row(rig.free_a)
+    row.update(FromSODtlKey=rig.so_dated, FromDocDtlKey=rig.so_dated, Location="HQ")
+    return WriteBackService(h.db, **h.factories()).relocate(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=PO_KEY, po_dtl_key=rig.free_a)
+
+
+def test_ac_65_01b_a_part_row_single_link_ends_done_when_only_remark2_to_4_were_mirrored(h):
+    rig = Rig65(h, remarks=DIFFER)
+    sent_row, final = split(h, rig, rig.so_dated)  # asserts the op ended done
+    assert final["Location"] == "BRW-AM" and day(final["DeliveryDate"]) == "2026-12-31"  # the restore applied
+    assert [rig.header()[f"Remark{n}"] for n in (2, 3, 4)] == ["FXT R1"] * 3  # the vendor did rewrite them
+
+
+def test_ac_65_01b_a_relocate_ends_done_when_only_remark2_to_4_were_mirrored(h):
+    rig = Rig65(h, remarks=DIFFER)
+    res = relocate(h, rig)
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert rig.row(rig.free_a)["Location"] == "BRW-AM"
+    assert [rig.header()[f"Remark{n}"] for n in (2, 3, 4)] == ["FXT R1"] * 3
+
+
+@pytest.mark.parametrize("remarks", [DIFFER, ("FXT R1",) * 4], ids=["remarks-differ", "remarks-equal"])
+def test_ac_65_01b_control_any_other_header_drift_on_the_relocate_is_still_not_done(h, remarks):
+    rig = Rig65(h, remarks=remarks, drift_description=True)  # the vendor rewrites Description: not the mirror
+    res = relocate(h, rig)
+    assert res.outcome != "done", (res.outcome, res.error_code)
+
+
+@pytest.mark.parametrize("remarks", [DIFFER, ("FXT R1",) * 4], ids=["remarks-differ", "remarks-equal"])
+def test_ac_65_01b_control_any_other_header_drift_on_the_single_link_is_still_not_done(h, remarks):
+    from decimal import Decimal
+
+    rig = Rig65(h, remarks=remarks, drift_description=True)
+    res = h.run("split_link", dict(po_doc_key=PO_KEY, po_dtl_key=rig.free_a, so_doc_key=SO_KEY,
+                                   so_dtl_key=rig.so_dated, qty=Decimal(1)), key="r-drift")
+    assert res.outcome != "done", (res.outcome, res.error_code)

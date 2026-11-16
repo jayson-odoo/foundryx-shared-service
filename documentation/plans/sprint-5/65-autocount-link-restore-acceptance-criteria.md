@@ -7,6 +7,8 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
 
 - AC-65-01 A link PUT whose read-back differs from the before-read ONLY by the AutoCount-side drift probe P1
   proved (expected: Remark2..4 read back as Remark1) verifies DONE. [unit]
+- AC-65-01b The plan 55 path (single part-row link, relocate) applies the same tolerance: a read-back whose only
+  header drift is Remark2..4 equal to Remark1 ends done; any other header drift is still refused. [unit]
 - AC-65-02 Any other header field drift, or any field drift on a row other than the source row, is still
   `COLLATERAL_CHANGE`; a Remark2..4 drift to a value that is NOT Remark1 is still `COLLATERAL_CHANGE`. [unit]
 - AC-65-03 The restore step's verify (verify_edit, no header change) applies the same tolerance: the proven

@@ -121,6 +121,12 @@ All through SS's logged client/reader (every call in `ac_api_call_log`), against
   linked to one of its SO rows. Evidence: root-cause report section 3 (unlink of a half-restored row = up to 3
   live PUTs, PO a unit short). After D5, Resume is the repair; the unlink is not needed. Other rows of the PO
   stay writable (owner: no pause of Link PO). The CRM hides the action on the matching code (cross-repo note).
+- D3a Single part-row link (CRM `po-links`, op `split_link` over the plan 55 path): same restore values (D2) via
+  the same function (`payloads.so_link_values` -> `transfer_restore`). A split operation is not resumable
+  (`resume` returns the stored answer for `split_link`), so its restore keeps the plan 55 rule: not landed =
+  DONE with `LOCATION_NOT_MOVED` / `ROW_VALUES_NOT_KEPT`. Making it resumable is a follow-up (backlog), not this lane.
+  The plan 55 header check (`service.py` `_header_unchanged`) gets the same D1 tolerance (AC-65-01b), so a
+  single link or a relocate on a PO with hand-typed remarks does not stop half way either.
 - D7 Logging and books: no new vendor door; every call through the logged client/reader; tests and scripts
   db3 only; db1 writes only from the production deploy (unchanged guard).
 - D8 Reuse (owner 12 Nov): `transfer_restore` / `transfer_row_drift` / `_move_rows` stay the one restore path
