@@ -802,6 +802,11 @@ class OneShotIdeaIn(ApiModel):
     # feature idea, ``issue`` = a problem with the system / complaint; more types
     # = new catalog rows). Omitted = ``idea``. Unknown = 422 ``unknown_type``.
     type: Optional[str] = None
+    # SS-FEEDBACK-BOARD-LINK: the host states the reply goes to the SUBMITTER
+    # themself (never an operator filing for someone else). Only then does the
+    # response carry ``board_url`` - the submitter's personal board link, a
+    # bearer credential. Omitted/false = today's response, unchanged.
+    reply_to_submitter: bool = False
 
 
 class SimilarOwnIn(ApiModel):
@@ -817,6 +822,11 @@ class SimilarOwnIn(ApiModel):
     # Optional type lane: only the sender's own ideas of this type match.
     # Omitted = every type (unchanged behaviour).
     type: Optional[str] = None
+    # SS-FEEDBACK-BOARD-LINK: the host states the reply goes to the SUBMITTER
+    # themself (never an operator filing for someone else). Only then does the
+    # response carry ``board_url`` - the submitter's personal board link, a
+    # bearer credential. Omitted/false = today's response, unchanged.
+    reply_to_submitter: bool = False
 
 
 # ── Idea portal (lane IDEA-PORTAL) ────────────────────────────────────────────

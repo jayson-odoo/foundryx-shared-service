@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+import { validateEmbedOrigin } from './lib/embed-origin';
+
 /**
  * frame-ancestors clickjacking guard for the chromeless embed surfaces:
  *  - the omnichannel embed shell (sprint-4/11 AC-11H-15) - `?c=<connectionId>`.
@@ -9,6 +11,11 @@ import type { NextRequest } from 'next/server';
  * Both resolve their own `allowedOrigins` from a tiny public backend GET and
  * emit `Content-Security-Policy: frame-ancestors <origins>`. Unknown / dead
  * key → `frame-ancestors 'none'` (fail closed - nothing may frame it).
+ *
+ * The personal feedback BOARD (`/public/feedback/board/**`, lane
+ * SS-FEEDBACK-BOARD-LINK) is framed by the Sorento CRM public page
+ * (`documentation/ideation/feedback-link-contract.md` section 3), so it allows
+ * `'self'` + the deployment's CRM origins from env - see `boardFrameAncestors`.
  */
 const BACKEND =
   process.env.BACKEND_API_URL ??
@@ -16,8 +23,31 @@ const BACKEND =
   'http://localhost:8001';
 
 export const config = {
-  matcher: ['/embed/omnichannel/:path*', '/public/webchat/:widgetKey*'],
+  matcher: ['/embed/omnichannel/:path*', '/public/webchat/:widgetKey*', '/public/feedback/board/:path*'],
 };
+
+const BOARD_PREFIX = '/public/feedback/board/';
+const DEFAULT_BOARD_FRAME_ANCESTORS = 'https://fe-sorento.foundryx.my';
+
+/**
+ * `frame-ancestors` source list for the feedback board: `'self'` + every
+ * valid bare origin in `FEEDBACK_BOARD_FRAME_ANCESTORS` (comma / space
+ * separated; unset = the prod CRM origin; empty = same-origin only). Each entry
+ * goes through the embed-origin rule (https only except localhost, no path,
+ * no wildcard, no special characters), so a config typo can never widen the
+ * policy or inject another CSP directive - an invalid entry is dropped.
+ * Read per request (server env, never inlined at build).
+ */
+export function boardFrameAncestors(): string {
+  const raw = process.env.FEEDBACK_BOARD_FRAME_ANCESTORS ?? DEFAULT_BOARD_FRAME_ANCESTORS;
+  const origins = new Set<string>();
+  for (const entry of raw.split(/[\s,]+/)) {
+    if (!entry) continue;
+    const check = validateEmbedOrigin(entry);
+    if (check.ok && check.value) origins.add(check.value);
+  }
+  return ["'self'", ...Array.from(origins)].join(' ');
+}
 
 /**
  * Review round 2 (B4) - a THIS-REQUEST-ONLY fail-closed result, never a
@@ -58,6 +88,13 @@ async function fetchAllowedOrigins(url: string): Promise<string[]> {
 export async function middleware(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.next();
   const { pathname, searchParams } = req.nextUrl;
+
+  if (pathname.startsWith(BOARD_PREFIX)) {
+    res.headers.set('Content-Security-Policy', `frame-ancestors ${boardFrameAncestors()}`);
+    // X-Frame-Options overrides the CSP in some browsers: never on the board.
+    res.headers.delete('X-Frame-Options');
+    return res;
+  }
 
   let origins: string[] = [];
   if (pathname.startsWith('/public/webchat/')) {

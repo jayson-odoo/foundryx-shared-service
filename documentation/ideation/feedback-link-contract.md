@@ -18,9 +18,15 @@ Plan + UAC: `documentation/plans/ideation/public-ideas-board/`.
     (the shared-service page).
 - Where it is sent: the WhatsApp intake "Track it here" reply for the
   contact's own idea or the idea they voted for, and `board_url` on every
-  `idea_status_events` item (`status-events-contract.md`). NOT returned by the
-  one-shot or own-similar intake APIs (those answer the host). Test ideas never
-  mint one.
+  `idea_status_events` item (`status-events-contract.md`), and `board_url` on
+  the one-shot (`POST /ideation/intake/ideas`) and own-similar
+  (`POST /ideation/intake/ideas/similar-own`, per match) intake APIs ONLY when
+  the host sends `reply_to_submitter: true` - i.e. it states its reply goes to
+  the submitter themself, never to an operator filing for someone else (owner
+  16 Nov Q2 a). Without the flag those APIs answer exactly as before (no
+  `board_url` key); `link` (the per-idea status page) is unchanged in every
+  case. `board_url` is null for a test idea or an idea with no submitter
+  contact. Test ideas never mint one.
 - It is a bearer credential: send it only to that contact; never log it.
 
 ## 2. What the link allows (`POST /portal/ideas/session/link {token}`)
@@ -45,3 +51,9 @@ Plan + UAC: `documentation/plans/ideation/public-ideas-board/`.
 - The page must send `Referrer-Policy: no-referrer`, `Cache-Control: no-store`
   and `X-Robots-Tag: noindex`, and must not log the path.
 - Colours: the Sorento tenant's Branding settings (owner QA a), no CRM code.
+- Framing: the shared-service frontend answers every `/public/feedback/board/**`
+  page with `Content-Security-Policy: frame-ancestors 'self' <CRM origins>`
+  (env `FEEDBACK_BOARD_FRAME_ANCESTORS`, space/comma separated bare origins;
+  default `https://fe-sorento.foundryx.my`) and no `X-Frame-Options`. The board
+  needs no cookies (Bearer from `/portal/ideas/session/link`), so it works in a
+  cross-site iframe without any SameSite change.

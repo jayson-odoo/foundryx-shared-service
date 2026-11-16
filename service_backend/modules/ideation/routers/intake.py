@@ -66,6 +66,8 @@ def create_idea_one_shot(
     ``problem_required``, 422 ``title_too_long``, 422 ``invalid_phone``, 404
     ``unknown_product``, 422 ``no_workspace``, 409 ``intake_ref_conflict``.
     A retry with the same ``intake_ref`` returns the same idea (idempotent).
+    ``reply_to_submitter: true`` adds ``board_url`` (the submitter's personal
+    board link, null for a test idea or no contact).
     ``/create-idea`` (the turn flow) is unchanged."""
     return IntakeService(db).create_one_shot(
         api_ws.tenant_id,
@@ -87,6 +89,7 @@ def create_idea_one_shot(
         is_test=body.is_test,
         intake_ref=body.intake_ref,
         idea_type=body.type,
+        reply_to_submitter=body.reply_to_submitter,
     )
 
 
@@ -101,7 +104,8 @@ def similar_own_ideas(
     rejected / duplicate / archived / merged-away), same product + test lane,
     top 3, the existing pg_trgm threshold. Returns ``{matches:[{idea_id,
     idea_number, title, problem, status, status_label, similarity, created_at,
-    link}]}``. 422 ``submitter_required`` when no usable identity is given."""
+    link}]}`` (+ ``board_url`` per match when ``reply_to_submitter`` is true).
+    422 ``submitter_required`` when no usable identity is given."""
     return IntakeService(db).similar_own(
         api_ws.tenant_id,
         product_id=body.product_id,
@@ -110,4 +114,5 @@ def similar_own_ideas(
         submitter_phone=body.submitter_phone,
         is_test=body.is_test,
         idea_type=body.type,
+        reply_to_submitter=body.reply_to_submitter,
     )
