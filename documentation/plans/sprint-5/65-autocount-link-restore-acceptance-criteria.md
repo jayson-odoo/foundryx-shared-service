@@ -22,6 +22,8 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
 - AC-65-05b The same restore rule (SO row location, old row price, SO row date, % discount, note) applies to
   the new linked row of a relink (`relink_row`, CRM "po-links/relink") and of a whole-row `link_row`: one shared
   function (owner rule: the single action calls the same function as the bulk one). [unit]
+- AC-65-05c A part-row single link (CRM "po-links", the op layer's split link over the plan 55 path) restores
+  its new linked row with the same rule and the same function. [unit]
 - AC-65-06 SO row with no delivery date: the restore sends no date (the row stays blank), never the PO row's
   date. [unit]
 - AC-65-07 The restore PUT carries `FurtherDescription` on the new linked row only: AutoCount's RTF wrapper

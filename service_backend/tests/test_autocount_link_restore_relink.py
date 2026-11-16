@@ -88,3 +88,38 @@ def test_ac_65_05b_an_amount_discount_is_not_copied_to_the_relinked_row(h, rig):
     _res, new = link_row(h, rig, rig.so_dated, discount="10")
     row = restore_put(h, new)
     assert row.get("Discount", "") == "" and rig.row(new)["Discount"] == ""
+
+
+# ================================ AC-65-05c the single link of part of a row (split_link) ===========
+
+def split(h, rig, so_dtl, *, key="r-split"):
+    """Part-row single link (plan 55 legacy flow wrapped by the op layer): 1 of the free row's 3."""
+    from decimal import Decimal
+
+    rig.row(rig.free_a)["Discount"] = "5%"
+    res = h.run("split_link", dict(po_doc_key=PO_KEY, po_dtl_key=rig.free_a, so_doc_key=SO_KEY, so_dtl_key=so_dtl,
+                                   qty=Decimal(1)), key=key)
+    assert res.outcome == "done", (res.outcome, res.error_code, res.warnings)
+    (new,) = [r for r in rig.linked(so_dtl)]
+    sent = puts(h)
+    assert len(sent) >= 2, [c.body for c in sent]
+    details = sent[-1].body["Details"]
+    assert [r["DtlKey"] for r in details] == [new["DtlKey"]], details  # the restore PUT: the new linked row only
+    return details[0], rig.row(new["DtlKey"])
+
+
+def test_ac_65_05c_a_part_row_single_link_restores_the_so_rows_location_date_note_and_a_percentage_discount(h, rig):
+    sent_row, final = split(h, rig, rig.so_dated)
+    assert (sent_row["Location"], sent_row["UnitPrice"], day(sent_row["DeliveryDate"]), sent_row["Discount"]) == (
+        "BRW-AM", 2.5, "2026-12-31", "5%")
+    assert sent_row.get("FurtherDescription") == rtf(NOTE)
+    assert (final["Location"], final["UnitPrice"], day(final["DeliveryDate"]), final["Discount"]) == (
+        "BRW-AM", 2.5, "2026-12-31", "5%")
+    assert rig.row(rig.free_a)["Qty"] == 2 and rig.row(rig.free_a)["Discount"] == "5%"  # the kept part is untouched
+
+
+def test_ac_65_05c_a_part_row_single_link_to_an_so_row_without_a_date_sends_no_date_and_a_note_without_dd(h, rig):
+    sent_row, final = split(h, rig, rig.so_undated)
+    assert not has_day(sent_row), sent_row.get("DeliveryDate")  # never the old row's date
+    assert not has_day(final)
+    assert sent_row.get("FurtherDescription") == rtf("**CUSTA SDN BHD/PROJECT X S/O: 428480")
