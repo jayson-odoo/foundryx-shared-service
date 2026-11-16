@@ -184,3 +184,9 @@ Two SS-only fixes found after #247 went live (crew-note on #247, blockers c and 
   A young `in_progress` op (< 600 s) is still respected (DOC_BUSY / OPERATION_IN_PROGRESS).
 - Contract 55 gets both rules. Evidence: unit tests (db3 cannot hold FOC, probe P2) + a db3 regression run of the
   restore suite on the new head.
+- B3 (17 Nov ~01:20, the 01:00 Unlink replay): an operation answered `recovered` left the PO as it was, but only
+  `recovered` + `OPERATION_NOT_APPLIED` released its idempotency key (`_nothing_landed`, operations.py:437-441), so a
+  `recovered` stored with any other code (a failed check undone by `_recover`, or a hand-set row) is replayed for
+  ever to the CRM, which resends the same key for the same line. Owner rule "only a confirmed success locks": every
+  `recovered` answer releases the key; the next press runs fresh (re-read, re-guarded, so it cannot write twice).
+

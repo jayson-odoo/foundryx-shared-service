@@ -112,3 +112,8 @@ borrowed values (AC-65-06), rows matched only by FromSODtlKey + qty (AC-65-15).
   `pending_verification` op (no snapshot -> its stored answer, nothing sent; with a snapshot -> the normal
   resume read). A young `in_progress` op still answers OPERATION_IN_PROGRESS (control). [unit]
 - AC-65-33 db3 regression: the restore suite (fresh link + Resume) still passes on the part B head. [live]
+- AC-65-34 A new press under the key of a stored `recovered` operation with any error code (e.g. `ROW_MISMATCH`,
+  `RESUMED`, none, or a hand-set `NOT_APPLIED`) releases that key and runs fresh (a new operation row; the old row
+  keeps its history under the released key). A stored `done` / `needs_attention` / `pending_verification` answer is
+  still replayed or reconciled as today (controls). [unit]
+
