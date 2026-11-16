@@ -55,7 +55,13 @@ from .intake_definitions import (
     get_intake_definition,
     next_field as compute_next_field,
 )
-from .ownership import SubmitterIdentity, find_contacts_by_phone, person_contact_ids, phone_digits
+from .ownership import (
+    SubmitterIdentity,
+    contact_ids_for,
+    find_contacts_by_phone,
+    person_contact_ids,
+    phone_digits,
+)
 from .feedback_links import SUBMITTER, mint_board_link
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
 from .idea_types import idea_type_label, resolve_idea_type
@@ -518,8 +524,11 @@ class IntakeService:
         ``submitter_required`` otherwise), so a missing identity can never fall
         back to name or widen to everyone. Read-only, except that
         ``reply_to_submitter`` (the host replies to the submitter themself) adds
-        each match's ``board_url`` - the matches are the submitter's own items,
-        so it is their own credential - minting it on first use."""
+        each match's ``board_url``, minting it on first use. A match is "own"
+        by CRM user id OR phone, but a CRM-id match may be an idea an operator
+        filed FOR another contact: the link is that contact's credential, so it
+        is returned only when the idea's contact is one the caller's own PHONE
+        resolves to; otherwise null (review B1)."""
         ident = SubmitterIdentity(crm_user_id=submitter_crm_user_id, phone=submitter_phone)
         if ident.is_empty:
             raise ApiError(
@@ -547,6 +556,12 @@ class IntakeService:
             .filter(Status.id.in_({i.status_id for i in ideas.values()}))
             .all()
         }
+        # The caller's own contacts (by phone) - the only ones whose link may be
+        # handed to a host replying to the submitter themself.
+        caller_contacts = (
+            set(contact_ids_for(self.db, tenant_id, ident)) if reply_to_submitter else set()
+        )
+        minted = False
         matches = []
         for idea_id, score in hits:
             idea = ideas.get(idea_id)
@@ -566,8 +581,17 @@ class IntakeService:
                     "link": mint_idea_link(self.db, idea),
                 }
             if reply_to_submitter:
-                match["board_url"] = self._submitter_board_link(idea)
+                url = (
+                    mint_board_link(self.db, idea)
+                    if idea.submitter_contact_id in caller_contacts
+                    else None
+                )
+                minted = minted or url is not None
+                match["board_url"] = url
             matches.append(match)
+        if minted:
+            # ``mint_board_link`` only flushes: a token handed to the host must exist.
+            self.db.commit()
         return {"matches": matches}
 
     def _product_or_404(self, tenant_id: str, product_id: str) -> Product:
