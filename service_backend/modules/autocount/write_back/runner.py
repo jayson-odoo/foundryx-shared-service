@@ -1736,6 +1736,10 @@ _R_NOTE = "**FXT TEST S/O: 0000 DD: 01/01/2027"
 _R_REMARKS = {f"Remark{i}": f"FXT R{i}" for i in range(1, 5)}
 
 
+def day_of(value: object) -> str:
+    return str(value or "")[:10]
+
+
 class _HaltBeforeRestore(OperationService):
     """Repro helper only: the real batch link, stopped where the incident stopped (the link PUT landed and
     verified, the restore never ran, the operation ``needs_attention``). Everything else is product code."""
@@ -1860,8 +1864,8 @@ class _RestoreRun(_BatchRun):
         case.status = PASS if response.ok else FAIL
 
     def r02(self, case: CaseResult) -> None:
-        case.expected = ("P1: on ddb53cbe the link PUT lands, the read-back is judged COLLATERAL_CHANGE and the op is "
-                         "needs_attention; the exact drift fields are named")
+        case.expected = ("plan 65 fixed rule: op done, no drift, the new row at the SO row's location with the old row's "
+                         "price, the SO ROW's delivery date, the % discount, FOCQty 0, the link kept, the kept row cut by 1")
         if self.po is None or "SO" not in self.so:
             case.status, case.observed = SKIPPED, "R00/R01 did not pass"
             return
@@ -1882,7 +1886,7 @@ class _RestoreRun(_BatchRun):
         drift_values: Dict[str, object] = {}
         if action is not None and action.before_json and action.after_json:
             before, after = action.before_json, action.after_json
-            drift = payloads._drifted(before, after, (), [self.source_key])
+            drift = payloads._drifted(before, after, (), [self.source_key], "PO")
             for name in drift:  # values: own test text only (remarks / description); other fields by key only
                 if name in _R_REMARKS or name == "Description":
                     drift_values[name] = {"before": before.get(name), "after": after.get(name)}
@@ -1899,7 +1903,18 @@ class _RestoreRun(_BatchRun):
         }
         case.observed = (f"{res.outcome} {res.error_code or ''}; drift {drift}; steps "
                          f"{[(s.get('step'), s.get('outcome'), s.get('code')) for s in steps]}; op {res.operation_id}")
-        case.status = PASS if drift or res.outcome != "done" else FAIL  # PASS = the probe observed something
+        six = self._six(new_row)
+        kept = self._po_row(doc, self.source_key)
+        restored = (
+            res.outcome == "done" and not drift and new_row is not None
+            and six["Location"] == _R_SO_LOCATION and _num(six["UnitPrice"]) == Decimal(str(_R_PRICE))
+            and day_of(six["DeliveryDate"]) == day_of(self.so_date) and six["Discount"] == "5%"
+            and _num(six["FOCQty"]) == 0 and six["FromSODtlKey"] == self.so_row_key
+            and kept is not None and _num(kept.get("Qty")) == Decimal(4)
+        )
+        # plan 65 fixed rule: the SO ROW's date (not the PO row's), the % discount back, the link kept, kept row cut by 1
+        self.facts["r02"]["restoredAsPlan65"] = restored
+        case.status = PASS if restored else FAIL
 
     def r03(self, case: CaseResult) -> None:
         case.expected = ("P3: one logged edit PUT on the new linked row only, with FurtherDescription (RTF); "
