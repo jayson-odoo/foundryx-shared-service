@@ -784,10 +784,9 @@ def test_is_test_persists_on_create_and_survives_turns(setup, monkeypatch):
         draft_id=draft_id, confirm=True,
     )
     assert r3.json()["status"] == "complete"
-    # A test turn never mints a real contact's personal link (security review):
-    # the per-idea status page, as before.
-    token = _idea_field(s["factory"], draft_id, "status_token")
-    assert r3.json()["link"] == f"https://fe.example.test/public/feedback/{token}"
+    # Owner 17 Nov (lane FEEDBACK-TEST-BOARD-LINK): a Console test filing gets
+    # the reporter's personal board link, like a real filing.
+    assert r3.json()["link"].startswith("https://fe.example.test/public/feedback/board/")
     assert _idea_status_key(s["factory"], draft_id) == "captured"
     assert _idea_field(s["factory"], draft_id, "is_test") is True
 

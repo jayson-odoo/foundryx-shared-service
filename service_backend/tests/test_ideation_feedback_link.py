@@ -549,6 +549,44 @@ def test_tb_02_test_idea_without_contact_gets_no_link(setup):
     assert _board_link(s, _idea(s, 403, is_test=True)) is None
 
 
+def test_tb_03_test_link_only_to_the_person_who_owns_the_opened_item(setup):
+    """Review: a link to someone else's test item would open a 404 board page.
+    A voter on another person's test item, or the reporter of a test child
+    merged into another person's test item, falls back to the status page."""
+    from app.config import settings
+    from modules.ideation.models import Idea
+    from modules.ideation.services.intake import IntakeService
+
+    s = setup
+    author = _contact(s, phone="+60123450001")
+    twin = _contact(s, phone="+60 12-345 0001")
+    voter = _contact(s, phone="+60123450777")
+    candidate = _idea(s, 414, token="D" * 32, is_test=True, submitter_contact_id=author)
+    child = _idea(s, 415, token="E" * 32, is_test=True, submitter_contact_id=voter)
+    _set(s, child, merged_into_id=candidate)
+    own_child = _idea(s, 416, is_test=True, submitter_contact_id=twin)
+    _set(s, own_child, merged_into_id=candidate)
+    base = settings.frontend_url.rstrip("/")
+    db = s["factory"]()
+    try:
+        cand = db.query(Idea).filter(Idea.id == candidate).first()
+        to_voter = IntakeService(db)._contact_link(cand, recipient=voter)
+        to_twin = IntakeService(db)._contact_link(cand, recipient=twin)
+        child_link = IntakeService(db)._contact_link(db.query(Idea).filter(Idea.id == child).first())
+        own_child_link = IntakeService(db)._contact_link(db.query(Idea).filter(Idea.id == own_child).first())
+        db.commit()
+    finally:
+        db.close()
+    assert to_voter == f"{base}/public/feedback/{'D' * 32}"
+    assert child_link == f"{base}/public/feedback/{'E' * 32}"
+    assert to_twin.endswith(f"/public/feedback/board/{_link(s, twin)}/FB-0414")
+    assert own_child_link.endswith(f"/public/feedback/board/{_link(s, twin)}/FB-0416")
+    # and that link opens the survivor for the twin
+    h = _contact_session(s, twin)
+    d = s["client"].get("/portal/ideas/FB-0416", headers=h)
+    assert d.status_code == 200 and d.json()["id"] == candidate
+
+
 def test_tb_10_own_board_lists_own_test_items(setup):
     s = setup
     me = _contact(s, phone="+60123450001")

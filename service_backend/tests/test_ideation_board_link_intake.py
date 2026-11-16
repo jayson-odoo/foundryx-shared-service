@@ -217,7 +217,10 @@ def test_similar_own_test_lane_gets_the_board_url(ctx):
     (m,) = res.json()["matches"]
     token = _live_token(client._factory, cid)
     assert token, "minted link must be committed"
-    assert m["board_url"] == f"{_board_base()}/{token}/{_n(m['idea_number'])}"
+    expected = f"{_board_base()}/{token}"
+    if m["idea_number"]:
+        expected += f"/{_n(m['idea_number'])}"
+    assert m["board_url"] == expected
 
 
 def test_similar_own_crm_match_filed_for_another_contact_gets_null(ctx):
