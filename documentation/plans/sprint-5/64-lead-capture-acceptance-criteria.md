@@ -79,26 +79,34 @@ J, K. Release 2: E (WhatsApp ads) and F (Google Ads, website form). Review: `doc
   S-META confirms it covers Pages and leads (owner D2 = b); otherwise a long-lived user token as below, and the
   Reconnect path (AC-64-29) applies either way. The code is exchanged server-side for a long-lived user token; only an opaque session id crosses the wire
   (same rule as omnichannel's Meta connect session). Without `META_APP_ID` the flow is simulated (dev + tests).
+  S-META (15/11): a system-user token covers Pages, forms, subscribe and lead reads, but only for Pages assigned to
+  that system user as an asset; the Login for Business system-user config itself is not tested yet (needs a config id).
 - AC-64-21 The Page step lists only Pages the user granted. One granted Page is chosen automatically and shown folded
   as "(the only Page you shared)".
 - AC-64-22 Instagram path: the Page's linked Instagram business account is read; none linked = warning + animated
   guide + "Check again"; linked = the account is shown and chosen.
 - AC-64-23 Forms step reads the Page's lead forms. None = warning + animated "Create an Instant Form" guide + "Check
   again". Some = "All forms, including new ones" (default) or "Only the forms I tick" (blocked until one is ticked).
+  The step also reads the Page's `leadgen_tos_accepted`: `false` = a warning that leads from real ads need the Page to
+  accept Meta's Lead Ads Terms (test leads work without it; S-META F13).
 - AC-64-24 Field map: each form question is listed with a target lead field (searchable dropdown). Standard questions
   (full name, phone, email) are matched automatically; custom questions default to "Lead notes". Targets come from the
   consumer's field list (AC-64-61), never a hardcoded CRM field set.
 - AC-64-25 Connect subscribes the Page to the app's `leadgen` field and stores a long-lived Page token Fernet-encrypted.
   The subscribe call ADDS `leadgen` to the fields the app already holds on that Page (read first, then post the union);
   it never removes omnichannel's Messenger fields, and omnichannel's own subscribe never removes `leadgen` (one shared
-  core function, lane S0). The same tenant reconnecting replaces the token in place. A Page already live under
+  core function, lane S0; S-META F5 confirmed the POST replaces the list). Page edges (`leadgen_forms`,
+  `subscribed_apps`, `test_leads`) are called with the Page token; a system-user token there gets `(#190)`. The same
+  tenant reconnecting replaces the token in place. A Page already live under
   ANOTHER tenant follows the Page-sharing rule (AC-64-36): refused with `PAGE_IN_USE` (no data of the other tenant
   shown) unless sharing is allowed on both sides.
 - AC-64-26 A `leadgen` webhook (signature checked with the app secret, invalid = 403 and nothing stored) is
   acknowledged 200 within 2 s and processed in the background: fetch `/{leadgen_id}` with that Page's token, store the
   raw answer, map it, deliver it. The tenant(s) are resolved from `page_id` against live sources only. The hand-off from the omnichannel ingress to
   Lead Capture runs BEFORE omnichannel's own channel lookup and module-active check, so a Page with no Messenger
-  channel, or a tenant without omnichannel, still gets its leads.
+  channel, or a tenant without omnichannel, still gets its leads. The webhook value holds only `leadgen_id`, `page_id`,
+  `form_id`, `created_time` (`ad_id` / `adgroup_id` only for ad leads, so they are optional); fixtures in
+  `documentation/plans/meta-leads/fixtures/` (S-META F6).
 - AC-64-27 Idempotent by `leadgen_id`: the same webhook delivered twice creates one lead and one delivery.
 - AC-64-28 Backfill: every 15 minutes, and on demand from the source, each LIVE form is read for leads created since
   its cursor (cap 90 days). In "All forms" mode each run first re-reads the Page's form list (`GET /{page_id}/leadgen_forms`),
@@ -108,6 +116,9 @@ J, K. Release 2: E (WhatsApp ads) and F (Google Ads, website form). Review: `doc
   wizard's reconnect path keeps the source id, field map and leads.
 - AC-64-30 The test step can fire Meta's test lead (Lead Ads Testing Tool equivalent via the Graph test-lead endpoint,
   or the user's own submission); the received test lead is marked `isTest: true` everywhere, including deliveries.
+  One test lead per form: a second call answers subcode 1892058, so the step deletes the old test lead (Page token)
+  and sends again. A delete answer of subcode 1892035 is not trusted (the lead is usually gone anyway): re-read
+  `GET /{form_id}/test_leads` before deciding (S-META F7).
 
 - AC-64-35 New form found (owner D3 = a): a lead from a form the source has no field map for is delivered at once
   (standard name / phone / email matched by type from that form's questions, every other answer to Lead notes) and
