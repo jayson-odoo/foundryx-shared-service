@@ -68,7 +68,8 @@ All through SS's logged client/reader (every call in `ac_api_call_log`), against
 - `payloads.autocount_rtf(text: str) -> str`: AutoCount's RTF wrapper around plain text (D4).
 - `payloads.link_discount(value) -> str`: the value when every `+`-term ends in `%`, else "" (D2a).
 - Snapshot `links[]` gains `soDeliveryDate` (`YYYY-MM-DD` or null) and `note` (plain text) at link time.
-- New codes: `RESTORE_NOT_LANDED` (D3, op `needs_attention`), `ROW_NEEDS_ATTENTION` (D6 refusal).
+- New codes: `RESTORE_NOT_LANDED` (D3, op `needs_attention`), `ROW_NEEDS_ATTENTION` (D6 refusal),
+  `FOC_ON_ROW` (D2a skip).
 - The vendor remark mirror is tolerated by one helper used by every PO verify (D1).
 
 ## 3. Decisions
@@ -77,10 +78,9 @@ All through SS's logged client/reader (every call in `ac_api_call_log`), against
   mirror, tolerated by one helper in `verify_link_batch`, `verify_edit` (the restore step, no header change)
   and the Resume re-check. Nothing broader: Remark2..4 drifting to anything else, any other header field, or
   any other row is still `COLLATERAL_CHANGE`. D1b, a NEW link on a PO whose Remark2..4 differ from Remark1
-  (the PUT will overwrite them): Q3 is with the owner (crew 16 Nov). Built behind ONE module flag
-  `SKIP_LINK_WHEN_REMARKS_DIFFER` (default False): False = link, op DONE with warning `REMARKS_OVERWRITTEN`
-  (old texts stay in the op's stored before-read); True = every line skipped `REMARKS_WOULD_CHANGE` before any
-  PUT (batch rule).
+  (the PUT will overwrite them): owner ruling 16 Nov ~21:42, link as normal, NO user-facing warning ("if it's
+  wrong, then we ask AutoCount to fix"); the old texts stay in the op's stored before-read and one server-side
+  log line; the vendor bug report goes to crew (`crew/state/files/autocount-link/hapi-vendor-bugs.md`).
 - D2 Restore values for a new SO-linked row (one shared function, used by the first run, Resume and the
   row operations' relink restore where the same rule applies):
   Location = SO row's location; UnitPrice = old PO row's; DeliveryDate = the SO ROW's delivery date
@@ -145,7 +145,7 @@ automatic joining" (rows matched by FromSODtlKey + qty only).
 
 ## 6. Open
 
-- Q1 / Q2 / Q4 answered by crew 16 Nov (D4, D2a). Q3 with the owner (flag, D1b). Order-back marker: not in the
+- Q1 / Q2 / Q4 answered by crew 16 Nov (D4, D2a). Q3 owner ruling 16 Nov (D1b, no warning). Order-back marker: not in the
   hapi SO read (UNVERIFIED source).
 - Owner screen check of the note on db3 (P3): evidence run names the PO, row and note text; crew asks at PR time.
 - CRM (sorento_crm, cross-repo): hide Unlink on `ROW_NEEDS_ATTENTION`; Resume wording unchanged.
