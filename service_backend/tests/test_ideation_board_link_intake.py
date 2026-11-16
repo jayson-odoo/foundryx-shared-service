@@ -79,15 +79,18 @@ def test_one_shot_without_flag_has_no_board_url_and_mints_nothing(ctx):
     assert _live_token(client._factory, cid) is None
 
 
-def test_one_shot_test_idea_gets_null_board_url(ctx):
+def test_one_shot_test_idea_gets_the_board_url_like_a_real_filing(ctx):
+    """Owner 17 Nov ~01:15 (lane FEEDBACK-TEST-BOARD-LINK, supersedes the 16 Nov
+    Q3 a): a Console test filing behaves like a real filing for the link."""
     client, _h, product_id, key = ctx
     cid = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone=PHONE)
     res = _one_shot(client, key, product_id, reply_to_submitter=True, is_test=True)
     assert res.status_code == 201, res.text
     body = res.json()
-    assert body["board_url"] is None
+    token = _live_token(client._factory, cid)
+    assert token, "minted link must be committed"
+    assert body["board_url"] == f"{_board_base()}/{token}/{_n(body['idea_number'])}"
     assert body["link"]
-    assert _live_token(client._factory, cid) is None
 
 
 def test_one_shot_no_contact_gets_null_board_url(ctx):
@@ -188,7 +191,7 @@ def test_similar_own_match_without_contact_gets_null_board_url(ctx):
     assert m["board_url"] is None
 
 
-def test_similar_own_test_lane_gets_null_board_url(ctx):
+def test_similar_own_test_lane_gets_the_board_url(ctx):
     from modules.ideation.models import Idea
     client, _h, product_id, key = ctx
     cid = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone=PHONE)
@@ -212,8 +215,9 @@ def test_similar_own_test_lane_gets_null_board_url(ctx):
     )
     assert res.status_code == 200, res.text
     (m,) = res.json()["matches"]
-    assert m["board_url"] is None
-    assert _live_token(client._factory, cid) is None
+    token = _live_token(client._factory, cid)
+    assert token, "minted link must be committed"
+    assert m["board_url"] == f"{_board_base()}/{token}/{_n(m['idea_number'])}"
 
 
 def test_similar_own_crm_match_filed_for_another_contact_gets_null(ctx):

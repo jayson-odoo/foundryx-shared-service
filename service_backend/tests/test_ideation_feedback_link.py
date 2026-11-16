@@ -532,18 +532,112 @@ def test_rr1_b1_voter_without_contact_never_gets_the_authors_link(setup):
     assert voter_with_contact.endswith(f"/public/feedback/board/{_link(s, other_voter)}/FB-0401")
 
 
-def test_rr1_test_ideas_never_mint_a_link(setup):
-    from modules.ideation.models import IdeaContactLink
+def test_tb_01_test_idea_mints_the_reporters_board_link(setup):
+    """Lane FEEDBACK-TEST-BOARD-LINK (owner 17 Nov ~01:15, supersedes rr1): a
+    Console test filing gets the reporter's personal board link like a real one."""
+    from app.config import settings
 
     s = setup
     cid = _contact(s)
     iid = _idea(s, 402, is_test=True, submitter_contact_id=cid)
-    assert _board_link(s, iid) is None
+    url = _board_link(s, iid)
+    assert url == f"{settings.frontend_url.rstrip('/')}/public/feedback/board/{_link(s, cid)}/FB-0402"
+
+
+def test_tb_02_test_idea_without_contact_gets_no_link(setup):
+    s = setup
+    assert _board_link(s, _idea(s, 403, is_test=True)) is None
+
+
+def test_tb_10_own_board_lists_own_test_items(setup):
+    s = setup
+    me = _contact(s, phone="+60123450001")
+    twin = _contact(s, phone="+60 12-345 0001")
+    real = _idea(s, 404, submitter_contact_id=me)
+    test_own = _idea(s, 405, is_test=True, submitter_contact_id=me)
+    test_twin = _idea(s, 406, is_test=True, submitter_contact_id=twin)
+    h = _contact_session(s, me)
+    c = s["client"]
+    every = {i["id"]: i for i in c.get("/portal/ideas", headers=h).json()["items"]}
+    assert set(every) == {real, test_own, test_twin}
+    assert every[test_own]["isMine"]
+    mine = {i["id"] for i in c.get("/portal/ideas?mine=true", headers=h).json()["items"]}
+    assert mine == {real, test_own, test_twin}
+    road = c.get("/portal/ideas/roadmap", headers=h).json()
+    assert {x["id"] for col in road["columns"] for x in col["ideas"]} == {real, test_own, test_twin}
+    assert sum(col["count"] for col in road["columns"]) == 3
+    # Opened by the number the link carries, and by id.
+    for ref in ("FB-0405", test_own):
+        d = c.get(f"/portal/ideas/{ref}", headers=h)
+        assert d.status_code == 200, d.text
+        assert d.json()["id"] == test_own and d.json()["problem"]
+    assert c.post(f"/portal/ideas/{test_own}/comments", headers=h, json={"body": "ok"}).status_code == 201
+
+
+def test_tb_11_other_contacts_never_see_a_test_item(setup):
+    s = setup
+    reporter = _contact(s, phone="+60123450001")
+    other = _contact(s, first_name="Dealer One", phone="+60123459999")  # same name, other phone
+    real = _idea(s, 407)
+    test_item = _idea(s, 408, is_test=True, submitter_contact_id=reporter)
+    h = _contact_session(s, other)
+    c = s["client"]
+    assert [i["id"] for i in c.get("/portal/ideas", headers=h).json()["items"]] == [real]
+    body = c.get("/portal/ideas", headers=h).json()
+    assert body["total"] == 1
+    assert c.get("/portal/ideas?mine=true", headers=h).json()["items"] == []
+    road = c.get("/portal/ideas/roadmap", headers=h).json()
+    assert [x["id"] for col in road["columns"] for x in col["ideas"]] == [real]
+    assert sum(col["count"] for col in road["columns"]) == 1
+    for ref in (test_item, "FB-0408"):
+        assert c.get(f"/portal/ideas/{ref}", headers=h).status_code == 404
+    assert c.post(f"/portal/ideas/{test_item}/vote", headers=h).status_code == 404
+    assert c.post(f"/portal/ideas/{test_item}/comments", headers=h, json={"body": "x"}).status_code == 404
+    assert c.get(f"/portal/ideas/{test_item}/comments", headers=h).status_code == 404
+
+
+def test_tb_12_staff_portal_never_sees_test_items(setup):
+    s = setup
+    cid = _contact(s)
+    real = _idea(s, 409)
+    test_item = _idea(s, 410, is_test=True, submitter_contact_id=cid)
+    h = _staff_session(s)
+    c = s["client"]
+    assert [i["id"] for i in c.get("/portal/ideas", headers=h).json()["items"]] == [real]
+    assert c.get(f"/portal/ideas/{test_item}", headers=h).status_code == 404
+
+
+def test_tb_13_test_item_never_in_the_changelog(setup):
+    s = setup
+    me = _contact(s)
+    real = _idea(s, 411, status_key="delivered", submitter_contact_id=me)
+    test_item = _idea(s, 412, status_key="delivered", is_test=True, submitter_contact_id=me)
+    h = _contact_session(s, me)
+    c = s["client"]
+    assert [i["id"] for i in c.get("/portal/ideas/changelog", headers=h).json()["items"]] == [real]
+    # still on the reporter's own board list
+    assert test_item in {i["id"] for i in c.get("/portal/ideas", headers=h).json()["items"]}
+
+
+def test_tb_20_test_status_event_never_pokes_the_crm(setup, monkeypatch):
+    from modules.ideation.models import IdeaStatusEvent
+    from modules.ideation.services import status_events
+
+    s = setup
+    pokes = []
+    monkeypatch.setattr(status_events, "queue_crm_poke", lambda *a, **k: pokes.append(a))
+    cid = _contact(s)
+    iid = _idea(s, 413, is_test=True, submitter_contact_id=cid)
+    res = s["client"].post(f"/ideation/ideas/{iid}/status", headers=s["h"], json={"status": "triaged"})
+    assert res.status_code == 200, res.text
     db = s["factory"]()
     try:
-        assert db.query(IdeaContactLink).filter(IdeaContactLink.contact_id == cid).count() == 0
+        ev = db.query(IdeaStatusEvent).filter(IdeaStatusEvent.idea_id == iid).one()
+        assert ev.is_test is True and ev.payload_json["is_test"] is True
+        assert ev.payload_json["board_url"].endswith(f"/public/feedback/board/{_link(s, cid)}/FB-0413")
     finally:
         db.close()
+    assert pokes == []
 
 
 def test_rr1_one_shot_response_keeps_the_per_idea_link(setup):
