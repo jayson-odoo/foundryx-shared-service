@@ -19,6 +19,9 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
 
 - AC-65-05 After a link, the new linked row reads back with Location = the SO row's location, UnitPrice =
   the old PO row's, DeliveryDate = the SO row's delivery date (not the PO row's). [unit + live]
+- AC-65-05b The same restore rule (SO row location, old row price, SO row date, % discount, note) applies to
+  the new linked row of a relink (`relink_row`, CRM "po-links/relink") and of a whole-row `link_row`: one shared
+  function (owner rule: the single action calls the same function as the bulk one). [unit]
 - AC-65-06 SO row with no delivery date: the restore sends no date (the row stays blank), never the PO row's
   date. [unit]
 - AC-65-07 The restore PUT carries `FurtherDescription` on the new linked row only: AutoCount's RTF wrapper
