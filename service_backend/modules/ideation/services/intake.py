@@ -346,6 +346,7 @@ class IntakeService:
         is_test: bool = False,
         intake_ref: Optional[str] = None,
         idea_type: Optional[str] = None,
+        reply_to_submitter: bool = False,
     ) -> dict:
         """Create a REAL idea in one call. The chatbot host has already
         collected AND confirmed the fields, so there is no draft/collect/confirm
@@ -363,7 +364,11 @@ class IntakeService:
 
         ``intake_ref`` (optional, host idempotency key): a retry with the same
         key returns the idea it already created (same body) and changes
-        nothing - a chatbot timeout-retry never mints a second idea."""
+        nothing - a chatbot timeout-retry never mints a second idea.
+
+        ``reply_to_submitter`` (SS-FEEDBACK-BOARD-LINK): the host states its
+        reply goes to the submitter themself - only then is ``board_url`` (the
+        submitter's personal board link) added; see :meth:`_one_shot_response`."""
         definition = get_intake_definition(IDEATION_INTAKE_KEY)
         if definition is None:  # pragma: no cover - registered at boot
             raise ApiError(500, "intake_unavailable", "Intake definition not registered.")
@@ -376,7 +381,7 @@ class IntakeService:
         if ref is not None:
             existing = self._idea_by_intake_ref(tenant_id, ref)
             if existing is not None:
-                return self._replay(existing, crm_user_id)
+                return self._replay(existing, crm_user_id, reply_to_submitter)
         problem = (problem or "").strip()
         if not problem:
             raise ApiError(422, "problem_required", "problem is required.")
@@ -433,11 +438,11 @@ class IntakeService:
             existing = self._idea_by_intake_ref(tenant_id, ref) if ref else None
             if existing is None:
                 raise
-            return self._replay(existing, crm_user_id)
+            return self._replay(existing, crm_user_id, reply_to_submitter)
         self._persist_attachments(tenant_id, idea, attachments)
         definition.on_complete_sink(self.db, idea, tenant_id)
         self.db.commit()
-        return self._one_shot_response(idea)
+        return self._one_shot_response(idea, reply_to_submitter)
 
     def _idea_by_intake_ref(self, tenant_id: str, ref: str) -> Optional[Idea]:
         return (
@@ -446,7 +451,7 @@ class IntakeService:
             .first()
         )
 
-    def _replay(self, existing: Idea, crm_user_id: str) -> dict:
+    def _replay(self, existing: Idea, crm_user_id: str, reply_to_submitter: bool = False) -> dict:
         """Idempotent replay - only for the SAME submitter. A key reused by a
         different CRM user is a host bug; 409 rather than hand them someone
         else's idea."""
@@ -454,21 +459,38 @@ class IntakeService:
             raise ApiError(
                 409, "intake_ref_conflict", "intake_ref already used by a different submitter."
             )
-        return self._one_shot_response(existing)
+        return self._one_shot_response(existing, reply_to_submitter)
 
-    def _one_shot_response(self, idea: Idea) -> dict:
+    def _one_shot_response(self, idea: Idea, reply_to_submitter: bool = False) -> dict:
         status = self.db.query(Status).filter(Status.id == idea.status_id).first()
-        return {
+        out = {
             "idea_id": idea.id,
             "idea_number": idea.idea_number,
             "status": status.key if status else "",
             "title": idea.title,
             "type": idea.type or "idea",
-            # The one-shot API answers the HOST (CRM chatbot / user), not the
-            # contact's own conversation: never hand out a personal link here
-            # (security review #1) - the per-idea status page, as before.
+            # The per-idea status page, in every case (unchanged).
             "link": mint_idea_link(self.db, idea),
         }
+        # Security review #1: the one-shot API answers the HOST (CRM chatbot /
+        # user), who may be an operator filing for someone else - so the
+        # submitter's personal board link (a bearer credential) is never handed
+        # out by default. The host opts in PER CALL, and only by stating that
+        # its reply goes to the submitter themself (``reply_to_submitter``,
+        # owner 16 Nov Q2 a). No key at all otherwise: an old client gets
+        # today's exact body. Null for a test idea or no submitter contact.
+        if reply_to_submitter:
+            out["board_url"] = self._submitter_board_link(idea)
+        return out
+
+    def _submitter_board_link(self, idea: Idea) -> Optional[str]:
+        """The idea submitter's own board link, committed: ``mint_board_link``
+        only flushes, and a minted-but-uncommitted token handed to the host
+        would not exist on the next request."""
+        url = mint_board_link(self.db, idea)
+        if url is not None:
+            self.db.commit()
+        return url
 
     def _contact_link(self, idea: Idea, *, recipient: object = SUBMITTER) -> Optional[str]:
         """The link the contact in THIS conversation gets about ``idea`` (lane
@@ -489,11 +511,15 @@ class IntakeService:
         submitter_phone: Optional[str] = None,
         is_test: bool = False,
         idea_type: Optional[str] = None,
+        reply_to_submitter: bool = False,
     ) -> dict:
         """The sender's OWN live ideas similar to ``text_`` (top 3, best first).
         Identity = CRM user id and/or phone - at least one must be real (422
         ``submitter_required`` otherwise), so a missing identity can never fall
-        back to name or widen to everyone. Read-only."""
+        back to name or widen to everyone. Read-only, except that
+        ``reply_to_submitter`` (the host replies to the submitter themself) adds
+        each match's ``board_url`` - the matches are the submitter's own items,
+        so it is their own credential - minting it on first use."""
         ident = SubmitterIdentity(crm_user_id=submitter_crm_user_id, phone=submitter_phone)
         if ident.is_empty:
             raise ApiError(
@@ -527,8 +553,7 @@ class IntakeService:
             if idea is None:  # pragma: no cover - same tenant by construction
                 continue
             st = statuses.get(idea.status_id)
-            matches.append(
-                {
+            match = {
                     "idea_id": idea.id,
                     "idea_number": idea.idea_number,
                     "title": idea.title,
@@ -540,7 +565,9 @@ class IntakeService:
                     "created_at": _iso_z(idea.created_at),
                     "link": mint_idea_link(self.db, idea),
                 }
-            )
+            if reply_to_submitter:
+                match["board_url"] = self._submitter_board_link(idea)
+            matches.append(match)
         return {"matches": matches}
 
     def _product_or_404(self, tenant_id: str, product_id: str) -> Product:

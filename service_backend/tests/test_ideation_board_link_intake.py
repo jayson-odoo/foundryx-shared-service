@@ -7,10 +7,8 @@ Owner rulings (16 Nov): Q2 a - board link only when the reply goes to the
 submitter themself (never to an operator filing for someone else = security
 review #1/B1); Q3 a - test items get no board link.
 """
-import pytest
-
 from app.models import DEFAULT_TENANT_ID
-from tests.test_ideation_create_idea import _make_contact
+from tests.test_ideation_create_idea import _key_auth, _make_contact
 from tests.test_ideation_own import (  # noqa: F401 - fixture re-export
     PHONE,
     _insert_idea,
@@ -41,6 +39,12 @@ def _live_token(factory, contact_id):
         db.close()
 
 
+def _n(idea_number):
+    # The URL carries the number as users read it (FB-0001), the wire field
+    # stays IDEA-0001 (lane FEEDBACK-RENAME).
+    return idea_number.replace("IDEA-", "FB-")
+
+
 def _board_base():
     from app.config import settings
 
@@ -48,6 +52,8 @@ def _board_base():
 
 
 # ── 1. one-shot create ───────────────────────────────────────────────────────
+
+
 def test_one_shot_reply_to_submitter_returns_board_url(ctx):
     client, _h, product_id, key = ctx
     cid = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone=PHONE)
@@ -56,7 +62,7 @@ def test_one_shot_reply_to_submitter_returns_board_url(ctx):
     body = res.json()
     token = _live_token(client._factory, cid)
     assert token, "minted link must be committed"
-    assert body["board_url"] == f"{_board_base()}/{token}/{body['idea_number']}"
+    assert body["board_url"] == f"{_board_base()}/{token}/{_n(body['idea_number'])}"
     # the per-idea track link is unchanged
     assert body["link"] and "/public/feedback/board/" not in body["link"]
 
@@ -105,7 +111,7 @@ def test_one_shot_two_calls_same_token_and_replay_same_board_url(ctx):
     tok1 = first["board_url"].split("/")[-2]
     tok2 = second["board_url"].split("/")[-2]
     assert tok1 == tok2
-    assert second["board_url"].endswith(f"/{second['idea_number']}")
+    assert second["board_url"].endswith(f"/{_n(second['idea_number'])}")
     # a replay without the flag is the old shape, still the same idea
     old = _one_shot(client, key, product_id, intake_ref="r-1").json()
     assert "board_url" not in old
@@ -124,10 +130,12 @@ def test_one_shot_board_url_on_crm_template_base(ctx, monkeypatch):
     )
     body = _one_shot(client, key, product_id, reply_to_submitter=True).json()
     token = _live_token(client._factory, cid)
-    assert body["board_url"] == f"https://crm.example.test/feedback/board/{token}/{body['idea_number']}"
+    assert body["board_url"] == f"https://crm.example.test/feedback/board/{token}/{_n(body['idea_number'])}"
 
 
 # ── 2. own-similar ───────────────────────────────────────────────────────────
+
+
 def test_similar_own_reply_to_submitter_carries_board_url_per_match(ctx):
     client, _h, product_id, key = ctx
     cid = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone=PHONE)
@@ -141,7 +149,7 @@ def test_similar_own_reply_to_submitter_carries_board_url_per_match(ctx):
 
     res = client.post(
         "/ideation/intake/ideas/similar-own",
-        headers=__import__("tests.test_ideation_create_idea", fromlist=["_key_auth"])._key_auth(key),
+        headers=_key_auth(key),
         json={
             "product_id": product_id,
             "text": "export orders to excel",
@@ -156,13 +164,12 @@ def test_similar_own_reply_to_submitter_carries_board_url_per_match(ctx):
     assert token
     expected = f"{_board_base()}/{token}"
     if m["idea_number"]:
-        expected = f"{expected}/{m['idea_number']}"
+        expected = f"{expected}/{_n(m['idea_number'])}"
     assert m["board_url"] == expected
     assert m["link"] == plain.json()["matches"][0]["link"]
 
 
 def test_similar_own_match_without_contact_gets_null_board_url(ctx):
-    from tests.test_ideation_create_idea import _key_auth
 
     client, _h, product_id, key = ctx
     _insert_idea(client._factory, product_id, problem="Export orders to Excel", crm_user_id="crm-1")
@@ -183,8 +190,6 @@ def test_similar_own_match_without_contact_gets_null_board_url(ctx):
 
 def test_similar_own_test_lane_gets_null_board_url(ctx):
     from modules.ideation.models import Idea
-    from tests.test_ideation_create_idea import _key_auth
-
     client, _h, product_id, key = ctx
     cid = _make_contact(client._factory, first_name="CUSTOMER", last_name="A", phone=PHONE)
     iid = _insert_idea(client._factory, product_id, problem="Export orders to Excel", contact_id=cid)
