@@ -190,7 +190,7 @@ def _header_unchanged(before: Doc, after: Doc, body: Doc) -> bool:
     for key in keys:
         if key.startswith(_HEADER_FREE_PREFIXES) or key in _HEADER_FREE_TOTALS:
             continue
-        if payloads._remark_mirror(key, after):
+        if payloads._remark_mirror(key, after, "PO"):  # the plan 55 flows verify PO / SPO documents
             continue
         expected = body[key] if key in body else before.get(key)
         if not _same(expected, after.get(key)):

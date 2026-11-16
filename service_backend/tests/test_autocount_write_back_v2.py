@@ -388,10 +388,10 @@ def test_ac_61_12_link_of_a_row_already_at_hq_without_a_date_still_sends_the_not
     assert "FurtherDescription" in puts(h)[1].body["Details"][0]
 
 
-def test_ac_61_12_move_failure_keeps_the_link_and_warns_location_not_moved(h, world):
+def test_ac_61_12_move_failure_keeps_the_link_and_is_needs_attention_restore_not_landed(h, world):
     h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
     res = h.run("link_row", world.params["link_row"])
-    assert res.outcome == "done" and "LOCATION_NOT_MOVED" in res.warnings
+    assert (res.outcome, res.error_code) == ("needs_attention", "RESTORE_NOT_LANDED")  # plan 65 R2: resumable, never done with warnings
     (_old, new), = res.replaced_lines
     assert row(h.vendor, "PO", 7001, new)["FromSODtlKey"] == world.so_a  # linked, at HQ
     assert row(h.vendor, "PO", 7001, new)["Location"] == "HQ"
@@ -827,11 +827,11 @@ def test_r3_gateway_link_and_relink_end_done_not_recovered(client, h, gw, world)
 
 
 @pytest.mark.parametrize("op", ["link_row", "relink_row"])
-def test_r3_a_failed_move_put_is_done_with_both_warnings_and_no_third_put(h, world, op):
+def test_r3_a_failed_move_put_is_needs_attention_restore_not_landed_and_no_third_put(h, world, op):
+    """Plan 65 R2: a link_row / relink_row restore that did not land is resumable, never done with warnings."""
     h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
     res = h.run(op, world.params[op])
-    assert res.outcome == "done", (res.outcome, res.error_code)
-    assert "LOCATION_NOT_MOVED" in res.warnings and "ROW_VALUES_NOT_KEPT" in res.warnings
+    assert (res.outcome, res.error_code) == ("needs_attention", "RESTORE_NOT_LANDED"), (res.outcome, res.error_code)
     assert len(puts(h)) == 2  # the replace and the failed move: no recovery, no retry
     (_o, new), = res.replaced_lines
     assert row(h.vendor, "PO", 7001, new)["FromSODtlKey"] in (world.so_a, world.so_b)  # the link is kept

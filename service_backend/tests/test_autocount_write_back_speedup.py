@@ -179,10 +179,11 @@ def test_spd_05_a_timed_out_replace_is_still_pending_and_logged(h, world):
     assert_one_row_per_call(h)
 
 
-def test_spd_05_a_failed_move_is_still_a_warning(h, world):
+def test_spd_05_a_failed_move_is_needs_attention_restore_not_landed(h, world):
     h.vendor.fail_next("PUT", "editpurchaseorderbydockey", status=500, after=1)
     res = h.run("link_row", world.params["link_row"])
-    assert res.outcome == "done" and "LOCATION_NOT_MOVED" in res.warnings, (res.outcome, res.warnings)
+    assert (res.outcome, res.error_code) == ("needs_attention", "RESTORE_NOT_LANDED"), (
+        res.outcome, res.warnings)  # plan 65 R2: resumable, never done with warnings
     assert_one_row_per_call(h)
 
 

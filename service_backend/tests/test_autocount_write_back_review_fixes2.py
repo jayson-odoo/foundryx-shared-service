@@ -226,12 +226,12 @@ def test_deadline_after_the_add_with_no_move_needed_is_done_with_replaced_lines_
     assert any(hasattr(r, "lines") for r in h.sink_calls), "the read-back document must still be pushed"
 
 
-def test_deadline_after_the_add_when_a_move_is_due_is_done_with_location_not_moved(h, w_far, monkeypatch):
+def test_deadline_after_the_add_when_a_move_is_due_is_needs_attention_restore_not_landed(h, w_far, monkeypatch):
     w = w_far
     _clock_jump_after_writes(h, monkeypatch, 1)  # plan 61: after the replace PUT
     res = h.run("link_row", w.params["link_row"])
-    assert res.outcome == "done", (res.outcome, res.error_code)
-    assert "LOCATION_NOT_MOVED" in res.warnings
+    assert (res.outcome, res.error_code) == ("needs_attention", "RESTORE_NOT_LANDED"), (
+        res.outcome, res.error_code)  # plan 65 R2: resumable, never done with warnings
     assert len(res.replaced_lines) == 1
     assert h.steps() == [PUT_PO]  # no move PUT after the deadline
     assert any(hasattr(r, "lines") for r in h.sink_calls)

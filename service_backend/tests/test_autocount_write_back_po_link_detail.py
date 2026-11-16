@@ -80,13 +80,13 @@ def test_ac_64_02_the_move_is_inside_the_same_po_links_call(client, gw, far):
 
 # ---- AC-64-03: move not landed -> today's LOCATION_NOT_MOVED, detail tells the truth ---------------------
 
-def test_ac_64_03_move_not_landed_keeps_location_not_moved_and_detail_is_the_real_location(client, gw, far):
+def test_ac_64_03_move_not_landed_is_needs_attention_and_names_no_detail(client, gw, far):
     gw.h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
     r = client.post(LINK, json=_whole(far), headers=gw.hdr())
-    assert r.status_code == 200, r.text
+    assert r.status_code == 502, r.text  # the gateway's existing status for needs_attention
     body = r.json()
-    assert body["outcome"] == "done" and "LOCATION_NOT_MOVED" in body["warnings"]
-    assert body["detail"]["Location"] == "HQ"  # where it really sits, never the SO location it missed
+    assert (body["outcome"], body["errorCode"]) == ("needs_attention", "RESTORE_NOT_LANDED")  # plan 65 R2: resumable, never done with warnings
+    assert body.get("detail") is None  # never the SO location it missed
 
 
 # ---- AC-64-04: goods received -> plain refusal, nothing sent, key released --------------------------------
