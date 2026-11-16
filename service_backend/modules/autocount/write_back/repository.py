@@ -88,6 +88,20 @@ class WriteActionRepository:
         after = row[0] if row else None
         return after if isinstance(after, dict) else None
 
+    def operation_step(self, tenant_id: str, company_id: str, operation_id: str, step: str) -> Optional[AcWriteAction]:
+        """The newest action of one step of an operation (plan 65 D5: Resume re-judges the stored link PUT)."""
+        return (
+            self.db.query(AcWriteAction)
+            .filter(
+                AcWriteAction.tenant_id == tenant_id,
+                AcWriteAction.company_id == company_id,
+                AcWriteAction.operation_id == operation_id,
+                AcWriteAction.step == step,
+            )
+            .order_by(AcWriteAction.created_at.desc(), AcWriteAction.id)
+            .first()
+        )
+
     def expire_stale_in_flight(
         self, tenant_id: str, company_id: str, doc_key: int, before: datetime
     ) -> int:
@@ -263,19 +277,22 @@ class OperationRepository:
         return query.first() is not None
 
     def pending_po_row_links(
-        self, tenant_id: str, company_id: str, doc_key: int, dtl_key: int, *, exclude_id: Optional[str] = None,
+        self, tenant_id: str, company_id: str, doc_key: int, dtl_key: Optional[int], *,
+        exclude_id: Optional[str] = None,
     ) -> List[AcWriteOperation]:
-        """The unresolved link operations on one PO row: ``pending_verification`` (outcome unknown) and
-        ``needs_attention`` (may have landed in part); both may already have taken some of the row."""
+        """The unresolved link operations on one PO row (``dtl_key`` None = on any row of the PO):
+        ``pending_verification`` (outcome unknown) and ``needs_attention`` (may have landed in part); both
+        may already have taken some of the row."""
         query = self.db.query(AcWriteOperation).filter(
             AcWriteOperation.tenant_id == tenant_id,
             AcWriteOperation.company_id == company_id,
             AcWriteOperation.doc_type == "PO",
             AcWriteOperation.doc_key == doc_key,
-            AcWriteOperation.dtl_key == dtl_key,
             AcWriteOperation.status.in_((OUTCOME_PENDING, "needs_attention")),
             AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
         )
+        if dtl_key is not None:
+            query = query.filter(AcWriteOperation.dtl_key == dtl_key)
         if exclude_id is not None:
             query = query.filter(AcWriteOperation.id != exclude_id)
         return query.all()

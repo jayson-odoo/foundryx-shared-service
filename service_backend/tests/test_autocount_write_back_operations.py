@@ -206,7 +206,7 @@ def test_ac_57_30_link_row_moves_the_new_row_to_the_so_rows_location(h, w_far):
     assert old_key == w.p_free and new_key != old_key
     assert [r["DtlKey"] for r in move.body["Details"]] == [new_key]
     assert move.body["Details"][0]["Location"] == "BRW-AM"
-    assert move.body["Details"][0]["DeliveryDate"] == "2026-12-01T00:00:00"  # F5: the vendor cleared it
+    assert move.body["Details"][0]["DeliveryDate"] == "2026-11-04T00:00:00"  # F5 cleared it; plan 65 D2: the SO row's
     stored = w.row_by_key(w.po_rows(), new_key)
     assert stored["FromSODtlKey"] == w.so_a and stored["Location"] == "BRW-AM"
     assert res.document and w.row_by_key(res.document["Details"], new_key)["Location"] == "BRW-AM"
