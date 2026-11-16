@@ -47,13 +47,40 @@ All through SS's logged client/reader (every call in `ac_api_call_log`), against
 - P4 (repair): link, then stop before the restore (the half-filled state), set the op `needs_attention`, then
   Resume on the fixed code: one restore PUT on the linked row only, verified, op DONE.
 
+### Probe results (db3, 16 Nov, runs FXT-1116A..F, lane DB call log)
+
+- P1: hapi rewrites PO Remark2..4 to Remark1 on EVERY create and edit PUT (Remark1 unchanged, omitted, blank
+  or changed: same). A PO with different remarks cannot be built through the API, so the db1 mismatch cannot be
+  replayed live; on API-made POs the incident-shaped link verifies DONE (drift list empty). The db1 PO's
+  remarks were hand-set: the link PUT replaced Remark2..4 with Remark1 (the expected COLLATERAL_CHANGE; the
+  owner confirms with query C of the root-cause report). Description sticks on edit.
+- P2: on the new linked row the link PUT's Location, UnitPrice, DeliveryDate AND Discount are reset; a second
+  edit PUT sets all four. FOCQty cannot be written through hapi at all (create, edit, second PUT: reads 0).
+- P3: an edit PUT with FurtherDescription answers 200, keeps the row and its link; reads never return it.
+- P4: the half-filled state is built by the live suite's case R04 (the real link, halted where the incident
+  stopped): new row HQ / price 0 / no date, op `needs_attention`. Kept op for the post-fix Resume:
+  `d146c832-907e-4040-829b-2308520dd094` (lane DB). Resume on ddb53cbe: 1 PUT, DONE, old PO row's date, no note.
+- Live red already visible: R02 on ddb53cbe restored the PO row's date, not the SO row's (AC-65-05).
+
+### Phase 1 contract (names the tester's tests and the coder share)
+
+- `payloads.so_link_note(so: Doc, so_row: Doc) -> str`: the plain note text (D4).
+- `payloads.autocount_rtf(text: str) -> str`: AutoCount's RTF wrapper around plain text (D4).
+- `payloads.link_discount(value) -> str`: the value when every `+`-term ends in `%`, else "" (D2a).
+- Snapshot `links[]` gains `soDeliveryDate` (`YYYY-MM-DD` or null) and `note` (plain text) at link time.
+- New codes: `RESTORE_NOT_LANDED` (D3, op `needs_attention`), `ROW_NEEDS_ATTENTION` (D6 refusal).
+- The vendor remark mirror is tolerated by one helper used by every PO verify (D1).
+
 ## 3. Decisions
 
-- D1 Verify tolerance: one shared helper names the AutoCount-side drift P1 proves (expected: Remark2..4
-  re-written from Remark1 by the vendor wrapper on an edit PUT), used by `verify_link_batch`, `verify_edit`
-  (the restore step) and the Resume re-check. Nothing broader: any other header or row drift is still
-  `COLLATERAL_CHANGE`. If P1 shows the remarks are LOST (overwritten with Remark1 on a PO where they
-  differ), that is real data loss on every PO edit: the lane asks crew before tolerating it.
+- D1 Verify tolerance (P1 proven): a Remark2..4 that reads back equal to the read-back Remark1 is the vendor
+  mirror, tolerated by one helper in `verify_link_batch`, `verify_edit` (the restore step, no header change)
+  and the Resume re-check. Nothing broader: Remark2..4 drifting to anything else, any other header field, or
+  any other row is still `COLLATERAL_CHANGE`. D1b, a NEW link on a PO whose Remark2..4 differ from Remark1
+  (the PUT will overwrite them): Q3 is with the owner (crew 16 Nov). Built behind ONE module flag
+  `SKIP_LINK_WHEN_REMARKS_DIFFER` (default False): False = link, op DONE with warning `REMARKS_OVERWRITTEN`
+  (old texts stay in the op's stored before-read); True = every line skipped `REMARKS_WOULD_CHANGE` before any
+  PUT (batch rule).
 - D2 Restore values for a new SO-linked row (one shared function, used by the first run, Resume and the
   row operations' relink restore where the same rule applies):
   Location = SO row's location; UnitPrice = old PO row's; DeliveryDate = the SO ROW's delivery date
@@ -78,9 +105,11 @@ All through SS's logged client/reader (every call in `ac_api_call_log`), against
   read back through hapi (P3): verify covers every other restored field; the note's landing is shown once on
   the db3 screen and recorded in the evidence.
 - D2a FOC / discount (crew decision 16 Nov, option a; the PO total never changes): a PART link puts FOCQty 0
-  on the linked row and the FOC stays on the kept row; a WHOLE-row link (row deleted) moves the old row's FOCQty
-  to the first linked row (request order); Discount is copied to the linked row only when it is a percentage
-  (every `+`-term ends in `%`), else blank.
+  on the linked row and the FOC stays on the kept row; Discount is restored on the linked row only when it is
+  a percentage (every `+`-term ends in `%`), else blank (P2: the link PUT resets it, the restore sets it). A
+  WHOLE-row link of a row with FOCQty > 0 cannot move the FOC (P2: hapi cannot write FOCQty): crew decision
+  Q4 (a) 16 Nov: the line that would take the whole row is skipped `FOC_ON_ROW` (batch rule: skipped + named),
+  never a silent quantity change.
 - D5 Resume repair (batch): (1) re-judge the stored link PUT (step `link` before_json vs after_json) with
   D1 (pure, no call): still MISMATCH -> stays `needs_attention`, no PUT; (2) fresh read: the kept row at its
   expected qty (or gone when all taken) and one new row per link, nothing else linked to the batch SO rows ->
@@ -116,5 +145,7 @@ automatic joining" (rows matched by FromSODtlKey + qty only).
 
 ## 6. Open
 
-- Q1 / Q2 answered by crew 16 Nov (D4, D2a). Order-back marker: not in the hapi SO read (UNVERIFIED source).
+- Q1 / Q2 / Q4 answered by crew 16 Nov (D4, D2a). Q3 with the owner (flag, D1b). Order-back marker: not in the
+  hapi SO read (UNVERIFIED source).
+- Owner screen check of the note on db3 (P3): evidence run names the PO, row and note text; crew asks at PR time.
 - CRM (sorento_crm, cross-repo): hide Unlink on `ROW_NEEDS_ATTENTION`; Resume wording unchanged.

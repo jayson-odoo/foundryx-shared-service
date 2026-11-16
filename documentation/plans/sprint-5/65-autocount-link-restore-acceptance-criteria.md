@@ -11,8 +11,9 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
   `COLLATERAL_CHANGE`; a Remark2..4 drift to a value that is NOT Remark1 is still `COLLATERAL_CHANGE`. [unit]
 - AC-65-03 The restore step's verify (verify_edit, no header change) applies the same tolerance: the proven
   drift alone never turns a landed restore into "not landed". [unit]
-- AC-65-04 Live: the incident-shaped link on db3 (four different remarks, sub-location SO row) ends DONE on
-  the fixed code; on ddb53cbe it ends `needs_attention` with the code P1 names. [live]
+- AC-65-04 Live: hapi mirrors Remark1 into Remark2..4 on every PUT, so different remarks cannot be built on
+  db3 (probe P1); the mismatch is proven by the unit fixture (AC-65-01). Live, the incident-shaped link
+  (sub-location SO row, priced, dated, % discount source row) ends DONE with the restored row of AC-65-05. [live]
 
 ## Restore values (D2, D4)
 
@@ -26,7 +27,11 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
   `\`, `{`, `}` escaped, non-ASCII encoded. [unit; live: PUT accepted, row and link kept]
 - AC-65-08 Part link: the linked row has FOCQty 0 and the kept row keeps its FOCQty. Whole-row link: the first
   linked row gets the old row's FOCQty. Discount is copied only when it is a percentage (e.g. "5%",
-  "5%+2%"), else blank. The PO total before and after the link is the same. [unit + live]
+  "5%+2%"), else blank. The PO total before and after the link is the same. A line that would take the whole
+  of a row carrying FOCQty > 0 is skipped `FOC_ON_ROW` (named in `skipped[]`), nothing sent for it. [unit]
+- AC-65-08b Remarks (flag `SKIP_LINK_WHEN_REMARKS_DIFFER`): off (default) = a link on a PO whose Remark2..4
+  differ from Remark1 ends DONE with warning `REMARKS_OVERWRITTEN`; on = every line skipped
+  `REMARKS_WOULD_CHANGE`, no PUT. A PO whose Remark2..4 are blank or equal Remark1 gets neither. [unit]
 - AC-65-09 The restore PUT's Details hold only the new linked rows; no other row and no header field is sent
   for change. [unit]
 - AC-65-10 The snapshot stores, per link, the SO row's delivery date and the note text at link time. [unit]
@@ -55,7 +60,7 @@ Plan: `65-autocount-link-restore.md`. Each AC names its test (unit = pytest on f
 
 - AC-65-18 `unlink_row`, `relink_row` and `delete_line` on a PO row covered by a `needs_attention` or
   `pending_verification` link operation (its source row, or a new row linked to one of its SO rows) are
-  refused `ROW_NEEDS_ATTENTION` with no vendor call. [unit]
+  refused `ROW_NEEDS_ATTENTION` with no PUT (reads allowed). [unit]
 - AC-65-19 The same ops on another row of that PO are not refused for this reason; a new Link PO on another
   row still runs. [unit]
 - AC-65-20 After Resume ends DONE the refusal lifts. [unit]
