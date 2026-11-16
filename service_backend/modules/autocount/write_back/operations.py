@@ -443,9 +443,11 @@ class OperationService:
     @staticmethod
     def _nothing_landed(status: Optional[str], code: Optional[str]) -> bool:
         """Plan 62 D6: the stored outcome proves nothing reached AutoCount: a refusal, or AutoCount's
-        own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed."""
+        own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed.
+        Plan 65 B3 (owner: only a confirmed success locks): every ``recovered`` answer, whatever its code,
+        left the PO as it was; the next press runs fresh (re-read and re-guarded, so it cannot write twice)."""
         return (status == REFUSED or (status == VENDOR_ERROR and code == VENDOR_REFUSED)
-                or (status == RECOVERED and code == NOT_APPLIED))  # resume proved the write never landed
+                or status == RECOVERED)
 
     def _release_key(self, row: AcWriteOperation) -> None:
         """Free the idempotency key of a confirmed not-landed operation: the row is kept for history
