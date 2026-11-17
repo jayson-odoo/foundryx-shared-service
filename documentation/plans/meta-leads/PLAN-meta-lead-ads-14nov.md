@@ -197,6 +197,15 @@ answers encrypted, AC-64-55) and R7 (History tab, AC-64-38). Plan 64 is copied o
 (`documentation/plans/sprint-5/64-lead-capture*.md`), so its original branch `claude/wizardly-albattani-ymi7d2` is
 now superseded by this PR.
 
+**Later rulings (17/11/2026):**
+
+- Ask a53007814, "Should Meta form answers fill Developer / Location / Product interest?": the owner first chose
+  (b) + (c) ("I think we should do b and c la").
+- At ~15:27 he dropped (b): "for meta leads i think this is too cusotmized already sorry".
+- So Meta form answers stay in the lead's Notes as today. No product-interest field or field map is published, and
+  the script for it was removed.
+- Whether (c) Developer / Location (CRM lane META-CRM-FIELDS) is also dropped: open, asked on PR #236.
+
 ## 8. Decision 1 in detail: sharing a Facebook Page between products
 
 **What the customer sees.** One switch in each product's Lead Capture settings (in EcoHub: Company Settings > Lead
