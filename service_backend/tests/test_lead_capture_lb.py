@@ -93,6 +93,7 @@ class LbGraph(FakeGraph):
         self.dead = False
         self.dead_code = 190
         self.leads_filters: list = []
+        self.form_errors: dict = {}
 
     def _dead(self) -> httpx.Response:
         return httpx.Response(
@@ -124,14 +125,27 @@ class LbGraph(FakeGraph):
         if path.endswith("/leads") and request.method == "GET":
             self.calls.append(request)
             form_id = path.rsplit("/", 2)[-2]
+            if form_id in self.form_errors:
+                code = self.form_errors[form_id]
+                return httpx.Response(400, json={"error": {"message": f"(#{code}) refused", "code": code}})
             filtering = json.loads(request.url.params.get("filtering") or "[]")
             self.leads_filters.append((form_id, filtering))
-            since = next((int(f["value"]) for f in filtering if f.get("field") == "time_created"), 0)
+            since = next((int(f["value"]) for f in filtering
+                          if f.get("field") == "time_created" and f.get("operator") == "GREATER_THAN"), 0)
+            until = next((int(f["value"]) for f in filtering
+                          if f.get("field") == "time_created" and f.get("operator") == "LESS_THAN"), 10**12)
             rows = [
                 r for r in self.form_leads.get(form_id, [])
-                if _epoch(datetime.strptime(r["created_time"], "%Y-%m-%dT%H:%M:%S%z")) > since
+                if since < _epoch(datetime.strptime(r["created_time"], "%Y-%m-%dT%H:%M:%S%z")) < until
             ]
-            return httpx.Response(200, json={"data": rows, "paging": {}})
+            rows.sort(key=lambda r: r["created_time"], reverse=True)  # Meta: newest first
+            limit = int(request.url.params.get("limit") or 100)
+            offset = int(request.url.params.get("after") or 0)
+            page = rows[offset:offset + limit]
+            paging = {}
+            if offset + limit < len(rows):
+                paging = {"cursors": {"after": str(offset + limit)}, "next": "https://graph.example/next"}
+            return httpx.Response(200, json={"data": page, "paging": paging})
         return super().handler(request)
 
 
@@ -796,3 +810,244 @@ def test_lb_migration_is_additive_and_fits():
     rev = text.split('revision = "', 1)[1].split('"', 1)[0]
     assert len(rev) <= 32 and 'down_revision = "0003_lc_source_routing_unique"' in text
     assert "IF NOT EXISTS" in text and "DROP TABLE" not in text.split("def downgrade", 1)[0]
+
+
+# ── review round 1 ──────────────────────────────────────────────────────────
+
+def _many(form_id: str, count: int, start: datetime, step=timedelta(minutes=20), base=200):
+    return [_lead_body(str(100000000000000 + base + i), form_id, start + i * step, email=f"m{i}@example.com")
+            for i in range(count)]
+
+
+def test_backfill_with_more_leads_than_one_read_still_gets_all(client, lc, lgraph, monkeypatch):
+    """A form with more leads than one capped read: the window is split, so
+    every lead is stored and nothing is read twice into a duplicate."""
+    from modules.lead_capture import meta_leads
+
+    monkeypatch.setattr(meta_leads, "PAGE_SIZE", 2)
+    monkeypatch.setattr(meta_leads, "MAX_PAGES", 1)
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    _set(lc, sid, status=SOURCE_LIVE)
+    _age_source(lc, sid, days=1)
+    lgraph.form_leads[FORM_ID] = _many(FORM_ID, 7, datetime.now(timezone.utc) - timedelta(hours=5))
+    assert client.post(f"/lead-capture/sources/{sid}/backfill", headers=headers).status_code == 202
+    assert len(_leads(lc)) == 7
+    assert _row(lc, sid).backfill_last_error is None
+
+
+def test_backfill_cut_by_the_run_budget_continues_next_run(client, lc, lgraph, monkeypatch):
+    from modules.lead_capture import meta_leads
+    from modules.lead_capture.services import backfill_service
+
+    monkeypatch.setattr(meta_leads, "PAGE_SIZE", 2)
+    monkeypatch.setattr(meta_leads, "MAX_PAGES", 1)
+    monkeypatch.setattr(backfill_service, "RUN_PAGE_BUDGET", 3)
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    _set(lc, sid, status=SOURCE_LIVE)
+    _age_source(lc, sid, days=1)
+    lgraph.form_leads[FORM_ID] = _many(FORM_ID, 7, datetime.now(timezone.utc) - timedelta(hours=5))
+    seen = []
+    for _ in range(10):
+        db = lc()
+        try:
+            backfill_service.backfill_source(db, sid)
+        finally:
+            db.close()
+        seen.append(len(_leads(lc)))
+        if seen[-1] == 7:
+            break
+    assert seen[-1] == 7 and seen[0] < 7  # progress across runs, never stuck
+    assert len({lead.platform_lead_id for lead in _leads(lc)}) == 7
+
+
+def test_one_failing_form_does_not_stall_the_others(client, lc, lgraph):
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    _set(lc, sid, status=SOURCE_LIVE)
+    _age_source(lc, sid)
+    client.put(f"/lead-capture/sources/{sid}/forms", json={"formsMode": "pick", "formIds": [FORM_ID3, FORM_ID]},
+               headers=headers)
+    lgraph.form_errors[FORM_ID3] = 100  # e.g. a ticked form deleted on Facebook
+    lgraph.form_leads[FORM_ID] = [_lead_body(MISSED_LEAD, FORM_ID, datetime.now(timezone.utc) - timedelta(hours=1))]
+    client.post(f"/lead-capture/sources/{sid}/backfill", headers=headers)
+    assert [lead.platform_lead_id for lead in _leads(lc)] == [MISSED_LEAD]
+    row = _row(lc, sid)
+    assert row.status == SOURCE_LIVE and row.backfill_last_error and FORM_ID3 in row.backfill_last_error
+
+
+def test_a_form_level_permission_error_in_backfill_does_not_flip(client, lc, lgraph):
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    _set(lc, sid, status=SOURCE_LIVE)
+    _age_source(lc, sid)
+    lgraph.form_errors[FORM_ID] = 200  # Leads Access Manager: this form only
+    client.post(f"/lead-capture/sources/{sid}/backfill", headers=headers)
+    assert _row(lc, sid).status == SOURCE_LIVE and _mails(lc) == []
+
+
+def test_a_forms_change_during_ingest_is_not_overwritten(client, lc, lgraph):
+    """The ingest caches the form name in config_json; a forms choice saved
+    while it read from Meta must survive its commit."""
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    orig = lgraph.handler
+
+    def handler(request):
+        if request.url.path.endswith(f"/{FORM_ID}") and request.url.params.get("fields") == "name":
+            db = lc()
+            try:
+                row = db.get(LcSource, sid)
+                row.config_json = {**(row.config_json or {}), "formsMode": "pick", "formIds": [FORM_ID]}
+                db.commit()
+            finally:
+                db.close()
+        return orig(request)
+
+    lgraph.handler = handler
+    db = lc()
+    try:
+        assert len(leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)) == 1
+    finally:
+        db.close()
+    config = _row(lc, sid).config_json
+    assert config["formsMode"] == "pick" and config["formIds"] == [FORM_ID]
+    assert config["formNames"][FORM_ID]
+
+
+@pytest.mark.parametrize("code", [10, 200])
+def test_caller_driven_reads_flip_only_on_a_dead_token(client, lc, lgraph, code):
+    """A viewer opening the forms list, or a made-up form id on the test lead,
+    must not stop a healthy source on a permission-style answer."""
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    _set(lc, sid, status=SOURCE_LIVE)
+    lgraph.dead, lgraph.dead_code = True, code
+    assert client.get(f"/lead-capture/sources/{sid}/forms", headers=headers).status_code == 400
+    assert client.get(f"/lead-capture/sources/{sid}/forms/{FORM_ID}/questions", headers=headers).status_code == 400
+    assert _row(lc, sid).status == SOURCE_LIVE and _mails(lc) == []
+
+
+def test_caller_driven_read_with_a_dead_token_flips(client, lc, lgraph):
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    _set(lc, sid, status=SOURCE_LIVE)
+    lgraph.dead = True  # 190
+    res = client.get(f"/lead-capture/sources/{sid}/forms", headers=headers)
+    assert res.status_code == 400 and res.json()["detail"]["code"] == "token_invalid"
+    assert _row(lc, sid).status == SOURCE_NEEDS_RECONNECT
+
+
+def test_backfill_run_now_cooldown_and_in_flight_skip(client, lc, lgraph):
+    from modules.lead_capture.services import backfill_service
+
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    key = _key(client, headers)
+    assert client.post(f"/lead-capture/sources/{sid}/backfill", headers=headers).status_code == 202
+    again = client.post(f"/api/v1/lead-capture/sources/{sid}/backfill", headers=_bearer(key))
+    assert again.status_code == 429 and again.json()["error"]["code"] == "backfill_cooldown"
+    assert 1 <= int(again.headers["Retry-After"]) <= 60
+    # a run already in flight is skipped by the tick (no Graph call)
+    _set(lc, sid, backfill_started_at=datetime.now(timezone.utc), backfill_last_run_at=None)
+    lgraph.calls.clear()
+    db = lc()
+    try:
+        backfill_service.run_due(db)
+    finally:
+        db.close()
+    assert not any(c.url.path.endswith("/leadgen_forms") for c in lgraph.calls)
+    # a stale claim (a crashed worker) does not block for ever
+    _set(lc, sid, backfill_started_at=datetime.now(timezone.utc) - timedelta(hours=2))
+    db = lc()
+    try:
+        backfill_service.run_due(db)
+    finally:
+        db.close()
+    assert any(c.url.path.endswith("/leadgen_forms") for c in lgraph.calls)
+    assert _row(lc, sid).backfill_started_at is None
+
+
+def test_reconnect_rechecks_sharing_when_another_product_joined_meanwhile(client, lc, lgraph):
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    _set(lc, sid, status=SOURCE_LIVE)
+    lgraph.dead = True
+    db = lc()
+    try:
+        with pytest.raises(Exception):
+            leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+    finally:
+        db.close()
+    assert _row(lc, sid).status == SOURCE_NEEDS_RECONNECT
+    lgraph.dead = False
+    _second_tenant(lc, True)  # B allows sharing; A (default) does not
+    db = lc()
+    try:
+        connect_service.connect_facebook(db, TENANT_B, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+    finally:
+        db.close()
+    res = _connect(client, headers)
+    assert res.status_code == 409 and res.json()["detail"]["code"] == "PAGE_IN_USE"
+    assert _row(lc, sid).status == SOURCE_NEEDS_RECONNECT
+
+
+def test_history_never_shows_an_email(client, lc, lgraph):
+    from app.models.user import User
+
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    db = lc()
+    try:
+        for user in db.query(User).filter(User.tenant_id == DEFAULT_TENANT_ID).all():
+            user.name = ""
+        db.commit()
+    finally:
+        db.close()
+    key = _key(client, headers)
+    res = client.get(f"/api/v1/lead-capture/sources/{sid}/history", headers=_bearer(key))
+    assert res.status_code == 200
+    assert "@" not in res.text and res.json()["data"][0]["actor"]["name"] == "Team member"
+
+
+def test_form_ids_are_capped(client, lc, lgraph):
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    res = client.put(f"/lead-capture/sources/{sid}/forms", json={"formsMode": "pick", "formIds": ["1" * 5000]},
+                     headers=headers)
+    assert res.status_code == 422
+
+
+def test_test_lead_requests_are_capped_per_source(client, lc, monkeypatch):
+    """Rotating made-up form ids cannot get round the cooldown."""
+    from app.config import settings
+    from modules.lead_capture.services import form_service
+
+    monkeypatch.setattr(settings, "meta_app_id", "")
+    monkeypatch.setattr(settings, "meta_app_secret", "")
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(form_service, "_dev_test_lead", lambda source, form_id: None)
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    codes = [
+        client.post(f"/lead-capture/sources/{sid}/test-lead", json={"formId": str(400000000000100 + i)},
+                    headers=headers).status_code
+        for i in range(form_service.TEST_LEADS_PER_HOUR + 1)
+    ]
+    assert codes[:-1] == [202] * form_service.TEST_LEADS_PER_HOUR and codes[-1] == 429
+
+
+def test_reconnect_email_subject_has_no_line_breaks(client, lc, lgraph, posts):
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    _set(lc, sid, status=SOURCE_LIVE, account_name="Evil\r\nBcc: x@example.com")
+    lgraph.dead = True
+    db = lc()
+    try:
+        with pytest.raises(Exception):
+            leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+    finally:
+        db.close()
+    (mail,) = _mails(lc)
+    assert "\r" not in mail.subject and "\n" not in mail.subject
