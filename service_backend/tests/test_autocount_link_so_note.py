@@ -133,3 +133,37 @@ def test_ac_66_08_the_restore_put_resends_the_same_note_never_omits_or_blanks_it
     assert later, "no restore PUT on the new row"
     assert all(r.get("FurtherDescription") == created for r in later), later
     assert created == rtf(NOTE)
+
+
+def test_ac_66_09_a_partly_received_link_row_puts_the_note_on_the_added_remainder_row(h, rig):
+    """The partial mode (cut the row to the received qty, ADD the rest linked) carries the note on the add."""
+    res = h.run("link_row", dict(doc_key=PO_KEY, dtl_key=rig.free_a, so_doc_key=SO_KEY, so_dtl_key=rig.so_dated),
+                key="n-partial", receipt_reader=lambda kind, doc, row: Decimal(1) if row["DtlKey"] == rig.free_a
+                else Decimal(0))
+    assert res.outcome == "done", (res.outcome, res.error_code, res.warnings)
+    assert link_put(h, rig.so_dated).get("FurtherDescription") == rtf(NOTE)
+
+
+def test_ac_66_10_the_recover_row_of_a_relink_never_takes_the_new_so_rows_note(h, rig):
+    """A relink whose add fails re-adds the row with its OLD link: the note (which names the NEW SO row) must
+    stay off it. ``_line_of`` puts the note only on ``snap["newLink"]``."""
+    ops = h.ops()
+    old = {"FromDocType": "SO", "FromDocNo": "SO428480", "FromDocDtlKey": rig.so_undated}
+    new = {"FromDocType": "SO", "FromDocNo": "SO428480", "FromDocDtlKey": rig.so_dated}
+    snap = {"row": {"DtlKey": 1, "ItemCode": "ITEM-A", "Qty": 3}, "newLink": new, "oldLink": old,
+            "soLink": {"soDeliveryDate": "2026-12-31", "note": NOTE}}
+    from modules.autocount.write_back import payloads
+    assert payloads.LINK_NOTE_KEY not in ops._line_of(snap, snap["oldLink"])
+    assert ops._line_of(snap, snap["newLink"])[payloads.LINK_NOTE_KEY] == NOTE
+
+
+def test_ac_66_11_a_line_from_outside_an_operation_cannot_smuggle_the_note_key(h, rig):
+    """Defence in depth under the router whitelist: a primitive call with no operation id strips the link-only
+    note key, so no FurtherDescription is sent."""
+    from modules.autocount.write_back import payloads
+    from tests.test_autocount_write_back_primitives import _line
+
+    line = dict(_line("ITEM-A", 1, 1.0, "HQ"), FromDocType="SO", FromDocNo="SO428480",
+                FromDocDtlKey=rig.so_dated, **{payloads.LINK_NOTE_KEY: NOTE})
+    h.service().add_line(**h.args("PO", doc_key=PO_KEY, line=line))
+    assert not any("FurtherDescription" in r for c in puts(h) for r in c.body["Details"]), [c.body for c in puts(h)]

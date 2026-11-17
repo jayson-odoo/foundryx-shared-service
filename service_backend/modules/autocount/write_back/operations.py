@@ -930,8 +930,10 @@ class OperationService:
     def _line_of(self, snap: Doc, link: Doc, qty: Optional[Decimal] = None) -> Doc:
         line = {k: v for k, v in snap["row"].items() if k != "DtlKey"}
         line.update(link)
-        note = (snap.get("soLink") or {}).get("note") if link.get("FromDocType") == "SO" else None
-        if note:  # plan 66: the note goes on the new linked row in the PUT that creates it
+        # plan 66: the note goes on the NEW linked row in the PUT that creates it. ``soLink`` describes the
+        # new link only, so the recover row (``oldLink``, e.g. a relink's previous SO row) never takes it.
+        note = (snap.get("soLink") or {}).get("note") if link is snap["newLink"] else None
+        if note and link.get("FromDocType") == "SO":
             line[payloads.LINK_NOTE_KEY] = note
         if qty is not None:
             line["Qty"] = float(qty)

@@ -73,6 +73,9 @@ body leaves out. Resending the identical note is safe under both: (a) leaves the
 (`if sent.get(k)`, payloads.py:341), so the restore can never write a blank note. Pinned by AC-66-08.
 
 AC-66-08 the restore PUT on the new row carries the identical note the link PUT carried (never omitted, never empty).
+AC-66-09 a partly received link_row (cut + add) carries the note on the added remainder row.
+AC-66-10 the recover row of a failed relink (old link) never takes the new SO row's note.
+AC-66-11 a primitive line from outside an operation cannot carry the link-only note key.
 
 ## 6. Proof after release
 
