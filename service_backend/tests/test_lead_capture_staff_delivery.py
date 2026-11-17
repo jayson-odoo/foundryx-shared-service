@@ -186,6 +186,22 @@ def _park_and_lapse(db, action_key, entity_type, entity_id):
 def test_deferred_keys_registered():
     assert deferred_action_for("lead_capture_keys.revoke").permission == "lead_capture.keys.manage"
     assert deferred_action_for("lead_capture_receivers.remove").permission == "lead_capture.manage"
+    assert deferred_action_for("lead_capture_fields.reset").permission == "lead_capture.manage"
+
+
+def test_deferred_fields_reset_commits_through_set_fields(client, lc):
+    headers = _login(client)
+    res = client.put("/lead-capture/fields", json=[{"key": "client", "label": "Client", "type": "name"}], headers=headers)
+    assert res.status_code == 200
+    db = lc()
+    try:
+        result = _park_and_lapse(db, "lead_capture_fields.reset", "lead_capture_fields", "fields")
+        assert result.status == "committed"
+    finally:
+        db.close()
+    body = client.get("/lead-capture/fields", headers=headers).json()
+    assert body["isDefault"] is True
+    assert [f["key"] for f in body["data"]] == ["name", "phone", "email", "notes"]
 
 
 def test_deferred_key_revoke_commits(client, lc):

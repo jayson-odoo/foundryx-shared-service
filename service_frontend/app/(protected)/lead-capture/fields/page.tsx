@@ -55,7 +55,7 @@ export default function LeadCaptureFieldsPage() {
           />
           <div className="flex flex-col gap-2">
             <h2 className="text-base font-semibold">Form maps</h2>
-            <ResourceList key={nonce} config={config} hideHeader />
+            <ResourceList key={nonce} config={config} hideHeader restoreFromCtx />
           </div>
         </div>
       </Container>

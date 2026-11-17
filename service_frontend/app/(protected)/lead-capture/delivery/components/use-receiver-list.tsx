@@ -51,7 +51,7 @@ export function useReceiverList(
   onCreate: () => void,
   onChanged: () => void,
 ): ResourceListConfig<LeadReceiverItem> {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime } = useDatetime();
   const sendTestPush = useSendTestPush();
 
   const actions = useMemo<ResourceAction<LeadReceiverItem>[]>(
@@ -125,7 +125,7 @@ export function useReceiverList(
         meta: { headerTitle: 'Added' },
         header: ({ column }) => <DataGridColumnHeader title="Added" column={column} />,
         cell: ({ row }) => (
-          <span className="text-sm text-muted-foreground">{formatDateTime(row.original.createdAt)}</span>
+          <span className="text-sm text-muted-foreground">{formatDmyDateTime(row.original.createdAt)}</span>
         ),
         size: 180,
         enableSorting: true,
@@ -137,7 +137,7 @@ export function useReceiverList(
         header: ({ column }) => <DataGridColumnHeader title="Last delivered" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">
-            {row.original.lastSuccessAt ? formatDateTime(row.original.lastSuccessAt) : '-'}
+            {row.original.lastSuccessAt ? formatDmyDateTime(row.original.lastSuccessAt) : '-'}
           </span>
         ),
         size: 190,
@@ -181,8 +181,8 @@ export function useReceiverList(
         data.map((r) => [
           r.url,
           eventLabels(r.events).join(', '),
-          formatDateTime(r.createdAt),
-          r.lastSuccessAt ? formatDateTime(r.lastSuccessAt) : '-',
+          formatDmyDateTime(r.createdAt),
+          r.lastSuccessAt ? formatDmyDateTime(r.lastSuccessAt) : '-',
         ]),
       );
     };
@@ -216,9 +216,10 @@ export function useReceiverList(
       defaultSort: { id: 'created', desc: false },
       exportFilename: 'lead-capture-receivers',
       enableStatusViews: false,
+      urlState: true,
       createLabel: 'Create',
       createPermission: MANAGE,
       onCreate,
     };
-  }, [actions, formatDateTime, onCreate, onChanged]);
+  }, [actions, formatDmyDateTime, onCreate, onChanged]);
 }

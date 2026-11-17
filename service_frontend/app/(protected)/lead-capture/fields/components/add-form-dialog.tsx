@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { AlertCircle, Loader2 } from 'lucide-react';
+import { Alert, AlertIcon, AlertTitle, AlertToolbar } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -10,10 +12,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
-import { isFormId } from '@/lib/lead-field-map';
+import { useSourceForms } from '@/hooks/use-lead-capture';
 import type { LeadSourceItem } from '@/types/lead-capture';
 import type { MapTarget } from './map-fields-dialog';
 
@@ -25,29 +26,29 @@ export interface AddFormDialogProps {
   onPick: (target: MapTarget) => void;
 }
 
-/** Pick the Page and enter the Instant Form id; the map popup loads its questions. */
+/** Pick the Page, then one of its Instant Forms (read from Meta); the map popup opens for it. */
 export function AddFormDialog({ open, sources, onOpenChange, onPick }: AddFormDialogProps) {
   const [sourceId, setSourceId] = useState('');
   const [formId, setFormId] = useState('');
-  const [touched, setTouched] = useState(false);
+  const forms = useSourceForms(open ? sourceId : '');
 
   useEffect(() => {
     if (open) {
       setSourceId(sources.length === 1 ? sources[0].id : '');
       setFormId('');
-      setTouched(false);
     }
   }, [open, sources]);
 
-  const formOk = isFormId(formId);
-  const ready = sourceId !== '' && formOk;
+  const formOptions = (forms.data?.data ?? []).map((f) => ({
+    value: f.id,
+    label: f.name?.trim() || `Instant Form ${f.id}`,
+  }));
+  const chosen = formOptions.find((o) => o.value === formId);
 
   const submit = () => {
-    setTouched(true);
-    if (!ready) return;
-    const id = formId.trim();
+    if (!sourceId || !chosen) return;
     onOpenChange(false);
-    onPick({ sourceId, formId: id, formName: `Instant Form ${id}` });
+    onPick({ sourceId, formId: chosen.value, formName: chosen.label });
   };
 
   return (
@@ -66,33 +67,43 @@ export function AddFormDialog({ open, sources, onOpenChange, onPick }: AddFormDi
               ariaLabel="Page"
               options={sources.map((s) => ({ value: s.id, label: s.pageName || s.name }))}
               value={sourceId}
-              onChange={setSourceId}
-            />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="lead-form-id">Instant Form ID *</Label>
-            <Input
-              id="lead-form-id"
-              inputMode="numeric"
-              maxLength={64}
-              value={formId}
-              aria-invalid={touched && !formOk ? true : undefined}
-              onChange={(e) => setFormId(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  submit();
-                }
+              onChange={(v) => {
+                setSourceId(v);
+                setFormId('');
               }}
             />
-            {touched && !formOk && <p className="text-sm text-destructive">Enter the Instant Form ID (digits only).</p>}
           </div>
+          {sourceId && (
+            <div className="flex flex-col gap-2">
+              <Label>Form *</Label>
+              {forms.loading && !forms.data && <Loader2 className="size-5 animate-spin text-muted-foreground" />}
+              {forms.error && (
+                <Alert variant="destructive">
+                  <AlertIcon>
+                    <AlertCircle />
+                  </AlertIcon>
+                  <AlertTitle>{forms.error}</AlertTitle>
+                  <AlertToolbar>
+                    <Button variant="outline" size="sm" onClick={forms.reload}>
+                      Try again
+                    </Button>
+                  </AlertToolbar>
+                </Alert>
+              )}
+              {forms.data && formOptions.length === 0 && (
+                <p className="text-sm text-destructive">This Page has no Instant Forms.</p>
+              )}
+              {forms.data && formOptions.length > 0 && (
+                <SearchSelect ariaLabel="Form" options={formOptions} value={formId} onChange={setFormId} />
+              )}
+            </div>
+          )}
         </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={submit} disabled={sourceId === '' || formId.trim() === ''}>
+          <Button variant="primary" onClick={submit} disabled={!sourceId || !chosen}>
             Next
           </Button>
         </DialogFooter>

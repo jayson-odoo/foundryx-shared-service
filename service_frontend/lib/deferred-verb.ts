@@ -91,6 +91,7 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   autocount_pull_api_key: { singular: 'key', plural: 'keys' },
   lead_capture_key: { singular: 'key', plural: 'keys' },
   lead_capture_receiver: { singular: 'receiver', plural: 'receivers' },
+  lead_capture_fields: { singular: 'field list', plural: 'field lists' },
   // BR Send to build write-back key revoke (deferred-actions engine).
   ideation_build_key: { singular: 'key', plural: 'keys' },
 };

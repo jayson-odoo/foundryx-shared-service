@@ -55,6 +55,22 @@ def _receiver_remove(db: Session, tenant_id: str, entity_id: str, payload: dict,
         raise ValueError(exc.message) from None
 
 
+# The field list is one per company: the entity id is this fixed name.
+FIELD_LIST_ENTITY_ID = "fields"
+
+
+def _field_list_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    return entity_id == FIELD_LIST_ENTITY_ID
+
+
+def _fields_reset(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from .services import field_service
+
+    # The same function as PUT /fields with [] (both doors): the list goes back
+    # to the defaults and map lines to removed fields are pruned with it.
+    field_service.set_fields(db, tenant_id, [])
+
+
 KEY_REVOKE = DeferredActionDef(
     key="lead_capture_keys.revoke",
     module=MODULE_NAME,
@@ -77,6 +93,18 @@ RECEIVER_REMOVE = DeferredActionDef(
 )
 
 
+FIELDS_RESET = DeferredActionDef(
+    key="lead_capture_fields.reset",
+    module=MODULE_NAME,
+    entity_type="lead_capture_fields",
+    permission=MANAGE,
+    window="destructive",
+    label="Use defaults",
+    execute=_fields_reset,
+    exists=_field_list_exists,
+)
+
+
 def register_lead_capture_deferred_actions() -> None:
-    for action_def in (KEY_REVOKE, RECEIVER_REMOVE):
+    for action_def in (KEY_REVOKE, RECEIVER_REMOVE, FIELDS_RESET):
         register_deferred_action(action_def)

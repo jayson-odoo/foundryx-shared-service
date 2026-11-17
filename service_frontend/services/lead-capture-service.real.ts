@@ -5,6 +5,7 @@
 import { ApiError, apiFetch } from '@/lib/api-client';
 import type {
   LeadFieldList,
+  LeadFormList,
   LeadFormQuestions,
   LeadKeyCreated,
   LeadKeyItem,
@@ -65,6 +66,9 @@ export const realLeadCaptureService: LeadCaptureService = {
   async listSources() {
     const res = await apiFetch<{ data: LeadSourceItem[] }>(`${BASE}/sources`);
     return res.data;
+  },
+  listForms(sourceId) {
+    return apiFetch<LeadFormList>(`${BASE}/sources/${encodeURIComponent(sourceId)}/forms`);
   },
   formQuestions(sourceId, formId) {
     return apiFetch<LeadFormQuestions>(

@@ -77,3 +77,12 @@ revoke/remove through the core grace-window engine.
 - Saving the field list (Save fields or Use defaults) drops map lines that point at a removed field, in the same
   service call for both doors; "Use defaults" asks first; the Form maps list refreshes after a save.
 - Lead fields lines stack at phone width; column chooser keeps the column's own label ("Last used").
+
+## Round 4 (crew-pass ea6096e5 NOT READY; merged main with lane L-B #258)
+- Hover text starts at the cell's left edge (no longer under the sidebar); Copy works on plain http (fallback copy,
+  inline "Could not copy" when nothing works); reload keeps the list page (shared list hook compares by value).
+- Form maps: form names from the Page's form list (L-B `GET /sources/{id}/forms`); Add form = Page + Form pickers;
+  "All forms" edits its stored lines without a Meta read; a stored map to the automatic field shows that field.
+- "Use defaults" = grace-window countdown with Cancel (`lead_capture_fields.reset`, same `set_fields` call).
+- Dates dd/mm/yyyy, h:mm am/pm (shared `formatDmyDateTime`); Save fields is secondary (Form maps Create is the one
+  filled button); Delivery and Form maps keep their list state in the address bar; "At most 5 receivers.".

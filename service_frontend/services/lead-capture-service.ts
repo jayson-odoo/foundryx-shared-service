@@ -7,6 +7,7 @@ import type {
   LeadEvent,
   LeadField,
   LeadFieldList,
+  LeadFormList,
   LeadFormQuestions,
   LeadKeyCreated,
   LeadKeyItem,
@@ -35,6 +36,8 @@ export interface LeadCaptureService {
   saveFields(fields: LeadField[]): Promise<LeadFieldList>;
 
   listSources(): Promise<LeadSourceItem[]>;
+  /** The Page's Instant Forms, read from Meta. */
+  listForms(sourceId: string): Promise<LeadFormList>;
   formQuestions(sourceId: string, formId: string): Promise<LeadFormQuestions>;
   /** Save one form's map (`formId` "*" = every form of the Page). */
   saveFieldMap(

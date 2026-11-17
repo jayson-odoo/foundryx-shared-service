@@ -333,7 +333,7 @@ signature check before real leads arrive.
  "lastUsedAt": "2026-11-17T07:40:00Z", "revokedAt": null}
 ```
 
-`POST /keys` also returns `"key": "fxl_live_..."` once. A revoked key stays listed with `revokedAt` set and answers
+`POST /keys` also returns `"key": "fxl_live_..."` once. A blank or missing `name` is saved as "Lead Capture key". A revoked key stays listed with `revokedAt` set and answers
 `401 invalid_api_key` from then on. To rotate: create the new key, switch your backend to it, then revoke the old
 key with the new one (a key cannot revoke itself). Every key call is audited with the calling key id.
 
@@ -466,7 +466,8 @@ def verify(secret: str, header: str, raw_body: bytes) -> bool:
 ## 6. Pulling leads
 
 `GET /leads?since=2026-11-15T00:00:00Z` returns leads in `receivedAt`, then `id`, order. Keep `nextCursor` and call
-`GET /leads?cursor=<nextCursor>` next time: it resumes right after the last lead you received. An empty page keeps
+`GET /leads?cursor=<nextCursor>` next time: it resumes right after the last lead you received. `nextCursor` is
+that resume point, so it is set even when `hasMore` is `false`. An empty page keeps
 the cursor you sent; an empty first `since` page has `nextCursor: null`, so call with the same `since` again.
 `hasMore: true` means call again now. `source=<sourceId>` limits to one source. `cursor` wins over `since`. A lead
 appears in the pull about 5 seconds after it is stored (so a cursor never passes a lead that is still being saved);

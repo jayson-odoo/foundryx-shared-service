@@ -84,6 +84,21 @@ export interface LeadFormQuestions {
   data: LeadFormQuestion[];
 }
 
+/** One Instant Form of a Page (`GET /sources/{id}/forms`). */
+export interface LeadFormItem {
+  id: string;
+  name: string | null;
+  status: string | null;
+  createdAt: string | null;
+}
+
+export interface LeadFormList {
+  formsMode: string;
+  formIds: string[];
+  tosAccepted: boolean | null;
+  data: LeadFormItem[];
+}
+
 /** The "*" form id: one map for every form of a Page. */
 export const ALL_FORMS = '*';
 

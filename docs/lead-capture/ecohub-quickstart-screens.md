@@ -1,6 +1,6 @@
 # EcoHub: build the Lead Capture screens in your app
 
-Part of the EcoHub quickstart (`docs/lead-capture/ecohub-quickstart.md`, `ecohub-quickstart-simple.md`). Shared
+Part of the product quickstart (`docs/lead-capture/ecohub-quickstart.md`). Shared
 Service (SS) provides the API and the middleware; EcoHub can show the same three setup screens SS has (Keys,
 Delivery, Fields) inside its own app. Every action on those screens has a gateway call, so no SS sign-in, no
 script and no SQL is needed.
@@ -84,7 +84,7 @@ Errors:
 
 - `422 invalid_url`: the URL is not public `https://`. Show the message under the URL field.
 - `422 invalid_events`: no event chosen, or an unknown one.
-- `409 endpoint_limit`: already 5 receivers.
+- `409 endpoint_limit`: already 5 receivers ("At most 5 receivers.").
 - `404 endpoint_not_found` (test push, remove): the receiver is gone. Reload the list.
 
 ## Screen 3: Fields and the field map
@@ -96,7 +96,8 @@ EcoHub publishes its own lead fields; the admin then maps each form question to 
 | Load the fields | `GET /fields` | `{"data": [Field], "isDefault"}` |
 | Save the fields | `PUT /fields` `[Field]` (replaces the list) | same shape |
 | Use defaults | `PUT /fields` `[]` | the four defaults, `isDefault: true` |
-| Load the forms | `GET /sources` | `{"data": [Source]}` |
+| Load the mapped forms | `GET /sources` | `{"data": [Source]}` |
+| Load a Page's form names | `GET /sources/{sourceId}/forms` | `{"formsMode", "formIds", "tosAccepted", "data": [Form]}` |
 | Load a form's questions | `GET /sources/{sourceId}/forms/{formId}/questions` | `{"formId", "formName", "data": [Question]}` |
 | Save a form's map | `PUT /sources/{sourceId}/field-map` `{"formId": "400000000000001", "map": {...}}` | Source |
 
@@ -118,37 +119,43 @@ PUT /sources/4c1f0000-0000-0000-0000-000000000001/field-map
 Show:
 
 - Fields: an editable list of Key, Label, Type (Name, Phone, Email, Lead notes, Text). "Use defaults" only when
-  `isDefault` is false; ask first ("Use the default fields?"), because it replaces the list.
+  `isDefault` is false. It replaces the list, so give the admin a way back: Shared Service shows a 10-second
+  countdown with Cancel and only then sends `PUT /fields` `[]`.
 - Saving the field list (including Use defaults) also removes every map line that points at a field no longer in
   the list, in the same call; a form left with no line loses its map. Reload the sources afterwards so the Form
   maps list matches.
 - Form maps list: one row per (Page, form) from `GET /sources`:
   - every form id in a source's `fieldMap` (`"*"` = All forms);
   - every form in its `needsMapping` (Status: Needs mapping, plus `unmappedCount` answers that went to notes);
-  - Page = `pageName`; Form = the notice's `formName`, else the name from the questions call.
+  - Page = `pageName`; Form = the form's `name` from `GET /sources/{sourceId}/forms`, else the notice's
+    `formName`, else "Instant Form <id>" (e.g. when Meta cannot be read right now).
 - Map popup: one line per question from the questions call (`label`), each with a searchable picker of EcoHub's
   fields. Start each picker from the form's own map, else the `"*"` map. With no map:
   - a standard question (`full_name`, `first_name`, `last_name`, `email`, `phone_number`) fills its field by
     itself; label it e.g. "Client Name (automatic)";
   - any other answer goes to the notes field; label it "Leave in notes".
+  Keep the automatic field in the picker too: a stored map may name it, and the picker must show what is stored.
   Send every question on Save, `null` for the automatic / notes choice. Saving clears the form's "Needs mapping".
-- Add form: Page picker + Instant Form ID (digits only), then open the map popup for it.
+- All forms (`"*"`): there is no single form to read questions from, so do NOT call the questions route for it
+  (it answers `422 invalid_form_id`). Its lines are the question keys its stored map already names, labelled by key.
+- Add form: Page picker, then a Form picker filled from `GET /sources/{sourceId}/forms`; then open the map popup.
 
 Errors:
 
 - `422 invalid_fields`: bad or repeated key, unknown type, more than 50 fields. Show the message next to the list.
 - `422 invalid_field_map`: a target that is not one of your fields (e.g. after removing a field). Reload the fields
   and the popup.
-- `422 invalid_form_id` (questions call): the form id is not digits only. Check it in your Add form step before
-  calling; the field-map call itself only refuses an id with characters other than letters, digits, `_` and `-`
-  (`422 invalid_field_map`).
+- `422 invalid_form_id` (questions call): the form id is not digits only (e.g. `"*"`). Pick forms from the form
+  list instead of typing ids; the field-map call itself only refuses an id with characters other than letters,
+  digits, `_` and `-` (`422 invalid_field_map`).
+- Form list call: `400 token_invalid`, `400 meta_refused`, `502 meta_unreachable`, as for the questions call.
 - Questions call: `400 token_invalid` (the Page must be reconnected), `400 meta_refused` (Meta's reason, e.g. the
   Page has not given Leads Access), `502 meta_unreachable` (try again). Show the message with "Try again".
 - `404 source_not_found`: the Page was disconnected. Reload the list.
 
 ## Not on these screens yet
 
-- Connecting a Facebook Page from EcoHub (a "Connect a source" button): lane L-C. Until then Foundryx connects the
-  Page.
+- Connecting a Facebook Page, choosing forms, backfill, history and disconnect: see the product quickstart
+  sections 1-8.
 - The leads log with delivery status and Redeliver: lane L-C. Redeliver already works:
   `POST /deliveries/{id}/redeliver`.

@@ -116,7 +116,7 @@ export default function LeadCaptureDeliveryPage() {
                 Pull only
               </ToggleGroupItem>
             </ToggleGroup>
-            {mode === 'push' && <ResourceList key={nonce} config={config} hideHeader />}
+            {mode === 'push' && <ResourceList key={nonce} config={config} hideHeader restoreFromCtx />}
             {mode === 'pull' && <PullOnlyPanel address={leadsPullUrl()} />}
           </div>
         )}

@@ -7,6 +7,7 @@ import type {
   LeadEvent,
   LeadField,
   LeadFieldList,
+  LeadFormList,
   LeadFormQuestions,
   LeadKeyCreated,
   LeadReceiverCreated,
@@ -147,4 +148,16 @@ export function useSaveFieldMap(): {
 } {
   const { busy, run } = useBusy(leadCaptureService.saveFieldMap);
   return { saving: busy, save: run };
+}
+
+/** The Page's Instant Forms (Add form picker). Empty `sourceId` = nothing to load. */
+export function useSourceForms(sourceId: string): LoadState<LeadFormList> {
+  const load = useCallback(
+    () =>
+      sourceId
+        ? leadCaptureService.listForms(sourceId)
+        : Promise.resolve<LeadFormList>({ formsMode: 'all', formIds: [], tosAccepted: null, data: [] }),
+    [sourceId],
+  );
+  return useLoad(load, "Could not load the Page's forms.");
 }

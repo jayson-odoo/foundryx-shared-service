@@ -57,7 +57,7 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
  * row action (`lead_capture_keys.revoke`).
  */
 export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKeyItem> {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime } = useDatetime();
 
   const actions = useMemo<ResourceAction<LeadKeyItem>[]>(
     () => [
@@ -77,7 +77,7 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
 
   return useMemo<ResourceListConfig<LeadKeyItem>>(() => {
     const dateCell = (value: string | null) => (
-      <span className="text-sm text-muted-foreground">{value ? formatDateTime(value) : '-'}</span>
+      <span className="text-sm text-muted-foreground">{value ? formatDmyDateTime(value) : '-'}</span>
     );
     const columns: ColumnDef<LeadKeyItem>[] = [
       {
@@ -169,8 +169,8 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
         data.map((k) => [
           k.name,
           k.keyMasked,
-          formatDateTime(k.createdAt),
-          k.lastUsedAt ? formatDateTime(k.lastUsedAt) : '-',
+          formatDmyDateTime(k.createdAt),
+          k.lastUsedAt ? formatDmyDateTime(k.lastUsedAt) : '-',
           LEAD_KEY_STATUS[leadKeyStatus(k)].label,
         ]),
       );
@@ -211,5 +211,5 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
       createPermission: KEYS_MANAGE,
       onCreate,
     };
-  }, [actions, formatDateTime, onCreate]);
+  }, [actions, formatDmyDateTime, onCreate]);
 }

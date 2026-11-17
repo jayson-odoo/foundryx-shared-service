@@ -9,7 +9,7 @@ import type { ResourceListConfig } from '@/components/platform/resource-list';
 import type { ListQuery, ListResult } from '@/types/resource';
 import { applyClientQuery, type ClientListSpec } from '@/lib/client-list-query';
 import { toCsv } from '@/lib/csv';
-import { formMapRows, type FormMapRow } from '@/lib/lead-field-map';
+import { formMapRows, type FormMapRow, type FormNames } from '@/lib/lead-field-map';
 import { leadCaptureService } from '@/services/lead-capture-service';
 
 export const FORM_MAP_STATUS: StatusRegistry<FormMapRow['status']> = {
@@ -101,8 +101,23 @@ export function useFormMapList(
       },
     ];
 
-    const fetcher = async (query: ListQuery): Promise<ListResult<FormMapRow>> =>
-      applyClientQuery(formMapRows(await leadCaptureService.listSources()), query, spec);
+    const fetcher = async (query: ListQuery): Promise<ListResult<FormMapRow>> => {
+      const sources = await leadCaptureService.listSources();
+      // Form names from each Page's form list (one Meta read per Page); a Page
+      // whose list cannot be read falls back to the notice name / form id.
+      const names: FormNames = {};
+      await Promise.all(
+        sources.map(async (source) => {
+          try {
+            const forms = await leadCaptureService.listForms(source.id);
+            names[source.id] = Object.fromEntries(forms.data.map((f) => [f.id, f.name]));
+          } catch {
+            names[source.id] = {};
+          }
+        }),
+      );
+      return applyClientQuery(formMapRows(sources, names), query, spec);
+    };
 
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
@@ -149,6 +164,7 @@ export function useFormMapList(
       defaultSort: { id: 'status', desc: true },
       exportFilename: 'lead-capture-form-maps',
       enableStatusViews: false,
+      urlState: true,
       createLabel: 'Create',
       createPermission: 'lead_capture.manage',
       onCreate,

@@ -92,4 +92,25 @@ describe('MapFieldsDialog', () => {
     await waitFor(() => expect(screen.getByText('Best time to call')).toBeInTheDocument());
     expect(formQuestions).toHaveBeenCalledTimes(2);
   });
+
+  it('All forms lists its stored lines without calling Meta, and saves them', async () => {
+    const allForms: LeadSourceItem = { ...source, fieldMap: { '*': { what_is_your_budget: 'budget', full_name: 'name' } } };
+    const onSaved = vi.fn();
+    render(
+      <MapFieldsDialog
+        target={{ sourceId: 'src1', formId: '*', formName: 'All forms' }}
+        sources={[allForms]}
+        fields={fields}
+        canManage
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'what_is_your_budget' })).toHaveTextContent('Budget'));
+    expect(screen.getByRole('combobox', { name: 'full_name' })).toHaveTextContent('Name');
+    expect(formQuestions).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save map' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(saveFieldMap).toHaveBeenCalledWith('src1', '*', { what_is_your_budget: 'budget', full_name: 'name' });
+  });
 });

@@ -1,19 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowDown, ArrowUp, Loader2, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Alert, AlertIcon, AlertTitle, AlertToolbar } from '@/components/ui/alert';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle, CardToolbar } from '@/components/ui/card';
 import {
@@ -24,6 +14,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { SearchSelect } from '@/components/platform/search-select';
+import { deferredToast, dismissDeferredToast } from '@/components/platform/resource-actions/deferred-toast';
+import { useDeferredAction } from '@/hooks/use-deferred-action';
 import { leadCaptureErrorMessage, type LoadState } from '@/hooks/use-lead-capture';
 import {
   LEAD_FIELD_TYPE_LABELS,
@@ -55,7 +47,46 @@ const same = (a: LeadField[], b: LeadField[]) => JSON.stringify(a) === JSON.stri
 export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: LeadFieldsCardProps) {
   const [rows, setRows] = useState<LeadField[]>([]);
   const [submitted, setSubmitted] = useState(false);
-  const [confirmDefaults, setConfirmDefaults] = useState(false);
+  const toastIdRef = useRef<string | number | null>(null);
+  const settle = () => {
+    if (toastIdRef.current !== null) dismissDeferredToast(toastIdRef.current);
+    toastIdRef.current = null;
+  };
+  // "Use defaults" replaces the list: a grace-window action (countdown +
+  // Cancel), committed server-side by `lead_capture_fields.reset`.
+  const reset = useDeferredAction({
+    onCommitted: () => {
+      settle();
+      toast.success('Lead fields set to the defaults.');
+      onSaved();
+    },
+    onFailed: (error) => {
+      settle();
+      toast.error(error || 'Could not set the default fields.');
+    },
+    onCancelledElsewhere: settle,
+  });
+
+  const startReset = async () => {
+    try {
+      const { commitAt, windowSeconds } = await reset.start('lead_capture_fields.reset', {
+        entityType: 'lead_capture_fields',
+        entityId: 'fields',
+      });
+      toastIdRef.current = deferredToast({
+        id: 'pending-action-lead-capture-fields',
+        verb: 'Setting default fields',
+        commitAt,
+        windowSeconds,
+        onCancel: () => {
+          void reset.cancel();
+          settle();
+        },
+      });
+    } catch (err) {
+      toast.error(leadCaptureErrorMessage(err, 'Could not set the default fields.'));
+    }
+  };
   const loaded = state.data?.data;
 
   useEffect(() => {
@@ -103,11 +134,11 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
         {canManage && state.data && (
           <CardToolbar>
             {!state.data.isDefault && (
-              <Button variant="outline" size="sm" disabled={saving} onClick={() => setConfirmDefaults(true)}>
+              <Button variant="outline" size="sm" disabled={saving || reset.state.status === 'pending'} onClick={() => void startReset()}>
                 Use defaults
               </Button>
             )}
-            <Button variant="primary" size="sm" disabled={saving || !dirty} onClick={onSave}>
+            <Button variant="outline" size="sm" disabled={saving || !dirty} onClick={onSave}>
               {saving && <Loader2 className="size-4 animate-spin" />}
               Save fields
             </Button>
@@ -207,29 +238,6 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
           </div>
         )}
       </CardContent>
-      <AlertDialog open={confirmDefaults} onOpenChange={(open) => !saving && setConfirmDefaults(open)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Use the default fields?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Your fields are replaced by Name, Phone, Email and Lead notes. Form map lines that point at a removed
-              field are cleared.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={saving}
-              onClick={(e) => {
-                e.preventDefault();
-                void persist([]).finally(() => setConfirmDefaults(false));
-              }}
-            >
-              Use default fields
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Card>
   );
 }

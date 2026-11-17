@@ -116,7 +116,7 @@ def create_endpoint(db: Session, tenant_id: str, url: str, events: List[str]) ->
         .count()
     )
     if count >= MAX_ENDPOINTS:
-        raise DeliveryError(409, "endpoint_limit", f"At most {MAX_ENDPOINTS} endpoints.")
+        raise DeliveryError(409, "endpoint_limit", f"At most {MAX_ENDPOINTS} receivers.")
     secret = SECRET_SCHEME + pysecrets.token_urlsafe(32)
     row = LcWebhookEndpoint(
         tenant_id=tenant_id,

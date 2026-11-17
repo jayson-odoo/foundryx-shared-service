@@ -21,7 +21,6 @@ export const LEAD_FIELD_TYPE_LABELS: Record<LeadFieldType, string> = {
 
 export const MAX_LEAD_FIELDS = 50;
 const KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-const FORM_ID_RE = /^[0-9]{1,64}$/;
 
 /** Meta standard question keys -> the field TYPE they fill when unmapped. */
 const STANDARD_KEYS: Record<string, LeadFieldType> = {
@@ -50,11 +49,6 @@ export function validateLeadFields(fields: LeadField[]): Record<number, string> 
   return errors;
 }
 
-/** Instant Form ids are digits only (mirrors `form_service._check_form_id`). */
-export function isFormId(value: string): boolean {
-  return FORM_ID_RE.test(value.trim());
-}
-
 /** One row of the Form maps list. */
 export interface FormMapRow {
   id: string;
@@ -68,13 +62,17 @@ export interface FormMapRow {
   status: 'NEEDS_MAPPING' | 'MAPPED';
 }
 
-function formLabel(formId: string, formName: string | null | undefined): string {
+function formLabel(formId: string, ...names: (string | null | undefined)[]): string {
   if (formId === ALL_FORMS) return 'All forms';
-  return formName?.trim() || `Instant Form ${formId}`;
+  return names.map((n) => n?.trim()).find(Boolean) || `Instant Form ${formId}`;
 }
 
-/** Every (Page, form) the company knows: forms with a map + forms needing one. */
-export function formMapRows(sources: LeadSourceItem[]): FormMapRow[] {
+/** Form names per source, from the Page's form list: `{sourceId: {formId: name}}`. */
+export type FormNames = Record<string, Record<string, string | null>>;
+
+/** Every (Page, form) the company knows: forms with a map + forms needing one.
+ *  The form's name comes from the Page's form list, else the notice. */
+export function formMapRows(sources: LeadSourceItem[], formNames: FormNames = {}): FormMapRow[] {
   const rows: FormMapRow[] = [];
   for (const source of sources) {
     const pageName = source.pageName || source.name;
@@ -91,7 +89,7 @@ export function formMapRows(sources: LeadSourceItem[]): FormMapRow[] {
         sourceId: source.id,
         pageName,
         formId,
-        formName: formLabel(formId, notice?.formName),
+        formName: formLabel(formId, formNames[source.id]?.[formId], notice?.formName),
         mappedCount: Object.keys(source.fieldMap?.[formId] ?? {}).length,
         unmappedCount: notice ? notice.unmappedCount : null,
         status: notice ? 'NEEDS_MAPPING' : 'MAPPED',

@@ -4,7 +4,6 @@ import {
   fieldMapPayload,
   formMapRows,
   initialTargets,
-  isFormId,
   storedMapQuestions,
   targetOptions,
   validateLeadFields,
@@ -44,14 +43,6 @@ describe('validateLeadFields', () => {
   });
 });
 
-describe('isFormId', () => {
-  it('accepts digits only', () => {
-    expect(isFormId(' 1234567890 ')).toBe(true);
-    expect(isFormId('abc')).toBe(false);
-    expect(isFormId('')).toBe(false);
-  });
-});
-
 describe('formMapRows', () => {
   it('lists mapped forms and forms needing a map, with plain names', () => {
     const rows = formMapRows([
@@ -66,6 +57,14 @@ describe('formMapRows', () => {
       ['Show unit enquiry', 0, 'NEEDS_MAPPING', 3],
     ]);
     expect(rows[0].pageName).toBe('Sample Home Page');
+  });
+
+  it("names a form from the Page's form list first", () => {
+    const rows = formMapRows(
+      [source({ fieldMap: { '111': { a: 'budget' } }, needsMapping: [{ formId: '222', formName: 'Old name', unmappedCount: 1 }] })],
+      { src1: { '111': 'Viewing booking', '222': 'Show unit enquiry' } },
+    );
+    expect(rows.map((r) => r.formName)).toEqual(['Viewing booking', 'Show unit enquiry']);
   });
 });
 
