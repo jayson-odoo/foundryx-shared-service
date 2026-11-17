@@ -2,9 +2,9 @@
 HTTP only; every call is tenant-scoped from the signed-in user."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -15,6 +15,8 @@ from .. import schemas
 from ..services import (
     backfill_service,
     connect_service,
+    connect_session_service,
+    staff_list_service,
     delivery_service,
     field_service,
     form_service,
@@ -51,7 +53,7 @@ def connect_facebook(
             db,
             user.tenant_id,
             page_id=body.pageId,
-            system_user_token=body.systemUserToken,
+            system_user_token=body.systemUserToken or "",
             forms_mode=body.formsMode,
             user_id=actor_id,
             actor=source_service.Actor.user(actor_id, user.id),
@@ -90,8 +92,26 @@ def create_key(
     actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ) -> schemas.KeyCreated:
+    try:
+        origins = connect_session_service.clean_origins(body.allowedOrigins)
+    except connect_session_service.SessionError as exc:
+        raise _http(exc)
     row, full_key = key_service.issue(db, user.tenant_id, name=body.name, created_by=actor_id)
+    if origins:
+        row = connect_session_service.set_key_origins(db, user.tenant_id, row.id, origins)
     return schemas.KeyCreated(**read_service.key_item(row).model_dump(), key=full_key)
+
+
+@router.put("/keys/{key_id}/origins", response_model=schemas.KeyItem)
+def set_key_origins(
+    key_id: str, body: schemas.KeyOriginsUpdate, user: User = Depends(_KEYS), db: Session = Depends(get_db)
+) -> schemas.KeyItem:
+    """Origins a connect session may post back to (AC-64-06)."""
+    try:
+        row = connect_session_service.set_key_origins(db, user.tenant_id, key_id, body.allowedOrigins)
+    except connect_session_service.SessionError as exc:
+        raise _http(exc)
+    return read_service.key_item(row)
 
 
 @router.get("/keys", response_model=schemas.KeyList)
@@ -227,3 +247,74 @@ def disconnect_source(
     except source_service.SourceError as exc:
         raise _http(exc)
     return Response(status_code=204)
+
+
+
+# ── lane L-C: connect sessions, Sources + Leads lists (AC-64-05/06/53) ──────
+
+@router.post("/connect-sessions", response_model=schemas.ConnectSessionCreated, status_code=201)
+def create_connect_session(
+    body: schemas.ConnectSessionCreate,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.ConnectSessionCreated:
+    """The staff door to the hosted wizard ("Connect a source", Reconnect)."""
+    try:
+        row, url = connect_session_service.create_session(
+            db, user.tenant_id, return_origin=body.returnOrigin, user_id=actor_id, source_id=body.sourceId
+        )
+    except (connect_session_service.SessionError, source_service.SourceError) as exc:
+        raise _http(exc)
+    return schemas.ConnectSessionCreated(url=url, expiresAt=row.expires_at)
+
+
+@router.get("/sources/list", response_model=schemas.StaffSourcePage)
+def list_sources_page(
+    search: Optional[str] = Query(default=None, max_length=200),
+    status: Optional[List[str]] = Query(default=None),
+    platform: Optional[List[str]] = Query(default=None),
+    sort: Optional[str] = Query(default=None, max_length=32),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    page: int = Query(default=0, ge=0),
+    pageSize: int = Query(default=25, ge=1, le=staff_list_service.MAX_PAGE_SIZE),
+    user: User = Depends(_VIEW),
+    db: Session = Depends(get_db),
+) -> schemas.StaffSourcePage:
+    return staff_list_service.list_sources(
+        db, user.tenant_id, search=search, statuses=status, platforms=platform,
+        sort=sort, order=order, page=page, page_size=pageSize,
+    )
+
+
+@router.get("/leads", response_model=schemas.StaffLeadPage)
+def list_leads(
+    search: Optional[str] = Query(default=None, max_length=200),
+    source: Optional[List[str]] = Query(default=None),
+    platform: Optional[List[str]] = Query(default=None),
+    isTest: Optional[bool] = Query(default=None),
+    receivedFrom: Optional[str] = Query(default=None, max_length=40),
+    receivedTo: Optional[str] = Query(default=None, max_length=40),
+    sort: Optional[str] = Query(default=None, max_length=32),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    page: int = Query(default=0, ge=0),
+    pageSize: int = Query(default=25, ge=1, le=staff_list_service.MAX_PAGE_SIZE),
+    user: User = Depends(_VIEW),
+    db: Session = Depends(get_db),
+) -> schemas.StaffLeadPage:
+    try:
+        return staff_list_service.list_leads(
+            db, user.tenant_id, search=search, source_ids=source, platforms=platform, is_test=isTest,
+            received_from=receivedFrom, received_to=receivedTo, sort=sort, order=order,
+            page=page, page_size=pageSize,
+        )
+    except read_service.ReadError as exc:
+        raise _http(exc)
+
+
+@router.get("/leads/{lead_id}", response_model=schemas.StaffLeadDetail)
+def lead_detail(lead_id: str, user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.StaffLeadDetail:
+    try:
+        return staff_list_service.lead_detail(db, user.tenant_id, lead_id)
+    except read_service.ReadError as exc:
+        raise _http(exc)

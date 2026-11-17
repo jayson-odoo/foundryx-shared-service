@@ -39,6 +39,14 @@ from app.integrations.meta.graph import (
 
 logger = logging.getLogger(__name__)
 
+# Plan 64 D4 / AC-64-20: what the Lead Capture login config asks for.
+LOGIN_SCOPES = (
+    "pages_show_list",
+    "pages_manage_metadata",
+    "pages_read_engagement",
+    "leads_retrieval",
+    "pages_manage_ads",
+)
 LEAD_FIELDS = "id,created_time,field_data,form_id,ad_id,adset_id,campaign_id,is_organic,platform"
 # S-META F7 test-lead subcodes.
 SUBCODE_TEST_LEAD_EXISTS = 1892058  # POST /{form}/test_leads: one already exists
@@ -164,6 +172,22 @@ class MetaLeadClient(MetaGraphMixin):
         finally:
             if self._client is None:
                 client.close()
+
+    def granted_permissions(self, token: str, *, dev: bool = False) -> Set[str]:
+        """The permissions the person (or system user) granted this app
+        (``GET /me/permissions``, token in the header). Dev = every scope the
+        wizard asks for. Read errors raise ``MetaLeadError``."""
+        if not self._configured or dev:
+            return set(LOGIN_SCOPES)
+        resp = self._get("me/permissions", token)
+        if resp.status_code != 200:
+            raise _error(resp, "Meta refused the permission read.")
+        granted: Set[str] = set()
+        for item in _dict_items(_json_obj(resp).get("data")):
+            name, status = _text(item.get("permission")), _text(item.get("status"))
+            if name and status == "granted":
+                granted.add(name)
+        return granted
 
     def page_token(self, system_user_token: str, page_id: str, *, dev: bool = False) -> Dict[str, str]:
         """``{"pageToken", "pageName"}`` for a Page the system user holds."""
