@@ -57,6 +57,11 @@ E5. A staff user opens /portal/feedback (signed in, all products): unchanged - p
 - Text on buttons stays readable: white or near-black foreground is picked from the colour's contrast.
 - Old link, contact submitted items on two products (R8 "otherwise"): unscoped, product row visible, SS
   default look - same as today.
+- Staff cancel a dealer's link: every live link of that person is cancelled (all products).
+- Known limitation: staff move an item to another product after its link was sent. The old product's link
+  no longer shows that item (it now belongs to the other product's board); the dealer's next status
+  message carries the new product's link. Logged as BL-SS-369 (redirect to the item's current product).
+- Embed boards (CRM embed connections) are product-bound already, so they take the product's look too.
 
 ## Acceptance criteria
 

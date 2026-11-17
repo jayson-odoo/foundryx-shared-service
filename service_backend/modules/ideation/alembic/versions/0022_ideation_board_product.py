@@ -61,7 +61,9 @@ def downgrade() -> None:
     from modules.ideation.db import IDEATION_SCHEMA as s
 
     # Back to one live link per contact: keep the oldest live link of each
-    # contact, cancel the rest, then restore the old index.
+    # contact, cancel the rest, then restore the old index. NOTE: the
+    # cancelled per-product links stop working, including links already sent
+    # to dealers; their next status message mints a working link again.
     bind.execute(
         text(
             f'UPDATE "{s}".idea_contact_links l SET revoked_at = now() '

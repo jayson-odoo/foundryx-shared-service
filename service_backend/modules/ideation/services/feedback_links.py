@@ -241,7 +241,6 @@ def mint_board_link(db: Session, idea: Idea, contact_id: object = SUBMITTER) -> 
     return f"{url}/{display_idea_number(idea.idea_number)}" if idea.idea_number else url
 
 
-
 def backfill_link_products_sql(schema: str) -> str:
     """Stamp a product on live links minted before links carried one (lane
     SS-MULTI-PRODUCT-BOARD, owner Q2 a): when every item the link's contact

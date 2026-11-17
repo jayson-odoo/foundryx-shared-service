@@ -23,6 +23,7 @@ export interface PortalShellProps {
 function useBoardTitle(title: string | null): void {
   useEffect(() => {
     if (!title) return;
+    const previous = document.title;
     setPageTitleOverride(title);
     const apply = () => {
       if (document.title !== title) document.title = title;
@@ -33,6 +34,7 @@ function useBoardTitle(title: string | null): void {
     return () => {
       observer.disconnect();
       setPageTitleOverride(null);
+      document.title = previous;
     };
   }, [title]);
 }

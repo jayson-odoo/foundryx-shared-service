@@ -126,7 +126,8 @@ describe('LinkPortalRoot', () => {
       token: 'portal-jwt',
       principal: { ...contact, productId: 'p-sorento', brand: { name: 'Sorento CRM', color: '#3b82f6' } },
     });
-    render(
+    document.title = 'Host page';
+    const { unmount } = render(
       <LinkPortalRoot linkToken={TOKEN}>
         <FeedbackView />
       </LinkPortalRoot>,
@@ -134,6 +135,9 @@ describe('LinkPortalRoot', () => {
     const shell = await screen.findByTestId('portal-shell');
     expect(shell.style.getPropertyValue('--primary')).toBe('#3b82f6');
     await waitFor(() => expect(document.title).toBe('Sorento CRM feedback'));
+    // Leaving the board gives the page its own title back.
+    unmount();
+    expect(document.title).toBe('Host page');
   });
 
   it('a link without product branding keeps the default colours', async () => {

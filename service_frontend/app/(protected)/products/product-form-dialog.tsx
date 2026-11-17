@@ -178,9 +178,9 @@ export function ProductFormDialog({
         const repo = buildRepo.trim();
         const domainChanged = isEdit ? trimmed !== (initialDomainBase ?? '') : trimmed.length > 0;
         const repoChanged = isEdit ? repo !== initialBuildRepo : repo.length > 0;
-        const name = boardName.trim();
+        const board = boardName.trim();
         const colorChanged = color !== initialBoardColor;
-        const nameChanged = name !== initialBoardName;
+        const nameChanged = board !== initialBoardName;
         const body: DeliveryConfigInput = {};
         if ((domainChanged && trimmed.length > 0) || repoChanged) {
           // productDomainBase is sent only when set: a product with just a build
@@ -190,7 +190,7 @@ export function ProductFormDialog({
         }
         // Board look: sent only when changed (omitted = untouched, null clears).
         if (colorChanged) body.boardColor = color.length > 0 ? color : null;
-        if (nameChanged) body.boardName = name.length > 0 ? name : null;
+        if (nameChanged) body.boardName = board.length > 0 ? board : null;
         if (Object.keys(body).length > 0) {
           await productService.setDelivery(saved.id, body);
         }
