@@ -193,6 +193,7 @@ def store_lead(
     token: Dict[str, Any],
     form_id_hint: str = "",
     created_time: Optional[int] = None,
+    test_ids_cache: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """THE store path for a lead read from Meta, shared by the webhook and the
     backfill (AC-64-28): one ``lc_lead`` per source in ``sources`` that does
@@ -202,18 +203,33 @@ def store_lead(
     leadgen_id = _clean_id(raw.get("id"))
     if not leadgen_id or not sources:
         return []
-    todo = _missing(db, sources, leadgen_id)
-    if not todo:
-        return []
-    dev = bool(token.get("dev")) or not meta.configured
     lead_form = _clean_id(raw.get("form_id")) or form_id_hint
+    dev = bool(token.get("dev")) or not meta.configured
+    form_name = _read_form_name(meta, sources, token, lead_form, dev)  # Graph call: before the lock
+    # Re-read every row under a lock: the Graph calls before this took
+    # seconds, and a forms change or a disconnect saved meanwhile must win
+    # (no stale config_json written back, no lead for a source that left).
+    fresh = [source_service.locked_source(db, s.id) for s in sources]
+    fresh = [
+        s for s in fresh
+        if s is not None and s.status in SOURCE_ROUTING_STATES and source_service.accepts_form(s, lead_form)
+    ]
+    todo = _missing(db, fresh, leadgen_id)
+    if not todo:
+        db.rollback()
+        return []
     ad_id = _clean_id(raw.get("ad_id"))
     if dev:
         is_test = True
     elif ad_id:
         is_test = False
     else:
-        test_ids = meta.test_lead_ids(token["pageToken"], lead_form)
+        if test_ids_cache is not None and lead_form in test_ids_cache:
+            test_ids = test_ids_cache[lead_form]  # one read per form per backfill run
+        else:
+            test_ids = meta.test_lead_ids(token["pageToken"], lead_form)
+            if test_ids_cache is not None:
+                test_ids_cache[lead_form] = test_ids
         is_test = bool(test_ids and leadgen_id in test_ids)
 
     answers = mapping.answers_from(raw.get("field_data"))
@@ -235,7 +251,7 @@ def store_lead(
     )
     created_ids: List[str] = []
     delivery_ids: List[str] = []
-    form_name = _form_name(meta, todo, token, lead_form, dev)
+    _cache_form_name(todo, lead_form, form_name)
     target_cache: Dict[str, List] = {}
     for source in todo:
         if source.tenant_id not in target_cache:
@@ -342,24 +358,26 @@ def note_test_request(source: LcSource, form_id: str, now: datetime) -> None:
 _FORM_NAMES_KEY = "formNames"
 
 
-def _form_name(
+def _read_form_name(
     meta: MetaLeadClient, sources: List[LcSource], token: Dict[str, Any], form_id: str, dev: bool
 ) -> Optional[str]:
-    """The form's name, cached per source in ``config_json["formNames"]`` (each
-    tenant's own row; a shared Page reads it once and every source on the Page
-    keeps a copy). Only a name actually read is cached, so a failed read is
-    retried with the next lead. No commit here: the lead transaction owns it."""
+    """The form's name: the copy cached in a source's ``config_json["formNames"]``
+    (a shared Page reads it once), else read from Meta. None when unknown;
+    never blocks the lead."""
     if not form_id:
         return None
     for source in sources:
         cached = ((source.config_json or {}).get(_FORM_NAMES_KEY) or {}).get(form_id)
         if isinstance(cached, str) and cached:
-            name = cached
-            break
-    else:
-        name = meta.form_name(token["pageToken"], form_id, dev=dev)
-        if not name:
-            return None
+            return cached
+    return meta.form_name(token["pageToken"], form_id, dev=dev) or None
+
+
+def _cache_form_name(sources: List[LcSource], form_id: str, name: Optional[str]) -> None:
+    """Keep a copy of a name actually read on each source (rows already
+    re-read under lock by the caller; no commit here - the lead txn owns it)."""
+    if not form_id or not name:
+        return
     for source in sources:
         config = dict(source.config_json or {})
         names = dict(config.get(_FORM_NAMES_KEY) or {})
@@ -367,7 +385,6 @@ def _form_name(
             names[form_id] = name
             config[_FORM_NAMES_KEY] = names
             source.config_json = config  # fresh dict: in-place JSON edits are not tracked
-    return name
 
 
 def lead_item(lead: LcLead, source: LcSource) -> Dict[str, Any]:

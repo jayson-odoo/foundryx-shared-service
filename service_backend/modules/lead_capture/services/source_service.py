@@ -61,6 +61,9 @@ _FORM_ID_RE = re.compile(r"^[0-9]{1,32}$")
 # config_json key remembering the routing state a source had before it left
 # routing, so a reconnect restores LIVE only for a source that passed its test.
 LAST_ROUTING_KEY = "lastRoutingStatus"
+# ...and when it left (a reconnect re-checks sharing if another product
+# joined the Page after that).
+LEFT_ROUTING_AT_KEY = "leftRoutingAt"
 
 ACTION_CONNECTED = "connected"
 ACTION_RECONNECTED = "reconnected"
@@ -70,11 +73,12 @@ ACTION_DISCONNECTED = "disconnected"
 
 
 class SourceError(Exception):
-    def __init__(self, status_code: int, code: str, message: str):
+    def __init__(self, status_code: int, code: str, message: str, retry_after: Optional[int] = None):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,19 @@ def get_source(db: Session, tenant_id: str, source_id: str) -> LcSource:
     if row is None:
         raise SourceError(404, "source_not_found", "Source not found.")
     return row
+
+
+def locked_source(db: Session, source_id: str) -> Optional[LcSource]:
+    """The row re-read FOR UPDATE (Postgres; SQLite serialises writers), so a
+    read-modify-write of ``config_json`` never overwrites a concurrent
+    change. Unscoped: only for a source the caller already resolved."""
+    return (
+        db.query(LcSource)
+        .filter(LcSource.id == source_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
 
 
 def page_credentials(source: LcSource) -> Optional[Dict[str, Any]]:
@@ -172,7 +189,7 @@ def list_forms(
         forms = meta.leadgen_forms(creds["pageToken"], source.account_ref or "", dev=dev)
     except MetaLeadError as exc:
         logger.info("form list read refused (code %s)", exc.code)
-        handle_meta_error(db, source, exc)
+        handle_meta_error(db, source, exc, dead_only=True)
         raise _meta_error(exc) from None
     tos = meta.leadgen_tos_accepted(creds["pageToken"], source.account_ref or "", dev=dev)
     from ..mapping import parse_meta_time
@@ -214,6 +231,7 @@ def set_forms(
         if len(clean) > MAX_PICKED_FORMS:
             raise SourceError(422, "invalid_form_id", f"Tick at most {MAX_PICKED_FORMS} forms.")
     source = get_source(db, tenant_id, source_id)
+    source = locked_source(db, source.id)
     before = _forms_label(source, forms_mode(source), picked_forms(source))
     config = dict(source.config_json or {})
     config["formsMode"] = mode
@@ -272,8 +290,9 @@ def history(db: Session, tenant_id: str, source_id: str, limit: int = 200) -> sc
     user_ids |= {r.on_behalf_of_id for r in rows if r.on_behalf_of_id}
     key_ids = {r.actor_id for r in rows if r.actor_type == "key" and r.actor_id}
     # Stored ids resolve WITH the tenant (AC-64-70): a planted id names nobody.
+    # A name only, never an email: a gateway key holder reads this too.
     users = {
-        u.id: (u.name or u.email or "")
+        u.id: ((u.name or "").strip() or "Team member")
         for u in db.query(User).filter(User.tenant_id == tenant_id, User.id.in_(user_ids)).all()
     } if user_ids else {}
     keys = {
@@ -283,7 +302,7 @@ def history(db: Session, tenant_id: str, source_id: str, limit: int = 200) -> sc
 
     def actor_name(row: LcSourceEvent) -> str:
         if row.actor_type == "user":
-            return users.get(row.actor_id or "", "") or "Removed user"
+            return users.get(row.actor_id or "", "Removed user")
         if row.actor_type == "key":
             return keys.get(row.actor_id or "", "") or "Removed API key"
         return "System"
@@ -318,11 +337,14 @@ def emit_source_updated(db: Session, source: LcSource, change: str) -> List[str]
 
 # ── token health (AC-64-29) ─────────────────────────────────────────────────
 
-def handle_meta_error(db: Session, source: LcSource, exc: MetaLeadError) -> bool:
+def handle_meta_error(db: Session, source: LcSource, exc: MetaLeadError, *, dead_only: bool = False) -> bool:
     """Flip the source when ``exc`` means the token is gone. Returns True when
-    this call moved it. Rolls back the caller's open work first: only call it
-    where nothing unsaved is pending."""
-    if not exc.token_invalid:
+    this call moved it. ``dead_only`` (calls on a caller-chosen object or by
+    a viewer): only a dead token (190/102) flips; a 10/200 answer there can
+    mean "this one object is not allowed" and must not stop a healthy
+    source. Rolls back the caller's open work first: only call it where
+    nothing unsaved is pending."""
+    if not (exc.token_dead if dead_only else exc.token_invalid):
         return False
     return mark_needs_reconnect(db, source.id)
 
@@ -344,8 +366,12 @@ def mark_needs_reconnect(db: Session, source_id: str) -> bool:
     if moved != 1:
         db.rollback()
         return False
-    db.refresh(source)
-    source.config_json = {**(source.config_json or {}), LAST_ROUTING_KEY: before}
+    source = locked_source(db, source_id)
+    source.config_json = {
+        **(source.config_json or {}),
+        LAST_ROUTING_KEY: before,
+        LEFT_ROUTING_AT_KEY: datetime.now(timezone.utc).isoformat(),
+    }
     record_event(db, source, ACTION_NEEDS_RECONNECT, Actor.system(), before, SOURCE_NEEDS_RECONNECT)
     ids = emit_source_updated(db, source, ACTION_NEEDS_RECONNECT)
     db.commit()
@@ -353,6 +379,12 @@ def mark_needs_reconnect(db: Session, source_id: str) -> bool:
     delivery_service.enqueue(ids)
     _notify_needs_reconnect(db, source)
     return True
+
+
+def _one_line(value: str) -> str:
+    """Control characters (CR/LF included) become spaces: a Page name never
+    breaks an email header."""
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in value).split())[:150]
 
 
 def _notify_needs_reconnect(db: Session, source: LcSource) -> None:
@@ -365,7 +397,7 @@ def _notify_needs_reconnect(db: Session, source: LcSource) -> None:
         for user in UserRepository(db).users_with_permission(source.tenant_id, MANAGE_PERMISSION):
             if user.email:
                 recipients.setdefault(user.email.strip().lower(), user.email.strip())
-        page = (source.account_name or source.name or "your Facebook Page").strip()
+        page = _one_line(source.account_name or source.name or "") or "your Facebook Page"
         subject = f"Reconnect the Facebook Page {page}"[:200]
         text = (
             f"Facebook no longer accepts the access for the Page {page}, so new leads from it "
@@ -419,7 +451,6 @@ def disconnect(db: Session, tenant_id: str, source_id: str, *, actor: Actor) -> 
         return source
     before = source.status
     creds = page_credentials(source)
-    last_holder = source.account_ref and not _page_still_held(db, source)
     config = dict(source.config_json or {})
     if before in SOURCE_ROUTING_STATES:
         config[LAST_ROUTING_KEY] = before
@@ -429,10 +460,18 @@ def disconnect(db: Session, tenant_id: str, source_id: str, *, actor: Actor) -> 
     source.credentials_encrypted = None
     record_event(db, source, ACTION_DISCONNECTED, actor, before, SOURCE_DISCONNECTED)
     ids = emit_source_updated(db, source, ACTION_DISCONNECTED)
+    # Decided and done while the Page lock is held, so a product connecting
+    # the Page right now cannot have its fresh subscription removed (its
+    # connect waits for this lock, then subscribes again).
+    if (
+        creds is not None
+        and source.platform == PLATFORM_FACEBOOK
+        and source.account_ref
+        and not _page_still_held(db, source)
+    ):
+        _unsubscribe(source.account_ref, creds)
     db.commit()
     delivery_service.enqueue(ids)
-    if last_holder and creds is not None and source.platform == PLATFORM_FACEBOOK:
-        _unsubscribe(source.account_ref, creds)
     db.refresh(source)
     return source
 

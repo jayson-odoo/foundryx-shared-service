@@ -61,7 +61,8 @@ Every gateway error has one shape:
 | 422 | `invalid_cursor` | `cursor` is not one this API returned |
 | 422 | `invalid_since` | `since` is not an ISO-8601 time |
 | 429 | `rate_limited` | Throttled; see `Retry-After` |
-| 429 | `test_lead_cooldown` | A test lead was asked for the same source and form less than 60 seconds ago; see `Retry-After` |
+| 429 | `test_lead_cooldown` | A test lead was asked for the same source and form less than 60 seconds ago, or 10 forms of the source already had one in the last hour; see `Retry-After` |
+| 429 | `backfill_cooldown` | `POST /sources/{id}/backfill` less than 60 seconds after the last run, or while a run is still going; see `Retry-After` |
 | 502 | `meta_unreachable` | Meta could not be reached for a form, form-list or test-lead call; try again |
 
 ## 3. Routes
@@ -128,7 +129,8 @@ Every gateway error has one shape:
   map, its forms choice and its leads, and only replaces the stored Page access:
   - a `WAITING_FOR_TEST` or `LIVE` source keeps its status;
   - a `NEEDS_RECONNECT` source returns to the status it had before (normally `LIVE`) and a backfill runs at once,
-    so leads sent while it was broken arrive (as normal `lead.created` deliveries);
+    so leads sent while it was broken arrive (as normal `lead.created` deliveries). If another product connected
+    the same Page while it was broken, the sharing rule applies first (`PAGE_IN_USE`);
   - a `DISCONNECTED` source comes back as the same row: `LIVE` if it had passed its test, else
     `WAITING_FOR_TEST`. Leads sent while it was disconnected are not fetched. If another product took the Page
     meanwhile, the sharing rule applies (`PAGE_IN_USE`).
@@ -191,12 +193,18 @@ history. It applies from the next lead on: a lead of a form that is not ticked i
 Lead Capture re-reads each `WAITING_FOR_TEST` / `LIVE` source's forms every 15 minutes for leads it did not receive
 by webhook (for example while Meta could not reach us), and stores them exactly like a webhook lead: the same
 `lead.created` delivery, and never twice (a lead already stored is skipped). `POST /sources/{id}/backfill` runs it
-now for one source and answers `202 {"sourceId"}`; the leads it finds arrive as deliveries.
+now for one source and answers `202 {"sourceId"}`; the leads it finds arrive as deliveries. One run at a time per
+source, and "run now" at most once a minute (`429 backfill_cooldown` with `Retry-After`).
 
-- It reads leads created since the previous run (at most 90 days back). In `"all"` mode the Page's form list is
-  read again each run, so a form made after the source was connected is included from its own creation; in
-  `"pick"` mode only the ticked forms are read.
-- The outcome is on the source: `backfillLastRunAt`, `backfillLastError`.
+- Each form is read from where its previous read stopped (at most 90 days back). In `"all"` mode the Page's form
+  list is read again each run, so a form made after the source was connected is included from its own creation;
+  in `"pick"` mode only the ticked forms are read.
+- A very busy form, or more waiting leads than one run reads, simply continues in the next run; it never holds
+  back the other forms.
+- One form Facebook refuses (for example a ticked form that was deleted) is named in `backfillLastError` and the
+  other forms are still read. Only a Page whose access Facebook no longer accepts stops the run, and the source
+  moves to `NEEDS_RECONNECT`.
+- The outcome is on the source: `backfillLastRunAt`, `backfillLastError` (`null` = every form was read in full).
 - A source that is not receiving leads answers `409 source_not_connected`.
 
 ### Disconnect
@@ -221,7 +229,8 @@ Connecting the Page again revives the same source (see Source).
 ```
 
 - `action`: `connected`, `reconnected`, `forms_changed`, `needs_reconnect`, `disconnected`.
-- `actor.type`: `user` (signed in to the Shared Service; `name` is the person's name), `key` (a gateway key;
+- `actor.type`: `user` (signed in to the Shared Service; `name` is the person's name, never an email:
+  `"Team member"` when the user has no name, `"Removed user"` when the user is gone), `key` (a gateway key;
   `name` is the key's name) or `system` (Lead Capture itself, e.g. `needs_reconnect`; `name` is `"System"`).
   `onBehalfOf` is the user's name when an admin acted while viewing as that user, else `null`.
 - `from` / `to`: the status before and after, or for `forms_changed` the forms choice before and after
@@ -254,7 +263,7 @@ token, so your mapping screen can show real labels and your CRM can keep its own
 `isTest: true`, usually within a minute. That first test lead moves a `WAITING_FOR_TEST` source to `LIVE`.
 
 - One request per source and form per 60 seconds: a second one sooner answers `429 test_lead_cooldown` with
-  `Retry-After` (seconds). Another form is not held back.
+  `Retry-After` (seconds). Another form is not held back, up to 10 different forms per source per hour.
 
 - Meta keeps one test lead per form, so the previous test lead on the form is deleted first. If Meta still holds
   it afterwards the call answers `409 test_lead_exists`: delete it in Meta's Lead Ads Testing Tool and retry.
@@ -378,7 +387,7 @@ exactly as `GET /sources` shows it, plus `change`:
 | `connected` | A source was connected for the first time |
 | `reconnected` | The Page was connected again (same source id) |
 | `forms_changed` | The forms choice changed (`PUT /sources/{id}/forms`) |
-| `needs_reconnect` | Facebook stopped accepting the Page's access; sent once per break, together with one email to the Shared Service users who manage Lead Capture |
+| `needs_reconnect` | Facebook stopped accepting the Page's access; sent once per break, together with one email to the Shared Service users who manage Lead Capture. Reading a lead or the Page's form list decides this; a refusal of one form (or a made-up form id on the test lead) never does |
 | `disconnected` | `DELETE /sources/{id}` |
 
 Use it to refresh the source shown in your CRM (e.g. a "Reconnect" badge). It carries no lead data.

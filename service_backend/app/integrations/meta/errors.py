@@ -50,3 +50,14 @@ TOKEN_ERROR_CODES = frozenset({10, 102, 190, 200})
 def is_token_error(code: Optional[int]) -> bool:
     """True when a Graph error code means: reconnect, the token is gone."""
     return isinstance(code, int) and not isinstance(code, bool) and code in TOKEN_ERROR_CODES
+
+
+# The token itself is dead (invalid, expired, revoked, the app removed from
+# the Page): never a per-object answer. Callers acting on a caller-chosen
+# object (one form, one lead) flip a source on these only, because 10 / 200
+# can also mean "this one object is not allowed".
+TOKEN_DEAD_CODES = frozenset({102, 190})
+
+
+def is_token_dead(code: Optional[int]) -> bool:
+    return isinstance(code, int) and not isinstance(code, bool) and code in TOKEN_DEAD_CODES

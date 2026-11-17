@@ -6,32 +6,41 @@ Runs every 15 minutes for every ``WAITING_FOR_TEST`` / ``LIVE`` source (beat
 "Run now"), plus once right after a ``NEEDS_RECONNECT`` source is reconnected.
 
 Per source:
-1. The forms to read: in "all" mode the Page's form list is read again each
+1. Claim the run (``backfill_started_at``, guarded UPDATE): a run already in
+   flight is skipped; a claim older than ``STALE_CLAIM`` (a crashed worker) is
+   taken over.
+2. The forms to read: in "all" mode the Page's form list is read again each
    run (``GET /{page}/leadgen_forms``), so a form made after setup is
    included; in "pick" mode only the ticked ids.
-2. Each form's leads created since the source's cursor (``GET /{form}/leads``,
-   ``time_created`` filter), at most 90 days back, never before the form's own
-   creation; a form made after the source was connected is read from its own
-   creation the first time (then from the cursor), with a 10-minute overlap (Meta lists a lead a little after it is
-   made; the store path is idempotent, so the overlap only costs a read).
-3. Every lead goes through ``leadgen_service.store_lead`` - the SAME store
+3. Each form is read from ITS OWN cursor (``config_json.formCursors``) in
+   time windows (``GET /{form}/leads`` with ``time_created`` GREATER_THAN /
+   LESS_THAN). A window too full for one capped read is halved; a window
+   fully stored moves that form's cursor. So a busy form, or a run cut by
+   the page budget, continues next run where it stopped and never holds back
+   the other forms. A form with no cursor yet starts at the source's cursor
+   (or connect time), or at its own creation when it was made after the
+   source was connected; never more than 90 days back.
+4. Every lead goes through ``leadgen_service.store_lead`` - the SAME store
    path as the webhook, idempotent on (source, platform lead id).
-4. The cursor moves to the run's start only after every lead is committed and
-   only when no form was cut short; ``backfill_last_run_at`` /
-   ``backfill_last_error`` record the outcome (Scheduled Tasks rule: last run,
-   last error, Run now). A token error moves the source to NEEDS_RECONNECT
-   (AC-64-29) through ``source_service``.
+5. One form's error is recorded and the run carries on with the others; only
+   a dead token (or a refused Page-level form list) stops the run and moves
+   the source to NEEDS_RECONNECT (AC-64-29) through ``source_service``.
+6. ``backfill_last_run_at`` / ``backfill_last_error`` record the outcome
+   (Scheduled Tasks rule: last run, last error, Run now).
 
-One source's failure never stops the others. No token or lead data in logs.
+No token or lead data in logs.
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from .. import meta_leads
 from ..mapping import parse_meta_time
 from ..meta_leads import MetaLeadClient, MetaLeadError
 from ..models import PLATFORM_FACEBOOK, SOURCE_ROUTING_STATES, LcSource
@@ -41,11 +50,20 @@ logger = logging.getLogger(__name__)
 
 MAX_LOOKBACK = timedelta(days=90)
 OVERLAP = timedelta(minutes=10)
+WINDOW = timedelta(days=1)
+MIN_WINDOW = timedelta(minutes=1)
+RUN_PAGE_BUDGET = 200  # lead-list pages per source per run
+STALE_CLAIM = timedelta(minutes=30)
+RUN_NOW_COOLDOWN_SECONDS = 60
 ERROR_CAP = 500
-# Forms read in full at least once (config_json): only an unseen form made
-# after the source was connected is read from its own creation.
-SEEN_FORMS_KEY = "backfillForms"
-MAX_SEEN_FORMS = 500
+FORM_CURSORS_KEY = "formCursors"
+MAX_FORM_CURSORS = 500
+
+
+def _aware(value: Optional[datetime]) -> Optional[datetime]:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def enqueue_backfill(source_id: str) -> None:
@@ -59,20 +77,67 @@ def enqueue_backfill(source_id: str) -> None:
 
 
 def request_backfill(db: Session, tenant_id: str, source_id: str) -> str:
-    """"Run now" for one source of THIS tenant (AC-64-70)."""
+    """"Run now" for one source of THIS tenant (AC-64-70). One per minute,
+    and never while a run is in flight."""
     source = source_service.get_source(db, tenant_id, source_id)
     if source.status not in SOURCE_ROUTING_STATES:
         raise source_service.SourceError(
             409, "source_not_connected", "This source is not receiving leads. Reconnect the Page."
+        )
+    now = datetime.now(timezone.utc)
+    last = _aware(source.backfill_last_run_at)
+    started = _aware(source.backfill_started_at)
+    wait = 0
+    if started is not None and now - started < STALE_CLAIM:
+        wait = RUN_NOW_COOLDOWN_SECONDS
+    elif last is not None:
+        wait = RUN_NOW_COOLDOWN_SECONDS - int((now - last).total_seconds())
+    if 0 < wait <= RUN_NOW_COOLDOWN_SECONDS:
+        raise source_service.SourceError(
+            429, "backfill_cooldown", f"A backfill ran a moment ago. Try again in {wait} seconds.", retry_after=wait
         )
     db.rollback()  # no read transaction held open while the worker runs
     enqueue_backfill(source.id)
     return source.id
 
 
-def _since(source: LcSource, now: datetime) -> datetime:
-    start = _aware(source.cursor_at or source.created_at) or now
-    return max(start - OVERLAP, now - MAX_LOOKBACK)
+# ── run claim ───────────────────────────────────────────────────────────────
+
+def _claim(db: Session, source_id: str, now: datetime) -> bool:
+    claimed = (
+        db.query(LcSource)
+        .filter(
+            LcSource.id == source_id,
+            LcSource.status.in_(SOURCE_ROUTING_STATES),
+            or_(LcSource.backfill_started_at.is_(None), LcSource.backfill_started_at < now - STALE_CLAIM),
+        )
+        .update({"backfill_started_at": now}, synchronize_session=False)
+    )
+    db.commit()
+    return claimed == 1
+
+
+def _finish(db: Session, source_id: str, *, error: Optional[str], cursor: Optional[datetime] = None) -> None:
+    """Record the run, release the claim, move the source cursor forward
+    only - in its own commit."""
+    db.rollback()
+    source = source_service.locked_source(db, source_id)
+    if source is None:
+        return
+    source.backfill_last_run_at = datetime.now(timezone.utc)
+    source.backfill_last_error = (error or None) and error[:ERROR_CAP]
+    source.backfill_started_at = None
+    current = _aware(source.cursor_at)
+    if cursor is not None and (current is None or cursor > current):
+        source.cursor_at = cursor
+    db.commit()
+
+
+# ── one run ─────────────────────────────────────────────────────────────────
+
+@dataclass
+class _Budget:
+    pages: int
 
 
 def _forms(meta: MetaLeadClient, source: LcSource, token: str, dev: bool) -> List[Dict[str, Any]]:
@@ -81,9 +146,105 @@ def _forms(meta: MetaLeadClient, source: LcSource, token: str, dev: bool) -> Lis
     return meta.leadgen_forms(token, source.account_ref or "", dev=dev)
 
 
+def _form_since(source: LcSource, form: Dict[str, Any], started: datetime) -> datetime:
+    cursors = (source.config_json or {}).get(FORM_CURSORS_KEY) or {}
+    made = parse_meta_time(form.get("createdTime"))
+    own = cursors.get(form["id"])
+    own_at = None
+    if isinstance(own, str):
+        try:
+            own_at = _aware(datetime.fromisoformat(own))
+        except ValueError:
+            own_at = None
+    connected_at = _aware(source.created_at) or started
+    if own_at is not None:
+        since = own_at - OVERLAP
+    elif made is not None and made > connected_at:
+        since = made - timedelta(minutes=1)  # a form made after connect starts at its own creation
+    else:
+        since = (_aware(source.cursor_at) or connected_at) - OVERLAP
+    since = max(since, started - MAX_LOOKBACK)
+    if made is not None:
+        since = max(since, made - timedelta(minutes=1))
+    return since
+
+
+def _save_form_cursor(db: Session, source_id: str, form_id: str, at: datetime) -> None:
+    source = source_service.locked_source(db, source_id)
+    if source is None:
+        return
+    config = dict(source.config_json or {})
+    cursors = dict(config.get(FORM_CURSORS_KEY) or {})
+    cursors.pop(form_id, None)
+    cursors[form_id] = at.isoformat()
+    config[FORM_CURSORS_KEY] = dict(list(cursors.items())[-MAX_FORM_CURSORS:])
+    source.config_json = config  # fresh dict: in-place JSON edits are not tracked
+    db.commit()
+
+
+class _Stop(Exception):
+    """The source left routing while the run went on."""
+
+
+def _read_form(
+    db: Session,
+    meta: MetaLeadClient,
+    source_id: str,
+    page_id: str,
+    creds: Dict[str, Any],
+    dev: bool,
+    form_id: str,
+    since: datetime,
+    until: datetime,
+    budget: _Budget,
+    test_ids: Dict[str, Any],
+) -> tuple:
+    """Read one form's window ``(since, until]`` in pieces. Returns
+    ``(created, complete)``; ``complete`` False = the page budget ran out."""
+    created = 0
+    cursor = since
+    window = WINDOW
+    while cursor < until:
+        if budget.pages <= 0:
+            return created, False
+        end = min(cursor + window, until)
+        leads, cut = meta.form_leads(
+            creds["pageToken"], form_id, int(cursor.timestamp()), int(end.timestamp()) + 1, dev=dev
+        )
+        budget.pages -= meta_leads.MAX_PAGES if cut else max(1, -(-len(leads) // max(1, meta_leads.PAGE_SIZE)))
+        if cut and end - cursor > MIN_WINDOW:
+            # Too full for one capped read: at least halve the window, and
+            # since Meta lists newest first (the leads not read are older than
+            # the oldest one returned) end it there when that is sooner. Every
+            # piece read in full moves the form's cursor, so the next run
+            # continues from it.
+            oldest = min(
+                (t for t in (parse_meta_time(r.get("created_time")) for r in leads) if t is not None),
+                default=None,
+            )
+            narrow = (end - cursor) / 2
+            if oldest is not None and cursor < oldest < cursor + narrow:
+                narrow = oldest - cursor
+            window = max(narrow, MIN_WINDOW)
+            continue
+        for raw in leads:
+            source = db.get(LcSource, source_id)
+            if source is None or source.status not in SOURCE_ROUTING_STATES:
+                raise _Stop()
+            created += len(
+                leadgen_service.store_lead(
+                    db, page_id, raw, [source], meta=meta, token=creds, form_id_hint=form_id, test_ids_cache=test_ids
+                )
+            )
+        _save_form_cursor(db, source_id, form_id, end)
+        cursor = end
+        window = min(window * 2, WINDOW)
+    return created, True
+
+
 def backfill_source(db: Session, source_id: str, *, client: Optional[MetaLeadClient] = None) -> int:
     """One backfill run for one source (worker side, resolved by id). Returns
-    the number of new leads (for this source only)."""
+    the number of new leads for this source."""
     source = db.get(LcSource, source_id)
     if (
         source is None
@@ -92,97 +253,76 @@ def backfill_source(db: Session, source_id: str, *, client: Optional[MetaLeadCli
         or not leadgen_service._active(db, source.tenant_id)
     ):
         return 0
-    meta = client or MetaLeadClient()
-    creds = source_service.page_credentials(source)
-    if creds is None or (meta.configured and creds.get("dev")):
+    started = datetime.now(timezone.utc)
+    if not _claim(db, source_id, started):
+        return 0  # a run is already in flight
+    try:
+        return _run(db, source_id, started, client or MetaLeadClient())
+    except Exception:
+        db.rollback()
+        _finish(db, source_id, error="The backfill run failed. It runs again in 15 minutes.")
+        raise
+
+
+def _run(db: Session, source_id: str, started: datetime, meta: MetaLeadClient) -> int:
+    source = db.get(LcSource, source_id)
+    creds = source_service.page_credentials(source) if source is not None else None
+    if source is None or creds is None or (meta.configured and creds.get("dev")):
         _finish(db, source_id, error="This source has no usable Page token. Reconnect the Page.")
         return 0
     dev = bool(creds.get("dev")) or not meta.configured
-    started = datetime.now(timezone.utc)
-    since = _since(source, started)
     page_id = source.account_ref or ""
-    connected_at = _aware(source.created_at) or started
-    seen = set((source.config_json or {}).get(SEEN_FORMS_KEY) or [])
-    created = 0
-    truncated: List[str] = []
-    read: List[str] = []
     try:
         forms = _forms(meta, source, creds["pageToken"], dev)
-        for form in forms:
-            form_since = since
-            made = parse_meta_time(form.get("createdTime"))
-            if made is not None:
-                if form["id"] not in seen and made > connected_at:
-                    # A form made after the source was connected starts at its
-                    # own creation on its first read (its early leads may have
-                    # come before any run knew the form).
-                    form_since = made - timedelta(minutes=1)
-                form_since = max(form_since, made - timedelta(minutes=1), started - MAX_LOOKBACK)
-            leads, cut = meta.form_leads(creds["pageToken"], form["id"], int(form_since.timestamp()), dev=dev)
-            if cut:
-                truncated.append(form["id"])
-            else:
-                read.append(form["id"])
-            for raw in leads:
-                source = db.get(LcSource, source_id)
-                if source is None or source.status not in SOURCE_ROUTING_STATES:
-                    return created  # disconnected / flipped while we ran
-                if not source_service.accepts_form(source, raw.get("form_id") or form["id"]):
-                    continue
-                created += len(
-                    leadgen_service.store_lead(
-                        db, page_id, raw, [source], meta=meta, token=creds, form_id_hint=form["id"]
-                    )
-                )
     except MetaLeadError as exc:
-        db.rollback()
-        logger.info("lead backfill for source %s refused (code %s)", source_id, exc.code)
-        message = "Facebook no longer accepts this Page's access. Reconnect the Page." if exc.token_invalid else exc.message
-        if exc.token_invalid:
-            source_service.mark_needs_reconnect(db, source_id)
-        _finish(db, source_id, error=message)
-        return created
-    error = None
-    if truncated:
-        error = "More leads are waiting than one run reads; the next run continues."
-    _finish(db, source_id, error=error, cursor=None if truncated else started, read_forms=read)
+        # The Page-level list: any token / permission answer means the Page.
+        return _fail(db, source_id, exc, flip=exc.token_invalid)
+    budget = _Budget(RUN_PAGE_BUDGET)
+    test_ids: Dict[str, Any] = {}
+    created = 0
+    errors: List[str] = []
+    complete = True
+    for form in forms:
+        source = db.get(LcSource, source_id)
+        if source is None or source.status not in SOURCE_ROUTING_STATES:
+            _finish(db, source_id, error=None)
+            return created
+        since = _form_since(source, form, started)
+        try:
+            count, done = _read_form(
+                db, meta, source_id, page_id, creds, dev, form["id"], since, started, budget, test_ids
+            )
+        except _Stop:
+            _finish(db, source_id, error=None)
+            return created
+        except MetaLeadError as exc:
+            db.rollback()
+            if exc.token_dead:
+                return created + _fail(db, source_id, exc, flip=True)
+            # One form refused (deleted, form-level access): note it, go on.
+            logger.info("lead backfill: one form of source %s refused (code %s)", source_id, exc.code)
+            errors.append(f"Form {form['id']}: {exc.message}")
+            complete = False
+            continue
+        created += count
+        if not done:
+            complete = False
+            errors.append("More leads are waiting than one run reads; the next run continues.")
+            break
+    _finish(db, source_id, error=" ".join(errors) or None, cursor=started if complete else None)
     return created
 
 
-def _aware(value: Optional[datetime]) -> Optional[datetime]:
-    if value is not None and value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value
-
-
-def _finish(
-    db: Session,
-    source_id: str,
-    *,
-    error: Optional[str],
-    cursor: Optional[datetime] = None,
-    read_forms: Optional[List[str]] = None,
-) -> None:
-    """Record the run (and move the cursor forward only) in its own commit."""
+def _fail(db: Session, source_id: str, exc: MetaLeadError, *, flip: bool) -> int:
     db.rollback()
-    source = db.get(LcSource, source_id)
-    if source is None:
-        return
-    source.backfill_last_run_at = datetime.now(timezone.utc)
-    source.backfill_last_error = (error or None) and error[:ERROR_CAP]
-    if cursor is not None:
-        current = source.cursor_at
-        if current is not None and current.tzinfo is None:
-            current = current.replace(tzinfo=timezone.utc)
-        if current is None or cursor > current:
-            source.cursor_at = cursor
-    if read_forms:
-        config = dict(source.config_json or {})
-        seen = list(config.get(SEEN_FORMS_KEY) or [])
-        seen += [f for f in read_forms if f not in seen]
-        config[SEEN_FORMS_KEY] = seen[-MAX_SEEN_FORMS:]
-        source.config_json = config  # fresh dict: in-place JSON edits are not tracked
-    db.commit()
+    logger.info("lead backfill for source %s refused (code %s)", source_id, exc.code)
+    if flip:
+        source_service.mark_needs_reconnect(db, source_id)
+        message = "Facebook no longer accepts this Page's access. Reconnect the Page."
+    else:
+        message = exc.message
+    _finish(db, source_id, error=message)
+    return 0
 
 
 def run_due(db: Session) -> int:
@@ -206,8 +346,4 @@ def run_due(db: Session) -> int:
         except Exception:  # noqa: BLE001 - one bad source never stops the rest
             logger.exception("lead backfill failed for source %s", source_id)
             db.rollback()
-            try:
-                _finish(db, source_id, error="The backfill run failed. It runs again in 15 minutes.")
-            except Exception:  # noqa: BLE001
-                db.rollback()
     return ran

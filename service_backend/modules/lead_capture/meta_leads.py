@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
-from app.integrations.meta.errors import TOKEN_ERROR_CODES, is_token_error  # noqa: F401 - re-export
+from app.integrations.meta.errors import TOKEN_ERROR_CODES, is_token_dead, is_token_error  # noqa: F401 - re-export
 from app.integrations.meta.graph import (
     MetaGraphMixin,
     _dict_items,
@@ -61,6 +61,7 @@ class MetaLeadError(Exception):
         subcode: Optional[int] = None,
         token_invalid: bool = False,
         unreachable: bool = False,
+        token_dead: Optional[bool] = None,
     ):
         super().__init__(message)
         self.message = message
@@ -68,6 +69,8 @@ class MetaLeadError(Exception):
         self.subcode = subcode
         self.token_invalid = token_invalid
         self.unreachable = unreachable
+        # True = the token itself is gone (190/102), not a per-object refusal.
+        self.token_dead = is_token_dead(code) if token_dead is None else token_dead
 
 
 def _error_subcode(resp: httpx.Response) -> Optional[int]:
@@ -305,18 +308,25 @@ class MetaLeadClient(MetaGraphMixin):
         return flag if isinstance(flag, bool) else None
 
     def form_leads(
-        self, page_token: str, form_id: str, since_epoch: int, *, dev: bool = False
+        self,
+        page_token: str,
+        form_id: str,
+        since_epoch: int,
+        until_epoch: Optional[int] = None,
+        *,
+        dev: bool = False,
     ) -> Tuple[List[Dict[str, Any]], bool]:
         """``(leads, truncated)``: leads of one form created after
-        ``since_epoch`` (``GET /{form}/leads`` with a ``time_created`` filter,
-        Page token), up to ``MAX_PAGES`` x ``PAGE_SIZE``; ``truncated`` = more
-        pages were left unread. Raises MetaLeadError."""
+        ``since_epoch`` and before ``until_epoch`` (``GET /{form}/leads`` with
+        ``time_created`` filters, Page token), up to ``MAX_PAGES`` x
+        ``PAGE_SIZE``; ``truncated`` = more pages were left unread (the caller
+        splits the window). Raises MetaLeadError."""
         if not self._configured or dev:
             return [], False
-        filtering = json.dumps(
-            [{"field": "time_created", "operator": "GREATER_THAN", "value": int(since_epoch)}],
-            separators=(",", ":"),
-        )
+        rules = [{"field": "time_created", "operator": "GREATER_THAN", "value": int(since_epoch)}]
+        if until_epoch is not None:
+            rules.append({"field": "time_created", "operator": "LESS_THAN", "value": int(until_epoch)})
+        filtering = json.dumps(rules, separators=(",", ":"))
         leads: List[Dict[str, Any]] = []
         after = ""
         for _ in range(MAX_PAGES):

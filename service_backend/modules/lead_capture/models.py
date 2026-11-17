@@ -102,6 +102,9 @@ class LcSource(LeadCaptureBase):
     # with the source so the job is never silent.
     backfill_last_run_at = Column(UTCDateTime(), nullable=True)
     backfill_last_error = Column(String(500), nullable=True)
+    # Claim of a run in flight (cleared at the end; a claim older than the
+    # stale limit is taken over, so a crashed worker never blocks for good).
+    backfill_started_at = Column(UTCDateTime(), nullable=True)
 
 
 class LcSourceEvent(LeadCaptureBase):

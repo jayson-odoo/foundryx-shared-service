@@ -133,6 +133,28 @@ def _parked_source(db: Session, tenant_id: str, page_id: str) -> Optional[LcSour
     return None
 
 
+def _joined_since_left(own: LcSource, others: list) -> bool:
+    left = (own.config_json or {}).get(source_service.LEFT_ROUTING_AT_KEY)
+    try:
+        left_at = datetime.fromisoformat(left) if isinstance(left, str) else None
+    except ValueError:
+        left_at = None
+    if left_at is None:
+        return False
+    if left_at.tzinfo is None:
+        left_at = left_at.replace(tzinfo=timezone.utc)
+    # Whole seconds (a database clock may store none finer); erring towards a
+    # check is the safe side.
+    left_at = left_at.replace(microsecond=0)
+    for other in others:
+        joined = other.created_at
+        if joined is not None and joined.tzinfo is None:
+            joined = joined.replace(tzinfo=timezone.utc)
+        if joined is not None and joined >= left_at:
+            return True
+    return False
+
+
 def connect_facebook(
     db: Session,
     tenant_id: str,
@@ -172,6 +194,8 @@ def connect_facebook(
     # A source that only lost its token is still on the Page (turning sharing
     # OFF blocks new joins only, AC-64-36); a disconnected one joins afresh.
     on_page = own is not None and own.status != SOURCE_DISCONNECTED
+    if on_page and own.status == SOURCE_NEEDS_RECONNECT and _joined_since_left(own, others):
+        on_page = False  # another product joined while this one was away: check again
     if others and not on_page:
         tenants = {s.tenant_id for s in others}
         if not _allows_sharing(db, tenant_id) or not all(_allows_sharing(db, t) for t in tenants):
@@ -198,6 +222,7 @@ def connect_facebook(
         config = dict(own.config_json or {})
         config.setdefault("formsMode", forms_mode)
         config.pop(source_service.LAST_ROUTING_KEY, None)
+        config.pop(source_service.LEFT_ROUTING_AT_KEY, None)
         own.status = source_service.status_after_reconnect(own)
         if before == SOURCE_DISCONNECTED:
             # A disconnect stopped capture on purpose: no backfill of that gap.

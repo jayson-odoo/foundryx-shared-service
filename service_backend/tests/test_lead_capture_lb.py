@@ -321,6 +321,7 @@ def test_backfill_finds_a_missed_lead_once_and_a_new_form(client, lc, lgraph, po
     row = _row(lc, sid)
     assert row.cursor_at is not None and row.backfill_last_run_at is not None and row.backfill_last_error is None
     # re-run creates nothing; the cursor rides the next query
+    _set(lc, sid, backfill_last_run_at=None)  # past the Run-now cooldown
     res = client.post(f"/lead-capture/sources/{sid}/backfill", headers=headers)
     assert res.status_code == 202
     assert len(_leads(lc)) == 1 and len(_events(posts, "lead.created")) == 1
@@ -330,6 +331,7 @@ def test_backfill_finds_a_missed_lead_once_and_a_new_form(client, lc, lgraph, po
     lgraph.forms.append({"id": FORM_ID3, "name": "New form", "status": "ACTIVE",
                          "created_time": _meta_time(now - timedelta(minutes=30))})
     lgraph.form_leads[FORM_ID3] = [_lead_body(NEW_FORM_LEAD, FORM_ID3, now - timedelta(minutes=20))]
+    _set(lc, sid, backfill_last_run_at=None)
     client.post(f"/lead-capture/sources/{sid}/backfill", headers=headers)
     assert sorted(lead.platform_lead_id for lead in _leads(lc)) == [MISSED_LEAD, NEW_FORM_LEAD]
     new_form_query = next(f for form, f in lgraph.leads_filters if form == FORM_ID3)
@@ -842,7 +844,7 @@ def test_backfill_cut_by_the_run_budget_continues_next_run(client, lc, lgraph, m
 
     monkeypatch.setattr(meta_leads, "PAGE_SIZE", 2)
     monkeypatch.setattr(meta_leads, "MAX_PAGES", 1)
-    monkeypatch.setattr(backfill_service, "RUN_PAGE_BUDGET", 3)
+    monkeypatch.setattr(backfill_service, "RUN_PAGE_BUDGET", 5)
     headers = _login(client)
     sid = _source_id(client, headers)
     _set(lc, sid, status=SOURCE_LIVE)

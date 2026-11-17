@@ -40,6 +40,9 @@ SEND_ATTEMPTS = 2
 # costs 3-8 Graph calls (list, delete, re-read, create); the minute also
 # covers the time Meta takes to deliver the lead it just made.
 TEST_LEAD_COOLDOWN_SECONDS = 60
+# ...and at most this many per source per hour, whatever the form ids (a
+# made-up id per call must not get round the cooldown).
+TEST_LEADS_PER_HOUR = 10
 
 
 class FormError(Exception):
@@ -103,7 +106,7 @@ def form_questions(
         read = meta.form_questions(creds["pageToken"], form_id, dev=bool(creds.get("dev")))
     except MetaLeadError as exc:
         logger.info("form questions read refused (code %s)", exc.code)
-        source_service.handle_meta_error(db, source, exc)
+        source_service.handle_meta_error(db, source, exc, dead_only=True)
         raise _meta_error(exc) from None
     return {"formId": form_id, "formName": read.get("formName"), "data": read.get("questions") or []}
 
@@ -158,7 +161,7 @@ def send_test_lead(
                 logger.info("test lead create answered 1892058 (attempt %s)", attempt + 1)
     except MetaLeadError as exc:
         logger.info("test lead refused (code %s subcode %s)", exc.code, exc.subcode)
-        source_service.handle_meta_error(db, source, exc)
+        source_service.handle_meta_error(db, source, exc, dead_only=True)
         raise _meta_error(exc) from None
     raise FormError(
         409,
@@ -172,13 +175,27 @@ def _claim_cooldown(db: Session, source: LcSource, form_id: str) -> None:
     note this request (it also tells the ingest which source asked, so on a
     shared Page only that source passes its test). Committed BEFORE any Meta
     call: every attempt counts, and the lead may arrive before we return."""
-    from .leadgen_service import last_test_request, note_test_request
+    from .leadgen_service import TEST_REQUEST_WINDOW, last_test_request, note_test_request, test_requested
 
+    source = source_service.locked_source(db, source.id)  # two requests at once: one waits
     now = datetime.now(timezone.utc)
+    recent = [
+        k for k in ((source.config_json or {}).get("testLeadRequests") or {})
+        if test_requested(source, k, now)
+    ]
+    if form_id not in recent and len(recent) >= TEST_LEADS_PER_HOUR:
+        oldest = min(last_test_request(source, k) for k in recent)
+        wait = max(1, int((oldest + TEST_REQUEST_WINDOW - now).total_seconds()))
+        db.rollback()
+        raise FormError(
+            429, "test_lead_cooldown", "Too many test leads were asked for this source. Try again later.",
+            retry_after=wait,
+        )
     last = last_test_request(source, form_id)
     if last is not None:
         wait = TEST_LEAD_COOLDOWN_SECONDS - int((now - last).total_seconds())
         if 0 < wait <= TEST_LEAD_COOLDOWN_SECONDS:
+            db.rollback()
             raise FormError(
                 429,
                 "test_lead_cooldown",
