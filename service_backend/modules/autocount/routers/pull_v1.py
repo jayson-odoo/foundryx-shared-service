@@ -659,9 +659,11 @@ def unlink_po_row(
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
             doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
+            pool_location=(_optional_text(raw, "poolLocation") or "").strip() or None,  # plan 66
         )
 
-    return _write_route(request, db, raw_body, service, "write_unlink", call, operations)
+    # plan 66: ``detail`` = the free PO row the qty went back to (the pool row merged into, or the moved row)
+    return _write_route(request, db, raw_body, service, "write_unlink", call, operations, with_detail=True)
 
 
 @router.post("/spo-links/unlink")
