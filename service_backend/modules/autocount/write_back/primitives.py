@@ -19,7 +19,7 @@ import re
 import time
 import unicodedata
 from urllib.parse import urlsplit
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
@@ -145,6 +145,13 @@ class _Call:
     fresh_doc: Optional[Dict[str, Any]] = None
     # plan 65 D4: an operation's restore of a new SO-linked row (``payloads.RESTORE_LINE_KEYS``)
     restore: bool = False
+
+
+def _no_note(line: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Plan 66: a line from outside an operation never carries the link note."""
+    if not line or payloads.LINK_NOTE_KEY not in line:
+        return line
+    return {k: v for k, v in line.items() if k != payloads.LINK_NOTE_KEY}
 
 
 # AC-57-47: what marks the start of an internal detail. The text is cut at the FIRST one:
@@ -544,6 +551,9 @@ class PrimitiveService(WriteFrame):
 
     @staticmethod
     def _build(call: _Call, doc: Doc) -> VendorRequest:
+        if call.operation_id is None:  # plan 66: only an operation's link step may carry the note
+            call = replace(call, line=_no_note(call.line),
+                           lines=None if call.lines is None else [_no_note(x) for x in call.lines])
         if call.primitive == EDIT:
             return payloads.build_edit(call.kind, doc, call.header_changes, call.line_changes,
                                        restore=call.restore)

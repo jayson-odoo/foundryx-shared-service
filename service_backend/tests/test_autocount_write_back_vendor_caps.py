@@ -248,11 +248,13 @@ def test_cap_whole_row_link_on_is_one_replace_put_then_the_move(h):
 # ---- 2. split link as two writes ----------------------------------------------------
 
 def test_split_put1_is_the_split_body_then_put2_moves_the_new_row(h):
-    from modules.autocount.write_back.payloads import build_link
+    from modules.autocount.write_back.payloads import build_link, so_link_note
 
-    expected1 = build_link(
+    so = h.ac.docs["salesorderbydocdate"][0]
+    so_row = next(r for r in so["Details"] if r["DtlKey"] == 11989)
+    expected1 = build_link(  # plan 66: the new linked row carries the S/O note in PUT 1 too
         copy.deepcopy(h.ac.docs["purchaseorderbydocdate"][0]), 12017,
-        h.ac.docs["salesorderbydocdate"][0], 11989, Decimal(10),
+        so, 11989, Decimal(10), note=so_link_note(so, so_row),
     )
     res = _split(h)
     assert res.outcome == "done" and res.error_code is None
