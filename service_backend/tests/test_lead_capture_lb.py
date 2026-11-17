@@ -1053,3 +1053,56 @@ def test_reconnect_email_subject_has_no_line_breaks(client, lc, lgraph, posts):
         db.close()
     (mail,) = _mails(lc)
     assert "\r" not in mail.subject and "\n" not in mail.subject
+
+
+def test_reconnect_rechecks_sharing_when_another_product_revived_an_old_row(client, lc, lgraph):
+    """Security re-check M3: B's old disconnected row (old created_at) is
+    revived while A is away; A's reconnect must still face the sharing rule."""
+    _second_tenant(lc, True)
+    db = lc()
+    try:
+        b = connect_service.connect_facebook(db, TENANT_B, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        b_id = b.id
+        from modules.lead_capture.services import source_service
+
+        source_service.disconnect(db, TENANT_B, b_id, actor=source_service.Actor.system())
+    finally:
+        db.close()
+    _set(lc, b_id, created_at=datetime.now(timezone.utc) - timedelta(days=30))
+    headers = _login(client)
+    sid = _source_id(client, headers)  # A alone on the Page (B disconnected)
+    _set(lc, sid, status=SOURCE_LIVE)
+    lgraph.dead = True
+    db = lc()
+    try:
+        with pytest.raises(Exception):
+            leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+    finally:
+        db.close()
+    assert _row(lc, sid).status == SOURCE_NEEDS_RECONNECT
+    lgraph.dead = False
+    db = lc()
+    try:
+        revived = connect_service.connect_facebook(db, TENANT_B, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        assert revived.id == b_id
+    finally:
+        db.close()
+    res = _connect(client, headers)  # A does not allow sharing
+    assert res.status_code == 409 and res.json()["detail"]["code"] == "PAGE_IN_USE"
+
+
+def test_reconnect_without_a_known_leave_time_checks_sharing(client, lc, lgraph):
+    _second_tenant(lc, True)
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    db = lc()
+    try:
+        row = db.get(LcSource, sid)
+        row.status = SOURCE_NEEDS_RECONNECT
+        row.config_json = {k: v for k, v in (row.config_json or {}).items() if k != "leftRoutingAt"}
+        db.commit()
+        connect_service.connect_facebook(db, TENANT_B, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+    finally:
+        db.close()
+    res = _connect(client, headers)
+    assert res.status_code == 409 and res.json()["detail"]["code"] == "PAGE_IN_USE"

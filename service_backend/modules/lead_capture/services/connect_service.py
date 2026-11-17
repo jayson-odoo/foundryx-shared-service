@@ -56,6 +56,9 @@ logger = logging.getLogger(__name__)
 LEADGEN_FIELD = "leadgen"
 FORMS_MODES = ("all",)
 _PAGE_ID_RE = re.compile(r"^[0-9]{1,32}$")
+# When a source last joined its Page (connect, or a revived row): the
+# sharing re-check on a reconnect compares against it, never created_at.
+JOINED_AT_KEY = "joinedAt"
 PAGE_IN_USE_MESSAGE = "This Facebook Page is already connected to another account."
 
 
@@ -133,24 +136,30 @@ def _parked_source(db: Session, tenant_id: str, page_id: str) -> Optional[LcSour
     return None
 
 
-def _joined_since_left(own: LcSource, others: list) -> bool:
-    left = (own.config_json or {}).get(source_service.LEFT_ROUTING_AT_KEY)
+def _parse_at(value) -> Optional[datetime]:
     try:
-        left_at = datetime.fromisoformat(left) if isinstance(left, str) else None
+        at = datetime.fromisoformat(value) if isinstance(value, str) else None
     except ValueError:
-        left_at = None
+        return None
+    if at is not None and at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at
+
+
+def _joined_since_left(own: LcSource, others: list) -> bool:
+    """Did another product join the Page (connect, or revive an old row)
+    after ``own`` left routing? Unknown leave time = yes (check again)."""
+    left_at = _parse_at((own.config_json or {}).get(source_service.LEFT_ROUTING_AT_KEY))
     if left_at is None:
-        return False
-    if left_at.tzinfo is None:
-        left_at = left_at.replace(tzinfo=timezone.utc)
+        return True
     # Whole seconds (a database clock may store none finer); erring towards a
     # check is the safe side.
     left_at = left_at.replace(microsecond=0)
     for other in others:
-        joined = other.created_at
+        joined = _parse_at((other.config_json or {}).get(JOINED_AT_KEY)) or other.created_at
         if joined is not None and joined.tzinfo is None:
             joined = joined.replace(tzinfo=timezone.utc)
-        if joined is not None and joined >= left_at:
+        if joined is None or joined >= left_at:
             return True
     return False
 
@@ -223,6 +232,8 @@ def connect_facebook(
         config.setdefault("formsMode", forms_mode)
         config.pop(source_service.LAST_ROUTING_KEY, None)
         config.pop(source_service.LEFT_ROUTING_AT_KEY, None)
+        if before not in SOURCE_ROUTING_STATES:
+            config[JOINED_AT_KEY] = datetime.now(timezone.utc).isoformat()  # back on the Page now
         own.status = source_service.status_after_reconnect(own)
         if before == SOURCE_DISCONNECTED:
             # A disconnect stopped capture on purpose: no backfill of that gap.
@@ -241,7 +252,7 @@ def connect_facebook(
             status=SOURCE_WAITING_FOR_TEST,  # LIVE after its first test lead (AC-64-16)
             account_ref=page_id,
             account_name=page.get("pageName") or None,
-            config_json={"formsMode": forms_mode},
+            config_json={"formsMode": forms_mode, JOINED_AT_KEY: datetime.now(timezone.utc).isoformat()},
             credentials_encrypted=credentials,
             created_by=user_id,
         )

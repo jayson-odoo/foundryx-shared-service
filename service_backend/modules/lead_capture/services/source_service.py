@@ -470,7 +470,14 @@ def disconnect(db: Session, tenant_id: str, source_id: str, *, actor: Actor) -> 
         and not _page_still_held(db, source)
     ):
         _unsubscribe(source.account_ref, creds)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # The Page may already be unsubscribed while the source stays as it
+        # was: say so (ids only); the next connect subscribes it again.
+        logger.warning("disconnect of source %s failed after the Page unsubscribe", source.id)
+        db.rollback()
+        raise
     delivery_service.enqueue(ids)
     db.refresh(source)
     return source
