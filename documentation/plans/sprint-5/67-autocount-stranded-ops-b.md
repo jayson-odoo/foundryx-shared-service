@@ -51,9 +51,15 @@ stored answer. No SS change is needed for this; the CRM slice (item D) owns it.
 
 ## Edge cases
 
+- A timed-out PUT may still land in AutoCount after the timeout. "Not found" is trusted only once the write is
+  older than the vendor's write timeout plus margin (150 s); before that the answer stays
+  `pending_verification` ("AutoCount has not confirmed this change yet...") and nothing is sent again.
+- A write whose own action already confirmed `done` (the worker died before the operation stored it) locks
+  as `done` without a re-read: only a confirmed success locks, and that one is confirmed.
+
 - Another body under the same key is still `IDEMPOTENCY_CONFLICT`; no lookup runs.
 - A young `in_progress` run (inside the busy window) still answers `OPERATION_IN_PROGRESS`.
-- Rows written before this lane carry no operation link on their action: the lookup finds the action by
+- Rows written before this lane carry no operation link on their action: the lookup finds the in-flight action by
   key, kind, document and time window; zero or several candidates -> the stored answer stands (nothing proves
   either way).
 - Create keeps its own lookup (plan 62); delete document is out of scope (its read-back is a not-found).
