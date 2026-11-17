@@ -1061,7 +1061,7 @@ def test_memory_scan_control_sees_a_live_request_and_an_open_file(memory_trackin
     async def receive():
         return {"type": "http.request", "body": b"", "more_body": False}
 
-    base_requests = _requests_holding(b"control-marker")  # earlier tests in this process may hold some
+    base_requests = _requests_holding(b"control-marker")  # tracking starts empty per test, so 0
     base_files = _open_spooled_files()
     request = Request({"type": "http", "method": "POST", "headers": [], "query_string": b""}, receive)
     request._body = b"head-control-marker-tail"
