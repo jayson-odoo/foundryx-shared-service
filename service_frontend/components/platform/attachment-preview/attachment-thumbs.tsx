@@ -30,7 +30,8 @@ function ImageThumb({ attachment, fetchContent }: { attachment: IdeaAttachment; 
     if (!attachment.contentPath || !fetchContent) return;
     let active = true;
     let created: string | null = null;
-    fetchContent(attachment)
+    // The tile asks for the small preview, never the full original.
+    fetchContent({ ...attachment, contentPath: `${attachment.contentPath}?variant=thumb` })
       .then((blob) => {
         if (!active) return;
         created = URL.createObjectURL(blob);

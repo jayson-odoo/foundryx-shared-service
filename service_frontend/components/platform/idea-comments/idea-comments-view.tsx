@@ -19,9 +19,15 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Textarea } from '@/components/ui/textarea';
-import { AttachmentPicker, useAttachmentDraft } from '@/components/platform/attachment-picker/attachment-picker';
+import {
+  AttachmentPicker,
+  UploadRetryNotice,
+  useAttachmentDraft,
+  useUploadRetry,
+} from '@/components/platform/attachment-picker/attachment-picker';
 import { AttachmentThumbs } from '@/components/platform/attachment-preview/attachment-thumbs';
 import { UserAvatar } from '@/components/platform/user-avatar';
+import { isCommentPostResult } from '@/lib/upload-files';
 import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 export interface IdeaCommentsViewProps {
@@ -32,7 +38,9 @@ export interface IdeaCommentsViewProps {
   /** Whether the viewer may post (composer + Reply). Reading is always allowed. */
   canComment: boolean;
   /** `files` only when the surface offers attachments (`allowAttachments`). */
-  onAdd: (body: string, parentId?: string, files?: File[]) => Promise<void>;
+  onAdd: (body: string, parentId?: string, files?: File[]) => Promise<unknown>;
+  /** Re-upload only the files that failed, against the comment just posted. */
+  onRetryUploads?: (commentId: string, files: File[]) => Promise<File[]>;
   /** Offer the attach control on the composers and show comment files. */
   allowAttachments?: boolean;
   fetchAttachment?: (attachment: IdeaAttachment) => Promise<Blob>;
@@ -229,10 +237,12 @@ function Composer({
   testId,
   autoFocus,
   allowAttachments,
+  onRetryUploads,
 }: {
   placeholder?: string;
   submitLabel: string;
-  onSubmit: (body: string, files: File[]) => Promise<void>;
+  onSubmit: (body: string, files: File[]) => Promise<unknown>;
+  onRetryUploads?: (commentId: string, files: File[]) => Promise<File[]>;
   allowAttachments?: boolean;
   onCancel?: () => void;
   badge?: boolean;
@@ -242,15 +252,16 @@ function Composer({
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const draft = useAttachmentDraft();
+  const uploads = useUploadRetry(draft, onRetryUploads);
   const empty = !text.trim() && draft.files.length === 0;
 
   const submit = async () => {
     if (empty || busy) return;
     setBusy(true);
     try {
-      await onSubmit(text.trim(), draft.files);
+      const result = await onSubmit(text.trim(), draft.files);
       setText('');
-      draft.clear();
+      uploads.track(result);
     } finally {
       setBusy(false);
     }
@@ -269,7 +280,11 @@ function Composer({
         autoFocus={autoFocus}
         onChange={(e) => setText(e.target.value)}
       />
-      {allowAttachments && <AttachmentPicker draft={draft} />}
+      {uploads.pending ? (
+        <UploadRetryNotice pending={uploads.pending} busy={uploads.busy} onRetry={() => void uploads.retryNow()} />
+      ) : (
+        allowAttachments && <AttachmentPicker draft={draft} />
+      )}
       <div className="flex flex-wrap items-center justify-end gap-2">
         {badge && (
           <Badge variant="secondary" appearance="light" size="sm">
@@ -286,14 +301,16 @@ function Composer({
             Cancel
           </Button>
         )}
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => void submit()}
-          disabled={empty || busy}
-        >
-          {submitLabel}
-        </Button>
+        {!uploads.pending && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void submit()}
+            disabled={empty || busy}
+          >
+            {submitLabel}
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -317,6 +334,7 @@ export function IdeaCommentsView({
   visibleToSubmitter = false,
   allowAttachments = false,
   fetchAttachment,
+  onRetryUploads,
 }: IdeaCommentsViewProps) {
   // Which thread has the inline composer open, and the comment id it posts under.
   const [reply, setReply] = useState<{
@@ -375,6 +393,7 @@ export function IdeaCommentsView({
           submitLabel="Comment"
           badge={visibleToSubmitter}
           allowAttachments={allowAttachments}
+          onRetryUploads={onRetryUploads}
           onSubmit={(body, files) => (files.length > 0 ? onAdd(body, undefined, files) : onAdd(body))}
         />
       )}
@@ -424,10 +443,15 @@ export function IdeaCommentsView({
                     submitLabel="Reply"
                     autoFocus
                     allowAttachments={allowAttachments}
+                    onRetryUploads={onRetryUploads}
                     onCancel={() => setReply(null)}
                     onSubmit={async (body, files) => {
-                      await (files.length > 0 ? onAdd(body, reply.parentId, files) : onAdd(body, reply.parentId));
-                      setReply(null);
+                      const result = await (files.length > 0
+                        ? onAdd(body, reply.parentId, files)
+                        : onAdd(body, reply.parentId));
+                      // Stay open while some files still need a retry.
+                      if (!(isCommentPostResult(result) && result.failed.length > 0)) setReply(null);
+                      return result;
                     }}
                   />
                 </div>

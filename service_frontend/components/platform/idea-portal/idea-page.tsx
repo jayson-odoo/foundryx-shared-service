@@ -6,7 +6,12 @@ import { ArrowLeft, Heart, Reply, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeaPortal, usePortalAttachmentFetch, usePortalIdeaPage } from '@/hooks/use-idea-portal';
-import { AttachmentPicker, useAttachmentDraft } from '@/components/platform/attachment-picker/attachment-picker';
+import {
+  AttachmentPicker,
+  UploadRetryNotice,
+  useAttachmentDraft,
+  useUploadRetry,
+} from '@/components/platform/attachment-picker/attachment-picker';
 import { AttachmentThumbs } from '@/components/platform/attachment-preview/attachment-thumbs';
 import { IdeaStatusTimeline } from '@/app/(public)/public/feedback/[token]/components/idea-status-timeline';
 import { colorToHex } from '@/components/platform/status-badge';
@@ -19,6 +24,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import { dateKey } from '@/lib/datetime';
+import { isCommentPostResult } from '@/lib/upload-files';
 import type { PortalActivity, PortalComment, PortalIdea, PortalVoter } from '@/types/idea-portal';
 import { PortalStatusPill } from './portal-status-pill';
 import { PortalLoading, PortalMessage } from './portal-states';
@@ -53,11 +59,13 @@ function Avatar({ name, small }: { name: string | null; small?: boolean }) {
 
 function Composer({
   onSubmit,
+  onRetry,
   placeholder,
   submitLabel,
   autoFocus,
 }: {
-  onSubmit: (body: string, files: File[]) => Promise<void>;
+  onSubmit: (body: string, files: File[]) => Promise<unknown>;
+  onRetry: (commentId: string, files: File[]) => Promise<File[]>;
   placeholder: string;
   submitLabel: string;
   autoFocus?: boolean;
@@ -65,15 +73,16 @@ function Composer({
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const draft = useAttachmentDraft();
+  const uploads = useUploadRetry(draft, onRetry);
   const trimmed = body.trim();
   const canSend = Boolean(trimmed || draft.files.length > 0) && !busy;
   const send = async () => {
     if (!canSend) return;
     setBusy(true);
     try {
-      await onSubmit(trimmed, draft.files);
+      const result = await onSubmit(trimmed, draft.files);
       setBody('');
-      draft.clear();
+      uploads.track(result);
     } catch {
       // the hook surfaces the error
     } finally {
@@ -91,12 +100,16 @@ function Composer({
         autoFocus={autoFocus}
         onChange={(e) => setBody(e.target.value)}
       />
-      <div className="flex items-start justify-between gap-2">
-        <AttachmentPicker draft={draft} />
-        <Button size="sm" disabled={!canSend} onClick={send}>
-          {submitLabel}
-        </Button>
-      </div>
+      {uploads.pending ? (
+        <UploadRetryNotice pending={uploads.pending} busy={uploads.busy} onRetry={() => void uploads.retryNow()} />
+      ) : (
+        <div className="flex items-start justify-between gap-2">
+          <AttachmentPicker draft={draft} />
+          <Button size="sm" disabled={!canSend} onClick={send}>
+            {submitLabel}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -168,11 +181,13 @@ function ActivityItem({
   onLike,
   onDelete,
   onReply,
+  onRetry,
 }: {
   e: PortalActivity;
   onLike: (id: string) => void;
   onDelete: (id: string) => void;
-  onReply: (parentId: string, body: string, files: File[]) => Promise<void>;
+  onReply: (parentId: string, body: string, files: File[]) => Promise<unknown>;
+  onRetry: (commentId: string, files: File[]) => Promise<File[]>;
 }) {
   const { formatDmyDateTime: formatDateTime } = useDatetime();
   const [replying, setReplying] = useState(false);
@@ -191,9 +206,12 @@ function ActivityItem({
                 autoFocus
                 placeholder="Write a reply"
                 submitLabel="Send reply"
+                onRetry={onRetry}
                 onSubmit={async (body, files) => {
-                  await onReply(top.id, body, files);
-                  setReplying(false);
+                  const result = await onReply(top.id, body, files);
+                  // Stay open while some files still need a retry.
+                  if (!(isCommentPostResult(result) && result.failed.length > 0)) setReplying(false);
+                  return result;
                 }}
               />
             )}
@@ -440,6 +458,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
               <Composer
                 placeholder="Leave a comment"
                 submitLabel="Comment"
+                onRetry={page.retryCommentUploads}
                 onSubmit={(body, files) => (files.length > 0 ? page.addComment(body, undefined, files) : page.addComment(body))}
               />
               {page.actionError && <p className="mt-2 text-sm text-destructive">{page.actionError}</p>}
@@ -467,6 +486,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
                     e={row.event}
                     onLike={(id) => onAction(page.likeComment(id))}
                     onDelete={(id) => onAction(page.deleteComment(id))}
+                    onRetry={page.retryCommentUploads}
                     onReply={(parentId, body, files) =>
                       files.length > 0 ? page.addComment(body, parentId, files) : page.addComment(body, parentId)
                     }

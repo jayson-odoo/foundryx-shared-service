@@ -8,7 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { signOut as nextAuthSignOut, useSession } from 'next-auth/react';
 import { ApiError } from '@/lib/api-client';
 import { ideaPortalAuth } from '@/lib/idea-portal-auth';
-import { shrinkImage } from '@/lib/shrink-image';
+import { uploadInOrder, type CommentPostResult } from '@/lib/upload-files';
 import { ideaPortalService } from '@/services/idea-portal-service';
 import type { IdeaAttachment } from '@/types/ideation';
 import type {
@@ -27,18 +27,9 @@ import type {
   PortalVoter,
 } from '@/types/idea-portal';
 
-/** Upload files one after another (a big photo is shrunk first). Returns the
- * files that did NOT make it, so the caller can name them and retry only those. */
-async function uploadFiles(ideaId: string, files: File[], commentId?: string): Promise<File[]> {
-  const failed: File[] = [];
-  for (const file of files) {
-    try {
-      await ideaPortalService.uploadAttachment(ideaId, await shrinkImage(file), commentId);
-    } catch {
-      failed.push(file);
-    }
-  }
-  return failed;
+/** Upload files to the report, or to a comment of it; returns those that failed. */
+function uploadFiles(ideaId: string, files: File[], commentId?: string): Promise<File[]> {
+  return uploadInOrder(files, (file) => ideaPortalService.uploadAttachment(ideaId, file, commentId));
 }
 
 /** Fetch an uploaded file's bytes (its content route needs the portal token),
@@ -319,7 +310,13 @@ export interface UsePortalIdeaPage {
   vote: () => Promise<void>;
   /** `files` are uploaded to the new comment after it is created (the body may
    * then be empty). */
-  addComment: (body: string, parentId?: string | null, files?: File[]) => Promise<void>;
+  addComment: (
+    body: string,
+    parentId?: string | null,
+    files?: File[],
+  ) => Promise<CommentPostResult | undefined>;
+  /** Retry only the files that failed against a comment that already exists. */
+  retryCommentUploads: (commentId: string, files: File[]) => Promise<File[]>;
   deleteComment: (commentId: string) => Promise<void>;
   likeComment: (commentId: string) => Promise<void>;
   setHidden: (hidden: boolean) => Promise<void>;
@@ -367,22 +364,32 @@ export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
   );
 
   const addComment = useCallback(
-    (body: string, parentId?: string | null, files: File[] = []) =>
-      run(async () => {
+    async (body: string, parentId?: string | null, files: File[] = []) => {
+      let result: CommentPostResult | undefined;
+      await run(async () => {
         const created = await ideaPortalService.addComment(
           resolvedId,
           body,
           parentId,
           files.length > 0 && !body,
         );
+        // The comment exists either way: report what did not upload.
         const failed = files.length > 0 ? await uploadFiles(resolvedId, files, created.id) : [];
-        // The comment exists either way: name what did not upload instead of failing.
-        if (failed.length > 0) {
-          setActionError(`Could not upload ${failed.map((f) => f.name).join(', ')}.`);
-        }
+        result = { commentId: created.id, failed };
         activity.reload();
-      }),
+      });
+      return result;
+    },
     [run, resolvedId, activity],
+  );
+
+  const retryCommentUploads = useCallback(
+    async (commentId: string, files: File[]) => {
+      const failed = await uploadFiles(resolvedId, files, commentId);
+      activity.reload();
+      return failed;
+    },
+    [resolvedId, activity],
   );
 
   const deleteComment = useCallback(
@@ -429,6 +436,7 @@ export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
     setOrder,
     vote,
     addComment,
+    retryCommentUploads,
     deleteComment,
     likeComment,
     setHidden,

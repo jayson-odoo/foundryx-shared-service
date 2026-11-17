@@ -134,11 +134,16 @@ export const ideaPortalService = {
     return call<IdeaAttachment>(`/${encodeURIComponent(id)}/attachments`, { method: 'POST', body });
   },
   /** An uploaded file's bytes (the content route needs the portal token). */
-  attachmentContent(contentPath: string): Promise<Blob> {
+  async attachmentContent(contentPath: string): Promise<Blob> {
     const token = ideaPortalAuth.get();
     const headers = new Headers();
     if (token) headers.set('Authorization', `Bearer ${token}`);
-    return publicFetchBlob(contentPath, { headers });
+    try {
+      return await publicFetchBlob(contentPath, { headers });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) ideaPortalAuth.set(null);
+      throw err;
+    }
   },
   deleteComment(id: string, commentId: string): Promise<void> {
     return call<void>(`/${encodeURIComponent(id)}/comments/${encodeURIComponent(commentId)}`, {

@@ -5,6 +5,7 @@ import { FileText, Paperclip, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { isCommentPostResult } from '@/lib/upload-files';
 
 export const MAX_FILES = 10;
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -21,6 +22,8 @@ export interface AttachmentDraft {
   add: (incoming: FileList | File[]) => void;
   remove: (index: number) => void;
   clear: () => void;
+  /** Keep exactly these files (e.g. only the ones that failed to upload). */
+  replace: (files: File[]) => void;
   /** Spread on the form / composer so paste and drop land in this draft. */
   wrapperProps: AttachmentDraftWrapperProps;
 }
@@ -65,12 +68,20 @@ export function useAttachmentDraft(): AttachmentDraft {
     setFiles([]);
   }, []);
 
+  const replace = useCallback((next: File[]) => {
+    setError(null);
+    setFiles(next);
+  }, []);
+
   const wrapperProps = useMemo<AttachmentDraftWrapperProps>(
     () => ({
       onPaste: (e) => {
         const pasted = e.clipboardData?.files;
         if (pasted && pasted.length > 0) {
-          e.preventDefault();
+          // A paste with text AND an image (Word) keeps its text; the image is
+          // still added. Only a files-only paste is taken over.
+          const text = typeof e.clipboardData.getData === 'function' ? e.clipboardData.getData('text/plain') : '';
+          if (!text) e.preventDefault();
           add(pasted);
         }
       },
@@ -86,7 +97,7 @@ export function useAttachmentDraft(): AttachmentDraft {
     [add],
   );
 
-  return { files, error, add, remove, clear, wrapperProps };
+  return { files, error, add, remove, clear, replace, wrapperProps };
 }
 
 /** Object URLs for image previews, revoked on remove / unmount. */
@@ -131,6 +142,7 @@ export function AttachmentPicker({ draft }: { draft: AttachmentDraft }) {
           ref={inputRef}
           type="file"
           multiple
+          accept="image/*,video/*,audio/*,application/pdf,*/*"
           className="hidden"
           onChange={(e) => {
             if (e.target.files) draft.add(e.target.files);
@@ -166,6 +178,77 @@ export function AttachmentPicker({ draft }: { draft: AttachmentDraft }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** A posted comment whose files did not all upload: what is left to retry. */
+export interface PendingUploads {
+  commentId: string;
+  failed: File[];
+}
+
+/**
+ * After a comment is posted, keep the files that failed in the draft and offer
+ * a retry against the SAME comment. `track` takes whatever the post resolved to.
+ */
+export function useUploadRetry(
+  draft: AttachmentDraft,
+  retry?: (commentId: string, files: File[]) => Promise<File[]>,
+) {
+  const [pending, setPending] = useState<PendingUploads | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { clear, replace } = draft;
+
+  const track = useCallback(
+    (result: unknown) => {
+      if (isCommentPostResult(result) && result.failed.length > 0) {
+        setPending({ commentId: result.commentId, failed: result.failed });
+        replace(result.failed);
+      } else {
+        setPending(null);
+        clear();
+      }
+    },
+    [clear, replace],
+  );
+
+  const retryNow = useCallback(async () => {
+    if (!pending || !retry) return;
+    setBusy(true);
+    try {
+      const failed = await retry(pending.commentId, pending.failed);
+      if (failed.length > 0) {
+        setPending({ commentId: pending.commentId, failed });
+        replace(failed);
+      } else {
+        setPending(null);
+        clear();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [pending, retry, clear, replace]);
+
+  return { pending, busy, track, retryNow };
+}
+
+/** Names the files that did not upload, with the one button to retry them. */
+export function UploadRetryNotice({
+  pending,
+  busy,
+  onRetry,
+}: {
+  pending: PendingUploads;
+  busy: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <p className="text-sm text-destructive">Could not upload {pending.failed.map((f) => f.name).join(', ')}.</p>
+      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onRetry}>
+        Try again
+      </Button>
     </div>
   );
 }
