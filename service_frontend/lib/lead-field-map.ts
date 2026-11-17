@@ -79,7 +79,7 @@ export function formMapRows(sources: LeadSourceItem[]): FormMapRow[] {
   for (const source of sources) {
     const pageName = source.pageName || source.name;
     const notices = new Map(source.needsMapping.map((n) => [n.formId, n]));
-    const formIds = new Set<string>([...Object.keys(source.fieldMap ?? {}), ...notices.keys()]);
+    const formIds = new Set<string>([...Object.keys(source.fieldMap ?? {}), ...Array.from(notices.keys())]);
     // "All forms" first, then the rest in form-id order.
     const ordered = Array.from(formIds).sort((a, b) =>
       a === ALL_FORMS ? -1 : b === ALL_FORMS ? 1 : a.localeCompare(b, undefined, { numeric: true }),

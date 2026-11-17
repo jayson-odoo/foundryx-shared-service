@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertCircle, Loader2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Alert, AlertIcon, AlertTitle, AlertToolbar } from '@/components/ui/alert';
@@ -56,15 +56,15 @@ function MapFieldsBody({
 }: MapFieldsDialogProps & { target: MapTarget }) {
   const questions = useFormQuestions(target.sourceId, target.formId);
   const { saving, save } = useSaveFieldMap();
-  const [selection, setSelection] = useState<Record<string, string>>({});
+  // The user's picks over the starting map (derived, so no first-paint flicker).
+  const [picked, setPicked] = useState<Record<string, string>>({});
   const source = sources.find((s) => s.id === target.sourceId);
   const title = questions.data?.formName || target.formName;
-
-  useEffect(() => {
-    if (questions.data) {
-      setSelection(initialTargets(questions.data.data, source?.fieldMap ?? {}, target.formId, fields));
-    }
-  }, [questions.data, source, target.formId, fields]);
+  const initial = useMemo(
+    () => (questions.data ? initialTargets(questions.data.data, source?.fieldMap ?? {}, target.formId, fields) : {}),
+    [questions.data, source, target.formId, fields],
+  );
+  const selection = useMemo(() => ({ ...initial, ...picked }), [initial, picked]);
 
   const onSave = async () => {
     if (!questions.data) return;
@@ -117,7 +117,7 @@ function MapFieldsBody({
                   options={targetOptions(q, fields)}
                   value={selection[q.key] ?? ''}
                   disabled={!canManage}
-                  onChange={(v) => setSelection((prev) => ({ ...prev, [q.key]: v }))}
+                  onChange={(v) => setPicked((prev) => ({ ...prev, [q.key]: v }))}
                 />
               </div>
             ))}
