@@ -204,7 +204,11 @@ now superseded by this PR.
 - At ~15:27 he dropped (b): "for meta leads i think this is too cusotmized already sorry".
 - So Meta form answers stay in the lead's Notes as today. No product-interest field or field map is published, and
   the script for it was removed.
-- Whether (c) Developer / Location (CRM lane META-CRM-FIELDS) is also dropped: open, asked on PR #236.
+- (c) Developer / Location is dropped too (owner, 17/11/2026: "2495 i think revert better"). CRM PR #2495 is being
+  reverted before the next release (crew lane REVERT-2495). Sales set Developer and Location by hand from the lead's
+  Notes. The META-CRM-FIELDS spec stays on PR #236 as a record, unbuilt.
+- Net effect: nothing to build for (b) or (c). Meta leads carry name, phone and email, and every other answer is in
+  Notes.
 
 ## 8. Decision 1 in detail: sharing a Facebook Page between products
 
