@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { LoaderCircleIcon, UserMinus } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Button } from '@/components/ui/button';
+import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
@@ -27,6 +28,14 @@ import type { ListQuery, ListResult } from '@/types/resource';
 import type { IdeaFollower } from '@/types/ideation';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+/** Sort keys per column (the list is the item's whole follower set, sorted here). */
+const SORT_KEYS: Record<string, (r: IdeaFollower) => string> = {
+  name: (r) => (r.name ?? '').toLowerCase(),
+  phone: (r) => r.phone ?? '',
+  addedBy: (r) => (r.addedByStaff ? 'staff' : 'themselves'),
+  since: (r) => r.createdAt ?? '',
+};
 
 export interface IdeaFollowersTabProps {
   ideaId: string;
@@ -106,7 +115,7 @@ function AddFollowerDialog({
  * picker and remove through the row / bulk actions.
  */
 export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
-  const { followers, error, add, remove } = useIdeaFollowers(ideaId);
+  const { followers, error, add, remove, reload } = useIdeaFollowers(ideaId);
   const { formatDmyDate } = useDatetime();
   const [adding, setAdding] = useState(false);
 
@@ -133,34 +142,30 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
       {
         id: 'name',
         meta: { headerTitle: 'Name' },
-        header: () => 'Name',
+        header: ({ column }) => <DataGridColumnHeader title="Name" column={column} />,
         cell: ({ row }) => <ClampedText text={row.original.name ?? '-'} lines={1} />,
         size: 220,
-        enableSorting: false,
       },
       {
         id: 'phone',
         meta: { headerTitle: 'Phone' },
-        header: () => 'Phone',
+        header: ({ column }) => <DataGridColumnHeader title="Phone" column={column} />,
         cell: ({ row }) => <span className="text-muted-foreground">{row.original.phone ?? '-'}</span>,
         size: 160,
-        enableSorting: false,
       },
       {
         id: 'addedBy',
         meta: { headerTitle: 'Added by' },
-        header: () => 'Added by',
+        header: ({ column }) => <DataGridColumnHeader title="Added by" column={column} />,
         cell: ({ row }) => <span>{row.original.addedByStaff ? 'Staff' : 'Themselves'}</span>,
         size: 120,
-        enableSorting: false,
       },
       {
         id: 'since',
         meta: { headerTitle: 'Following since' },
-        header: () => 'Following since',
+        header: ({ column }) => <DataGridColumnHeader title="Following since" column={column} />,
         cell: ({ row }) => <span>{row.original.createdAt ? formatDmyDate(row.original.createdAt) : '-'}</span>,
         size: 140,
-        enableSorting: false,
       },
       {
         id: 'actions',
@@ -190,6 +195,13 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
         data = data.filter(
           (r) => (r.name ?? '').toLowerCase().includes(s) || (r.phone ?? '').toLowerCase().includes(s),
         );
+      }
+      if (query.sort) {
+        const key = SORT_KEYS[query.sort.id];
+        if (key) {
+          const dir = query.sort.desc ? -1 : 1;
+          data = [...data].sort((a, b) => dir * key(a).localeCompare(key(b)));
+        }
       }
       const start = query.page * query.pageSize;
       return { data: data.slice(start, start + query.pageSize), total: data.length, page: query.page };
@@ -244,7 +256,14 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
   return (
     <Card>
       <CardContent className="py-4">
-        {error && <p className="mb-2 text-sm text-destructive">{error}</p>}
+        {error && (
+          <div className="mb-2 flex items-center gap-2 text-sm text-destructive" role="alert">
+            <span>{error}</span>
+            <Button mode="link" size="sm" onClick={reload}>
+              Try again
+            </Button>
+          </div>
+        )}
         {/* Keyed on the rows so an add / remove refetches the embedded list. */}
         <ResourceList key={followers.map((f) => f.contactId).join(',')} config={config} hideHeader />
         <AddFollowerDialog

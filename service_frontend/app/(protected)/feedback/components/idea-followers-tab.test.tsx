@@ -104,6 +104,15 @@ describe('IdeaFollowersTab (AC-FS-10)', () => {
     await waitFor(() => expect(h.add).toHaveBeenCalledWith('c-2'));
   });
 
+  it('every data column header is the shared sortable header', async () => {
+    mockHook([follower]);
+    render(<IdeaFollowersTab ideaId="i-1" canManage />);
+    await screen.findByText('Manager A');
+    for (const name of ['Name', 'Phone', 'Added by', 'Following since']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    }
+  });
+
   it('without manage permission there is no Create and no Remove', async () => {
     mockHook([follower]);
     render(<IdeaFollowersTab ideaId="i-1" canManage={false} />);
