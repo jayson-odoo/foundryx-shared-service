@@ -92,6 +92,22 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
+    # tolerant of a table created ahead of this revision (the crew test copy's idempotent SQL): create if absent,
+    # then rebuild the rows from scratch
+    if not sa.inspect(bind).has_table(TABLE, schema=SCHEMA):
+        _create()
+    op.create_index("ix_ac_so_row_index_dtl", TABLE, ["tenant_id", "company_id", "so_dtl_key"], schema=SCHEMA,
+                    if_not_exists=True)
+    op.create_index("ix_ac_so_row_index_so_ref", TABLE, ["tenant_id", "company_id", "so_source_ref"], schema=SCHEMA,
+                    if_not_exists=True)
+    # the SPO re-stage finds the POs its lines name by number (write_back/doc_mapping._po_dtl_lookup)
+    op.create_index("ix_ac_staged_doc_no", "ac_staged_record", ["tenant_id", "company_id", "entity_type", "doc_no"],
+                    schema=SCHEMA, if_not_exists=True)
+    bind.execute(sa.delete(index))
+    _backfill(bind)
+
+
+def _create() -> None:
     op.create_table(
         TABLE,
         sa.Column("id", sa.String(), primary_key=True),
@@ -105,11 +121,9 @@ def upgrade() -> None:
         sa.Column("staged_at", sa.DateTime(timezone=True), nullable=True),
         schema=SCHEMA,
     )
-    op.create_index("ix_ac_so_row_index_dtl", TABLE, ["tenant_id", "company_id", "so_dtl_key"], schema=SCHEMA)
-    op.create_index("ix_ac_so_row_index_so_ref", TABLE, ["tenant_id", "company_id", "so_source_ref"], schema=SCHEMA)
-    # the SPO re-stage finds the POs its lines name by number (write_back/doc_mapping._po_dtl_lookup)
-    op.create_index("ix_ac_staged_doc_no", "ac_staged_record", ["tenant_id", "company_id", "entity_type", "doc_no"],
-                    schema=SCHEMA, if_not_exists=True)
+
+
+def _backfill(bind) -> None:
 
     # backfill: per SO, the rows ranked newest (dense_rank keeps equally new copies), ignoring discarded delete
     # intents; an SO whose newest rank holds a live delete intent gets nothing (as refresh(deleted=True) leaves it)

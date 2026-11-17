@@ -93,6 +93,19 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
+    # tolerant of a table created ahead of this revision (the crew test copy's idempotent SQL): create if absent,
+    # then rebuild the rows from scratch
+    if not sa.inspect(bind).has_table(TABLE, schema=SCHEMA):
+        _create()
+    op.create_index("ix_ac_spo_po_link_po_dtl", TABLE, ["tenant_id", "company_id", "po_dtl_key"], schema=SCHEMA,
+                    if_not_exists=True)
+    op.create_index("ix_ac_spo_po_link_spo_ref", TABLE, ["tenant_id", "company_id", "spo_source_ref"], schema=SCHEMA,
+                    if_not_exists=True)
+    bind.execute(sa.delete(link))
+    _backfill(bind)
+
+
+def _create() -> None:
     op.create_table(
         TABLE,
         sa.Column("id", sa.String(), primary_key=True),
@@ -105,8 +118,9 @@ def upgrade() -> None:
         sa.Column("qty", sa.Numeric(20, 8), nullable=False),
         schema=SCHEMA,
     )
-    op.create_index("ix_ac_spo_po_link_po_dtl", TABLE, ["tenant_id", "company_id", "po_dtl_key"], schema=SCHEMA)
-    op.create_index("ix_ac_spo_po_link_spo_ref", TABLE, ["tenant_id", "company_id", "spo_source_ref"], schema=SCHEMA)
+
+
+def _backfill(bind) -> None:
 
     # backfill: the newest staged row of each SPO that is not a discarded delete intent (as the runtime
     # newest() reads it); a live delete intent or a cancelled SPO adds nothing. Streamed, inserted in chunks.
