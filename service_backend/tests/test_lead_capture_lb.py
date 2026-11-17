@@ -1153,3 +1153,21 @@ def test_gateway_connect_errors_use_the_envelope(client, lc, lgraph):
                       json={"pageId": PAGE_ID, "systemUserToken": SYSTEM_TOKEN}, headers=_bearer(key))
     assert res.status_code == 409 and res.json()["error"]["code"] == "PAGE_IN_USE"
     assert TENANT_B not in res.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"systemUserToken": SYSTEM_TOKEN},  # no pageId: the whole body is the error input
+        {"pageId": PAGE_ID, "systemUserToken": SYSTEM_TOKEN + "x" * 4100},  # too long
+        {"pageId": PAGE_ID, "systemUserToken": [SYSTEM_TOKEN]},  # wrong type
+    ],
+)
+def test_validation_errors_never_echo_the_token(client, lc, lgraph, body):
+    headers = _login(client)
+    key = _key(client, headers)
+    res = client.post("/api/v1/lead-capture/sources/facebook", json=body, headers=_bearer(key))
+    assert res.status_code == 422 and res.json()["error"]["code"] == "invalid_request"
+    assert SYSTEM_TOKEN not in res.text
+    staff = client.post("/lead-capture/sources/facebook", json=body, headers=headers)
+    assert staff.status_code == 422 and SYSTEM_TOKEN not in staff.text
