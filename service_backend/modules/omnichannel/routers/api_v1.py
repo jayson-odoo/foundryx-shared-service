@@ -283,9 +283,10 @@ async def send_message(
 def list_channels(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> PublicChannelListResponse:
     items = PublicGatewayService(db).list_channels(api_ws.tenant_id, api_ws.workspace_id)
-    return PublicChannelListResponse(data=items)
+    return versioned(PublicChannelListResponse(data=items), version)
 
 
 @router.get("/templates", response_model=PublicTemplateListResponse)

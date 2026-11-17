@@ -48,6 +48,9 @@ EVENT_TYPES = (
     "contact.updated",
     "message.reaction",
     "contact.erased",
+    # Track A S9, opt-in like every type here (no wildcard subscription):
+    # only endpoints that list it receive it.
+    "channel.updated",
 )
 
 # Auto-disable after this many consecutive dead-lettered deliveries.

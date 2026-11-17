@@ -19,6 +19,7 @@ from ..schemas import ChannelItem, ManualConnectRequest, OnboardingCallbackReque
 from ..security import encrypt_credentials
 from .channel_service import ChannelService
 from . import statuses
+from .channel_events import emit_channel_updated
 
 
 class WorkspaceNotFound(Exception):
@@ -140,6 +141,7 @@ class OnboardingService:
             except Exception:  # noqa: BLE001 - subscription failure shouldn't block onboarding
                 pass
 
+        emit_channel_updated(self.db, channel)
         return ChannelService(self.db)._items([channel], tenant_id)[0]
 
     def manual_connect(
@@ -206,5 +208,6 @@ class OnboardingService:
             expires = (adapter.token_details(payload.accessToken) or {}).get("expires_at")
         except Exception:  # noqa: BLE001 - an unreadable expiry never blocks a connect
             expires = None
+        emit_channel_updated(self.db, channel)
         item = ChannelService(self.db)._items([channel], tenant_id)[0]
         return TokenChannelItem(**item.model_dump(), tokenExpiresAt=expires)

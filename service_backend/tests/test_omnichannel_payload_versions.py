@@ -123,7 +123,7 @@ V2_CHANGED_API = {
     "api.webhooks.create", "api.webhooks.list", "api.webhooks.update",
     "api.webhooks.disable", "api.webhooks.enable",
     "api.contacts.list", "api.contacts.get", "api.contacts.update", "api.contacts.messages",
-    "api.contacts.message", "api.contacts.comment", "api.templates.list",
+    "api.contacts.message", "api.contacts.comment", "api.templates.list", "api.channels.list",
 }
 
 
@@ -147,6 +147,7 @@ def test_header_2_adds_only_v2_keys_and_keeps_rio_and_webhooks_identical(client,
     assert '"sender":{"type":"API"' in out["api.contacts.messages"]
     assert '"sender":{"type":"SYSTEM"' in out["api.contacts.comment"]
     assert '"headerFormat":null,"headerVariableCount":0,"buttonVariableCount":0' in out["api.templates.list"]
+    assert '"connectionState":"CONNECTED"' in out["api.channels.list"]
 
 
 @pytest.mark.parametrize("value", ["3", "0", "-1", "abc", "v2", "1.0", "2 2", " ", "99999"])
@@ -904,3 +905,115 @@ def test_template_send_with_header_and_button_variables(client, session_factory,
     assert res.status_code == 202, res.text
     sent = repr(spy.calls)
     assert "#88" in sent and "Q-1" in sent and "Sam" in sent
+
+
+# ── Track A S9: channel connectionState + opt-in channel.updated ─────────────
+def _channel_row(session_factory, channel_id):
+    from modules.omnichannel.models import Channel
+
+    db = session_factory()
+    try:
+        return db.query(Channel).filter(Channel.id == channel_id).one()
+    finally:
+        db.close()
+
+
+def _channels(client, hdr, version=None):
+    headers = hdr if version is None else {**hdr, HEADER: version}
+    return {c["id"]: c for c in client.get(f"{BASE}/channels", headers=headers).json()["data"]}
+
+
+def test_connection_state_only_at_version_2_and_status_values_unchanged(client, session_factory):
+    from modules.omnichannel.services import statuses
+
+    hdr, channel_id = _key(client, session_factory)
+    assert "connectionState" not in _channels(client, hdr)[channel_id]
+    assert "connectionState" not in _channels(client, hdr, "1")[channel_id]
+    assert _channels(client, hdr, "2")[channel_id]["connectionState"] == "CONNECTED"
+
+    def set_row(**kw):
+        from modules.omnichannel.models import Channel
+
+        db = session_factory()
+        try:
+            c = db.query(Channel).filter(Channel.id == channel_id).one()
+            for k, v in kw.items():
+                if k == "status":
+                    c.status_id = statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", v)
+                else:
+                    setattr(c, k, v)
+            db.commit()
+        finally:
+            db.close()
+
+    set_row(is_active=False, status="INACTIVE")
+    item = _channels(client, hdr, "2")[channel_id]
+    assert (item["status"], item["connectionState"]) == ("INACTIVE", "PAUSED")
+    set_row(is_active=True, status="ERROR")
+    item = _channels(client, hdr, "2")[channel_id]
+    assert (item["status"], item["connectionState"]) == ("ERROR", "NEEDS_RECONNECT")
+
+
+def _hook(client, hdr, url, events, version=None):
+    extra = {"payloadVersion": version} if version else {}
+    return _create(client, hdr, url=url, events=events, **extra).json()
+
+
+def test_channel_updated_reaches_only_endpoints_that_list_it(client, session_factory, posted):
+    hdr, channel_id = _key(client, session_factory)
+    # An existing-style endpoint subscribed to every pre-S9 event type.
+    from tests.test_omnichannel_payload_snapshots import V1_EVENT_TYPES
+
+    _hook(client, hdr, "https://hooks.example.com/legacy", list(V1_EVENT_TYPES))
+    _hook(client, hdr, HOOK_V1, ["channel.updated"])
+    _hook(client, hdr, HOOK_V2, ["channel.updated"], version=2)
+    staff = _auth(client)
+    res = client.patch(f"/omnichannel/channels/{channel_id}", json={"isActive": False}, headers=staff)
+    assert res.status_code == 200, res.text
+    calls = list(posted.drain(session_factory))
+    by_url = {c["url"]: c for c in calls}
+    assert "https://hooks.example.com/legacy" not in by_url
+    assert {c["headers"]["X-Fx-Event-Type"] for c in calls} == {"channel.updated"}
+    v1 = json.loads(by_url[HOOK_V1]["content"])
+    v2 = json.loads(by_url[HOOK_V2]["content"])
+    assert v1["data"]["channel"]["id"] == channel_id and v1["data"]["channel"]["isActive"] is False
+    assert "connectionState" not in v1["data"]["channel"]
+    assert v2["data"]["channel"]["connectionState"] == "PAUSED"
+    assert v2["data"]["channel"]["status"] == "INACTIVE"
+
+    # Resume, then disconnect: one event each.
+    client.patch(f"/omnichannel/channels/{channel_id}", json={"isActive": True}, headers=staff)
+    client.patch(f"/omnichannel/channels/{channel_id}", json={"name": "renamed"}, headers=staff)  # no state change
+    states = [json.loads(c["content"])["data"]["channel"]["connectionState"]
+              for c in posted.drain(session_factory)[len(calls):] if c["url"] == HOOK_V2]
+    assert states == ["CONNECTED"]
+
+
+def test_channel_updated_on_disconnect_and_token_health(client, session_factory, posted, monkeypatch):
+    from modules.omnichannel.services import token_health
+    from modules.omnichannel.services.channel_service import ChannelService
+
+    hdr, channel_id = _key(client, session_factory)
+    _hook(client, hdr, HOOK_V2, ["channel.updated"], version=2)
+
+    class _Dead:
+        verdict = "dead"
+
+        def check_token(self, *a, **k):
+            return self.verdict
+
+    adapter = _Dead()
+    monkeypatch.setattr(token_health, "get_adapter", lambda *a, **k: adapter)
+    monkeypatch.setattr(token_health, "_checkable", lambda c: {"access_token": "t"})
+    monkeypatch.setattr(token_health, "_notify_dead", lambda db, c: None)
+    db = session_factory()
+    try:
+        assert token_health.check_channel_token(db, channel_id) == "dead"
+        assert token_health.check_channel_token(db, channel_id) == "dead"  # no change, no event
+        adapter.verdict = "ok"
+        assert token_health.check_channel_token(db, channel_id) == "ok"
+        ChannelService(db).disconnect([channel_id], DEFAULT_TENANT_ID)
+    finally:
+        db.close()
+    states = [json.loads(c["content"])["data"]["channel"]["connectionState"] for c in posted.drain(session_factory)]
+    assert states == ["NEEDS_RECONNECT", "CONNECTED", "DISCONNECTED"]

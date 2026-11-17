@@ -42,6 +42,8 @@ GATED_KEYS: Dict[str, Dict[str, int]] = {
     "MessageItem": {"sender": V2},
     # Track A S4: template header/button shape.
     "PublicTemplateItem": {"headerFormat": V2, "headerVariableCount": V2, "buttonVariableCount": V2},
+    # Track A S9: channel connection state.
+    "PublicChannelItem": {"connectionState": V2},
     # Track A S2: hand-built `details` on the public window refusals (409).
     "WindowRefusal": {"details": V2},
 }

@@ -159,6 +159,49 @@ def _attribution(sender) -> Optional[dict]:
     return {"senderAttribution": sender.stored()} if sender is not None else None
 
 
+def _is_provider_id(value: Optional[str], c: Channel) -> bool:
+    """On a WhatsApp channel, a display field that holds (or is built from)
+    the provider's number id, because details were not available at connect,
+    is not shown. Short, blank or missing ids change nothing."""
+    if c.channel_type != "WHATSAPP" or not value:
+        return False
+    pid = (c.phone_number_id or "").strip()
+    return len(pid) >= 6 and pid in value
+
+
+def connection_state(channel: Channel, status_key: str) -> str:
+    """Payload version 2 `connectionState`, derived from what the channel
+    already stores (the `status` values are never extended): disconnected
+    (trashed) -> DISCONNECTED; the token check's ERROR -> NEEDS_RECONNECT;
+    paused (inactive) -> PAUSED; else CONNECTED."""
+    if channel.is_trashed:
+        return "DISCONNECTED"
+    if status_key == "ERROR":
+        return "NEEDS_RECONNECT"
+    if not channel.is_active:
+        return "PAUSED"
+    return "CONNECTED"
+
+
+def _public_channel_item(c: Channel, smap, default_id: Optional[str]) -> PublicChannelItem:
+    # A missing status row reads ACTIVE only for an active channel.
+    status = smap.get(c.status_id) or ("ACTIVE" if c.is_active else "INACTIVE")
+    return PublicChannelItem(
+        id=c.id,
+        channelType=c.channel_type,
+        name="WhatsApp channel" if _is_provider_id(c.name, c) else c.name,
+        status=status,
+        isActive=c.is_active,
+        isDefault=c.id == default_id,
+        displayPhoneNumber=(
+            None if _is_provider_id(c.display_phone_number, c) else c.display_phone_number
+        ),
+        verifiedName=None if _is_provider_id(c.verified_name, c) else c.verified_name,
+        createdAt=c.created_at,
+        connectionState=connection_state(c, status),
+    )
+
+
 def _iso_z(dt) -> Optional[str]:
     """Aware-UTC datetime → ISO-8601 Z. Used for Foundryx-extension fields on
     the Rio shapes (`cswExpiresAt`), which follow the house convention rather
@@ -1573,43 +1616,24 @@ class PublicGatewayService:
         rows = ChannelRepository(self.db).list_by_workspace(
             workspace_id, tenant_id, oldest_first=True
         )
+        default_id = self._default_channel_id(tenant_id, workspace_id)
+        smap = statuses.id_to_key_map(self.db, tenant_id)
+        return [_public_channel_item(c, smap, default_id) for c in rows]
+
+    def _default_channel_id(self, tenant_id: str, workspace_id: str) -> Optional[str]:
         try:
-            default_id: Optional[str] = self._workspace_channel(tenant_id, workspace_id).id
+            return self._workspace_channel(tenant_id, workspace_id).id
         except ApiError as exc:
             if exc.code not in ("no_active_channel", "channel_required"):
                 raise
-            default_id = None
-        smap = statuses.id_to_key_map(self.db, tenant_id)
+            return None
 
-        def _is_provider_id(value: Optional[str], c: Channel) -> bool:
-            # On a WhatsApp channel, a display field that holds (or is built
-            # from) the provider's number id, because details were not available
-            # at connect, is not shown. Short, blank or missing ids change nothing.
-            if c.channel_type != "WHATSAPP" or not value:
-                return False
-            pid = (c.phone_number_id or "").strip()
-            return len(pid) >= 6 and pid in value
-
-        def _status(c: Channel) -> str:
-            # A missing status row reads ACTIVE only for an active channel.
-            return smap.get(c.status_id) or ("ACTIVE" if c.is_active else "INACTIVE")
-
-        return [
-            PublicChannelItem(
-                id=c.id,
-                channelType=c.channel_type,
-                name="WhatsApp channel" if _is_provider_id(c.name, c) else c.name,
-                status=_status(c),
-                isActive=c.is_active,
-                isDefault=c.id == default_id,
-                displayPhoneNumber=(
-                    None if _is_provider_id(c.display_phone_number, c) else c.display_phone_number
-                ),
-                verifiedName=None if _is_provider_id(c.verified_name, c) else c.verified_name,
-                createdAt=c.created_at,
-            )
-            for c in rows
-        ]
+    def public_channel_item(self, channel: Channel) -> PublicChannelItem:
+        """One channel in the `GET /channels` shape, trashed or not (the
+        `channel.updated` event body)."""
+        default_id = self._default_channel_id(channel.tenant_id, channel.workspace_id)
+        smap = statuses.id_to_key_map(self.db, channel.tenant_id)
+        return _public_channel_item(channel, smap, default_id)
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
     def list_templates(
