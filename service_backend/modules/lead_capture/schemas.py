@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.base import ApiModel
 
@@ -78,9 +78,12 @@ class SourceItem(ApiModel):
     pageId: Optional[str] = None
     pageName: Optional[str] = None
     formsMode: Optional[str] = None
+    formIds: List[str] = []
     needsMapping: List[FormNotice] = []
     fieldMap: Dict[str, Dict[str, str]] = {}
     lastLeadAt: Optional[datetime] = None
+    backfillLastRunAt: Optional[datetime] = None
+    backfillLastError: Optional[str] = None
     createdAt: datetime
 
 
@@ -154,3 +157,49 @@ class LeadPage(BaseModel):
     data: List[Dict[str, Any]]
     nextCursor: Optional[str] = None
     hasMore: bool = False
+
+
+# ── lane L-B: forms, backfill, history ──────────────────────────────────────
+
+class FormItem(ApiModel):
+    id: str
+    name: Optional[str] = None
+    status: Optional[str] = None
+    createdAt: Optional[datetime] = None
+
+
+class FormList(BaseModel):
+    formsMode: str
+    formIds: List[str] = []
+    tosAccepted: Optional[bool] = None
+    data: List[FormItem]
+
+
+class FormsUpdate(BaseModel):
+    formsMode: str = Field(max_length=16)
+    formIds: List[str] = Field(default_factory=list, max_length=500)
+
+
+class BackfillAccepted(BaseModel):
+    sourceId: str
+
+
+class EventActor(BaseModel):
+    type: str
+    name: str
+
+
+class SourceEventItem(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    action: str
+    actor: EventActor
+    onBehalfOf: Optional[str] = None
+    from_: Optional[str] = Field(default=None, alias="from")
+    to: Optional[str] = None
+    createdAt: datetime
+
+
+class SourceEventList(BaseModel):
+    data: List[SourceEventItem]
