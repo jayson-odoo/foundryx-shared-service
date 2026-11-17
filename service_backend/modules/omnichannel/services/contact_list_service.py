@@ -152,7 +152,8 @@ class ContactListService:
     def _decorate(self, rows: List[Contact], tenant_id: str) -> List[ContactListItem]:
         if not rows:
             return []
-        thread_items = self.conv._thread_items(rows, tenant_id)
+        # Staff-only list (always version 1): no version 2 `windows[]` query.
+        thread_items = self.conv._thread_items(rows, tenant_id, with_windows=False)
         channels_map = self.repo.channels_for_contacts([c.id for c in rows], tenant_id)
         counts = ContactEraseRepository(self.db).message_file_counts([c.id for c in rows], tenant_id)
         out: List[ContactListItem] = []
