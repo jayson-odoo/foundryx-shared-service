@@ -205,6 +205,17 @@ def _doc_no(document: Optional[Doc], snapshot: Optional[Doc]) -> Optional[str]:
     return str(number) if number else None
 
 
+def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
+    """Plan 66: the pool location an unlinked PO row returns to (the caller's ``pool_location``, an
+    exact Location code). Other operations, or none given, keep today's behaviour."""
+    if defn.kind != "PO" or defn.mode != "unlink":
+        return None
+    value = params.get("pool_location")
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
@@ -294,6 +305,7 @@ class OperationService:
         self._base_url = ""
         self._row: Optional[AcWriteOperation] = None
         self._op_deadline = 0.0
+        self._pool_location: Optional[str] = None  # plan 66: the unlink's pool location (the caller's)
         # (kind, doc_key) -> (date, document | the read's exception): a side read made beside another
         # GET, consumed by the next ``_read`` of that document (SS-AUTOCOUNT-SPEEDUP).
         self._prefetched: Dict[Tuple[str, int], Tuple[date, Any]] = {}
@@ -369,6 +381,7 @@ class OperationService:
             return OperationResult(None, REFUSED, DOC_BUSY)  # not stored: the key stays usable
         self._steps, self._warnings = [], []
         self._mail_allowed = True
+        self._pool_location = None  # set per run by ``_execute_unlocked`` (plan 66)
         self._row = row
         self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
         return self._guarded(row, company, lambda: self._execute(row, company, op, spec, params))
@@ -625,6 +638,7 @@ class OperationService:
         defn = OPS[op]
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
+        self._pool_location = _pool_of(defn, params)
         self._check_not_busy(company, spec.doc_key, defn.kind)
         doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date,
                                    beside=self._target_beside(company, defn, spec))
@@ -799,17 +813,27 @@ class OperationService:
         """Plan 62 D7: the DtlKey of the FIRST free row (row order) the unlinked quantity can join:
         same item, unit, location, price and delivery date, not linked, no SPO row pointing at it,
         no known receipt above zero. An UNKNOWN receipt (the vendor hides it) allows the merge, like the
-        linked row's own receipt check. None = no merge (today's new free row)."""
+        linked row's own receipt check. None = no merge (today's new free row).
+
+        Plan 66 (owner 17 Nov): with a pool location the free row must sit AT the pool location (exact
+        code) and match on item and unit ONLY. Unit price and delivery date are not matched (the date is
+        the SO's, meaningless once unlinked; owner: "unit price also can ignore"): the pool row keeps its
+        own price and date, only its Qty goes up."""
         if defn.kind != "PO" or defn.mode != "unlink":
             return None
+        pool = self._pool_location
+        same = ("ItemCode", "UOM") if pool else ("ItemCode", "UOM", "Location")
+        values: Tuple[str, ...] = () if pool else ("UnitPrice", "DeliveryDate")
         for cand in doc.get("Details") or []:
             if cand.get("DtlKey") == row.get("DtlKey") or _link_of("PO", cand):
                 continue
             if cand.get("FromDocType") not in ("", None):
                 continue
-            if any(cand.get(k) != row.get(k) for k in ("ItemCode", "UOM", "Location")):
+            if pool and cand.get("Location") != pool:
                 continue
-            if not all(payloads.same_row_value(k, row.get(k), cand.get(k)) for k in ("UnitPrice", "DeliveryDate")):
+            if any(cand.get(k) != row.get(k) for k in same):
+                continue
+            if not all(payloads.same_row_value(k, row.get(k), cand.get(k)) for k in values):
                 continue
             if self._spo_ref(company, int(cand["DtlKey"])):
                 continue
@@ -889,7 +913,9 @@ class OperationService:
         if target is not None:
             new_link = {"FromDocType": defn.target, "FromDocNo": target.get("DocNo"),
                         "FromDocDtlKey": spec.target_dtl_key}
-        move_to = row.get("Location")  # unlink / SPO: the line stays where it was
+        move_to = row.get("Location")  # unlink / SPO: the line stays where it was ...
+        if defn.mode == "unlink" and self._pool_location:
+            move_to = self._pool_location  # ... plan 66: an unlinked PO row goes back to the pool
         so_link: Optional[Doc] = None
         if target is not None and defn.target == "SO":
             trow = next((r for r in target.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), {})
@@ -996,7 +1022,8 @@ class OperationService:
             self._abort_unless_done(res)
             raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
         self.prims._stage(company, snap["kind"], res.document, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document,
+                            detail=_row_in(res.document, free_key))
 
     def _replace_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int) -> OperationResult:
         """Plan 61: ONE PUT [row "D", new row with the new link or none], then the move.
@@ -1269,7 +1296,8 @@ class OperationService:
         if not landed:
             return self._needs_attention(row, company, snap, "RESUMED")
         self.prims._stage(company, snap["kind"], doc, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc,
+                            detail=_row_in(doc, free_key))
 
     def _resume_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, key: int, doc: Doc,
                      location: Optional[str]) -> Doc:
