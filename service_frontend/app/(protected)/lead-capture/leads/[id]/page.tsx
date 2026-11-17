@@ -5,7 +5,8 @@
  * attribution and every delivery attempt with Redeliver. The raw platform
  * payload stays server-side (AC-64-71).
  */
-import { use } from 'react';
+import { use, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { RotateCw } from 'lucide-react';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
@@ -14,6 +15,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { PageHeader } from '@/components/platform/page-header';
+import { RecordNav } from '@/components/platform/resource-form/record-nav';
+import { buildListNav } from '@/lib/list-context';
+import { leadCaptureSourcesService } from '@/services/lead-capture-sources-service';
+import type { ListQuery } from '@/types/resource';
+import { leadHref } from '../components/use-leads-list-config';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
@@ -59,6 +65,18 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const { detail, error, loading, redeliver, redelivering, reload } = useLeadDetail(id);
   const { formatDmyDateTime } = useDatetime();
   const { can } = useCan();
+  const sourceId = useSearchParams().get('source');
+  const fetchAt = useCallback(
+    async (query: ListQuery, index: number) => {
+      const res = await leadCaptureSourcesService.listLeads({ ...query, page: index, pageSize: 1 }, sourceId);
+      return { recordId: res.data[0]?.id ?? null, total: res.total };
+    },
+    [sourceId],
+  );
+  const buildHref = useCallback(
+    (recordId: string, ctx: string, index: number) => buildListNav(leadHref(recordId, sourceId), { ctx, i: index }),
+    [sourceId],
+  );
 
   return (
     <RequirePermission permission="lead_capture.view">
@@ -68,6 +86,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
             title={detail ? leadTitle(detail.lead) : 'Lead'}
             crumbs={[{ label: 'Lead Capture' }, { label: 'Leads', href: '/lead-capture/leads' }, { label: detail ? leadTitle(detail.lead) : 'Lead' }]}
             description={detail?.lead.isTest ? 'Test lead' : undefined}
+            actions={<RecordNav fetchAt={fetchAt} buildHref={buildHref} />}
           />
           {loading && !detail ? (
             <div className="flex flex-col gap-3">

@@ -24,6 +24,13 @@ function text(id: keyof StaffLead, title: string, size: number): ColumnDef<Staff
   };
 }
 
+/** A lead's page; a list filtered to one source keeps it, so the record pager
+ * walks the same filtered order. */
+export function leadHref(id: string, sourceId: string | null): string {
+  const base = `/lead-capture/leads/${encodeURIComponent(id)}`;
+  return sourceId ? `${base}?source=${encodeURIComponent(sourceId)}` : base;
+}
+
 export function useLeadsListConfig(sourceId: string | null): ResourceListConfig<StaffLead> {
   const { formatDmyDateTime } = useDatetime();
   const [sources, setSources] = useState<StaffSource[]>([]);
@@ -109,7 +116,7 @@ export function useLeadsListConfig(sourceId: string | null): ResourceListConfig<
       pageTitle: 'Leads',
       columns,
       getRowId: (r) => r.id,
-      rowHref: (r) => `/lead-capture/leads/${encodeURIComponent(r.id)}`,
+      rowHref: (r) => leadHref(r.id, sourceId),
       fetcher: (q) => leadCaptureSourcesService.listLeads(q, sourceId),
       filterFields,
       exportColumns: [],
