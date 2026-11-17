@@ -5,7 +5,7 @@ import { FileText, Paperclip, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
-import { isCommentPostResult } from '@/lib/upload-files';
+import { isCommentPostResult, type FailedUpload } from '@/lib/upload-files';
 
 export const MAX_FILES = 10;
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -194,7 +194,7 @@ export function AttachmentPicker({ draft }: { draft: AttachmentDraft }) {
 /** A posted comment whose files did not all upload: what is left to retry. */
 export interface PendingUploads {
   commentId: string;
-  failed: File[];
+  failed: FailedUpload[];
 }
 
 /**
@@ -203,65 +203,97 @@ export interface PendingUploads {
  */
 export function useUploadRetry(
   draft: AttachmentDraft,
-  retry?: (commentId: string, files: File[]) => Promise<File[]>,
+  retry?: (commentId: string, files: File[]) => Promise<FailedUpload[]>,
 ) {
   const [pending, setPending] = useState<PendingUploads | null>(null);
   const [busy, setBusy] = useState(false);
-  const { clear, replace, discard } = draft;
+  const { clear, discard } = draft;
 
   /** `sent` = the files that went out with the post: only those leave the
    * draft, so anything added while the post was sending is kept. */
   const track = useCallback(
     (result: unknown, sent?: File[]) => {
-      if (isCommentPostResult(result) && result.failed.length > 0) {
-        setPending({ commentId: result.commentId, failed: result.failed });
-        if (sent) discard(sent, result.failed);
-        else replace(result.failed);
+      const failed = isCommentPostResult(result) ? result.failed : [];
+      if (isCommentPostResult(result) && failed.length > 0) {
+        setPending({ commentId: result.commentId, failed });
+        if (sent) discard(sent, failed.map((f) => f.file));
       } else {
         setPending(null);
         if (sent) discard(sent);
         else clear();
       }
     },
-    [clear, replace, discard],
+    [clear, discard],
   );
 
   const retryNow = useCallback(async () => {
     if (!pending || !retry) return;
     setBusy(true);
+    const files = pending.failed.map((f) => f.file);
     try {
-      const failed = await retry(pending.commentId, pending.failed);
-      if (failed.length > 0) {
-        setPending({ commentId: pending.commentId, failed });
-        replace(failed);
-      } else {
-        setPending(null);
-        clear();
-      }
+      const failed = await retry(pending.commentId, files);
+      // Only the retried files leave the draft; files added meanwhile stay.
+      discard(files, failed.map((f) => f.file));
+      setPending(failed.length > 0 ? { commentId: pending.commentId, failed } : null);
     } finally {
       setBusy(false);
     }
-  }, [pending, retry, clear, replace]);
+  }, [pending, retry, discard]);
 
-  return { pending, busy, track, retryNow };
+  /** Drop one failed file for good; the last one returns the composer to normal. */
+  const removeFailed = useCallback(
+    (file: File) => {
+      discard([file]);
+      setPending((prev) => {
+        if (!prev) return prev;
+        const failed = prev.failed.filter((f) => f.file !== file);
+        return failed.length > 0 ? { ...prev, failed } : null;
+      });
+    },
+    [discard],
+  );
+
+  return { pending, busy, track, retryNow, removeFailed };
 }
 
-/** Names the files that did not upload, with the one button to retry them. */
+/** Says why each file did not upload (each can be dropped), with the one
+ * button to retry the rest. `extra` is an optional secondary action. */
 export function UploadRetryNotice({
-  pending,
+  failed,
   busy,
   onRetry,
+  onRemove,
+  extra,
 }: {
-  pending: PendingUploads;
+  failed: FailedUpload[];
   busy: boolean;
   onRetry: () => void;
+  onRemove: (file: File) => void;
+  extra?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <p className="text-sm text-destructive">Could not upload {pending.failed.map((f) => f.name).join(', ')}.</p>
-      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onRetry}>
-        Try again
-      </Button>
+    <div className="flex flex-col gap-2">
+      <ul className="flex flex-col gap-1">
+        {failed.map(({ file, reason }, i) => (
+          <li key={`${file.name}-${i}`} className="flex items-start gap-2 text-sm text-destructive">
+            <span className="min-w-0 flex-1 break-words">{reason}</span>
+            <button
+              type="button"
+              aria-label={`Remove ${file.name}`}
+              onClick={() => onRemove(file)}
+              className={`${PRESSED_CLASS} flex size-5 shrink-0 items-center justify-center rounded-full border bg-background hover:text-destructive`}
+            >
+              <X className="size-3" aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" variant="primary" size="sm" disabled={busy} onClick={onRetry}>
+          Try again
+        </Button>
+        {extra}
+      </div>
     </div>
   );
 }

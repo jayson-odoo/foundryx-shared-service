@@ -32,6 +32,7 @@ vi.mock('@/hooks/use-idea-portal', async () => {
   };
 });
 
+import { ApiError } from '@/lib/api-client';
 import { IdeaPage } from './idea-page';
 
 const png = (name: string) => new File(['x'], name, { type: 'image/png' });
@@ -68,7 +69,7 @@ describe('board comment uploads', () => {
     await screen.findByText('T');
     await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, [png('ok.png'), png('bad.png')]);
     await userEvent.click(screen.getByRole('button', { name: 'Comment' }));
-    expect(await screen.findByText(/Could not upload/)).toBeInTheDocument();
+    expect(await screen.findByText(/did not upload/)).toBeInTheDocument();
     expect(svc.addComment).toHaveBeenCalledTimes(1);
     svc.uploadAttachment.mockClear();
     await userEvent.click(screen.getByRole('button', { name: /try again/i }));
@@ -95,5 +96,18 @@ describe('board comment uploads', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove sent.png' })).not.toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Remove later.png' })).toBeInTheDocument();
     expect(box).toHaveValue('first and more');
+  });
+
+  it('says why a file failed, lets the user drop it, and the composer returns to normal', async () => {
+    svc.uploadAttachment.mockRejectedValue(new ApiError('nope', 415));
+    const { container } = render(<IdeaPage ideaId="i10" />);
+    await screen.findByText('T');
+    await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, png('x.exe'));
+    await userEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    expect(await screen.findByText("x.exe: this file type can't be attached")).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Comment' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Remove x.exe' }));
+    expect(await screen.findByRole('button', { name: 'Comment' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull();
   });
 });

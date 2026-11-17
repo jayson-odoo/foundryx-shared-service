@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { IdeaAttachment, IdeaComment, IdeaCommentThread } from '@/types/ideation';
 import { toast } from '@/lib/toast';
-import { uploadInOrder, type CommentPostResult } from '@/lib/upload-files';
+import { uploadInOrder, type CommentPostResult, type FailedUpload } from '@/lib/upload-files';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { countLiveComments, groupCommentThreads } from './idea-comment-threads';
 
@@ -14,9 +14,10 @@ export interface UseIdeaComments {
   loading: boolean;
   error: string | null;
   /** `files` are uploaded onto the new comment (the body may then be empty). */
-  add: (body: string, parentId?: string, files?: File[]) => Promise<CommentPostResult | undefined>;
+  /** `null` = the post itself failed (already toasted): the caller keeps the draft. */
+  add: (body: string, parentId?: string, files?: File[]) => Promise<CommentPostResult | null | undefined>;
   /** Retry only the files that failed against a comment that already exists. */
-  retryUploads: (commentId: string, files: File[]) => Promise<File[]>;
+  retryUploads: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
   edit: (commentId: string, body: string) => Promise<void>;
   remove: (commentId: string) => Promise<void>;
   /** Bytes of an uploaded file (auth-gated route), for thumbnails + preview. */
@@ -77,7 +78,7 @@ export function useIdeaComments(ideaId: string): UseIdeaComments {
 
   const add = useCallback(
     async (body: string, parentId?: string, files: File[] = []) => {
-      let result: CommentPostResult | undefined;
+      let result: CommentPostResult | null | undefined;
       try {
         if (!service.addComment) return undefined;
         const created =
@@ -93,6 +94,7 @@ export function useIdeaComments(ideaId: string): UseIdeaComments {
         result = { commentId: created.id, failed };
       } catch (e) {
         toast.error(messageOf(e, 'Could not post the comment.'));
+        result = null;
       }
       await load();
       return result;
@@ -102,7 +104,9 @@ export function useIdeaComments(ideaId: string): UseIdeaComments {
   const retryUploads = useCallback(
     async (commentId: string, files: File[]) => {
       const upload = service.uploadAttachment?.bind(service);
-      const failed = upload ? await uploadInOrder(files, (file) => upload(ideaId, file, commentId)) : files;
+      const failed = upload
+        ? await uploadInOrder(files, (file) => upload(ideaId, file, commentId))
+        : files.map((file) => ({ file, reason: `${file.name} did not upload` }));
       await load();
       return failed;
     },

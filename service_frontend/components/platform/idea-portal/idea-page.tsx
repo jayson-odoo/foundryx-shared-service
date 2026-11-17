@@ -24,7 +24,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import { dateKey } from '@/lib/datetime';
-import { isCommentPostResult } from '@/lib/upload-files';
+import { isCommentPostResult, type FailedUpload } from '@/lib/upload-files';
 import type { PortalActivity, PortalComment, PortalIdea, PortalVoter } from '@/types/idea-portal';
 import { PortalStatusPill } from './portal-status-pill';
 import { PortalLoading, PortalMessage } from './portal-states';
@@ -65,7 +65,7 @@ function Composer({
   autoFocus,
 }: {
   onSubmit: (body: string, files: File[]) => Promise<unknown>;
-  onRetry: (commentId: string, files: File[]) => Promise<File[]>;
+  onRetry: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
   placeholder: string;
   submitLabel: string;
   autoFocus?: boolean;
@@ -103,7 +103,12 @@ function Composer({
         onChange={(e) => setBody(e.target.value)}
       />
       {uploads.pending ? (
-        <UploadRetryNotice pending={uploads.pending} busy={uploads.busy} onRetry={() => void uploads.retryNow()} />
+        <UploadRetryNotice
+          failed={uploads.pending.failed}
+          busy={uploads.busy}
+          onRetry={() => void uploads.retryNow()}
+          onRemove={uploads.removeFailed}
+        />
       ) : (
         <div className="flex items-start justify-between gap-2">
           <AttachmentPicker draft={draft} />
@@ -189,7 +194,7 @@ function ActivityItem({
   onLike: (id: string) => void;
   onDelete: (id: string) => void;
   onReply: (parentId: string, body: string, files: File[]) => Promise<unknown>;
-  onRetry: (commentId: string, files: File[]) => Promise<File[]>;
+  onRetry: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
 }) {
   const { formatDmyDateTime: formatDateTime } = useDatetime();
   const [replying, setReplying] = useState(false);

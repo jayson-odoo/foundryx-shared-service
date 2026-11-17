@@ -27,7 +27,7 @@ import {
 } from '@/components/platform/attachment-picker/attachment-picker';
 import { AttachmentThumbs } from '@/components/platform/attachment-preview/attachment-thumbs';
 import { UserAvatar } from '@/components/platform/user-avatar';
-import { isCommentPostResult } from '@/lib/upload-files';
+import { isCommentPostResult, type FailedUpload } from '@/lib/upload-files';
 import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 export interface IdeaCommentsViewProps {
@@ -40,7 +40,7 @@ export interface IdeaCommentsViewProps {
   /** `files` only when the surface offers attachments (`allowAttachments`). */
   onAdd: (body: string, parentId?: string, files?: File[]) => Promise<unknown>;
   /** Re-upload only the files that failed, against the comment just posted. */
-  onRetryUploads?: (commentId: string, files: File[]) => Promise<File[]>;
+  onRetryUploads?: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
   /** Offer the attach control on the composers and show comment files. */
   allowAttachments?: boolean;
   fetchAttachment?: (attachment: IdeaAttachment) => Promise<Blob>;
@@ -242,7 +242,7 @@ function Composer({
   placeholder?: string;
   submitLabel: string;
   onSubmit: (body: string, files: File[]) => Promise<unknown>;
-  onRetryUploads?: (commentId: string, files: File[]) => Promise<File[]>;
+  onRetryUploads?: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
   allowAttachments?: boolean;
   onCancel?: () => void;
   badge?: boolean;
@@ -262,6 +262,8 @@ function Composer({
       const sent = draft.files;
       const sentText = text.trim();
       const result = await onSubmit(sentText, sent);
+      // A failed post (null, already reported) keeps the text and the files.
+      if (result === null) return;
       // Only what was sent leaves the box; anything typed or added meanwhile stays.
       setText((current) => (current.trim() === sentText ? '' : current));
       uploads.track(result, sent);
@@ -284,7 +286,12 @@ function Composer({
         onChange={(e) => setText(e.target.value)}
       />
       {uploads.pending ? (
-        <UploadRetryNotice pending={uploads.pending} busy={uploads.busy} onRetry={() => void uploads.retryNow()} />
+        <UploadRetryNotice
+          failed={uploads.pending.failed}
+          busy={uploads.busy}
+          onRetry={() => void uploads.retryNow()}
+          onRemove={uploads.removeFailed}
+        />
       ) : (
         allowAttachments && <AttachmentPicker draft={draft} />
       )}

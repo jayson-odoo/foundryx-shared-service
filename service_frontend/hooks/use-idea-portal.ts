@@ -8,7 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { signOut as nextAuthSignOut, useSession } from 'next-auth/react';
 import { ApiError } from '@/lib/api-client';
 import { ideaPortalAuth } from '@/lib/idea-portal-auth';
-import { uploadInOrder, type CommentPostResult } from '@/lib/upload-files';
+import { uploadInOrder, type CommentPostResult, type FailedUpload } from '@/lib/upload-files';
 import { ideaPortalService } from '@/services/idea-portal-service';
 import type { IdeaAttachment } from '@/types/ideation';
 import type {
@@ -28,7 +28,7 @@ import type {
 } from '@/types/idea-portal';
 
 /** Upload files to the report, or to a comment of it; returns those that failed. */
-function uploadFiles(ideaId: string, files: File[], commentId?: string): Promise<File[]> {
+function uploadFiles(ideaId: string, files: File[], commentId?: string): Promise<FailedUpload[]> {
   return uploadInOrder(files, (file) => ideaPortalService.uploadAttachment(ideaId, file, commentId));
 }
 
@@ -316,7 +316,7 @@ export interface UsePortalIdeaPage {
     files?: File[],
   ) => Promise<CommentPostResult | undefined>;
   /** Retry only the files that failed against a comment that already exists. */
-  retryCommentUploads: (commentId: string, files: File[]) => Promise<File[]>;
+  retryCommentUploads: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
   deleteComment: (commentId: string) => Promise<void>;
   likeComment: (commentId: string) => Promise<void>;
   setHidden: (hidden: boolean) => Promise<void>;
@@ -450,7 +450,7 @@ export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
 export interface PortalSubmitResult {
   idea: PortalIdea;
   /** Files that failed to upload (the item itself exists). */
-  failed: File[];
+  failed: FailedUpload[];
 }
 
 export interface UsePortalSubmit {
@@ -459,7 +459,7 @@ export interface UsePortalSubmit {
   /** Create the item, then upload `files` to it one by one. */
   submit: (input: PortalIdeaInput, files?: File[]) => Promise<PortalSubmitResult | null>;
   /** Retry only the given files against an item that already exists. */
-  retryUploads: (ideaId: string, files: File[]) => Promise<File[]>;
+  retryUploads: (ideaId: string, files: File[]) => Promise<FailedUpload[]>;
 }
 
 export function usePortalSubmit(): UsePortalSubmit {

@@ -41,14 +41,14 @@ describe('useIdeaComments uploads', () => {
     await act(async () => {
       posted = await result.current.add('', undefined, [file('ok.txt'), file('bad.txt')]);
     });
-    expect(posted!.commentId).toBe('new1');
-    expect(posted!.failed.map((f) => f.name)).toEqual(['bad.txt']);
+    expect(posted && posted.commentId).toBe('new1');
+    expect(posted!.failed.map((f) => f.file.name)).toEqual(['bad.txt']);
     expect(upload).toHaveBeenCalledWith('idea-1', expect.any(File), 'new1');
     upload.mockClear();
     failBad = false;
-    let left: File[] = [];
+    let left: unknown[] = [];
     await act(async () => {
-      left = await result.current.retryUploads('new1', posted!.failed);
+      left = await result.current.retryUploads('new1', posted!.failed.map((f) => f.file));
     });
     expect(left).toEqual([]);
     expect(upload).toHaveBeenCalledTimes(1);
