@@ -24,6 +24,8 @@ def _out(product_id: str, row) -> DeliveryConfigOut:
         productId=row.product_id,
         productDomainBase=row.product_domain_base,
         buildRepo=row.build_repo,
+        boardColor=row.board_color,
+        boardName=row.board_name,
         createdAt=row.created_at,
         updatedAt=row.updated_at,
     )
@@ -46,10 +48,17 @@ def set_delivery(
     current_user: User = Depends(require_permission("ideation.products.manage")),
     db: Session = Depends(get_db),
 ) -> DeliveryConfigOut:
+    sent = body.model_fields_set
+    optional = {
+        kwarg: getattr(body, field)
+        for field, kwarg in (
+            ("buildRepo", "build_repo"),
+            ("boardColor", "board_color"),
+            ("boardName", "board_name"),
+        )
+        if field in sent
+    }
     row = DeliveryService(db).set(
-        current_user.tenant_id,
-        product_id,
-        body.productDomainBase,
-        **({"build_repo": body.buildRepo} if "buildRepo" in body.model_fields_set else {}),
+        current_user.tenant_id, product_id, body.productDomainBase, **optional
     )
     return _out(product_id, row)

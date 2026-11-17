@@ -172,10 +172,11 @@ def test_ac_mpb_05_backfill_single_product_contacts_only(setup):
 
     db = setup["factory"]()
     try:
-        assert backfill_link_products(db) == 1
+        # The test engine attaches the ideation schema as ``ideation``.
+        assert backfill_link_products(db, "ideation") == 1
         db.commit()
         got = {r.token: r.product_id for r in db.query(IdeaContactLink)}
-        assert backfill_link_products(db) == 0  # idempotent
+        assert backfill_link_products(db, "ideation") == 0  # idempotent
     finally:
         db.close()
     assert got[t_two] is None
@@ -185,16 +186,18 @@ def test_ac_mpb_05_backfill_single_product_contacts_only(setup):
 
 
 def test_ac_mpb_tenant_isolation_of_brand(setup):
-    """The brand is read with the link's own tenant: another tenant's product
-    delivery row with the same product id can never colour this board."""
+    """The brand is read with the link's own tenant: a delivery row that is
+    not in the link's tenant can never colour this board."""
     cid, a, b, other = _two_products(setup)
+    assert _board(setup, setup["h"], setup["product_id"], boardColor="#3b82f6").status_code == 200
     from modules.ideation.models import ProductDelivery
 
     db = setup["factory"]()
     try:
-        db.add(ProductDelivery(tenant_id="someone-else", product_id=other, board_color="#000000"))
+        row = db.query(ProductDelivery).filter_by(product_id=setup["product_id"]).first()
+        row.tenant_id = "someone-else"
         db.commit()
     finally:
         db.close()
-    sb = _session(setup, _mint(setup, b))
-    assert sb["principal"]["brand"] is None
+    sa = _session(setup, _mint(setup, a))
+    assert sa["principal"]["brand"] is None
