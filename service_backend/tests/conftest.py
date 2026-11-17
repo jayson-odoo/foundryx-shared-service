@@ -438,6 +438,35 @@ def ideation_session_factory(_ideation_session_factory_template):
     engine.dispose()
 
 
+def release_fastapi_call_caches() -> None:
+    """Drop FastAPI's per-callable classification caches.
+
+    FastAPI (0.11x+) classifies every dependency callable through
+    ``functools.lru_cache(maxsize=4096)`` caches keyed by the callable. Each
+    test installs a fresh ``get_db`` override closure that captures its own
+    ``sessionmaker`` -> engine -> whole in-memory database copy, so without
+    this a worker kept the last ~4096 tests' databases alive (~4.5 GB per
+    xdist worker): the hosted runner OOM-killed a worker and xdist then hung to
+    the job timeout (PR #253 CI, test_conftest_memory.py). Clearing only costs a
+    re-classification of each dependency on its next call.
+    """
+    try:
+        from fastapi.dependencies import models as _fastapi_models
+    except ImportError:  # pragma: no cover - older FastAPI has no such caches
+        return
+    for value in vars(_fastapi_models).values():
+        cache_clear = getattr(value, "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _release_fastapi_call_caches():
+    """Free each test's override closure (and its database) once it ends."""
+    yield
+    release_fastapi_call_caches()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_reference_guards():
     """Snapshot/restore the process-global reference-guard registry per test.
