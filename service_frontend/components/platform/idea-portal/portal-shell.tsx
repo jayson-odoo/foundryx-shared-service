@@ -72,6 +72,7 @@ export function PortalShell({ children }: PortalShellProps) {
             </div>
           </div>
         )}
+        {mode !== 'share' && (
         <nav className="mx-auto flex w-full max-w-6xl gap-1 overflow-x-auto px-4 text-sm" aria-label="Portal">
           {tabs.map((t) => (
             <Link
@@ -89,6 +90,7 @@ export function PortalShell({ children }: PortalShellProps) {
             </Link>
           ))}
         </nav>
+        )}
       </header>
       <main className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-4 px-4 py-6">{children}</main>
     </div>

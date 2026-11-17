@@ -10,15 +10,18 @@ import type {
   PortalActivity,
   PortalChangelogItem,
   PortalComment,
+  PortalFollow,
   PortalIdea,
   PortalIdeaInput,
   PortalLike,
   PortalList,
+  PortalPhoneSession,
   PortalListQuery,
   PortalPrincipal,
   PortalProduct,
   PortalRoadmap,
   PortalSession,
+  PortalShareLink,
   PortalVote,
   PortalVoter,
 } from '@/types/idea-portal';
@@ -124,10 +127,45 @@ export const ideaPortalService = {
       method: 'DELETE',
     });
   },
+  /** Lane FEEDBACK-SUBSCRIBE: follow / unfollow (a contact on their own link). */
+  follow(id: string): Promise<PortalFollow> {
+    return call<PortalFollow>(`/${encodeURIComponent(id)}/follow`, { method: 'POST' });
+  },
+  unfollow(id: string): Promise<PortalFollow> {
+    return call<PortalFollow>(`/${encodeURIComponent(id)}/follow`, { method: 'DELETE' });
+  },
+  /** The item's read-only share link. */
+  share(id: string): Promise<PortalShareLink> {
+    return call<PortalShareLink>(`/${encodeURIComponent(id)}/share`, { method: 'POST' });
+  },
   likeComment(id: string, commentId: string): Promise<PortalLike> {
     return call<PortalLike>(
       `/${encodeURIComponent(id)}/comments/${encodeURIComponent(commentId)}/like`,
       { method: 'POST' },
     );
+  },
+};
+
+/** One item's read-only share link (lane FEEDBACK-SUBSCRIBE): no session, the
+ * share token is the capability; any action goes through the phone step. */
+const shared = (token: string, path = '') => `${BASE}/shared/${encodeURIComponent(token)}${path}`;
+
+export const ideaShareService = {
+  get(token: string): Promise<PortalIdea> {
+    return publicFetch<PortalIdea>(shared(token));
+  },
+  comments(token: string): Promise<PortalComment[]> {
+    return publicFetch<PortalComment[]>(shared(token, '/comments'));
+  },
+  activity(token: string, order: 'asc' | 'desc' = 'desc'): Promise<PortalActivity[]> {
+    return publicFetch<PortalActivity[]>(shared(token, `/activity?order=${order}`));
+  },
+  /** Step 1: the item's product checks the phone and sends a WhatsApp code. */
+  sendCode(token: string, phone: string): Promise<{ sent: boolean }> {
+    return publicFetch<{ sent: boolean }>(shared(token, '/phone/send-code'), json({ phone }));
+  },
+  /** Step 2: the code proves the phone; returns the visitor's own session. */
+  verifyCode(token: string, phone: string, code: string): Promise<PortalPhoneSession> {
+    return publicFetch<PortalPhoneSession>(shared(token, '/phone/verify'), json({ phone, code }));
   },
 };

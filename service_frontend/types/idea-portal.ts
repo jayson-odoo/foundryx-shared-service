@@ -4,7 +4,8 @@
  */
 
 /** `contact` = a dealer on a personal feedback link (lane PUBLIC-IDEAS-BOARD). */
-export type PortalKind = 'staff' | 'crm' | 'contact';
+/** `share` = anyone on one item's read-only share link (lane FEEDBACK-SUBSCRIBE). */
+export type PortalKind = 'staff' | 'crm' | 'contact' | 'share';
 
 export interface PortalPrincipal {
   kind: PortalKind;
@@ -80,6 +81,24 @@ export interface PortalIdea extends PortalCard {
   timeline: PortalTimelineStep[];
   portalHidden: boolean | null;
   note: string | null;
+  /** Lane FEEDBACK-SUBSCRIBE: contacts following it (the submitter not counted). */
+  followerCount?: number;
+  /** This viewer gets its WhatsApp status updates (submitter or follower). */
+  following?: boolean;
+}
+
+export interface PortalFollow {
+  following: boolean;
+  followerCount: number;
+}
+
+export interface PortalShareLink {
+  url: string;
+}
+
+/** Proven phone on a share link: the visitor's own session + personal board link. */
+export interface PortalPhoneSession extends PortalSession {
+  boardUrl: string | null;
 }
 
 export interface PortalVote {

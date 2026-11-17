@@ -8,7 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { signOut as nextAuthSignOut, useSession } from 'next-auth/react';
 import { ApiError } from '@/lib/api-client';
 import { ideaPortalAuth } from '@/lib/idea-portal-auth';
-import { ideaPortalService } from '@/services/idea-portal-service';
+import { ideaPortalService, ideaShareService } from '@/services/idea-portal-service';
 import type {
   PortalActivity,
   PortalCard,
@@ -18,6 +18,7 @@ import type {
   PortalIdeaInput,
   PortalList,
   PortalListQuery,
+  PortalPhoneSession,
   PortalPrincipal,
   PortalProduct,
   PortalRoadmap,
@@ -35,8 +36,12 @@ export interface IdeaPortalPaths {
 }
 
 export interface IdeaPortalRuntime {
-  /** `link` = a dealer's personal feedback link (no login, no header actions). */
-  mode: 'portal' | 'embed' | 'link';
+  /** `link` = a dealer's personal feedback link (no login, no header actions).
+   * `share` = one item's read-only share link (lane FEEDBACK-SUBSCRIBE): no
+   * tabs, every action goes through the phone step. */
+  mode: 'portal' | 'embed' | 'link' | 'share';
+  /** `share` mode only: the item's share token. */
+  shareToken?: string;
   paths: IdeaPortalPaths;
   principal: PortalPrincipal;
   signOut: () => void;
@@ -300,19 +305,32 @@ export interface UsePortalIdeaPage {
   likeComment: (commentId: string) => Promise<void>;
   setHidden: (hidden: boolean) => Promise<void>;
   setNote: (note: string | null) => Promise<void>;
+  /** Lane FEEDBACK-SUBSCRIBE: Follow / Following toggle (contact viewer). */
+  toggleFollow: () => Promise<void>;
+  /** The item's read-only share link. */
+  shareUrl: () => Promise<string>;
   actionError: string | null;
 }
 
-export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
+/** ``shareToken`` set = the read-only share view (lane FEEDBACK-SUBSCRIBE):
+ * reads go through the share link; no voters list (names stay off it). */
+export function usePortalIdeaPage(id: string, shareToken?: string | null): UsePortalIdeaPage {
   const [order, setOrder] = useState<'asc' | 'desc'>('desc');
   const [actionError, setActionError] = useState<string | null>(null);
-  const idea = usePortalQuery(() => ideaPortalService.get(id), [id]);
+  const idea = usePortalQuery(
+    () => (shareToken ? ideaShareService.get(shareToken) : ideaPortalService.get(id)),
+    [id, shareToken],
+  );
   // Reads follow the survivor id once the idea resolves (merged child links).
   const resolvedId = idea.data?.id ?? id;
-  const voters = usePortalQuery(() => ideaPortalService.voters(resolvedId), [resolvedId]);
+  const voters = usePortalQuery(
+    () => (shareToken ? Promise.resolve<PortalVoter[]>([]) : ideaPortalService.voters(resolvedId)),
+    [resolvedId, shareToken],
+  );
   const activity = usePortalQuery(
-    () => ideaPortalService.activity(resolvedId, order),
-    [resolvedId, order],
+    () =>
+      shareToken ? ideaShareService.activity(shareToken, order) : ideaPortalService.activity(resolvedId, order),
+    [resolvedId, order, shareToken],
   );
 
   const run = useCallback(async (fn: () => Promise<unknown>) => {
@@ -387,12 +405,28 @@ export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
     [run, resolvedId, idea],
   );
 
+  const toggleFollow = useCallback(
+    () =>
+      run(async () => {
+        const following = Boolean(idea.data?.following);
+        const f = following
+          ? await ideaPortalService.unfollow(resolvedId)
+          : await ideaPortalService.follow(resolvedId);
+        idea.setData((prev) => (prev ? { ...prev, following: f.following, followerCount: f.followerCount } : prev));
+      }),
+    [run, resolvedId, idea],
+  );
+
+  const shareUrl = useCallback(async () => (await ideaPortalService.share(resolvedId)).url, [resolvedId]);
+
   return {
     idea,
     voters,
     activity,
     order,
     setOrder,
+    toggleFollow,
+    shareUrl,
     vote,
     addComment,
     deleteComment,
@@ -476,3 +510,87 @@ export function usePortalChangelog() {
 export function usePortalProducts() {
   return usePortalQuery<PortalProduct[]>(() => ideaPortalService.products(), []);
 }
+
+// ── share link phone step (lane FEEDBACK-SUBSCRIBE) ─────────────────────────────
+
+/** What the visitor tapped before the phone step; done for them once proven. */
+export type ShareAction = 'follow' | 'upvote' | 'comment';
+
+export interface UseSharePhoneStep {
+  step: 'phone' | 'code';
+  busy: boolean;
+  error: string | null;
+  sendCode: (phone: string) => Promise<boolean>;
+  /** Proves the phone; on success runs ``action`` as the visitor and returns
+   * their own board link (null when none). */
+  verify: (code: string, action: ShareAction | null, ideaId: string) => Promise<PortalPhoneSession | null>;
+  restart: () => void;
+}
+
+function stepError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) return 'Too many attempts. Try again later.';
+    return err.message || 'Something went wrong. Try again.';
+  }
+  return 'Something went wrong. Try again.';
+}
+
+export function useSharePhoneStep(shareToken: string): UseSharePhoneStep {
+  const [step, setStep] = useState<'phone' | 'code'>('phone');
+  const [phone, setPhone] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const sendCode = useCallback(
+    async (value: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await ideaShareService.sendCode(shareToken, value);
+        setPhone(value);
+        setStep('code');
+        return true;
+      } catch (err) {
+        setError(stepError(err));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [shareToken],
+  );
+
+  const verify = useCallback(
+    async (code: string, action: ShareAction | null, ideaId: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const s = await ideaShareService.verifyCode(shareToken, phone, code);
+        ideaPortalAuth.set(s.token);
+        // The tap that opened the step, done as the visitor themselves. A
+        // failure here still lands them on their own board to retry.
+        try {
+          if (action === 'follow') await ideaPortalService.follow(ideaId);
+          if (action === 'upvote') await ideaPortalService.vote(ideaId);
+        } catch {
+          /* the board shows the current state */
+        }
+        return s;
+      } catch (err) {
+        setError(stepError(err));
+        return null;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [shareToken, phone],
+  );
+
+  const restart = useCallback(() => {
+    setStep('phone');
+    setError(null);
+  }, []);
+
+  return { step, busy, error, sendCode, verify, restart };
+}
+
