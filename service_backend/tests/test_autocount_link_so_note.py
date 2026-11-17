@@ -113,3 +113,23 @@ def test_ac_66_07_control_the_public_add_line_door_still_refuses_or_drops_a_note
         ItemCode="ITEM-A", UOM="UNIT", Qty=1, UnitPrice=1.0, Location="HQ", FurtherDescription="x")))
     sent = [r for c in puts(h) for r in c.body["Details"]]
     assert res.outcome == "refused" or not any("FurtherDescription" in r for r in sent), (res.outcome, sent)
+
+
+@pytest.mark.parametrize("op", ["link_row", "link_batch"])
+def test_ac_66_08_the_restore_put_resends_the_same_note_never_omits_or_blanks_it(h, rig, op):
+    """Plan 66 D2: the restore PUT is an edit of the row the link PUT just created. It RESENDS the identical
+    note (never omits the key, never sends it empty), so whether AutoCount's edit ignores the field, writes it,
+    or treats an absent key as "clear", the row ends with the note the link PUT put on it."""
+    if op == "link_row":
+        res = h.run("link_row", dict(doc_key=PO_KEY, dtl_key=rig.free_a, so_doc_key=SO_KEY,
+                                     so_dtl_key=rig.so_dated), key="n-r")
+    else:
+        res = h.run("link_batch", dict(doc_key=PO_KEY, dtl_key=rig.free_a, links=[
+            dict(so_doc_key=SO_KEY, so_dtl_key=rig.so_dated, qty=1)]), key="n-b")
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    created = link_put(h, rig.so_dated)["FurtherDescription"]
+    new_key = rig.new_key(rig.so_dated)
+    later = [r for c in puts(h) for r in c.body["Details"] if r.get("DtlKey") == new_key]
+    assert later, "no restore PUT on the new row"
+    assert all(r.get("FurtherDescription") == created for r in later), later
+    assert created == rtf(NOTE)

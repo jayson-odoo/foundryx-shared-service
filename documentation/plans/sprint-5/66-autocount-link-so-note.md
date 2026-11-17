@@ -62,3 +62,19 @@ UAC (red tests `service_backend/tests/test_autocount_link_so_note.py`):
 - AC-66-05 no other row of any PUT carries a note (kept / deleted rows keep theirs).
 - AC-66-06 control: unlink's plain row carries none.
 - AC-66-07 control: the public add-line door never sends a caller's FurtherDescription.
+
+## 5. D2: the restore PUT resends the note (never omits it)
+
+The restore PUT (`_restore_rows`, operations.py, via `transfer_row_drift` payloads.py:341) is an edit of the row
+the link PUT just created. Two ways AutoCount's edit could treat FurtherDescription, neither proven:
+(a) ignore it (the live 17 Nov evidence: sent, 200, not stored) or (b) a full-row edit that clears a field the
+body leaves out. Resending the identical note is safe under both: (a) leaves the note the link PUT stored,
+(b) writes the same text. Omitting the key would blank it under (b). The note is never sent empty
+(`if sent.get(k)`, payloads.py:341), so the restore can never write a blank note. Pinned by AC-66-08.
+
+AC-66-08 the restore PUT on the new row carries the identical note the link PUT carried (never omitted, never empty).
+
+## 6. Proof after release
+
+No db3 screen or SQL access exists (owner, 17 Nov). Proof = the owner's next real Link PO on the live book plus
+the SELECT-only check `66-evidence/note-landing-check.sql` (presence / length / marker only).
