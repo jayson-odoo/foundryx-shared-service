@@ -387,7 +387,7 @@ exactly as `GET /sources` shows it, plus `change`:
 | `connected` | A source was connected for the first time |
 | `reconnected` | The Page was connected again (same source id) |
 | `forms_changed` | The forms choice changed (`PUT /sources/{id}/forms`) |
-| `needs_reconnect` | Facebook stopped accepting the Page's access; sent once per break, together with one email to the Shared Service users who manage Lead Capture. Reading a lead or the Page's form list decides this; a refusal of one form (or a made-up form id on the test lead) never does |
+| `needs_reconnect` | Facebook stopped accepting the Page's access; sent once per break, together with one email to the Shared Service users who manage Lead Capture. Reading a lead (webhook or backfill) or the backfill's read of the Page's form list decides this; a refusal of one form, a screen opening the form list, or a made-up form id on the test lead never does on its own (only an access token Facebook rejects outright does) |
 | `disconnected` | `DELETE /sources/{id}` |
 
 Use it to refresh the source shown in your CRM (e.g. a "Reconnect" badge). It carries no lead data.

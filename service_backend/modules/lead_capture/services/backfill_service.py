@@ -138,6 +138,7 @@ def _finish(db: Session, source_id: str, *, error: Optional[str], cursor: Option
 @dataclass
 class _Budget:
     pages: int
+    notes: List[str]
 
 
 def _forms(meta: MetaLeadClient, source: LcSource, token: str, dev: bool) -> List[Dict[str, Any]]:
@@ -227,6 +228,10 @@ def _read_form(
                 narrow = oldest - cursor
             window = max(narrow, MIN_WINDOW)
             continue
+        if cut:
+            budget.notes.append(
+                f"Form {form_id}: more leads in one minute than one read takes; some of them could not be read."
+            )
         for raw in leads:
             source = db.get(LcSource, source_id)
             if source is None or source.status not in SOURCE_ROUTING_STATES:
@@ -277,7 +282,11 @@ def _run(db: Session, source_id: str, started: datetime, meta: MetaLeadClient) -
     except MetaLeadError as exc:
         # The Page-level list: any token / permission answer means the Page.
         return _fail(db, source_id, exc, flip=exc.token_invalid)
-    budget = _Budget(RUN_PAGE_BUDGET)
+    budget = _Budget(RUN_PAGE_BUDGET, [])
+    # The forms read longest ago go first, so a page budget used up by a few
+    # busy forms never starves the same forms run after run.
+    cursors = (source.config_json or {}).get(FORM_CURSORS_KEY) or {}
+    forms = sorted(forms, key=lambda f: (f["id"] in cursors, str(cursors.get(f["id"]) or "")))
     test_ids: Dict[str, Any] = {}
     created = 0
     errors: List[str] = []
@@ -309,6 +318,7 @@ def _run(db: Session, source_id: str, started: datetime, meta: MetaLeadClient) -
             complete = False
             errors.append("More leads are waiting than one run reads; the next run continues.")
             break
+    errors += budget.notes
     _finish(db, source_id, error=" ".join(errors) or None, cursor=started if complete else None)
     return created
 

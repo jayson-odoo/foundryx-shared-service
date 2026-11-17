@@ -205,19 +205,10 @@ def store_lead(
         return []
     lead_form = _clean_id(raw.get("form_id")) or form_id_hint
     dev = bool(token.get("dev")) or not meta.configured
-    form_name = _read_form_name(meta, sources, token, lead_form, dev)  # Graph call: before the lock
-    # Re-read every row under a lock: the Graph calls before this took
-    # seconds, and a forms change or a disconnect saved meanwhile must win
-    # (no stale config_json written back, no lead for a source that left).
-    fresh = [source_service.locked_source(db, s.id) for s in sources]
-    fresh = [
-        s for s in fresh
-        if s is not None and s.status in SOURCE_ROUTING_STATES and source_service.accepts_form(s, lead_form)
-    ]
-    todo = _missing(db, fresh, leadgen_id)
-    if not todo:
-        db.rollback()
-        return []
+    if not _missing(db, sources, leadgen_id):
+        return []  # every source holds it already: no Graph call
+    # Graph calls first, never while holding the row locks below.
+    form_name = _read_form_name(meta, sources, token, lead_form, dev)
     ad_id = _clean_id(raw.get("ad_id"))
     if dev:
         is_test = True
@@ -231,6 +222,18 @@ def store_lead(
             if test_ids_cache is not None:
                 test_ids_cache[lead_form] = test_ids
         is_test = bool(test_ids and leadgen_id in test_ids)
+    # Re-read every row under a lock: the Graph calls before this took
+    # seconds, and a forms change or a disconnect saved meanwhile must win
+    # (no stale config_json written back, no lead for a source that left).
+    fresh = [source_service.locked_source(db, s.id) for s in sources]
+    fresh = [
+        s for s in fresh
+        if s is not None and s.status in SOURCE_ROUTING_STATES and source_service.accepts_form(s, lead_form)
+    ]
+    todo = _missing(db, fresh, leadgen_id)
+    if not todo:
+        db.rollback()
+        return []
 
     answers = mapping.answers_from(raw.get("field_data"))
     platform_created = mapping.parse_meta_time(raw.get("created_time")) or mapping.parse_meta_time(created_time)
