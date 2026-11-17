@@ -1,17 +1,19 @@
 """Plan 66 (RED, lane UNLINK-RETURN-POOL): an unlink returns the freed qty to the company's pool location.
 
-Owner 17 Nov: the unlinked qty goes back to the pool. Rules (card answers Q1-Q4, recommended / crew-decided):
-1. Merge: a FREE row on the same PO AT THE POOL LOCATION (exact code) with the same ItemCode, UOM, UnitPrice and
-   DeliveryDate (not linked, no SPO row, no receipt) takes the qty: ONE PUT [linked row "D", pool row raised].
-2. Otherwise: today's replace PUT, then the move puts the new free row at the POOL location (price + the unlinked
-   row's own delivery date kept).
+Owner 17 Nov: the unlinked qty goes back to the pool. Rules (owner answers Q1/Q2/Q3/Q5, crew Q4):
+Q1: the pool is the one the CRM project location is configured to come from; the caller sends it as
+    ``poolLocation`` on ``/po-links/unlink`` (``pool_location`` on ``unlink_row``), an exact Location code.
+1. Merge: a FREE row on the same PO AT THE POOL LOCATION with the same ItemCode + UOM (+ UnitPrice, kept until crew
+   confirms) - NOT the delivery date (it is the SO's; irrelevant once unlinked) - not linked, no SPO row, no receipt,
+   takes the qty: ONE PUT [linked row "D", pool row raised]; the pool row keeps its own date.
+2. Otherwise: today's replace PUT, then the move puts the new free row at the POOL location (price + date as today).
 3. A partly received row: the received part stays where it is; the remaining qty's new row goes to the pool.
-4. No pool location set on the company = exactly today's behaviour (plan 62 D7 same-location merge).
+4. No pool location sent = exactly today's behaviour (plan 62 D7 same-location merge).
 Relink frees nothing: unchanged.
 
 World PO 7001 (ITEM-A / UNIT / 5.0 / 2026-12-01, Qty 4): ``p_free`` BR1 free (today's same-location merge
 target), ``p_linked`` BR1 linked to ``so_a``, ``p_spo`` BR1 (an SPO row points at it), ``p_other`` moved to the
-pool location BRW, free. The pool-location setting is written through ``set_pool`` (one seam, Q1).
+pool location BRW, free. The pool location rides the call (``params`` / the route's ``poolLocation``).
 """
 
 from __future__ import annotations
@@ -30,11 +32,11 @@ UNLINK = f"{PREFIX}/po-links/unlink"
 POOL = "BRW"
 
 
-def set_pool(h, db, code: Optional[str]) -> None:
-    """Q1 (a): one exact Location code per AutoCount company; empty / None = off."""
-    h.company.pool_location = code
-    db.add(h.company)
-    db.commit()
+def unlink(h, world, key, pool: Optional[str] = POOL, **kw):
+    params = dict(world.params["unlink_row"])
+    if pool is not None:
+        params["pool_location"] = pool
+    return h.run("unlink_row", params, key=key, **kw)
 
 
 @pytest.fixture
@@ -43,7 +45,6 @@ def world(h, db):
     w = World(h)
     h.vendor.find("PO", 7001)["Details"][1]["UnitPrice"] = 5.0  # the linked row matches the free rows' price
     row(h, w.p_other)["Location"] = POOL
-    set_pool(h, db, POOL)
     return w
 
 
@@ -85,7 +86,7 @@ def keys_before(h):
 # ============================== rule 1: merge into the pool row =================================
 
 def test_unlink_merges_into_the_free_pool_row_not_the_same_location_row(h, world):
-    res = h.run("unlink_row", world.params["unlink_row"], key="p-1")
+    res = unlink(h, world, "p-1")
     assert res.outcome == "done", (res.outcome, res.error_code, res.message)
     sent = puts(h)
     assert len(sent) == 1  # one PUT, no move
@@ -99,10 +100,43 @@ def test_unlink_merges_into_the_free_pool_row_not_the_same_location_row(h, world
 
 def test_route_answer_names_the_pool_row(client, h, gw, world):
     r = client.post(UNLINK, headers=gw.hdr("p-route"),
-                    json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked})
+                    json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked, "poolLocation": POOL})
     assert r.status_code == 200, r.text
     assert r.json()["replacedLines"] == [{"oldDtlKey": world.p_linked, "newDtlKey": world.p_other}]
+    detail = r.json()["detail"]  # Q5: the CRM words "Qty returned to <pool>" from the row the qty went to
+    assert detail["DtlKey"] == world.p_other and detail["Location"] == POOL
     assert qty(row(h, world.p_other)) == Decimal(8)
+
+
+def test_route_moved_row_detail_is_at_the_pool(client, h, gw, world):
+    row(h, world.p_other)["Location"] = "BR1"
+    r = client.post(UNLINK, headers=gw.hdr("p-route-move"),
+                    json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked, "poolLocation": POOL})
+    assert r.status_code == 200, r.text
+    assert r.json()["detail"]["Location"] == POOL
+    assert r.json()["detail"]["DtlKey"] == r.json()["replacedLines"][0]["newDtlKey"]
+
+
+def test_route_without_pool_location_is_todays_unlink(client, h, gw, world):
+    r = client.post(UNLINK, headers=gw.hdr("p-route-off"),
+                    json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked})
+    assert r.status_code == 200, r.text
+    assert r.json()["replacedLines"] == [{"oldDtlKey": world.p_linked, "newDtlKey": world.p_free}]
+
+
+def test_route_rejects_a_non_text_pool_location(client, h, gw, world):
+    r = client.post(UNLINK, headers=gw.hdr("p-route-bad"),
+                    json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked, "poolLocation": 7})
+    assert r.status_code == 422, r.text
+    assert puts(h) == []
+
+
+def test_pool_location_is_part_of_the_idempotency_body(h, world):
+    first = unlink(h, world, "p-idem")
+    assert first.outcome == "done"
+    again = unlink(h, world, "p-idem", pool="BR1")  # same key, different body
+    assert again.outcome != "done" or again.error_code == "IDEMPOTENCY_CONFLICT"
+    assert len(puts(h)) == 1
 
 
 # ============================== rule 2: no pool row -> move to the pool ========================
@@ -114,7 +148,7 @@ def _assert_moved_to_pool(h, world, before, res):
     assert added["Location"] == POOL
     assert qty(added) == Decimal(4)
     assert Decimal(str(added["UnitPrice"])) == Decimal("5.0")
-    assert str(added["DeliveryDate"]).startswith("2026-12-01")  # Q3 (a): the unlinked row's own date
+    assert str(added["DeliveryDate"]).startswith("2026-12-01")  # Q3: as today, the unlinked row's date
     assert not (added.get("FromSODtlKey") or added.get("FromDocDtlKey"))
     assert row(h, world.p_linked) is None
     assert res.replaced_lines == [(world.p_linked, added["DtlKey"])]
@@ -124,7 +158,7 @@ def _assert_moved_to_pool(h, world, before, res):
 def test_no_pool_row_on_the_po_moves_the_unlinked_row_to_the_pool(h, world):
     row(h, world.p_other)["Location"] = "BR1"  # no row at the pool location any more
     before = keys_before(h)
-    res = h.run("unlink_row", world.params["unlink_row"], key="p-none")
+    res = unlink(h, world, "p-none")
     _assert_moved_to_pool(h, world, before, res)
     assert qty(row(h, world.p_free)) == Decimal(4)  # same-location BR1 free row NOT merged into
 
@@ -132,18 +166,28 @@ def test_no_pool_row_on_the_po_moves_the_unlinked_row_to_the_pool(h, world):
 def test_a_linked_pool_row_is_not_merged_into_and_the_row_goes_to_the_pool(h, world):
     row(h, world.p_other).update(FromSODtlKey=world.so_b, FromDocDtlKey=world.so_b)
     before = keys_before(h)
-    res = h.run("unlink_row", world.params["unlink_row"], key="p-linked")
+    res = unlink(h, world, "p-linked")
     _assert_moved_to_pool(h, world, before, res)
     assert qty(row(h, world.p_other)) == Decimal(4)
 
 
-@pytest.mark.parametrize("field,value", [("UnitPrice", 5.5), ("DeliveryDate", "2027-01-15T00:00:00"),
-                                         ("UOM", "BOX"), ("ItemCode", "ITEM-Z")])
+def test_a_pool_row_with_another_delivery_date_is_still_merged_into_and_keeps_its_date(h, world):
+    """Q2/Q3 (owner): the delivery date is the SO's, irrelevant once unlinked: not part of the match."""
+    row(h, world.p_other)["DeliveryDate"] = "2027-01-15T00:00:00"
+    res = unlink(h, world, "p-date")
+    assert res.outcome == "done", (res.outcome, res.error_code, res.message)
+    assert res.replaced_lines == [(world.p_linked, world.p_other)]
+    assert qty(row(h, world.p_other)) == Decimal(8)
+    assert str(row(h, world.p_other)["DeliveryDate"]).startswith("2027-01-15")
+    assert len(puts(h)) == 1
+
+
+@pytest.mark.parametrize("field,value", [("UnitPrice", 5.5), ("UOM", "BOX"), ("ItemCode", "ITEM-Z")])
 def test_a_pool_row_that_differs_is_not_merged_into(h, world, field, value):
-    """Q2 (a): item + UOM + price + delivery date must match; else rule 2 (two pool rows)."""
+    """Q2: item + UOM must match (unit price kept in the match until crew confirms); else rule 2."""
     row(h, world.p_other)[field] = value
     before = keys_before(h)
-    res = h.run("unlink_row", world.params["unlink_row"], key=f"p-diff-{field}")
+    res = unlink(h, world, f"p-diff-{field}")
     _assert_moved_to_pool(h, world, before, res)
     assert qty(row(h, world.p_other)) == Decimal(4)
 
@@ -151,7 +195,7 @@ def test_a_pool_row_that_differs_is_not_merged_into(h, world, field, value):
 def test_pool_code_is_exact_brw_bb_is_not_brw(h, world):
     row(h, world.p_other)["Location"] = "BRW-BB"
     before = keys_before(h)
-    res = h.run("unlink_row", world.params["unlink_row"], key="p-exact")
+    res = unlink(h, world, "p-exact")
     _assert_moved_to_pool(h, world, before, res)
     assert qty(row(h, world.p_other)) == Decimal(4)
 
@@ -160,7 +204,7 @@ def test_a_pool_row_an_spo_points_at_is_not_merged_into(h, world):
     row(h, world.p_other)["Location"] = "BR1"
     row(h, world.p_spo)["Location"] = POOL  # the only pool row, but an SPO row takes it
     before = keys_before(h)
-    res = h.run("unlink_row", world.params["unlink_row"], key="p-spo")
+    res = unlink(h, world, "p-spo")
     _assert_moved_to_pool(h, world, before, res)
     assert qty(row(h, world.p_spo)) == Decimal(4)
 
@@ -170,7 +214,7 @@ def test_a_received_pool_row_is_not_merged_into(h, world):
         return Decimal(1) if r.get("DtlKey") == world.p_other else Decimal(0)
 
     before = keys_before(h)
-    res = h.run("unlink_row", world.params["unlink_row"], key="p-recv", receipt_reader=reader)
+    res = unlink(h, world, "p-recv", receipt_reader=reader)
     _assert_moved_to_pool(h, world, before, res)
 
 
@@ -178,7 +222,7 @@ def test_the_linked_row_already_at_the_pool_still_ends_at_the_pool(h, world):
     row(h, world.p_linked)["Location"] = POOL
     row(h, world.p_other)["Location"] = "BR1"
     before = keys_before(h)
-    res = h.run("unlink_row", world.params["unlink_row"], key="p-at-pool")
+    res = unlink(h, world, "p-at-pool")
     _assert_moved_to_pool(h, world, before, res)
 
 
@@ -188,7 +232,7 @@ def test_partly_received_row_keeps_the_received_part_and_sends_the_rest_to_the_p
     def reader(kind, doc, r):
         return Decimal(1) if r.get("DtlKey") == world.p_linked else Decimal(0)
 
-    res = h.run("unlink_row", world.params["unlink_row"], key="p-part", receipt_reader=reader)
+    res = unlink(h, world, "p-part", receipt_reader=reader)
     assert res.outcome == "done", (res.outcome, res.error_code, res.message)
     cut = row(h, world.p_linked)
     assert cut is not None and qty(cut) == Decimal(1) and cut["Location"] == "BR1"
@@ -200,17 +244,16 @@ def test_partly_received_row_keeps_the_received_part_and_sends_the_rest_to_the_p
 
 # ============================== rule 4: setting off = today ====================================
 
-@pytest.mark.parametrize("off", [None, ""])
-def test_no_pool_location_set_is_todays_same_location_merge(h, db, world, off):
-    set_pool(h, db, off)
-    res = h.run("unlink_row", world.params["unlink_row"], key=f"p-off-{off!r}")
+@pytest.mark.parametrize("off", [None, "", "  "])
+def test_no_pool_location_sent_is_todays_same_location_merge(h, world, off):
+    res = unlink(h, world, f"p-off-{off!r}", pool=off)
     assert res.outcome == "done"
     assert res.replaced_lines == [(world.p_linked, world.p_free)]  # plan 62 D7, BR1 row
     assert qty(row(h, world.p_free)) == Decimal(8) and qty(row(h, world.p_other)) == Decimal(4)
 
 
-def test_relink_is_unchanged_with_a_pool_location_set(h, world):
-    res = h.run("relink_row", world.params["relink_row"], key="p-relink")
+def test_relink_ignores_a_pool_location(h, world):
+    res = h.run("relink_row", dict(world.params["relink_row"], pool_location=POOL), key="p-relink")
     assert res.outcome == "done"
     assert qty(row(h, world.p_other)) == Decimal(4)
     assert all(r["Location"] != POOL for r in h.vendor.rows("PO", 7001) if r["DtlKey"] != world.p_other)
