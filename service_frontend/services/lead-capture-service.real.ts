@@ -2,7 +2,7 @@
  * Real Lead Capture service - FastAPI staff routes under `/lead-capture`
  * (`service_backend/modules/lead_capture/routers/staff.py`).
  */
-import { apiFetch } from '@/lib/api-client';
+import { ApiError, apiFetch } from '@/lib/api-client';
 import type {
   LeadFieldList,
   LeadFormQuestions,
@@ -43,7 +43,12 @@ export const realLeadCaptureService: LeadCaptureService = {
   },
   async removeReceivers(ids) {
     for (const id of ids) {
-      await apiFetch(`${BASE}/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      try {
+        await apiFetch(`${BASE}/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch (err) {
+        // Already removed (e.g. a Remove that lapsed meanwhile) - the goal holds.
+        if (!(err instanceof ApiError && err.status === 404)) throw err;
+      }
     }
   },
 

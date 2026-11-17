@@ -9,18 +9,23 @@ import type { FilterGroup, FilterRule, ListQuery, ListResult } from '@/types/res
 export interface ClientListSpec<T> {
   /** Texts the general search matches (case-insensitive contains). */
   searchText: (row: T) => string[];
-  /** Comparable value per sortable column id (and per filter field). */
-  value: (row: T, field: string) => string | number | null;
+  /** Comparable value per sortable column id (and per filter field). A list
+   *  value (multi-value cell) matches an `in` filter on any element and sorts
+   *  by its joined text. */
+  value: (row: T, field: string) => string | number | null | string[];
 }
 
 function matchRule<T>(row: T, rule: FilterRule, spec: ClientListSpec<T>): boolean {
   if (rule.kind === 'group') return matchGroup(row, rule, spec);
   const actual = spec.value(row, rule.field);
-  const text = actual === null ? '' : String(actual).toLowerCase();
+  const values = (Array.isArray(actual) ? actual : [actual === null ? '' : String(actual)]).map((v) =>
+    v.toLowerCase(),
+  );
+  const text = values.join(', ');
   const wanted = rule.value;
   switch (rule.operator) {
     case 'in':
-      return Array.isArray(wanted) && wanted.map((v) => v.toLowerCase()).includes(text);
+      return Array.isArray(wanted) && wanted.some((v) => values.includes(v.toLowerCase()));
     case 'eq':
       return text === String(wanted ?? '').toLowerCase();
     case 'neq':
@@ -36,6 +41,10 @@ function matchGroup<T>(row: T, group: FilterGroup, spec: ClientListSpec<T>): boo
   if (group.rules.length === 0) return true;
   const results = group.rules.map((r) => matchRule(row, r, spec));
   return group.combinator === 'or' ? results.some(Boolean) : results.every(Boolean);
+}
+
+function sortable(v: string | number | null | string[]): string | number | null {
+  return Array.isArray(v) ? v.join(', ') : v;
 }
 
 export function applyClientQuery<T>(
@@ -56,8 +65,8 @@ export function applyClientQuery<T>(
   if (sort) {
     const dir = sort.desc ? -1 : 1;
     out = [...out].sort((a, b) => {
-      const va = spec.value(a, sort.id);
-      const vb = spec.value(b, sort.id);
+      const va = sortable(spec.value(a, sort.id));
+      const vb = sortable(spec.value(b, sort.id));
       // Blanks sort last whatever the direction.
       if (va === null || va === '') return vb === null || vb === '' ? 0 : 1;
       if (vb === null || vb === '') return -1;

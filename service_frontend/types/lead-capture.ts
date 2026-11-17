@@ -86,3 +86,10 @@ export interface LeadFormQuestions {
 
 /** The "*" form id: one map for every form of a Page. */
 export const ALL_FORMS = '*';
+
+/** Plain names for the receiver events. */
+export const LEAD_EVENT_LABELS: Record<LeadEvent, string> = {
+  'lead.created': 'New lead',
+  'lead.updated': 'Lead updated',
+  'source.updated': 'Source updated',
+};

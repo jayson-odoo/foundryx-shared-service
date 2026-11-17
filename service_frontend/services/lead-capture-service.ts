@@ -14,6 +14,7 @@ import type {
   LeadReceiverItem,
   LeadSourceItem,
 } from '@/types/lead-capture';
+import { BASE_URL } from '@/lib/api-client';
 import { realLeadCaptureService } from './lead-capture-service.real';
 
 export interface LeadCaptureService {
@@ -44,3 +45,8 @@ export interface LeadCaptureService {
 }
 
 export const leadCaptureService: LeadCaptureService = realLeadCaptureService;
+
+/** The address a pull-only product reads its leads from (key-authed gateway). */
+export function leadsPullUrl(): string {
+  return `${BASE_URL.replace(/\/$/, '')}/api/v1/lead-capture/leads`;
+}

@@ -10,7 +10,7 @@ import { deriveTenantSlug } from '@/lib/tenant';
  * Attaches the NextAuth session JWT (issued by FastAPI) as a Bearer token.
  */
 
-const BASE_URL =
+export const BASE_URL =
   process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8000';
 
 export class ApiError extends Error {

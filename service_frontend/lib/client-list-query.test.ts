@@ -47,3 +47,28 @@ describe('applyClientQuery', () => {
     expect(p1.total).toBe(3);
   });
 });
+
+describe('applyClientQuery list values', () => {
+  interface Rec {
+    url: string;
+    events: string[];
+  }
+  const recs: Rec[] = [
+    { url: 'a', events: ['lead.created'] },
+    { url: 'b', events: ['lead.updated', 'source.updated'] },
+  ];
+  const recSpec: ClientListSpec<Rec> = {
+    searchText: (r) => [r.url],
+    value: (r, f) => (f === 'events' ? r.events : r.url),
+  };
+  it('an in filter matches any element of a list value', () => {
+    const filter = {
+      kind: 'group' as const,
+      combinator: 'and' as const,
+      rules: [
+        { kind: 'condition' as const, field: 'events', operator: 'in' as const, value: ['source.updated', 'x'] },
+      ],
+    };
+    expect(applyClientQuery(recs, { page: 0, pageSize: 10, filter }, recSpec).data.map((r) => r.url)).toEqual(['b']);
+  });
+});

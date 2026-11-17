@@ -10,6 +10,7 @@ import type {
   LeadFormQuestions,
   LeadKeyCreated,
   LeadReceiverCreated,
+  LeadReceiverItem,
   LeadSourceItem,
 } from '@/types/lead-capture';
 
@@ -105,9 +106,9 @@ function useLoad<T>(load: () => Promise<T>, fallback: string): LoadState<T> {
   return { data, loading, error, reload };
 }
 
-export function useReceiverCount(): LoadState<number> {
-  const load = useCallback(async () => (await leadCaptureService.listReceivers()).length, []);
-  return useLoad(load, 'Could not load the receivers.');
+/** The receivers as one list (the Delivery page's Push / Pull only state). */
+export function useReceivers(): LoadState<LeadReceiverItem[]> {
+  return useLoad(leadCaptureService.listReceivers, 'Could not load the receivers.');
 }
 
 export function useLeadFields(): LoadState<LeadFieldList> & {
