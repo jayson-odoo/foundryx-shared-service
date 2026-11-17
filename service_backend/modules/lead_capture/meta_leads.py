@@ -55,6 +55,13 @@ _TEXT_CAP = 500
 PAGE_SIZE = 100
 MAX_PAGES = 20  # 2,000 rows per call at most; the next backfill run continues
 DEV_FORM_ID = "100000000000000"
+# Simulated Pages (no Meta app configured: dev + tests) - digits like real
+# Page ids, neutral names (white-label). The hosted wizard lists them and the
+# dev connect names the source after them.
+DEV_PAGES: List[Dict[str, str]] = [
+    {"id": "100000000000701", "name": "Sample Home Page"},
+    {"id": "100000000000702", "name": "Sample Store Page"},
+]
 
 
 class MetaLeadError(Exception):
@@ -192,7 +199,8 @@ class MetaLeadClient(MetaGraphMixin):
     def page_token(self, system_user_token: str, page_id: str, *, dev: bool = False) -> Dict[str, str]:
         """``{"pageToken", "pageName"}`` for a Page the system user holds."""
         if not self._configured or dev:
-            return {"pageToken": f"dev-page-token-{page_id}", "pageName": f"Dev Page {page_id}"}
+            name = next((p["name"] for p in DEV_PAGES if p["id"] == page_id), f"Dev Page {page_id}")
+            return {"pageToken": f"dev-page-token-{page_id}", "pageName": name}
         resp = self._get(page_id, system_user_token, {"fields": "access_token,name"})
         if resp.status_code != 200:
             raise _error(resp, "Meta refused the Page.")

@@ -113,6 +113,7 @@ export function useLeadsListConfig(sourceId: string | null): ResourceListConfig<
       fetcher: (q) => leadCaptureSourcesService.listLeads(q, sourceId),
       filterFields,
       exportColumns: [],
+      enableStatusViews: false,
       actions: [],
       searchPlaceholder: 'Search email, phone, form or source',
       defaultSort: { id: 'receivedAt', desc: true },

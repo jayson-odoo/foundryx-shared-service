@@ -163,6 +163,7 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
       fetcher: (q) => leadCaptureSourcesService.listSources(q),
       filterFields: FILTER_FIELDS,
       exportColumns: [],
+      enableStatusViews: false,
       actions,
       searchPlaceholder: 'Search sources',
       defaultSort: { id: 'createdAt', desc: true },

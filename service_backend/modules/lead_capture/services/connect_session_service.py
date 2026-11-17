@@ -45,6 +45,7 @@ from app.repositories.module_repository import ModuleRepository
 from app.scoped_tokens import decode_scoped_token, mint_scoped_token
 from app.secrets import decrypt_secret, encrypt_secret
 
+from .. import meta_leads
 from ..meta_leads import LOGIN_SCOPES, MetaLeadClient, MetaLeadError
 from ..models import (
     PLATFORM_FACEBOOK,
@@ -66,12 +67,7 @@ LOGIN_TTL = timedelta(minutes=30)
 MAX_ORIGINS = 10
 REQUIRED_SCOPE = "leads_retrieval"
 WIZARD_PATH = "/public/lead-capture/connect"
-# Simulated Pages (no Meta app configured: dev + tests). Digits like real
-# Page ids, neutral names (white-label).
-DEV_PAGES: List[Dict[str, str]] = [
-    {"id": "100000000000701", "name": "Sample Home Page"},
-    {"id": "100000000000702", "name": "Sample Store Page"},
-]
+DEV_PAGES = meta_leads.DEV_PAGES
 _ORIGIN_HOST_RE = re.compile(r"^[a-z0-9.-]{1,253}$")
 
 
