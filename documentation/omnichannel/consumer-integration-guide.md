@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Delivery history and contact list filters** (sections 6a, 7). New `GET /webhooks/{id}/deliveries?status=&limit=&before=` returns the delivery history of one of your own endpoints, newest first (no event body, no secret); another workspace's endpoint answers the same `404 not_found` as an unknown id. `GET /contacts` takes two optional filters: `updatedSince` (contacts changed or messaged after an ISO 8601 instant) and `channelId` (contacts with an identity on that channel; a channel outside your workspace answers `404 channel_not_found`, as on `GET /templates`). Additive: a request without the new parameters gets exactly today's response, and no existing response gains a field. |
 > | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and `POST /messages` as multipart up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send takes exactly one `file` part and one `payload` part, with at most 5 form fields; more answers `422 invalid_request`. |
 > | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
 > | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
@@ -474,7 +475,11 @@ A miss (or a contact in another workspace) → `404 contact_not_found`.
 
 ### List contacts - `GET /api/v1/omnichannel/contacts`
 
-Query params: `status` (`OPEN|SNOOZED|CLOSED`), `assignee` (`all|unassigned`), `priority` (`LOW|MEDIUM|HIGH|URGENT`), `search` (name / phone / message body), `page` (0-based), `pageSize` (1-200).
+Query params: `status` (`OPEN|SNOOZED|CLOSED`), `assignee` (`all|unassigned`), `priority` (`LOW|MEDIUM|HIGH|URGENT`), `search` (name / phone / message body), `updatedSince`, `channelId`, `page` (0-based), `pageSize` (1-200).
+
+* `updatedSince` (optional, 2026-11-18): an ISO 8601 instant such as `2026-11-18T00:00:00Z`; only contacts changed after it are listed (a message in or out, a profile edit, a status change). An instant without an offset is read as UTC. A value that is not a timestamp answers `422 invalid_request`. Use it to reconcile after an outage: keep the time of your last successful sync and list what changed since.
+* `channelId` (optional, 2026-11-18): only contacts with an identity on that channel (a number they wrote to, or that knows them). The channel must be a channel of your workspace (active or paused); any other id answers `404 channel_not_found`, the same answer `GET /templates?channelId=` gives.
+* Both combine with each other and with the filters above, and work with `?format=rio` (the `next`/`previous` links keep them). Without them the response is exactly as before.
 
 ```json
 { "data": [ /* ThreadItem - see §9.1 */ ], "total": 42, "page": 0, "pageSize": 50 }
@@ -1003,7 +1008,7 @@ async def receive(request: Request):
 * Only an `ACTIVE` endpoint gets events: while it is `DISABLED` or `AUTO_DISABLED` no event is queued for it, and none is replayed after it is re-enabled.
 * While a workspace is trashed, its tenant is suspended or the service is off for it, no event is queued, and queued retries end failed. Those events are not sent later, even after the workspace is back.
 * Webhook delivery is fully isolated - a slow/broken consumer never blocks an inbound WhatsApp message.
-* A **delivery log** is available in the dashboard (per-attempt status, response code, latency, error) for debugging.
+* A **delivery log** is available in the dashboard (per-attempt status, response code, latency, error) for debugging, and with your API key through `GET /webhooks/{id}/deliveries` (below).
 
 ### Registering your callbacks - `/api/v1/omnichannel/webhooks`
 
@@ -1017,6 +1022,7 @@ async def receive(request: Request):
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret (returned once) |
 | POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume delivery (`409 endpoint_paused_by_staff` on enable when staff paused it) |
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove it |
+| GET | `/api/v1/omnichannel/webhooks/{id}/deliveries` | Delivery history of the endpoint (below) |
 
 ```bash
 curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/webhooks \
@@ -1044,6 +1050,25 @@ The URL is validated at registration: **https only**, no `localhost`, no private
 **Which key owns an endpoint.** The key that last changed an endpoint owns it: registering, a PATCH with a real change, a rotation, or enabling a paused one makes that key the owner. A disable, a delete and every action by staff leave the owner alone, and a request that changes nothing moves nothing.
 
 **When a key is revoked.** When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` on each paused endpoint says the API key that registered it was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key, and resume only the endpoints you recognise. After a rotation, do this with the new key. A key's own disable can be resumed by a key, except on an endpoint disabled before 2026-11-02, which reads as a staff pause. A pause set by staff cannot be undone with a key: enable, PATCH, rotate and DELETE answer `409 endpoint_paused_by_staff`, and only staff resume it. Registering, or a PATCH, rotate, enable or disable, made with a key that is revoked meanwhile answers `401` and changes nothing; a DELETE under way may still land.
+
+#### Delivery history - `GET /api/v1/omnichannel/webhooks/{id}/deliveries`
+
+The deliveries of one of your own endpoints, newest first (2026-11-18). One item is one event sent to the endpoint, with its retries.
+
+Query params: `status` (`PENDING|SUCCESS|FAILED`, any case), `limit` (1-200, default 50), `before` (the `nextBefore` of the previous page).
+
+```json
+{ "data": [ { "id": "9b1c…", "eventId": "evt_…", "eventType": "message.inbound",
+              "status": "FAILED", "attemptCount": 6, "responseStatus": 500, "responseMs": 412,
+              "error": "Consumer returned 500.", "lastAttemptAt": "2026-11-18T03:10:00Z",
+              "nextAttemptAt": null, "createdAt": "2026-11-17T21:02:11Z" } ],
+  "nextBefore": "9b1c…" }
+```
+
+* `eventId` is the envelope `id` (and the `X-Fx-Event-Id` header) your endpoint received; `status` is `PENDING` while retries remain, `SUCCESS` or `FAILED` (dead-lettered) after; `attemptCount` is the number of attempts so far; `lastAttemptAt` is the latest attempt and `nextAttemptAt` the next retry (`null` when none is due); `responseStatus` is your endpoint's HTTP answer (`null` when none came back) and `error` a short reason, which never names a host.
+* The event body and the signing secret are never returned.
+* Paging: `nextBefore` is set when the page is full; pass it as `before` for older rows. A short page is the last one (`nextBefore: null`). A `before` that is not a delivery of this endpoint answers `422 invalid_request`.
+* An unknown endpoint id, or one of another workspace, answers `404 not_found`. A bad `status` or `limit` answers `422 invalid_request`.
 
 An operator can also manage these from the Foundryx dashboard, where a per-attempt **delivery log** is available for debugging.
 
@@ -1722,7 +1747,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/messages` | Send a message (all types) | `202 {id, status, idempotencyReplay}` |
 | GET | `/api/v1/omnichannel/channels` | List the workspace's channels (`isDefault` marks the implicit send channel, none when `channelId` is required) | `{data[]}` of channel items (§5a) |
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
-| GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
+| GET | `/api/v1/omnichannel/contacts` | List contacts (filters incl. `updatedSince`, `channelId` + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |
 | PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/team/language/countryCode/customFields/tags/lifecycle) | `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}/messages` | Message history | `{contactId, data[], nextBefore}` of `MessageItem` |
@@ -1737,6 +1762,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret | `{signingSecret}` |
 | POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume (`409 endpoint_paused_by_staff` on enable when staff paused it) | `WebhookEndpoint` |
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove | `204` |
+| GET | `/api/v1/omnichannel/webhooks/{id}/deliveries` | Delivery history (`status`, `limit`, `before`) | `{data[], nextBefore}` |
 | GET | `/api/v1/omnichannel/workflows/catalog` | Node types a key may use, plus the workspace's pickers | `{nodes[], options}` (§6c) |
 | POST | `/api/v1/omnichannel/workflows` | Create a workflow | `201` workflow |
 | GET | `/api/v1/omnichannel/workflows` | List the workspace's workflows (paged) | `{data[], nextCursor}` |

@@ -854,6 +854,10 @@ class WebhookDelivery(OmniBase):
 
     __table_args__ = (
         Index("ix_webhook_deliveries_due", "status", "next_attempt_at"),
+        # Delivery history newest first for one endpoint (the key-callable
+        # `GET /api/v1/omnichannel/webhooks/{id}/deliveries`). Built
+        # CONCURRENTLY by `0027_omni_delivery_history_ix`.
+        Index("ix_webhook_deliveries_endpoint_created", "endpoint_id", "created_at"),
     )
 
 

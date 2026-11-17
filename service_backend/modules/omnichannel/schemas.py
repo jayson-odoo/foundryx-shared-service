@@ -1840,6 +1840,15 @@ class WebhookDeliveryListResponse(ApiModel):
     data: List[WebhookDeliveryItem]
 
 
+class PublicWebhookDeliveryListResponse(ApiModel):
+    """`GET /api/v1/omnichannel/webhooks/{id}/deliveries` (2026-11-18). Same
+    item as the staff log (no payload body, no secret); ``nextBefore`` is the
+    ``before`` value for the next older page, null on the last page."""
+
+    data: List[WebhookDeliveryItem]
+    nextBefore: Optional[str] = None
+
+
 # ── Template management (plan 07) ─────────────────────────────────────────────
 class TemplateManageItem(ApiModel):
     id: str

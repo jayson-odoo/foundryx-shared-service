@@ -183,7 +183,8 @@ def test_ac_58_03_migration_revision_chain_and_single_head():
             p = _assigned(text, "down_revision")
             if p:
                 parents.update(p if isinstance(p, (tuple, list)) else [p])
-    assert revs - parents == {"0026_omni_contact_erasures"}
+    # (later revisions build on 0026, so check ONE head and 0026 in the chain)
+    assert len(revs - parents) == 1 and "0026_omni_contact_erasures" in parents | (revs - parents)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

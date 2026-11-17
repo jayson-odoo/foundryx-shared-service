@@ -57,19 +57,11 @@ def _to_staff_items(
 
 
 def _to_delivery(row: WebhookDelivery) -> WebhookDeliveryItem:
-    return WebhookDeliveryItem(
-        id=row.id,
-        eventId=row.event_id,
-        eventType=row.event_type,
-        status=row.status,
-        attemptCount=row.attempt_count,
-        responseStatus=row.response_status,
-        responseMs=row.response_ms,
-        error=row.error,
-        lastAttemptAt=row.last_attempt_at,
-        nextAttemptAt=row.next_attempt_at,
-        createdAt=row.created_at,
-    )
+    """Shared mapper (service layer), same as `_to_item`: the public gateway's
+    delivery history and this log cannot drift."""
+    from ..services.webhook_service import webhook_delivery_item
+
+    return webhook_delivery_item(row)
 
 
 def _bad(exc: Exception) -> HTTPException:

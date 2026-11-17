@@ -134,6 +134,26 @@ def webhook_endpoint_item(row: "WebhookEndpoint"):
     )
 
 
+def webhook_delivery_item(row: "WebhookDelivery"):
+    """Delivery row → wire item (staff log and public history alike). Never the
+    signed payload body or any secret."""
+    from ..schemas import WebhookDeliveryItem
+
+    return WebhookDeliveryItem(
+        id=row.id,
+        eventId=row.event_id,
+        eventType=row.event_type,
+        status=row.status,
+        attemptCount=row.attempt_count,
+        responseStatus=row.response_status,
+        responseMs=row.response_ms,
+        error=row.error,
+        lastAttemptAt=row.last_attempt_at,
+        nextAttemptAt=row.next_attempt_at,
+        createdAt=row.created_at,
+    )
+
+
 def _validate_events(events: List[str]) -> List[str]:
     if not events:
         raise WebhookError("Select at least one event type.")
@@ -568,16 +588,48 @@ class WebhookService:
         self.db.commit()
 
     def list_deliveries(
-        self, tenant_id: str, endpoint_id: str, limit: int = 50
+        self,
+        tenant_id: str,
+        endpoint_id: str,
+        limit: int = 50,
+        *,
+        status: Optional[str] = None,
+        before_id: Optional[str] = None,
     ) -> List[WebhookDelivery]:
+        """Newest first. ``status`` narrows to one delivery status; ``before_id``
+        pages to the rows older than that delivery of the SAME endpoint (an id
+        that is not one raises ``WebhookError``). The caller scopes the endpoint
+        (tenant here; the gateway also checks the workspace first)."""
         self._get(tenant_id, endpoint_id)  # tenant-scope guard
-        return (
-            self.db.query(WebhookDelivery)
-            .filter(
-                WebhookDelivery.tenant_id == tenant_id,
-                WebhookDelivery.endpoint_id == endpoint_id,
+        q = self.db.query(WebhookDelivery).filter(
+            WebhookDelivery.tenant_id == tenant_id,
+            WebhookDelivery.endpoint_id == endpoint_id,
+        )
+        if status:
+            q = q.filter(WebhookDelivery.status == status)
+        if before_id:
+            anchor = (
+                self.db.query(WebhookDelivery.created_at, WebhookDelivery.id)
+                .filter(
+                    WebhookDelivery.tenant_id == tenant_id,
+                    WebhookDelivery.endpoint_id == endpoint_id,
+                    WebhookDelivery.id == before_id,
+                )
+                .first()
             )
-            .order_by(WebhookDelivery.created_at.desc())
+            if anchor is None:
+                raise WebhookError("Unknown 'before' cursor.")
+            q = q.filter(
+                or_(
+                    WebhookDelivery.created_at < anchor.created_at,
+                    and_(
+                        WebhookDelivery.created_at == anchor.created_at,
+                        WebhookDelivery.id < anchor.id,
+                    ),
+                )
+            )
+        return (
+            q.order_by(WebhookDelivery.created_at.desc(), WebhookDelivery.id.desc())
             .limit(min(limit, 200))
             .all()
         )

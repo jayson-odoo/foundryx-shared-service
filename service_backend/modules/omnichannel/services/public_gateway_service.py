@@ -594,15 +594,30 @@ class PublicGatewayService:
         assignee: str = "all",
         priority: Optional[str] = None,
         search: Optional[str] = None,
+        updated_since: Optional[datetime] = None,
+        channel_id: Optional[str] = None,
         page: int = 0,
         page_size: int = 50,
         fmt: str = FORMAT_GUIDE,
     ):
         """Returns ``(items, total)`` - ``ThreadItem``s by default, ``RioContactItem``s
         when ``fmt='rio'``. Filtering/pagination reuse the inbox's ``list_threads``
-        (offset-based); the router turns page/total into the documented envelope."""
+        (offset-based); the router turns page/total into the documented envelope.
+
+        ``updated_since`` (naive = UTC) keeps contacts changed or messaged after
+        it; ``channel_id`` keeps contacts with an identity on that channel. A
+        channel outside the workspace is the uniform ``404 channel_not_found``
+        that ``GET /templates?channelId=`` gives. Neither set = today's query."""
         from .conversation_service import ConversationService
 
+        filters = {}
+        if channel_id:
+            self._workspace_channel_any_state(tenant_id, workspace_id, channel_id)
+            filters["channel_ids"] = [channel_id]
+        if updated_since is not None:
+            if updated_since.tzinfo is None:
+                updated_since = updated_since.replace(tzinfo=timezone.utc)
+            filters["updated_since"] = updated_since
         items, total = ConversationService(self.db).list_threads(
             tenant_id,
             workspace_id=workspace_id,
@@ -612,6 +627,7 @@ class PublicGatewayService:
             search=search,
             page=page,
             page_size=page_size,
+            **filters,
         )
         if fmt != FORMAT_RIO:
             return items, total
@@ -1507,6 +1523,25 @@ class PublicGatewayService:
         ]
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
+    def _workspace_channel_any_state(
+        self, tenant_id: str, workspace_id: str, channel_id: str
+    ) -> Channel:
+        """A non-trashed channel of this workspace, active or not (a read filter
+        may target a paused number). Else the uniform 404 of the template read."""
+        channel = (
+            self.db.query(Channel)
+            .filter(
+                Channel.id == channel_id,
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id == workspace_id,
+                Channel.is_trashed.is_(False),
+            )
+            .first()
+        )
+        if channel is None:
+            raise ApiError(404, "channel_not_found", "Channel not found for this workspace.")
+        return channel
+
     def list_templates(
         self,
         tenant_id: str,
@@ -1522,18 +1557,7 @@ class PublicGatewayService:
         workspace/tenant is a uniform 404. ``search`` filters by name substring
         (case-insensitive); ``category`` filters by Meta category (UTILITY|…)."""
         if channel_id:
-            channel = (
-                self.db.query(Channel)
-                .filter(
-                    Channel.id == channel_id,
-                    Channel.tenant_id == tenant_id,
-                    Channel.workspace_id == workspace_id,
-                    Channel.is_trashed.is_(False),
-                )
-                .first()
-            )
-            if channel is None:
-                raise ApiError(404, "channel_not_found", "Channel not found for this workspace.")
+            channel = self._workspace_channel_any_state(tenant_id, workspace_id, channel_id)
         else:
             channel = self._workspace_channel(tenant_id, workspace_id)
         q = self.db.query(WhatsappTemplate).filter(
