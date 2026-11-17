@@ -355,7 +355,9 @@ def test_waiting_source_blocks_another_tenant_like_live(client, lc, fgraph):
     assert res.status_code == 409 and res.json()["detail"]["code"] == "PAGE_IN_USE"
 
 
-def test_test_lead_flips_only_its_own_source_on_a_shared_page(lc, fgraph):
+def test_test_lead_flips_every_waiting_source_on_a_shared_page(lc, fgraph):
+    """Meta's test lead is one lead on the Page: every tenant sharing it
+    receives and parses it (D13), so each waiting source passes its test."""
     _second_tenant(lc, True)
     fgraph.test_ids = [LEAD_ID]
     db = lc()
@@ -363,6 +365,7 @@ def test_test_lead_flips_only_its_own_source_on_a_shared_page(lc, fgraph):
         connect_service.set_allow_shared_pages(db, DEFAULT_TENANT_ID, True, None)
         a = connect_service.connect_facebook(db, DEFAULT_TENANT_ID, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
         b = connect_service.connect_facebook(db, TENANT_B, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+        assert b.status == SOURCE_WAITING_FOR_TEST
         a.status = SOURCE_LIVE
         db.commit()
         a_id, b_id = a.id, b.id
@@ -371,3 +374,81 @@ def test_test_lead_flips_only_its_own_source_on_a_shared_page(lc, fgraph):
         db.close()
     assert _status(lc, a_id) == SOURCE_LIVE and _status(lc, b_id) == SOURCE_LIVE
     assert len(_leads(lc)) == 2
+
+
+# ── review round 1 ──────────────────────────────────────────────────────────
+
+def test_test_lead_on_a_source_not_receiving_leads_is_409(client, lc, fgraph):
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    db = lc()
+    try:
+        db.get(LcSource, sid).status = "NEEDS_RECONNECT"
+        db.commit()
+    finally:
+        db.close()
+    res = client.post(f"/lead-capture/sources/{sid}/test-lead", json={"formId": FORM_ID}, headers=headers)
+    assert res.status_code == 409 and res.json()["detail"]["code"] == "source_not_connected"
+    assert not any(c.url.path.endswith("/test_leads") for c in fgraph.calls)
+
+
+def test_meta_unreachable_is_502(client, lc, fgraph, monkeypatch):
+    from modules.lead_capture import meta_leads
+
+    headers = _login(client)
+    sid = _source_id(client, headers)
+
+    def boom(request):
+        raise httpx.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(meta_leads.MetaLeadClient, "_http", lambda self: httpx.Client(transport=httpx.MockTransport(boom)))
+    res = client.get(f"/lead-capture/sources/{sid}/forms/{FORM_ID}/questions", headers=headers)
+    assert res.status_code == 502 and res.json()["detail"]["code"] == "meta_unreachable"
+    res = client.post(f"/lead-capture/sources/{sid}/test-lead", json={"formId": FORM_ID}, headers=headers)
+    assert res.status_code == 502 and res.json()["detail"]["code"] == "meta_unreachable"
+
+
+def test_dev_test_lead_runs_the_ingest_and_flips_live(client, lc, monkeypatch):
+    """No Meta app + ENVIRONMENT=development: the canned test lead runs
+    through the normal ingest (eager) and the source passes its test."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "meta_app_id", "")
+    monkeypatch.setattr(settings, "meta_app_secret", "")
+    monkeypatch.setattr(settings, "environment", "development")
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    assert _status(lc, sid) == SOURCE_WAITING_FOR_TEST
+    res = client.post(f"/lead-capture/sources/{sid}/test-lead", json={"formId": FORM_ID}, headers=headers)
+    assert res.status_code == 202, res.text
+    (lead,) = _leads(lc)
+    assert lead.is_test is True and lead.form_id == FORM_ID
+    assert _status(lc, sid) == SOURCE_LIVE
+    q = client.get(f"/lead-capture/sources/{sid}/forms/{FORM_ID}/questions", headers=headers)
+    assert q.status_code == 200 and [x["key"] for x in q.json()["data"]] == ["full_name", "email", "phone_number"]
+
+
+def test_dev_test_lead_is_refused_outside_development(client, lc, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "meta_app_id", "")
+    monkeypatch.setattr(settings, "meta_app_secret", "")
+    headers = _login(client)
+    sid = _source_id(client, headers)
+    monkeypatch.setattr(settings, "environment", "production")
+    res = client.post(f"/lead-capture/sources/{sid}/test-lead", json={"formId": FORM_ID}, headers=headers)
+    assert res.status_code == 400 and res.json()["detail"]["code"] == "token_invalid"
+    assert _leads(lc) == []
+
+
+def test_unique_index_covers_waiting_and_live():
+    from pathlib import Path
+
+    from modules.lead_capture.models import LcSource as Src
+
+    idx = next(i for i in Src.__table__.indexes if i.name == "uq_lc_source_live_account")
+    assert "WAITING_FOR_TEST" in str(idx.dialect_options["postgresql"]["where"])
+    text = (Path(__file__).resolve().parents[1] / "modules/lead_capture/alembic/versions/0003_lc_source_routing_unique.py").read_text()
+    rev = text.split('revision = "', 1)[1].split('"', 1)[0]
+    assert len(rev) <= 32 and 'down_revision = "0002_lc_lead_form_name"' in text
+    assert "IF NOT EXISTS" in text and "WAITING_FOR_TEST" in text

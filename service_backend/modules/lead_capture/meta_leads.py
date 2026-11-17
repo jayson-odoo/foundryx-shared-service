@@ -57,12 +57,14 @@ class MetaLeadError(Exception):
         code: Optional[int] = None,
         subcode: Optional[int] = None,
         token_invalid: bool = False,
+        unreachable: bool = False,
     ):
         super().__init__(message)
         self.message = message
         self.code = code
         self.subcode = subcode
         self.token_invalid = token_invalid
+        self.unreachable = unreachable
 
 
 def _error_subcode(resp: httpx.Response) -> Optional[int]:
@@ -142,7 +144,7 @@ class MetaLeadClient(MetaGraphMixin):
                 headers={"Authorization": f"Bearer {token}"},
             )
         except httpx.HTTPError as exc:
-            raise MetaLeadError(f"Could not reach Meta ({type(exc).__name__}).") from None
+            raise MetaLeadError(f"Could not reach Meta ({type(exc).__name__}).", unreachable=True) from None
         finally:
             if self._client is None:
                 client.close()
@@ -152,7 +154,7 @@ class MetaLeadClient(MetaGraphMixin):
         try:
             return client.request(method, f"{self._base}/{path}", headers={"Authorization": f"Bearer {token}"})
         except httpx.HTTPError as exc:
-            raise MetaLeadError(f"Could not reach Meta ({type(exc).__name__}).") from None
+            raise MetaLeadError(f"Could not reach Meta ({type(exc).__name__}).", unreachable=True) from None
         finally:
             if self._client is None:
                 client.close()

@@ -23,10 +23,11 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.secrets import decrypt_secret
 
 from ..meta_leads import SUBCODE_TEST_LEAD_EXISTS, MetaLeadClient, MetaLeadError
-from ..models import PLATFORM_FACEBOOK, LcSource
+from ..models import PLATFORM_FACEBOOK, SOURCE_ROUTING_STATES, LcSource
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ class FormError(Exception):
 
 
 def _meta_error(exc: MetaLeadError) -> FormError:
+    if exc.unreachable:
+        return FormError(502, "meta_unreachable", "Meta could not be reached. Try again.")
     if exc.token_invalid:
         return FormError(400, "token_invalid", "Meta no longer accepts this Page's token. Reconnect the Page.")
     return FormError(400, "meta_refused", exc.message)
@@ -51,7 +54,7 @@ def _meta_error(exc: MetaLeadError) -> FormError:
 
 def _check_form_id(form_id: str) -> str:
     form_id = (form_id or "").strip()
-    if not _FORM_ID_RE.match(form_id):
+    if not _FORM_ID_RE.fullmatch(form_id):
         raise FormError(422, "invalid_form_id", "Enter the Instant Form id (digits only).")
     return form_id
 
@@ -99,7 +102,7 @@ def form_questions(
 
 def _clear_test_leads(meta: MetaLeadClient, token: str, form_id: str) -> None:
     """Delete the form's test leads, then re-read: only the list decides."""
-    existing = [i for i in meta.list_test_leads(token, form_id) if _LEAD_ID_RE.match(i)]
+    existing = [i for i in meta.list_test_leads(token, form_id) if _LEAD_ID_RE.fullmatch(i)]
     if not existing:
         return
     for lead_id in existing:
@@ -122,9 +125,14 @@ def send_test_lead(
     lead arrives later through the webhook."""
     form_id = _check_form_id(form_id)
     source = _source(db, tenant_id, source_id)
+    if source.status not in SOURCE_ROUTING_STATES:
+        # the lead would be dropped at the webhook: say so instead of a 202
+        raise FormError(409, "source_not_connected", "This source is not receiving leads. Reconnect the Page.")
     meta = client or MetaLeadClient()
     creds = _page_token(source, meta)
     if creds.get("dev") or not meta.configured:
+        if settings.environment != "development":
+            raise FormError(400, "token_invalid", "This source has no usable Page token. Reconnect the Page.")
         _dev_test_lead(source, form_id)
         return {"formId": form_id}
     token = creds["pageToken"]
@@ -149,8 +157,8 @@ def send_test_lead(
 
 
 def _dev_test_lead(source: LcSource, form_id: str) -> None:
-    """No Meta app (dev / test copy): run the canned test lead through the
-    normal ingest task, so the LIVE gate can be tried without Meta."""
+    """No Meta app, ``ENVIRONMENT=development`` only: run the canned test lead
+    through the normal ingest task, so the LIVE gate can be tried without Meta."""
     from app.workflow_engine.worker import lead_capture_process_leadgen
 
     leadgen_id = "9" + "".join(secrets.choice("0123456789") for _ in range(14))

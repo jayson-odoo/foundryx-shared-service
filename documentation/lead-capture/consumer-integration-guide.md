@@ -46,6 +46,7 @@ Every gateway error has one shape:
 | 400 | `token_invalid` | Meta no longer accepts the source's Page token (or it has none): reconnect the Page |
 | 400 | `meta_refused` | Meta refused the form or test-lead call; `message` is Meta's reason, cleaned |
 | 409 | `endpoint_limit` | Already 5 webhook endpoints |
+| 409 | `source_not_connected` | Test lead for a source that is not receiving leads (`NEEDS_RECONNECT`, `DISCONNECTED`, `DRAFT`): reconnect first |
 | 409 | `test_lead_exists` | Meta still holds the form's previous test lead after clearing it; delete it in Meta's Lead Ads Testing Tool, then retry |
 | 409 | `lead_purged` | Redeliver of a lead whose personal data was deleted |
 | 422 | `invalid_request` | Body or query fails validation (e.g. `limit=500`, no `url`); `details` lists the fields |
@@ -57,6 +58,7 @@ Every gateway error has one shape:
 | 422 | `invalid_cursor` | `cursor` is not one this API returned |
 | 422 | `invalid_since` | `since` is not an ISO-8601 time |
 | 429 | `rate_limited` | Throttled; see `Retry-After` |
+| 502 | `meta_unreachable` | Meta could not be reached for a form or test-lead call; try again |
 
 ## 3. Routes
 
@@ -96,7 +98,9 @@ Every gateway error has one shape:
 
 `status` is one of `DRAFT`, `WAITING_FOR_TEST`, `LIVE`, `NEEDS_RECONNECT`, `DISCONNECTED`. A newly connected Page is
 `WAITING_FOR_TEST` until its first test lead (`isTest: true`) is received, then `LIVE`. Leads, test or real, are
-stored and delivered in both states; only a test lead moves it to `LIVE`. Reconnecting a Page keeps its status.
+stored and delivered in both states; only a test lead moves it to `LIVE`. Reconnecting a `WAITING_FOR_TEST` or `LIVE`
+source keeps its id and status. On a Page shared by several products, Meta's test lead reaches every product on the
+Page, so it moves each product's waiting source to `LIVE`.
 `needsMapping` lists forms
 whose leads arrived with no field map and had answers that went to notes: those leads were still delivered.
 Saving a map for that form (or for `"*"`) clears its entry.
@@ -139,9 +143,9 @@ token, so your mapping screen can show real labels and your CRM can keep its own
 
 - `key` is the question key used in the field map and in a lead's `answers[].key`. `type` is Meta's question type
   as given (`FULL_NAME`, `EMAIL`, `PHONE`, `CUSTOM`, ...). `options` is empty for a free-text question; for a
-  multiple-choice question `value` is the text the person picked, which is what arrives in the lead's answer.
+  multiple-choice question each option has Meta's option `key` and its display text `value`.
 - The source must belong to your key's tenant (`404 source_not_found` otherwise). Meta refusing the read answers
-  `400 token_invalid` or `400 meta_refused`.
+  `400 token_invalid` or `400 meta_refused`; Meta not reachable answers `502 meta_unreachable`.
 
 ### Test lead
 
@@ -151,8 +155,9 @@ token, so your mapping screen can show real labels and your CRM can keep its own
 
 - Meta keeps one test lead per form, so the previous test lead on the form is deleted first. If Meta still holds
   it afterwards the call answers `409 test_lead_exists`: delete it in Meta's Lead Ads Testing Tool and retry.
-- Errors as for form questions (`404 source_not_found`, `400 token_invalid`, `400 meta_refused`, `422
-  invalid_form_id`).
+- A source that is not receiving leads (not `WAITING_FOR_TEST` or `LIVE`) answers `409 source_not_connected`.
+- Other errors as for form questions (`404 source_not_found`, `400 token_invalid`, `400 meta_refused`,
+  `502 meta_unreachable`, `422 invalid_form_id`).
 
 ### Settings
 

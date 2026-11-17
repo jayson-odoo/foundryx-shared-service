@@ -57,8 +57,8 @@ def _created() -> Column:
 
 
 class LcSource(LeadCaptureBase):
-    """One connected lead source (a Facebook Page for one tenant). D13: one LIVE
-    source per (tenant, platform, Page); the cross-tenant rule is applied by the
+    """One connected lead source (a Facebook Page for one tenant). D13: one
+    routing (WAITING_FOR_TEST or LIVE) source per (tenant, platform, Page); the cross-tenant rule is applied by the
     connect service under an advisory lock, not by an index."""
 
     __tablename__ = "lc_source"
@@ -71,8 +71,8 @@ class LcSource(LeadCaptureBase):
             "platform",
             "account_ref",
             unique=True,
-            postgresql_where=text("status = 'LIVE'"),
-            sqlite_where=text("status = 'LIVE'"),
+            postgresql_where=text("status IN ('WAITING_FOR_TEST', 'LIVE')"),
+            sqlite_where=text("status IN ('WAITING_FOR_TEST', 'LIVE')"),
         ),
     )
 
