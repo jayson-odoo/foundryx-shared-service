@@ -308,6 +308,7 @@ def create_document(
             call=lambda: prims.create_doc(
                 tenant_id=key.tenant_id, company_id=company.id, kind=name, header=header, lines=lines,
                 key_id=key.id),
+            frame=prims,
         )
         return _respond(answer)
 
@@ -378,6 +379,7 @@ def edit_document(
                 tenant_id=key.tenant_id, company_id=company.id, kind=name, doc_key=doc_key,
                 header_changes=header, line_changes=lines, doc_date=doc_date,
                 expected_last_modified=stamp, key_id=key.id),
+            frame=prims,
         )
         return _respond(answer)
 
@@ -401,6 +403,7 @@ def add_document_line(
             call=lambda: prims.add_line(
                 tenant_id=key.tenant_id, company_id=company.id, kind=name, doc_key=doc_key, line=line,
                 doc_date=doc_date, expected_last_modified=stamp, key_id=key.id),
+            frame=prims,
         )
         return _respond(answer)
 
@@ -423,6 +426,7 @@ def delete_document_line(
             call=lambda: prims.delete_line(
                 tenant_id=key.tenant_id, company_id=company.id, kind=name, doc_key=doc_key, dtl_key=dtl,
                 doc_date=doc_date, expected_last_modified=stamp, key_id=key.id),
+            frame=prims,
         )
         return _respond(answer)
 
@@ -445,6 +449,7 @@ def cancel_document(
             call=lambda: prims.cancel_doc(
                 tenant_id=key.tenant_id, company_id=company.id, kind=name, doc_key=doc_key,
                 doc_date=doc_date, expected_last_modified=stamp, key_id=key.id),
+            frame=prims,
         )
         return _respond(answer)
 
