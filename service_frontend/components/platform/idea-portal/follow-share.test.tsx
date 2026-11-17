@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PortalIdea } from '@/types/idea-portal';
@@ -121,18 +121,22 @@ describe('Follow / Share on the item page', () => {
     expect(screen.getByTestId('portal-follower-count')).toHaveTextContent('1 follower');
   });
 
-  it('Share copies the read-only link', async () => {
+  it('Share opens the read-only link in a popup with an inline-checkmark copy', async () => {
     const p = mockPage();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     render(<IdeaPage ideaId="FB-0042" />);
     await userEvent.click(screen.getByRole('button', { name: 'Share' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Share link' });
     expect(p.shareUrl).toHaveBeenCalledTimes(1);
+    expect(await within(dialog).findByLabelText('Share link')).toHaveValue('https://x.test/public/feedback/share/abc');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Copy link' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://x.test/public/feedback/share/abc'));
-    expect(toast.success).toHaveBeenCalledWith('Link copied');
+    expect(await within(dialog).findByRole('button', { name: 'Copied' })).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it('a refused clipboard still shows the link', async () => {
+  it('a refused clipboard keeps the link visible and says so', async () => {
     mockPage();
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
@@ -140,7 +144,10 @@ describe('Follow / Share on the item page', () => {
     });
     render(<IdeaPage ideaId="FB-0042" />);
     await userEvent.click(screen.getByRole('button', { name: 'Share' }));
-    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('https://x.test/public/feedback/share/abc'));
+    const dialog = await screen.findByRole('dialog', { name: 'Share link' });
+    await userEvent.click(await within(dialog).findByRole('button', { name: 'Copy link' }));
+    expect(await within(dialog).findByText(/Copy did not work/)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Share link')).toHaveValue('https://x.test/public/feedback/share/abc');
   });
 
   it('a staff / CRM viewer has Share but no Follow', () => {

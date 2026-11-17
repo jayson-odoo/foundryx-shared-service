@@ -35,6 +35,7 @@ import { IdeaBrsTab } from './idea-brs-tab';
 import { IdeaMergedTab } from './idea-merged-tab';
 import { IdeaFollowersTab } from './idea-followers-tab';
 import { ideaFollowerService } from '@/services/idea-follower-service';
+import { ShareLinkDialog } from '@/components/platform/idea-portal/share-link-dialog';
 import { IdeaSimilarTab } from './idea-similar-tab';
 import { MergeIdeasDialog } from '../merge-ideas-dialog';
 import { VoteCell } from './vote-cell';
@@ -107,6 +108,12 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
   // Similar ideas -> Merge (plan 20, AC-20-23): the rows picked to merge with
   // this idea; non-null opens the field-level merge dialog.
   const [similarMergeRows, setSimilarMergeRows] = useState<Idea[] | null>(null);
+  // Lane FEEDBACK-SUBSCRIBE: the Share link popup (idea id while open).
+  const [shareIdeaId, setShareIdeaId] = useState<string | null>(null);
+  const loadShareUrl = useCallback(
+    async () => (shareIdeaId ? (await ideaFollowerService.shareLink(shareIdeaId)).url : ''),
+    [shareIdeaId],
+  );
   const [similarReloadToken, setSimilarReloadToken] = useState(0);
 
   const form = useForm<IdeaFormValues>({
@@ -288,21 +295,14 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
                 {
                   // Lane FEEDBACK-SUBSCRIBE: the item's read-only share link
                   // (anyone reads it; following / commenting asks for a phone).
-                  id: 'copy-share-link',
-                  label: 'Copy share link',
+                  id: 'share-link',
+                  label: 'Share link',
                   icon: Link2,
                   permission: 'ideation.triage.manage',
                   surfaces: { row: false, form: true, bulk: false },
                   isVisible: (rows: Idea[]) => rows.every((r) => !r.isTest),
                   run: async (rows: Idea[]) => {
-                    const { url } = await ideaFollowerService.shareLink(rows[0].id);
-                    try {
-                      await navigator.clipboard.writeText(url);
-                      toast.success('Link copied');
-                    } catch {
-                      // Clipboard refused: show the link so it can be copied by hand.
-                      toast.info(url);
-                    }
+                    setShareIdeaId(rows[0].id);
                   },
                 } satisfies ResourceAction<Idea>,
                 {
@@ -647,5 +647,12 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       />
     ) : null;
 
-  return { config, form, isLoading, notFound, mergeDialog };
+  const dialogs = (
+    <>
+      {mergeDialog}
+      <ShareLinkDialog open={shareIdeaId !== null} onClose={() => setShareIdeaId(null)} loadUrl={loadShareUrl} />
+    </>
+  );
+
+  return { config, form, isLoading, notFound, mergeDialog: dialogs };
 }

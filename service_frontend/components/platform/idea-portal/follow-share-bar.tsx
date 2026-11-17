@@ -1,8 +1,9 @@
 'use client';
 
 import { Bell, BellRing, Link2 } from 'lucide-react';
-import { toast } from '@/lib/toast';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { ShareLinkDialog } from './share-link-dialog';
 
 export interface FollowShareBarProps {
   following: boolean;
@@ -15,25 +16,9 @@ export interface FollowShareBarProps {
 }
 
 /** Lane FEEDBACK-SUBSCRIBE: Follow / Following + follower count and Share
- * (copies the item's read-only link), beside the upvote box. */
+ * (opens the item's read-only link), beside the upvote box. */
 export function FollowShareBar({ following, followerCount, onFollow, onShare, busy }: FollowShareBarProps) {
-  const share = async () => {
-    if (!onShare) return;
-    let url: string;
-    try {
-      url = await onShare();
-    } catch {
-      toast.error('Could not get the link. Try again.');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(url);
-      toast.success('Link copied');
-    } catch {
-      // The browser refused the clipboard: show the link so it can be copied by hand.
-      toast.info(url);
-    }
-  };
+  const [sharing, setSharing] = useState(false);
   return (
     <div className="flex flex-wrap items-center gap-2" data-testid="portal-follow-share">
       {onFollow && (
@@ -53,11 +38,12 @@ export function FollowShareBar({ following, followerCount, onFollow, onShare, bu
         {followerCount} {followerCount === 1 ? 'follower' : 'followers'}
       </span>
       {onShare && (
-        <Button size="sm" variant="ghost" onClick={() => void share()}>
+        <Button size="sm" variant="ghost" onClick={() => setSharing(true)}>
           <Link2 className="size-4" aria-hidden />
           Share
         </Button>
       )}
+      {onShare && <ShareLinkDialog open={sharing} onClose={() => setSharing(false)} loadUrl={onShare} />}
     </div>
   );
 }
