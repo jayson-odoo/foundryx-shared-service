@@ -296,8 +296,13 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
                   isVisible: (rows: Idea[]) => rows.every((r) => !r.isTest),
                   run: async (rows: Idea[]) => {
                     const { url } = await ideaFollowerService.shareLink(rows[0].id);
-                    await navigator.clipboard.writeText(url);
-                    toast.success('Link copied');
+                    try {
+                      await navigator.clipboard.writeText(url);
+                      toast.success('Link copied');
+                    } catch {
+                      // Clipboard refused: show the link so it can be copied by hand.
+                      toast.info(url);
+                    }
                   },
                 } satisfies ResourceAction<Idea>,
                 {

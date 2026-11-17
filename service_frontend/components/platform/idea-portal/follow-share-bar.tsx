@@ -2,7 +2,6 @@
 
 import { Bell, BellRing, Link2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
-import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { Button } from '@/components/ui/button';
 
 export interface FollowShareBarProps {
@@ -18,13 +17,21 @@ export interface FollowShareBarProps {
 /** Lane FEEDBACK-SUBSCRIBE: Follow / Following + follower count and Share
  * (copies the item's read-only link), beside the upvote box. */
 export function FollowShareBar({ following, followerCount, onFollow, onShare, busy }: FollowShareBarProps) {
-  const { copyToClipboard } = useCopyToClipboard({ onCopy: () => toast.success('Link copied') });
   const share = async () => {
     if (!onShare) return;
+    let url: string;
     try {
-      copyToClipboard(await onShare());
+      url = await onShare();
     } catch {
       toast.error('Could not get the link. Try again.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success('Link copied');
+    } catch {
+      // The browser refused the clipboard: show the link so it can be copied by hand.
+      toast.info(url);
     }
   };
   return (

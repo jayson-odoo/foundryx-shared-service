@@ -15,7 +15,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/hooks/use-datetime', () => ({
   useDatetime: () => ({ timeZone: 'UTC', formatDmyDate: (v: string) => v.slice(0, 10) }),
 }));
-const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }));
 vi.mock('@/lib/toast', () => ({ toast }));
 
 const svc = vi.hoisted(() => ({
@@ -121,11 +121,26 @@ describe('Follow / Share on the item page', () => {
     expect(screen.getByTestId('portal-follower-count')).toHaveTextContent('1 follower');
   });
 
-  it('Share asks for the read-only link', async () => {
+  it('Share copies the read-only link', async () => {
     const p = mockPage();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     render(<IdeaPage ideaId="FB-0042" />);
     await userEvent.click(screen.getByRole('button', { name: 'Share' }));
     expect(p.shareUrl).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://x.test/public/feedback/share/abc'));
+    expect(toast.success).toHaveBeenCalledWith('Link copied');
+  });
+
+  it('a refused clipboard still shows the link', async () => {
+    mockPage();
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      configurable: true,
+    });
+    render(<IdeaPage ideaId="FB-0042" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Share' }));
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('https://x.test/public/feedback/share/abc'));
   });
 
   it('a staff / CRM viewer has Share but no Follow', () => {
