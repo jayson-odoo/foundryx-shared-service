@@ -21,7 +21,10 @@ Security model (owner 15 Nov):
 import re
 import secrets
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .history import HistoryActor
 from urllib.parse import urlsplit
 
 from sqlalchemy.exc import IntegrityError
@@ -129,7 +132,9 @@ def cancel_links_for_contact(db: Session, tenant_id: str, contact_id: str) -> in
     return len(rows)
 
 
-def cancel_feedback_link_for_idea(db: Session, tenant_id: str, idea_id: str) -> bool:
+def cancel_feedback_link_for_idea(
+    db: Session, tenant_id: str, idea_id: str, actor: Optional["HistoryActor"] = None
+) -> bool:
     """Staff action: cancel the links of ``idea_id``'s submitter contact AND
     every same-tenant contact with the same phone digits - one person, several
     workspace rows, and "My requests" spans all of them, so a sibling's link
@@ -144,6 +149,14 @@ def cancel_feedback_link_for_idea(db: Session, tenant_id: str, idea_id: str) -> 
     ids = {contact.id} | {c.id for c in find_contacts_by_phone(db, tenant_id, contact.phone)}
     for cid in sorted(ids):
         cancel_links_for_contact(db, tenant_id, cid)
+    # The item's History tab (lane FEEDBACK-SUBSCRIBE, crew pass 5441b840).
+    from . import history
+    from .followers import contact_name
+
+    history.record(
+        db, tenant_id, idea.id, history.ACTION_LINK_CANCELLED, actor or history.HistoryActor(),
+        from_value=contact_name(contact),
+    )
     db.commit()
     return True
 
@@ -177,16 +190,21 @@ def resolve_link_by_id(db: Session, tenant_id: str, link_id: str) -> Optional[Tu
     return row, contact
 
 
-def board_base(db: Session, tenant_id: str) -> str:
-    """Where the board lives for this tenant. A tenant ``public_link_base_url``
-    that is a TEMPLATE (``{token}``/``{ideaId}``) points at the Sorento CRM: the
-    board is the CRM public page ``{origin}/feedback/board``. A plain tenant
-    base (or none) is the shared-service frontend: ``{base}/public/feedback/board``."""
+def feedback_base(db: Session, tenant_id: str) -> str:
+    """Where the public feedback pages live for this tenant. A tenant
+    ``public_link_base_url`` that is a TEMPLATE (``{token}``/``{ideaId}``)
+    points at the Sorento CRM: ``{origin}/feedback``. A plain tenant base (or
+    none) is the shared-service frontend: ``{base}/public/feedback``."""
     tenant_base = tenant_public_link_base(db, tenant_id)
     if tenant_base and any(p in tenant_base for p in LINK_PLACEHOLDERS):
         parts = urlsplit(tenant_base)
-        return f"{parts.scheme}://{parts.netloc}/feedback/board"
-    return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback/board"
+        return f"{parts.scheme}://{parts.netloc}/feedback"
+    return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback"
+
+
+def board_base(db: Session, tenant_id: str) -> str:
+    """Where the board lives for this tenant (``feedback_base`` + ``/board``)."""
+    return f"{feedback_base(db, tenant_id)}/board"
 
 
 def _owns_test_item(db: Session, idea: Idea, contact_id: str) -> bool:

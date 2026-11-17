@@ -130,24 +130,62 @@ def test_a_document_with_different_lines_is_not_ours(client, h, gw):
     _not_a_match(client, h, gw, "cl-4d", lambda d: d["Details"][0].update(Qty=9))
 
 
-def test_a_window_straddling_midnight_reads_both_day_lists(client, h, gw, db):
-    # The midnight that starts yesterday (MYT), so the window always sits inside the
-    # LOOKUP_MAX_DAYS reach whatever day the suite runs (fixed dates aged out).
-    after = datetime.now(MYT).date() - timedelta(days=1)
+# The lookup reads "today" from clock.myt_today(); pin it so these tests never depend on the run day
+# (CI once failed just after MYT midnight when fixed dates aged past LOOKUP_MAX_DAYS).
+CLOCKS = {
+    "myt_23_59": datetime(2026, 11, 17, 23, 59, tzinfo=MYT),
+    "myt_00_00": datetime(2026, 11, 18, 0, 0, tzinfo=MYT),
+    "myt_00_01": datetime(2026, 11, 18, 0, 1, tzinfo=MYT),
+    "utc_23_59": datetime(2026, 11, 17, 23, 59, tzinfo=timezone.utc),
+    "utc_00_00": datetime(2026, 11, 18, 0, 0, tzinfo=timezone.utc),
+    "utc_00_01": datetime(2026, 11, 18, 0, 1, tzinfo=timezone.utc),
+}
+
+
+def pin_today(monkeypatch, now: datetime):
+    from modules.autocount.doc_feed import clock
+
+    today = clock.myt_date(now)
+    monkeypatch.setattr(clock, "myt_today", lambda: today)
+    return today
+
+
+def straddle(client, h, gw, db, key, after):
+    """A first attempt that landed across the MYT midnight that starts ``after``; resend it."""
     before = after - timedelta(days=1)
-    first_attempt_landed(client, h, gw, "cl-5", body())
+    first_attempt_landed(client, h, gw, key, body())
     shift(h.vendor.docs["PO"][0], to=f"{after.isoformat()}T00:00:02.000")  # created just after MYT midnight
     op = db.query(AcWriteOperation).filter_by(op="create_doc:PO").one()
     op.snapshot_json = dict(
         op.snapshot_json, start=f"{before.isoformat()}T23:59:50+08:00", end=f"{after.isoformat()}T00:00:05+08:00"
     )
     db.commit()
-    r = client.post(URL, json=body(), headers=gw.hdr("cl-5"))
+    r = client.post(URL, json=body(), headers=gw.hdr(key))
     assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
     assert len(posts(h)) == 1
-    days = sorted(c.query["lastModified"] for c in lookups(h))
-    # both sides of the midnight (later days may follow, up to today)
-    assert days[:2] == [before.strftime("%Y%m%d"), after.strftime("%Y%m%d")], days
+    return sorted(c.query["lastModified"] for c in lookups(h))
+
+
+@pytest.mark.parametrize("now", list(CLOCKS.values()), ids=list(CLOCKS))
+def test_a_window_straddling_midnight_reads_both_day_lists(client, h, gw, db, monkeypatch, now):
+    today = pin_today(monkeypatch, now)
+    after = today - timedelta(days=1)  # the midnight that starts yesterday (MYT)
+    days = straddle(client, h, gw, db, "cl-5", after)
+    # both sides of the midnight, then every later day up to today
+    want = [(after + timedelta(days=n)).strftime("%Y%m%d") for n in range(-1, 2)]
+    assert days == want, days
+
+
+@pytest.mark.parametrize("now", list(CLOCKS.values()), ids=list(CLOCKS))
+def test_a_window_at_the_edge_of_the_reach_reads_from_the_oldest_day(client, h, gw, db, monkeypatch, now):
+    from modules.autocount.write_back.operations import LOOKUP_MAX_DAYS
+
+    today = pin_today(monkeypatch, now)
+    after = today - timedelta(days=LOOKUP_MAX_DAYS)  # the day before it is past the reach
+    days = straddle(client, h, gw, db, "cl-5e", after)
+    # still found on the oldest day in reach; the day before is never read
+    assert days[0] == after.strftime("%Y%m%d") and days[-1] == today.strftime("%Y%m%d"), days
+    assert len(days) == LOOKUP_MAX_DAYS + 1, days
 
 
 def test_every_lookup_get_is_in_the_api_call_log(client, h, gw):

@@ -62,6 +62,24 @@ describe('SearchSelect', () => {
     expect(screen.getByText('Pending Review')).toBeInTheDocument();
   });
 
+  it('closing the dropdown tells the caller the search is empty again (crew pass 4025e5e9)', () => {
+    const onQueryChange = vi.fn();
+    render(<SearchSelect options={OPTIONS} value={null} onChange={vi.fn()} onQueryChange={onQueryChange} />);
+    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'pend' } });
+    // An option pick closes the popover programmatically.
+    fireEvent.click(screen.getByText('Pending Review'));
+    expect(onQueryChange).toHaveBeenLastCalledWith('');
+  });
+
+  it('closing without typing does not report an empty search', () => {
+    const onQueryChange = vi.fn();
+    render(<SearchSelect options={OPTIONS} value={null} onChange={vi.fn()} onQueryChange={onQueryChange} />);
+    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.click(screen.getByText('Active'));
+    expect(onQueryChange).not.toHaveBeenCalled();
+  });
+
   it('without onQueryChange, cmdk still client-filters as before (no regression)', () => {
     render(<SearchSelect options={OPTIONS} value={null} onChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('combobox'));

@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -868,6 +868,27 @@ class PortalSessionOut(ApiModel):
     principal: PortalPrincipalOut
 
 
+class SharePhoneIn(ApiModel):
+    """The phone a share-link visitor types (lane FEEDBACK-SUBSCRIBE)."""
+
+    phone: str = Field(min_length=1, max_length=40)
+
+
+class SharePhoneVerifyIn(SharePhoneIn):
+    code: str = Field(min_length=1, max_length=12)
+
+
+class SharePhoneSentOut(ApiModel):
+    sent: bool
+
+
+class SharePhoneSessionOut(PortalSessionOut):
+    """Proven: the visitor's own contact session + their personal board link
+    opening this item."""
+
+    boardUrl: Optional[str] = None
+
+
 class PortalEmbedSessionIn(ApiModel):
     token: str = Field(min_length=1, max_length=4096)
 
@@ -946,9 +967,55 @@ class PortalIdeaOut(PortalCardOut):
     portalHidden: Optional[bool] = None
     # The changelog note (Q3).
     note: Optional[str] = None
+    # Lane FEEDBACK-SUBSCRIBE: how many contacts follow it, and whether THIS
+    # viewer (a contact: submitter or follower) gets its WhatsApp updates.
+    followerCount: int = 0
+    following: bool = False
     # Report-level files only (comment files ride their comment). Omitted for a
     # dealer on an item they did not file (WITHHELD_DETAIL_KEYS).
     attachments: Optional[List[IdeaAttachmentOut]] = None
+
+
+class PortalFollowOut(ApiModel):
+    """Follow / unfollow result (lane FEEDBACK-SUBSCRIBE)."""
+
+    following: bool
+    followerCount: int
+
+
+class ShareLinkOut(ApiModel):
+    """An item's read-only share link (lane FEEDBACK-SUBSCRIBE)."""
+
+    url: str
+
+
+class IdeaHistoryOut(ApiModel):
+    """One row of a feedback item's History tab (display text, never ids)."""
+
+    id: str
+    at: Optional[str] = None
+    who: Optional[str] = None
+    onBehalfOf: Optional[str] = None
+    action: str
+    # ``from`` is a Python keyword: the wire key is set through the alias.
+    from_: Optional[str] = Field(default=None, alias="from")
+    to: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class IdeaFollowerIn(ApiModel):
+    contactId: str
+
+
+class IdeaFollowerOut(ApiModel):
+    """A follower on the operator idea page (staff only)."""
+
+    contactId: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    addedByStaff: bool = False
+    createdAt: Optional[datetime] = None
 
 
 class PortalVoteOut(ApiModel):

@@ -220,6 +220,9 @@ export function useReceiverList(
       createLabel: 'Create',
       createPermission: MANAGE,
       onCreate,
+      // The right-click / long-press menu (#253) reloads only the list; the
+      // page's Push / Pull only state follows the receivers too.
+      onDeferredCommitted: () => onChanged(),
     };
   }, [actions, formatDmyDateTime, onCreate, onChanged]);
 }
