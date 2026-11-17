@@ -169,3 +169,94 @@ def test_migration_backfill_rows_match_the_runtime_writer():
     assert [(r["spo_dtl_key"], r["po_dtl_key"], r["qty"]) for r in rows] == spo_links_of(raw)
     assert {r["spo_doc_no"] for r in rows} == {"SPO-1"}
     assert mod.rows_of("t", "c", "DB:1", None, dict(raw, Cancelled="T")) == []
+
+
+# ---- SO-row index (0048): the unlink snapshot's SO number + the relocate's SO location ------------------------
+
+NOISE_SOS = 2 * NOISE_SPOS  # owner: size the SO side at twice the SPO side
+
+
+def test_unlink_of_a_row_read_back_without_from_doc_no_finds_the_so_through_the_index(h):
+    h.delete_on()
+    so = h.seed_doc("SO", 8402, [_line("ITEM-A", 10, 5.0, "BR1")])
+    so_dtl = so["Details"][0]["DtlKey"]
+    for n in range(NOISE_SOS):  # the rest of the book
+        h.seed_doc("SO", 20000 + n, [_line("ITEM-B", 1, 5.0, "BR1")])
+    # the vendor reads the linked row back WITHOUT FromDocNo (AutoCount quirk): the snapshot must look it up
+    link = dict(FromDocType="SO", FromDocNo="", FromDocDtlKey=so_dtl, FromSODtlKey=so_dtl)
+    po = h.seed_doc("PO", 8401, [_line("ITEM-A", 4, 5.5, "BR1", **link)])
+    with _Counter(h.db.get_bind()) as seen:
+        res = h.run("unlink_row", dict(doc_key=8401, dtl_key=po["Details"][0]["DtlKey"]), key="so-idx")
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert h.operation(res).snapshot_json["oldLink"] == {"FromDocType": "SO", "FromDocNo": "SO-8402",
+                                                          "FromDocDtlKey": so_dtl}
+    assert seen.loaded <= 10, seen.loaded  # never one load per staged SO
+
+
+def _so_index(h, ref):
+    from modules.autocount.models import AcSoRowIndex
+
+    h.db.expire_all()
+    return sorted((r.so_dtl_key, r.location, r.ambiguous) for r in h.db.query(AcSoRowIndex).filter_by(
+        company_id=h.company.id, so_source_ref=ref))
+
+
+def test_so_index_marks_equally_new_disagreeing_copies_ambiguous_and_follows_the_newest(h):
+    from modules.autocount.write_back.link_index import refresh_links
+
+    so = h.seed_doc("SO", 8500, [_line("ITEM-A", 1, 5.0, "BR1")])
+    ref, key = f"{DBNAME}:8500", so["Details"][0]["DtlKey"]
+    assert _so_index(h, ref) == [(key, "BR1", False)]
+    newest = h.db.query(AcStagedRecord).filter_by(company_id=h.company.id, source_ref=ref).one()
+    moment = datetime.now(timezone.utc).replace(microsecond=0)
+    newest.created_at = moment
+    twin = h.stage("SO", dict(so, Details=[dict(so["Details"][0], Location="BR2")]))
+    twin.created_at = moment  # equally new, disagreeing
+    h.db.flush()
+    refresh_links(h.db, DEFAULT_TENANT_ID, h.company.id, "sales_order", ref)
+    h.db.commit()
+    assert _so_index(h, ref) == [(key, None, True)]
+    later = h.stage("SO", dict(so, Details=[dict(so["Details"][0], Location="BR3")]))
+    later.created_at = moment + timedelta(minutes=5)
+    h.db.flush()
+    refresh_links(h.db, DEFAULT_TENANT_ID, h.company.id, "sales_order", ref)
+    h.db.commit()
+    assert _so_index(h, ref) == [(key, "BR3", False)]
+
+
+def test_a_rolled_back_sync_job_rebuilds_the_indexes_from_what_survives(h):
+    """Review fix: ``discard_for_job`` hard-deletes a guard-tripped job's staged rows; the indexes built from
+    them are rebuilt, never left pointing at a gone copy."""
+    from modules.autocount.repositories import StagedRecordRepository
+    from modules.autocount.write_back.link_index import refresh_links
+
+    spo = h.seed_doc("SPO", 8600, [_line("ITEM-A", 1, 5.0, "BR1", FromDocType="PO", FromDocNo="PO-1",
+                                         FromDocDtlKey=601)])
+    ref = f"{DBNAME}:8600"
+    newer = h.stage("SPO", dict(spo, Details=[dict(spo["Details"][0], FromDocDtlKey=602)]), job_id="sync-job")
+    newer.created_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    h.db.flush()
+    refresh_links(h.db, DEFAULT_TENANT_ID, h.company.id, "shipping_order", ref)
+    h.db.commit()
+    assert [k for k, _q in _index(h, ref)] == [602]
+    StagedRecordRepository(h.db).discard_for_job(DEFAULT_TENANT_ID, h.company.id, "sync-job")
+    h.db.commit()
+    assert [k for k, _q in _index(h, ref)] == [601]  # back to the copy that survived
+
+
+def test_migration_0048_backfill_rows_match_the_runtime_writer():
+    import importlib.util
+    from pathlib import Path
+
+    from modules.autocount.write_back.link_index import so_rows_of
+
+    path = (Path(__file__).resolve().parents[1] / "modules" / "autocount" / "alembic" / "versions"
+            / "0048_autocount_so_row_index.py")
+    spec = importlib.util.spec_from_file_location("m0048", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    copies = [{"DocNo": "SO-1", "_lines": [{"DtlKey": 1, "Location": "A"}, {"DtlKey": 2, "Location": "B"}, "x"]},
+              {"DocNo": "SO-1", "_lines": [{"DtlKey": 1, "Location": "A"}, {"DtlKey": 2, "Location": "C"}]}]
+    rows = mod.rows_of("t", "c", "DB:1", None, None, copies)
+    assert sorted((r["so_dtl_key"], r["location"], r["ambiguous"]) for r in rows) == sorted(so_rows_of(copies))
+    assert {r["so_doc_no"] for r in rows} == {"SO-1"}

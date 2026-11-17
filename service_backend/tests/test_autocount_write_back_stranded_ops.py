@@ -177,3 +177,33 @@ def test_startup_sweep_is_wired_into_the_module_boot():
     from modules.autocount import bootstrap
 
     assert hasattr(bootstrap, "sweep_stranded_write_operations")
+
+
+def test_a_live_run_whose_row_was_settled_meanwhile_stops_before_any_write(h, w, monkeypatch):
+    """Review fix: a run still in its guards when its row is expired + settled not-applied (say by the startup
+    sweep of a replaced worker) must not go on to write: the snapshot store is conditional on in_progress."""
+    from modules.autocount.write_back.operations import OperationService
+
+    original = OperationService._guards
+
+    def guards_then_settled(self, *a, **kw):
+        plan = original(self, *a, **kw)
+        other = h.session_factory()
+        try:  # another process flips + settles this very row while the guards ran
+            other.query(AcWriteOperation).filter(AcWriteOperation.id == self._row.id).update(
+                {"status": "recovered", "error_code": "OPERATION_NOT_APPLIED",
+                 "result_json": {"outcome": "recovered", "errorCode": "OPERATION_NOT_APPLIED"}},
+                synchronize_session=False)
+            other.commit()
+        finally:
+            other.close()
+        return plan
+
+    with monkeypatch.context() as patch:
+        patch.setattr(OperationService, "_guards", guards_then_settled)
+        res = h.run("unlink_row", w.params["unlink_row"], key="idem-live")
+    assert (res.outcome, res.error_code) == ("recovered", "OPERATION_NOT_APPLIED")
+    assert h.vendor.writes() == []  # stopped before the first write
+    h.db.expire_all()
+    row = h.db.get(AcWriteOperation, res.operation_id)
+    assert row.status == "recovered" and row.snapshot_json is None  # never overwritten
