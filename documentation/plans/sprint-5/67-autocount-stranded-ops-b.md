@@ -10,7 +10,10 @@ Every example below is db3-shaped (the test book); no live book is touched by th
 R1 (B). A single-document write (edit document, add line, delete line, cancel) whose answer is unknown
 (`pending_verification`: the crash sweep flipped it, or the call timed out / the read-back failed) is looked
 up before the same-key resend is answered. The lookup reads the document once (logged under the operation)
-and checks it against the original request with the same check the write itself uses:
+and asks only whether THIS write's change is there (`payloads.change_landed`): asked values read back as
+asked, the added line is among the new rows, the deleted line is gone, the document reads cancelled. It never
+judges the rest of the document: another person may have edited it since, and judging that would add a line
+twice.
 - the change is in AutoCount -> the operation ends `done` and stays locked; the answer carries the document;
 - the change is not in AutoCount -> the operation ends `recovered` / `OPERATION_NOT_APPLIED`, its key is
   released, and the resend runs fresh (re-read, re-guarded);
@@ -56,6 +59,12 @@ stored answer. No SS change is needed for this; the CRM slice (item D) owns it.
 - Create keeps its own lookup (plan 62); delete document is out of scope (its read-back is a not-found).
 - An edit AutoCount partly ignored (`FIELD_IGNORED` on re-check) counts as "not in AutoCount": the fresh run
   reports the mismatch itself.
+
+## Answers (crew, from the owner's 11 Nov rulings)
+
+Q1 (a) accept + poll; Q2 every pending single-document write; Q3 (a) release the key and run fresh;
+Q4 yes, name the SPO document number. The CRM card part (shipping-PO reason, Try again with the same key,
+polling) is a separate CRM slice; its contract is in the crew ask on the PR.
 
 ## Questions (each with a recommendation)
 
