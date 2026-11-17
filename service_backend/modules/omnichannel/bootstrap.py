@@ -688,6 +688,22 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS visitor_profile_json JSON"
                 )
             )
+            # S7 partner workspaces (module Alembic 0028): the partner's
+            # organisation id. New, NULL on every existing row (no backfill:
+            # no workspace ever had a partner id), plus its partial unique index.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".workspaces '
+                    "ADD COLUMN IF NOT EXISTS external_ref VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_tenant_external_ref "
+                    f'ON "{OMNI_SCHEMA}".workspaces (tenant_id, external_ref) '
+                    "WHERE external_ref IS NOT NULL AND is_trashed = false"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:

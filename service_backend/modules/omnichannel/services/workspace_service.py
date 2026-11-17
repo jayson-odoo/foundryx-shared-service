@@ -108,6 +108,19 @@ class WorkspaceService:
 
     # ---- writes ----
     def create(self, payload: WorkspaceCreate, tenant_id: str = DEFAULT_TENANT_ID) -> WorkspaceItem:
+        return self._create(payload, tenant_id, None)
+
+    def create_with_external_ref(
+        self, payload: WorkspaceCreate, tenant_id: str, external_ref: str
+    ) -> WorkspaceItem:
+        """The partner path (S7): the same create, also stamping the partner's
+        organisation id. A live duplicate raises IntegrityError at the flush
+        (partial unique index), before anything is committed."""
+        return self._create(payload, tenant_id, external_ref)
+
+    def _create(
+        self, payload: WorkspaceCreate, tenant_id: str, external_ref: Optional[str]
+    ) -> WorkspaceItem:
         statuses.ensure_statuses(self.db, tenant_id)
         ws = Workspace(
             tenant_id=tenant_id,
@@ -115,6 +128,7 @@ class WorkspaceService:
             status_id=statuses.status_id_for(self.db, tenant_id, "WORKSPACE", payload.status),
             is_default=False,
             is_trashed=False,
+            external_ref=external_ref,
         )
         self.db.add(ws)
         self.db.flush()

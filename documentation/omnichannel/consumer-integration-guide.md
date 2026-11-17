@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Partner API: workspaces per organisation** (section 6e). `PUT /partner/workspaces/{externalOrgId}` creates or returns the organisation's workspace (idempotent), plus list, get and channel list. Every route is limited to the partner key's tenant with one uniform `404 workspace_not_found`. Additive: existing routes and fields are unchanged. |
 > | **2026-11-18** | **Partner API: partner key** (section 6e). New tenant-scoped partner key (`fxp_live_...`), minted from the dashboard by a tenant admin with the new Partner API Keys permission, and `GET /api/v1/omnichannel/partner/me`. Additive: workspace keys and every existing route, field and code are unchanged; a partner key is refused (`401 invalid_api_key`) on existing routes. |
 > | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and `POST /messages` as multipart up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send takes exactly one `file` part and one `payload` part, with at most 5 form fields; more answers `422 invalid_request`. |
 > | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
@@ -873,6 +874,35 @@ Proves the key works and shows what it is bound to.
 ```json
 { "tenantId": "8b1f...", "tenantName": "EcoHub", "keyId": "3c9e...", "keyName": "EcoHub production" }
 ```
+
+### Workspaces: one per organisation
+
+Each of your organisations is one workspace, keyed by **your own organisation id** (`externalOrgId`): 1 to 128 characters, letters, digits, `.`, `_`, `:` and `-`, starting with a letter or digit. Anything else answers `422 invalid_request`.
+
+**`PUT /api/v1/omnichannel/partner/workspaces/{externalOrgId}`** body `{ "name": "Acme Sdn Bhd" }` (1 to 200 characters) answers `200` with the workspace:
+
+```json
+{
+  "id": "5f0c...",
+  "externalOrgId": "org-42",
+  "name": "Acme Sdn Bhd",
+  "status": "ACTIVE",
+  "createdAt": "2026-11-18T01:02:03Z",
+  "channels": []
+}
+```
+
+* **Idempotent.** The first call creates the workspace in your tenant; every later call with the same `externalOrgId` returns the same workspace (same `id`), also when two first calls arrive at the same time. A different `name` renames it. Call it whenever you are unsure whether the organisation exists.
+* `channels` is the list of section 5a (`PublicChannelItem`), empty until a number is connected.
+* If Foundryx staff trash the workspace in the dashboard, it is no longer returned (`404`) and the next `PUT` creates a new workspace for that `externalOrgId`.
+
+**`GET /api/v1/omnichannel/partner/workspaces?externalOrgId=&page=&pageSize=`** lists your tenant's live workspaces, oldest first, as `{ "data": [workspace...], "total", "page", "pageSize" }` (`page` from 0, `pageSize` 1 to 100, default 25). Workspaces created in the dashboard are listed too, with `externalOrgId: null`.
+
+**`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}`** returns one workspace. **`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}/channels`** returns `{ "data": [PublicChannelItem...] }`, the same list as section 5a.
+
+### Isolation
+
+Every partner route reads and writes only your own tenant. A workspace id that belongs to another tenant, does not exist, or is trashed answers the same `404 workspace_not_found` ("Workspace not found."), so nothing tells you whether it exists elsewhere. The same `externalOrgId` in another tenant is a different organisation.
 
 ---
 
