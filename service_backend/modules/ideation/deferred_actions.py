@@ -155,7 +155,7 @@ def _br_idea_unlink(db: Session, tenant_id: str, entity_id: str, payload: dict, 
     from .services.business_requirements import BusinessRequirementService
 
     br_id, idea_id = _unlink_key(entity_id)
-    BusinessRequirementService(db).unlink_idea(tenant_id, br_id, idea_id)
+    BusinessRequirementService(db).unlink_idea(tenant_id, br_id, idea_id, _actor(db, tenant_id, actor_user_id))
 
 
 BR_IDEA_UNLINK = DeferredActionDef(

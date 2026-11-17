@@ -14,7 +14,7 @@ Load-bearing rules enforced here:
 - **Lifecycle rides the status engine (Bi-D3):** every status move goes through
   ``status_machine.transition`` (no hardcoded status-key branch).
 """
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -553,7 +553,7 @@ class BusinessRequirementService:
         return _truncate_title(problems[0]), problem_statement
 
     def _link_ideas(
-        self, tenant_id: str, br: BusinessRequirement, idea_ids: List[str], actor: Optional[User] = None
+        self, tenant_id: str, br: BusinessRequirement, idea_ids: List[str], actor: Optional[Any] = None
     ) -> None:
         """Link ideas to a BR (AC-BI-17). Each idea must be in the caller's
         tenant AND on the SAME product as the BR (cross-tenant / cross-product =
@@ -621,26 +621,38 @@ class BusinessRequirementService:
             from . import history
 
             history.record(
-                self.db, tenant_id, idea_id, history.ACTION_LINKED_BR, history.user_actor(actor),
+                self.db, tenant_id, idea_id, history.ACTION_LINKED_BR, history.actor_of(actor),
                 to_value=(br.title or "").strip() or "Untitled business requirement",
             )
         self.db.flush()
 
     def link_ideas(
-        self, tenant_id: str, br_id: str, idea_ids: List[str], actor: Optional[User] = None
+        self, tenant_id: str, br_id: str, idea_ids: List[str], actor: Optional[Any] = None
     ) -> List:
+        """``actor``: the staff ``User`` or a router ``HistoryActor`` (real
+        staff + on behalf of while impersonating)."""
         br = self._br_or_404(tenant_id, br_id)
         self._link_ideas(tenant_id, br, idea_ids, actor)
         self.db.commit()
         return self.linked_ideas(tenant_id, br_id)
 
-    def unlink_idea(self, tenant_id: str, br_id: str, idea_id: str) -> List:
+    def unlink_idea(
+        self, tenant_id: str, br_id: str, idea_id: str, actor: Optional[Any] = None
+    ) -> List:
         br = self._br_or_404(tenant_id, br_id)
-        self.db.query(IdeaBusinessRequirement).filter(
+        removed = self.db.query(IdeaBusinessRequirement).filter(
             IdeaBusinessRequirement.business_requirement_id == br.id,
             IdeaBusinessRequirement.idea_id == idea_id,
             IdeaBusinessRequirement.tenant_id == tenant_id,
         ).delete(synchronize_session=False)
+        if removed:
+            # The idea's History tab (lane FEEDBACK-SUBSCRIBE, crew pass 41998794).
+            from . import history
+
+            history.record(
+                self.db, tenant_id, idea_id, history.ACTION_UNLINKED_BR, history.actor_of(actor),
+                from_value=(br.title or "").strip() or "Untitled business requirement",
+            )
         self.db.commit()
         return self.linked_ideas(tenant_id, br_id)
 

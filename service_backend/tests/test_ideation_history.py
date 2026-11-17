@@ -178,3 +178,104 @@ def test_hist_12_linked_to_business_requirement_is_recorded(setup):
     assert row["action"] == "Linked to business requirement"
     assert row["to"]
     assert br.json()["id"] not in str(row)
+
+
+# ── crew pass 41998794 ────────────────────────────────────────────────────────
+
+
+def _br_with(s, iid):
+    from tests.test_ideation_br import _FULL_ANSWERS
+
+    res = s["client"].post(
+        "/ideation/business-requirements",
+        headers=s["h"],
+        json={"productId": s["product_id"], "answers": _FULL_ANSWERS, "ideaIds": [iid]},
+    )
+    assert res.status_code in (200, 201), res.text
+    return res.json()
+
+
+def test_hist_13_unlink_from_business_requirement_endpoint_is_recorded(setup):
+    s = setup
+    iid = _idea(s, 617)
+    br = _br_with(s, iid)
+    res = s["client"].delete(f"/ideation/business-requirements/{br['id']}/ideas/{iid}", headers=s["h"])
+    assert res.status_code == 200, res.text
+    row = _history(s, iid)[0]
+    assert row["action"] == "Unlinked from business requirement"
+    assert row["from"] and row["to"] is None and row["who"]
+    assert br["id"] not in str(row)
+
+
+def test_hist_14_unlink_deferred_action_is_recorded(setup):
+    """BR > Feedback tab > Unlink runs through the grace-window action."""
+    from app.models.user import User
+    from modules.ideation.deferred_actions import _br_idea_unlink
+
+    s = setup
+    iid = _idea(s, 618)
+    br = _br_with(s, iid)
+    db = s["factory"]()
+    try:
+        user = db.query(User).filter(User.tenant_id == DEFAULT_TENANT_ID).first()
+        _br_idea_unlink(db, DEFAULT_TENANT_ID, f"{br['id']}:{iid}", {}, user.id)
+        name = user.name
+    finally:
+        db.close()
+    row = _history(s, iid)[0]
+    assert (row["action"], row["who"]) == ("Unlinked from business requirement", name)
+    assert row["from"]
+
+
+def test_hist_15_unlink_of_a_pair_that_is_not_linked_records_nothing(setup):
+    s = setup
+    iid = _idea(s, 619)
+    br = _br_with(s, iid)
+    c = s["client"]
+    assert c.delete(f"/ideation/business-requirements/{br['id']}/ideas/{iid}", headers=s["h"]).status_code == 200
+    before = len(_history(s, iid))
+    assert c.delete(f"/ideation/business-requirements/{br['id']}/ideas/{iid}", headers=s["h"]).status_code == 200
+    assert len(_history(s, iid)) == before
+
+
+def test_hist_16_impersonated_merge_link_unlink_name_both_people(setup):
+    """While impersonating, Who = the real staff user, On behalf of = the target."""
+    from tests.test_impersonation import _make_user
+
+    s = setup
+    c = s["client"]
+    target = _make_user(
+        s["factory"],
+        "onbehalf@example.com",
+        "pw12345678",
+        perm_keys=[
+            "ideation.ideas.view",
+            "ideation.triage.manage",
+            "ideation.business_requirements.read",
+            "ideation.business_requirements.manage",
+        ],
+    )
+    assert c.post("/impersonation/start", headers=s["h"], json={"targetUserId": target}).status_code == 200
+    ih = {**s["h"], "X-Impersonate-User-Id": target}
+    survivor, child = _idea(s, 620), _idea(s, 621)
+    assert c.post(
+        "/ideation/ideas/merge", headers=ih, json={"survivorId": survivor, "ideaIds": [survivor, child]}
+    ).status_code == 200
+    row = _history(s, survivor)[0]
+    assert row["action"] == "Merged in"
+    assert row["onBehalfOf"] == "Onbehalf" and row["who"] and row["who"] != "Onbehalf"
+    assert c.post(f"/ideation/ideas/{child}/unmerge", headers=ih).status_code == 200
+    row = _history(s, child)[0]
+    assert (row["action"], row["onBehalfOf"]) == ("Unmerged", "Onbehalf")
+
+    iid = _idea(s, 622)
+    br = _br_with(s, iid)
+    other = _idea(s, 623)
+    assert c.post(
+        f"/ideation/business-requirements/{br['id']}/ideas", headers=ih, json={"ideaIds": [other]}
+    ).status_code == 200
+    row = _history(s, other)[0]
+    assert (row["action"], row["onBehalfOf"]) == ("Linked to business requirement", "Onbehalf")
+    assert c.delete(f"/ideation/business-requirements/{br['id']}/ideas/{other}", headers=ih).status_code == 200
+    row = _history(s, other)[0]
+    assert (row["action"], row["onBehalfOf"]) == ("Unlinked from business requirement", "Onbehalf")

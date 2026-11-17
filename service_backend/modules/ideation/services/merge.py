@@ -103,6 +103,7 @@ class IdeaMergeService:
         idea_ids: List[str],
         actor: Optional[User] = None,
         fields: Optional[Dict[str, List[str]]] = None,
+        history_actor: Optional[history.HistoryActor] = None,
     ) -> IdeaOut:
         """Collapse ``idea_ids`` onto ``survivor_id`` (AC-94-01). All
         validation (D6) happens BEFORE any write - a rejected merge changes
@@ -225,7 +226,7 @@ class IdeaMergeService:
             self.db, tenant_id=tenant_id, survivor=survivor, members=members, actor=actor
         )
         # The History tab of both sides (lane FEEDBACK-SUBSCRIBE).
-        who = history.user_actor(actor)
+        who = history_actor or history.user_actor(actor)
         for member in members:
             history.record(
                 self.db, tenant_id, survivor.id, history.ACTION_MERGED_IN, who,
@@ -382,7 +383,11 @@ class IdeaMergeService:
     # ── unmerge ──────────────────────────────────────────────────────────────
 
     def unmerge(
-        self, tenant_id: str, idea_id: str, actor: Optional[User] = None
+        self,
+        tenant_id: str,
+        idea_id: str,
+        actor: Optional[User] = None,
+        history_actor: Optional[history.HistoryActor] = None,
     ) -> List[IdeaOut]:
         """Restore ``idea_id`` (a child - AC-94-07) or dissolve its whole
         group (a survivor - AC-94-08); 422 for a plain idea (neither)."""
@@ -463,7 +468,7 @@ class IdeaMergeService:
             former_survivor_ids=former_survivor_ids,
             actor=actor,
         )
-        who = history.user_actor(actor)
+        who = history_actor or history.user_actor(actor)
         for child in targets:
             former = self._idea_in_tenant(tenant_id, former_survivor_ids.get(child.id) or "")
             if former is None:

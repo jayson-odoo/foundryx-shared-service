@@ -146,14 +146,21 @@ function AddFollowerDialog({
     setQueryText(q);
     picker.setQuery(q);
   };
+  // Every open starts clean: no pick, no refusal, the full list (crew pass
+  // 41998794: a closed dialog kept its last search filter).
+  const close = () => {
+    setContactId(null);
+    setError(null);
+    setQuery('');
+    onClose();
+  };
   const save = async () => {
     if (!contactId) return;
     setBusy(true);
     setError(null);
     try {
       await onAdd(contactId);
-      setContactId(null);
-      onClose();
+      close();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not add the follower.');
     } finally {
@@ -161,7 +168,7 @@ function AddFollowerDialog({
     }
   };
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
+    <Dialog open={open} onOpenChange={(o) => !o && !busy && close()}>
       <DialogContent className="max-w-md" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>Add follower</DialogTitle>
@@ -187,7 +194,7 @@ function AddFollowerDialog({
           )}
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={busy}>
+          <Button variant="outline" onClick={close} disabled={busy}>
             Cancel
           </Button>
           <Button onClick={() => void save()} disabled={!contactId || busy}>

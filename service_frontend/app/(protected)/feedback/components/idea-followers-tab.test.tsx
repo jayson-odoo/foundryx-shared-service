@@ -157,6 +157,30 @@ describe('IdeaFollowersTab (AC-FS-10)', () => {
     expect(within(dialog).queryByRole('alert')).toBeNull();
   });
 
+  it('reopening Add follower starts clean: full list, no pick, no refusal (crew pass 41998794)', async () => {
+    const user = userEvent.setup();
+    const h = mockHook([]);
+    h.add.mockRejectedValueOnce(new Error('This contact raised the request and already gets its updates.'));
+    render(<IdeaFollowersTab ideaId="i-1" canManage />);
+    await user.click(await screen.findByRole('button', { name: 'Create' }));
+    let dialog = await screen.findByRole('dialog', { name: 'Add follower' });
+    await user.click(within(dialog).getByRole('combobox', { name: 'Contact' }));
+    await user.keyboard('manager');
+    await user.click(await screen.findByText('Manager B (+60123450002)'));
+    await user.click(within(dialog).getByRole('button', { name: 'Add' }));
+    await within(dialog).findByRole('alert');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add follower' })).toBeNull());
+
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    dialog = await screen.findByRole('dialog', { name: 'Add follower' });
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Add' })).toBeDisabled();
+    await user.click(within(dialog).getByRole('combobox', { name: 'Contact' }));
+    expect(await screen.findByText('Zed Other (+60123450099)')).toBeInTheDocument();
+    expect(screen.getByText('Manager B (+60123450002)')).toBeInTheDocument();
+  });
+
   it('without manage permission there is no Create and no Remove', async () => {
     mockHook([follower]);
     render(<IdeaFollowersTab ideaId="i-1" canManage={false} />);

@@ -31,6 +31,7 @@ ACTION_MERGED_INTO = "Merged into"
 ACTION_UNMERGED = "Unmerged"
 ACTION_ATTACHMENT_ADDED = "Attachment added"
 ACTION_LINKED_BR = "Linked to business requirement"
+ACTION_UNLINKED_BR = "Unlinked from business requirement"
 
 
 class HistoryNotFound(Exception):
@@ -52,6 +53,14 @@ def _now() -> datetime:
 def user_actor(user) -> HistoryActor:
     """A staff user (or None: the system) as the History tab names them."""
     return HistoryActor(name=getattr(user, "name", None) or None)
+
+
+def actor_of(actor) -> HistoryActor:
+    """A ``HistoryActor`` as given (router: real staff + on behalf of), else the
+    staff ``User`` (or None: the system) as the History tab names them."""
+    if isinstance(actor, HistoryActor):
+        return actor
+    return user_actor(actor)
 
 
 def staff_actor(real_name: Optional[str], effective_name: Optional[str]) -> HistoryActor:

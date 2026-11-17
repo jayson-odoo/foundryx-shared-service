@@ -49,6 +49,7 @@ from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
 from ..services.idea_types import list_idea_types
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
+from .history_actor import request_actor
 from ..services.similar import SimilarIdeasService
 
 router = APIRouter()
@@ -184,6 +185,7 @@ def reorder_ideas(
 @router.post("/merge", response_model=IdeaOut)
 def merge_ideas(
     body: MergeIn,
+    request: Request,
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
@@ -197,6 +199,7 @@ def merge_ideas(
         body.ideaIds,
         actor=current_user,
         fields=body.fields,
+        history_actor=request_actor(request, current_user),
     )
 
 
@@ -344,12 +347,15 @@ def list_merged_ideas(
 @router.post("/{idea_id}/unmerge", response_model=List[IdeaOut])
 def unmerge_idea(
     idea_id: str,
+    request: Request,
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
     """Restore a merged child (AC-94-07), or dissolve a survivor's whole
     group (AC-94-08); 422 for an idea that is neither."""
-    return IdeaMergeService(db).unmerge(current_user.tenant_id, idea_id, actor=current_user)
+    return IdeaMergeService(db).unmerge(
+        current_user.tenant_id, idea_id, actor=current_user, history_actor=request_actor(request, current_user)
+    )
 
 
 @router.post("/{idea_id}/vote", response_model=IdeaOut)
@@ -419,12 +425,7 @@ def _follow_http(exc: follower_service.FollowError):
     raise HTTPException(exc.status_code, exc.message)
 
 
-def _actor(request: Request, current_user: User) -> history_service.HistoryActor:
-    """Who acted, for the History tab: the real staff user; while
-    impersonating, on behalf of the impersonated one."""
-    real = getattr(request.state, "real_user", None)
-    real_name = real.name if isinstance(real, User) else None
-    return history_service.staff_actor(real_name, current_user.name)
+_actor = request_actor
 
 
 @router.get("/{idea_id}/history", response_model=List[IdeaHistoryOut])
