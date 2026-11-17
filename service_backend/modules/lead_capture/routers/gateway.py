@@ -17,13 +17,50 @@ from app.database import get_db
 
 from .. import schemas
 from ..gateway_auth import AuditedRoute, LeadGatewayKey, get_lead_gateway_key
-from ..services import connect_service, delivery_service, field_service, form_service, key_service, read_service
+from ..services import (
+    backfill_service,
+    connect_service,
+    delivery_service,
+    field_service,
+    form_service,
+    key_service,
+    read_service,
+    source_service,
+)
 
 router = APIRouter(route_class=AuditedRoute)
 
 
 def _api(exc) -> ApiError:
-    return ApiError(exc.status_code, exc.code, exc.message)
+    err = ApiError(exc.status_code, exc.code, exc.message)
+    retry_after = getattr(exc, "retry_after", None)
+    return err.with_retry_after(retry_after) if retry_after else err
+
+
+def _actor(key: LeadGatewayKey) -> source_service.Actor:
+    return source_service.Actor.key(key.key_id)
+
+
+@router.post("/sources/facebook", response_model=schemas.SourceItem, status_code=201)
+def connect_facebook(
+    body: schemas.ConnectFacebookRequest,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.SourceItem:
+    """Connect a Facebook Page, or reconnect it (same Page again = the same
+    source, AC-64-29). The product's own door to the ONE connect function."""
+    try:
+        row = connect_service.connect_facebook(
+            db,
+            key.tenant_id,
+            page_id=body.pageId,
+            system_user_token=body.systemUserToken,
+            forms_mode=body.formsMode,
+            actor=_actor(key),
+        )
+    except connect_service.ConnectError as exc:
+        raise _api(exc)
+    return read_service.source_item(row)
 
 
 @router.get("/sources", response_model=schemas.SourceList)
@@ -198,3 +235,60 @@ def send_test_lead(
         return schemas.TestLeadAccepted(**form_service.send_test_lead(db, key.tenant_id, source_id, body.formId))
     except form_service.FormError as exc:
         raise _api(exc)
+
+
+# ── lane L-B: forms, backfill, history, disconnect ──────────────────────────
+
+@router.get("/sources/{source_id}/forms", response_model=schemas.FormList)
+def list_forms(
+    source_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.FormList:
+    try:
+        return source_service.list_forms(db, key.tenant_id, source_id)
+    except source_service.SourceError as exc:
+        raise _api(exc)
+
+
+@router.put("/sources/{source_id}/forms", response_model=schemas.SourceItem)
+def put_forms(
+    source_id: str,
+    body: schemas.FormsUpdate,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.SourceItem:
+    try:
+        row = source_service.set_forms(db, key.tenant_id, source_id, body.formsMode, body.formIds, _actor(key))
+    except source_service.SourceError as exc:
+        raise _api(exc)
+    return read_service.source_item(row)
+
+
+@router.post("/sources/{source_id}/backfill", response_model=schemas.BackfillAccepted, status_code=202)
+def run_backfill(
+    source_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.BackfillAccepted:
+    try:
+        return schemas.BackfillAccepted(sourceId=backfill_service.request_backfill(db, key.tenant_id, source_id))
+    except source_service.SourceError as exc:
+        raise _api(exc)
+
+
+@router.get("/sources/{source_id}/history", response_model=schemas.SourceEventList, response_model_by_alias=True)
+def source_history(
+    source_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.SourceEventList:
+    try:
+        return source_service.history(db, key.tenant_id, source_id)
+    except source_service.SourceError as exc:
+        raise _api(exc)
+
+
+@router.delete("/sources/{source_id}", status_code=204)
+def disconnect_source(
+    source_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> Response:
+    try:
+        source_service.disconnect(db, key.tenant_id, source_id, actor=_actor(key))
+    except source_service.SourceError as exc:
+        raise _api(exc)
+    return Response(status_code=204)

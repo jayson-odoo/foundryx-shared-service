@@ -105,6 +105,9 @@ celery_app.conf.beat_schedule = {
     # Lead Capture consumer deliveries (plan 64 AC-64-63) - re-drives PENDING
     # rows whose retry time passed (a lost self-reschedule). Module-absence safe.
     "lead-capture-deliveries-due": {"task": "lead_capture.deliveries_due", "schedule": 60.0},
+    # Lead Capture backfill (plan 64 AC-64-28) - re-reads every routing
+    # source's forms for leads the webhook missed. Module-absence safe.
+    "lead-capture-backfill-due": {"task": "lead_capture.backfill_due", "schedule": 900.0},
     # Resume workflow runs parked by an omnichannel Ask-a-question / Wait step
     # whose deadline passed (plan sprint-4/31 S4, D-A5-10/F8). Module-owned
     # work, defined + scheduled HERE (the sole beat host) and guarded exactly
@@ -391,6 +394,45 @@ def lead_capture_deliver(delivery_id: str) -> str:
         logger.exception("lead_capture delivery %s failed", delivery_id)
         db.rollback()
         return "error"
+    finally:
+        db.close()
+
+
+@celery_app.task(name="lead_capture.backfill_source")
+def lead_capture_backfill_source(source_id: str) -> dict:
+    """One backfill run for one source ("Run now", or right after a reconnect)."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.services.backfill_service import backfill_source
+    except ImportError:
+        return {"leads": 0}
+    db = SessionLocal()
+    try:
+        return {"leads": backfill_source(db, source_id)}
+    except Exception:  # noqa: BLE001 - ids only in the log
+        logger.exception("lead_capture backfill failed for source %s", source_id)
+        db.rollback()
+        return {"leads": 0, "error": "backfill failed"}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="lead_capture.backfill_due")
+def lead_capture_backfill_due() -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.services.backfill_service import run_due
+    except ImportError:
+        return {"sources": 0}
+    db = SessionLocal()
+    try:
+        return {"sources": run_due(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("lead_capture backfill tick failed")
+        db.rollback()
+        return {"sources": 0}
     finally:
         db.close()
 
