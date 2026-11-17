@@ -35,3 +35,29 @@ So the code sends the note; the open question is why the live row has none. Hypo
   confirmed landing; the db3 screen check is still open, plan 65 section 6).
 
 The call log (`ac_api_call_log.request_json`) of that link tells H1/H2/H3 apart (crew data request).
+
+## 3. Live finding (owner prod read, 17 Nov)
+
+- Prod served 8cc79df5 (#247 and #248 included). Ops on the PO: link_batch 14:39:22 -> unlink_row 14:39:37 ->
+  link_batch 14:40:43. The row checked is the last link_batch's new row.
+- That op ran the whole #247 path: GET PO, GET SO, GET PO, PUT 200 (link), GET PO, PUT 200 (restore), GET PO;
+  status done. The restore PUT always carries the note (`transfer_row_drift`, `payloads.py:341`) and is the only
+  write that can set the new row's DeliveryDate (the link PUT leaves it empty, plan 65 probe P2). The date
+  stuck, the note did not: AutoCount accepts `FurtherDescription` on an edit of an EXISTING row without storing
+  it (case c; owner3.sql confirms the note was in that PUT).
+
+## 4. Fix (held until the db3 probe, lane SO-NOTE-DB3-PROBE)
+
+Expected winner: the note also goes on the NEW row inside the PUT that creates it (a DtlKey-0 row; AutoCount
+documents FurtherDescription on added rows), and stays in the restore PUT. Same text and RTF builder
+(`so_link_note`, `autocount_rtf`). Only the new linked row ever carries it; unlink's plain row never does; the
+public add/edit doors still never take it. The link read-back verify never judges it (reads never return it).
+
+UAC (red tests `service_backend/tests/test_autocount_link_so_note.py`):
+- AC-66-01 whole-row `link_row`: the link PUT's new row carries the RTF note (no DD when the SO row has no date).
+- AC-66-02 `relink_row`: the replace PUT's new row carries the new SO row's note.
+- AC-66-03 `link_batch` (part and whole): each new row in the link PUT carries its note.
+- AC-66-04 single part-row link (`split_link`): the split PUT's new row carries the note.
+- AC-66-05 no other row of any PUT carries a note (kept / deleted rows keep theirs).
+- AC-66-06 control: unlink's plain row carries none.
+- AC-66-07 control: the public add-line door never sends a caller's FurtherDescription.
