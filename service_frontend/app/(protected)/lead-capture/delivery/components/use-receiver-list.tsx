@@ -50,6 +50,9 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
 export function useReceiverList(
   onCreate: () => void,
   onChanged: () => void,
+  /** Bump to refetch (after an Add) without remounting the list, which would
+   *  restore the address bar's state from page load. */
+  refreshKey = 0,
 ): ResourceListConfig<LeadReceiverItem> {
   const { formatDmyDateTime } = useDatetime();
   const sendTestPush = useSendTestPush();
@@ -171,8 +174,12 @@ export function useReceiverList(
       },
     ];
 
-    const fetcher = async (query: ListQuery): Promise<ListResult<LeadReceiverItem>> =>
-      applyClientQuery(await leadCaptureService.listReceivers(), query, spec);
+    const fetcher = async (query: ListQuery): Promise<ListResult<LeadReceiverItem>> => {
+      // A new refreshKey = a new fetcher, which the list refetches with its
+      // current query (no remount).
+      void refreshKey;
+      return applyClientQuery(await leadCaptureService.listReceivers(), query, spec);
+    };
 
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
@@ -224,5 +231,5 @@ export function useReceiverList(
       // page's Push / Pull only state follows the receivers too.
       onDeferredCommitted: () => onChanged(),
     };
-  }, [actions, formatDmyDateTime, onCreate, onChanged]);
+  }, [actions, formatDmyDateTime, onCreate, onChanged, refreshKey]);
 }

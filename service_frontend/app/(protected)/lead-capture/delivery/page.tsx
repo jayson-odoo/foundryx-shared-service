@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
@@ -24,10 +24,9 @@ import { useCan } from '@/hooks/use-can';
 import { leadCaptureErrorMessage, useReceivers, useRemoveReceivers } from '@/hooks/use-lead-capture';
 import { leadsPullUrl } from '@/services/lead-capture-service';
 import { AddReceiverDialog } from './components/add-receiver-dialog';
+import { type DeliveryMode, nextDeliveryMode } from './components/delivery-mode';
 import { PullOnlyPanel } from './components/pull-only-panel';
 import { useReceiverList } from './components/use-receiver-list';
-
-type Mode = 'push' | 'pull';
 
 const SEGMENT_ON =
   'data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-primary';
@@ -41,22 +40,27 @@ export default function LeadCaptureDeliveryPage() {
   const receivers = useReceivers();
   const { removing, remove } = useRemoveReceivers();
   const { can } = useCan();
-  const [mode, setMode] = useState<Mode | null>(null);
+  const [mode, setMode] = useState<DeliveryMode | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirmPull, setConfirmPull] = useState(false);
   const [nonce, setNonce] = useState(0);
 
   const count = receivers.data?.length ?? 0;
 
-  // The stored state decides the first view: receivers = push, none = pull.
+  // The stored state decides the first view (receivers = push, none = pull),
+  // and removing the last receiver from any menu switches to Pull only.
+  const prevCount = useRef<number | null>(null);
   useEffect(() => {
-    if (mode === null && receivers.data) setMode(receivers.data.length > 0 ? 'push' : 'pull');
-  }, [mode, receivers.data]);
+    if (!receivers.data) return;
+    const next = receivers.data.length;
+    setMode((current) => nextDeliveryMode(current, prevCount.current, next));
+    prevCount.current = next;
+  }, [receivers.data]);
 
   const onCreate = useCallback(() => setAdding(true), []);
   const reloadReceivers = receivers.reload;
   const onChanged = useCallback(() => reloadReceivers(), [reloadReceivers]);
-  const config = useReceiverList(onCreate, onChanged);
+  const config = useReceiverList(onCreate, onChanged, nonce);
 
   const choose = (next: string) => {
     if (next !== 'push' && next !== 'pull') return;
@@ -116,7 +120,7 @@ export default function LeadCaptureDeliveryPage() {
                 Pull only
               </ToggleGroupItem>
             </ToggleGroup>
-            {mode === 'push' && <ResourceList key={nonce} config={config} hideHeader restoreFromCtx />}
+            {mode === 'push' && <ResourceList config={config} hideHeader restoreFromCtx />}
             {mode === 'pull' && <PullOnlyPanel address={leadsPullUrl()} />}
           </div>
         )}

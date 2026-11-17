@@ -93,6 +93,10 @@ def verify(secret: str, header: str, body: bytes, *, tolerance: int = 300, now: 
 
 # ── Endpoints (AC-64-60) ────────────────────────────────────────────────────
 
+# The screens call an endpoint a "receiver" (crew pass on #259).
+RECEIVER_GONE = "This receiver was already removed."
+
+
 def _validate_events(events: List[str]) -> List[str]:
     clean = list(dict.fromkeys(e for e in events or [] if isinstance(e, str)))
     if not clean:
@@ -150,7 +154,7 @@ def delete_endpoint(db: Session, tenant_id: str, endpoint_id: str) -> None:
         .first()
     )
     if row is None or not row.active:
-        raise DeliveryError(404, "endpoint_not_found", "Endpoint not found.")
+        raise DeliveryError(404, "endpoint_not_found", RECEIVER_GONE)
     row.active = False
     # Pending deliveries to it stop here (never sent to a removed endpoint).
     db.query(LcDelivery).filter(
@@ -229,7 +233,7 @@ def get_endpoint(db: Session, tenant_id: str, endpoint_id: str) -> LcWebhookEndp
         .first()
     )
     if row is None or not row.active:
-        raise DeliveryError(404, "endpoint_not_found", "Endpoint not found.")
+        raise DeliveryError(404, "endpoint_not_found", RECEIVER_GONE)
     return row
 
 
@@ -291,7 +295,7 @@ def _service_enabled(db: Session, tenant_id: str) -> bool:
 
 
 def _assert_deliverable(url: str) -> None:
-    core_assert_deliverable(url, subject="Callback URL")
+    core_assert_deliverable(url, subject="The URL")
 
 
 def _check_address(url: str, budget: float) -> float:
@@ -302,7 +306,7 @@ def _post(url: str, *, content: bytes, headers: Dict[str, str], timeout: float) 
     """Module-level so a test can replace the outbound call."""
     return webhook_post.run_under_deadline(
         lambda: webhook_post.post_async(
-            url, content, headers, timeout, lambda: GuardedAsyncTransport(subject="Callback URL")
+            url, content, headers, timeout, lambda: GuardedAsyncTransport(subject="The URL")
         ),
         timeout,
     )

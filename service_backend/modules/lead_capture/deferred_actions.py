@@ -80,6 +80,7 @@ KEY_REVOKE = DeferredActionDef(
     label="Revoke",
     execute=_key_revoke,
     exists=_key_exists,
+    gone_message="This key was already revoked.",
 )
 RECEIVER_REMOVE = DeferredActionDef(
     key="lead_capture_receivers.remove",
@@ -90,6 +91,7 @@ RECEIVER_REMOVE = DeferredActionDef(
     label="Remove",
     execute=_receiver_remove,
     exists=_receiver_exists,
+    gone_message="This receiver was already removed.",
 )
 
 

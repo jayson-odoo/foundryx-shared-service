@@ -94,6 +94,8 @@ def test_staff_receiver_refuses_bad_url_and_unknown_event(client, lc):
         ("https://localhost/lead", "The URL cannot target localhost."),
         ("https://10.0.0.1/lead", "The URL cannot target a private or reserved IP."),
         ("https://[::1/lead", "Enter a valid URL."),
+        ("https://exa mple.com/lead", "Enter a valid URL."),
+        ("https://exa%20mple.com/lead", "Enter a valid URL."),
     ],
 )
 def test_refused_receiver_url_uses_the_screen_words(client, lc, url, message):
@@ -248,3 +250,49 @@ def test_deferred_receiver_remove_commits(client, lc):
         assert decrypt_secret(row.secret_encrypted)["secret"].startswith("whsec_")
     finally:
         db.close()
+
+
+PARK_URL = "/api/v1/pending-actions"
+
+
+def _park_api(client, headers, action_key, entity_type, entity_id):
+    return client.post(
+        PARK_URL,
+        json={"actionKey": action_key, "entityType": entity_type, "entityId": entity_id},
+        headers=headers,
+    )
+
+
+def test_stale_receiver_remove_says_so_in_plain_words(client, lc):
+    # Crew pass 041306ae: removed elsewhere, then Remove from the row menu: no id
+    # in the message, and the screen's own word "receiver".
+    headers = _login(client)
+    rid = _create(client, headers).json()["id"]
+    assert client.delete(f"/lead-capture/webhooks/{rid}", headers=headers).status_code == 204
+    res = _park_api(client, headers, "lead_capture_receivers.remove", "lead_capture_receiver", rid)
+    assert res.status_code == 404
+    assert res.json()["detail"] == "This receiver was already removed."
+    assert rid not in res.text
+
+
+def test_stale_key_revoke_says_so_in_plain_words(client, lc):
+    headers = _login(client)
+    kid = client.post("/lead-capture/keys", json={"name": "CRM"}, headers=headers).json()["id"]
+    assert client.delete(f"/lead-capture/keys/{kid}", headers=headers).status_code == 204
+    res = _park_api(client, headers, "lead_capture_keys.revoke", "lead_capture_key", kid)
+    assert res.status_code == 404
+    assert res.json()["detail"] == "This key was already revoked."
+    assert kid not in res.text
+
+
+def test_stale_test_push_and_remove_say_receiver_not_endpoint(client, lc):
+    headers = _login(client)
+    rid = _create(client, headers).json()["id"]
+    assert client.delete(f"/lead-capture/webhooks/{rid}", headers=headers).status_code == 204
+    for res in (
+        client.post(f"/lead-capture/webhooks/{rid}/test", headers=headers),
+        client.delete(f"/lead-capture/webhooks/{rid}", headers=headers),
+    ):
+        assert res.status_code == 404
+        assert res.json()["detail"]["code"] == "endpoint_not_found"
+        assert res.json()["detail"]["message"] == "This receiver was already removed."

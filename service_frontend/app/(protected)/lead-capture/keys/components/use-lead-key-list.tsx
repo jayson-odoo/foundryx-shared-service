@@ -56,7 +56,9 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
  * searches/filters/sorts/pages. Create = toolbar button; Revoke = grace-window
  * row action (`lead_capture_keys.revoke`).
  */
-export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKeyItem> {
+/** `refreshKey`: bump it to refetch (after a Create) without remounting the list,
+ *  which would restore the address bar's state from page load. */
+export function useLeadKeyList(onCreate: () => void, refreshKey = 0): ResourceListConfig<LeadKeyItem> {
   const { formatDmyDateTime } = useDatetime();
 
   const actions = useMemo<ResourceAction<LeadKeyItem>[]>(
@@ -159,8 +161,12 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
       },
     ];
 
-    const fetcher = async (query: ListQuery): Promise<ListResult<LeadKeyItem>> =>
-      applyClientQuery(await leadCaptureService.listKeys(), query, spec);
+    const fetcher = async (query: ListQuery): Promise<ListResult<LeadKeyItem>> => {
+      // A new refreshKey = a new fetcher, which the list refetches with its
+      // current query (no remount).
+      void refreshKey;
+      return applyClientQuery(await leadCaptureService.listKeys(), query, spec);
+    };
 
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
@@ -211,5 +217,5 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
       createPermission: KEYS_MANAGE,
       onCreate,
     };
-  }, [actions, formatDmyDateTime, onCreate]);
+  }, [actions, formatDmyDateTime, onCreate, refreshKey]);
 }

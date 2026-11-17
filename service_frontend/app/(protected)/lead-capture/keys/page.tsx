@@ -13,7 +13,7 @@ export default function LeadCaptureKeysPage() {
   const [open, setOpen] = useState(false);
   const [nonce, setNonce] = useState(0);
   const onCreate = useCallback(() => setOpen(true), []);
-  const config = useLeadKeyList(onCreate);
+  const config = useLeadKeyList(onCreate, nonce);
 
   return (
     <RequirePermission permission="lead_capture.keys.manage">
@@ -21,7 +21,7 @@ export default function LeadCaptureKeysPage() {
         {/* Own header so Create sits on the list's toolbar row (one row:
             Search, Filters, Export, Columns, Create), like Delivery. */}
         <PageHeader />
-        <ResourceList key={nonce} config={config} hideHeader restoreFromCtx />
+        <ResourceList config={config} hideHeader restoreFromCtx />
       </Container>
       <CreateKeyDialog open={open} onOpenChange={setOpen} onCreated={() => setNonce((n) => n + 1)} />
     </RequirePermission>

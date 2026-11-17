@@ -95,3 +95,14 @@ revoke/remove through the core grace-window engine.
 - Right-click / long-press row menu comes from the shared list (#253); Delivery refreshes Push / Pull only after a
   Remove from it.
 
+## Round 6 (crew-pass 041306ae NOT READY)
+- Removing the last receiver from any menu switches Delivery to Pull only (no reload).
+- A host with a space or "%20" is "Enter a valid URL." (core URL guard: a host is letters, digits, `-`, `_`, `.`, an
+  IP literal or an IDN name).
+- Keys and Delivery refresh their list after Create / Add through the list's fetcher, not a remount, so a cleared
+  search stays cleared.
+- A record already gone when a grace-window action is started reads in plain words, never its id: "This receiver
+  was already removed.", "This key was already revoked." (core engine: per-action `gone_message`, generic "This
+  record no longer exists."). Stale Send test push / Remove: "This receiver was already removed.".
+- CI: the AutoCount write-back deadline test runs on a fake clock (it failed on a busy runner).
+
