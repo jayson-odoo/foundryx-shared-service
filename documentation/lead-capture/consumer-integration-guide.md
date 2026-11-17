@@ -4,7 +4,8 @@ Contract of record for the Lead Capture gateway (plan 64, AC-64-66). A change to
 field or error code ships with a change to this file in the same pull request.
 
 Status: release 1. Sources: Facebook Page Instant Forms. Events sent: `lead.created` and `source.updated` (added
-17 Nov 2026). Instagram, connect sessions, the `lead.updated` event and the duplicate rule arrive in later releases
+17 Nov 2026). Connect sessions (the hosted wizard) and the Facebook login API for your own wizard: section 7
+(added 17 Nov 2026, lane L-C). Instagram, the `lead.updated` event and the duplicate rule arrive in later releases
 and will be added here first.
 
 Everything is per product (one Shared Service tenant per consuming CRM): its own key, its own endpoints and signing
@@ -45,7 +46,13 @@ Every gateway error has one shape:
 | 404 | `source_not_found` | Source id not found for this tenant |
 | 409 | `PAGE_IN_USE` | Connect: the Page is used by another product and sharing is not allowed on both sides |
 | 422 | `invalid_page_id` | Connect: `pageId` is not a Facebook Page id (digits only) |
-| 422 | `invalid_token` | Connect: `systemUserToken` is empty |
+| 422 | `invalid_token` | Connect: send exactly one of `systemUserToken` / `loginId` |
+| 409 | `LOGIN_REQUIRED` | Connect with a `loginId` that is unknown, expired (30 minutes), another key's or another tenant's: sign in again |
+| 422 | `ORIGIN_NOT_ALLOWED` | Connect session: `returnOrigin` is missing or not on this key's allowed origins |
+| 400 | `PERMISSION_DECLINED` | Facebook login: the person did not grant the lead permission (`leads_retrieval`) |
+| 400 | `LOGIN_FAILED` | Facebook login: Meta refused the code (used, expired, wrong redirect URI) |
+| 409 | `channel_unavailable` | Facebook login while Facebook is not set up on this server (`GET /channels` lists none) |
+| 422 | `invalid_code` | Facebook login: `code` is empty or too long |
 | 502 | `subscribe_failed` | Connect: Meta could not be reached, or refused the Page's lead subscription; try again |
 | 404 | `delivery_not_found` | Delivery id not found for this tenant |
 | 400 | `token_invalid` | Meta no longer accepts the source's Page token (or it has none): reconnect the Page |
@@ -78,7 +85,12 @@ Every gateway error has one shape:
 | PUT | `/settings` | `{"allowSharedPages": bool}` | `Settings` |
 | GET | `/fields` | - | `{"data": [Field], "isDefault"}` |
 | PUT | `/fields` | `[Field]` (replaces the list; `[]` = defaults) | `{"data": [Field], "isDefault"}` |
-| POST | `/sources/facebook` | `{"pageId", "systemUserToken", "formsMode": "all"}` | `201` `Source` (connect, or reconnect: same Page again = same source) |
+| POST | `/sources/facebook` | `{"pageId", "systemUserToken" or "loginId", "formsMode": "all"}` | `201` `Source` (connect, or reconnect: same Page again = same source) |
+| POST | `/connect-sessions` | `{"returnOrigin", "sourceId"?}` | `201` `{"url", "expiresAt"}` (section 7) |
+| GET | `/channels` | - | `{"data": [Channel]}` (section 7) |
+| GET | `/facebook/login-config` | - | `LoginConfig` (section 7) |
+| POST | `/facebook/login` | `{"code", "redirectUri"?}` | `201` `{"loginId", "pages": [Page], "expiresAt"}` (section 7) |
+| GET | `/facebook/logins/{loginId}/pages` | - | `{"data": [Page]}` (section 7) |
 | DELETE | `/sources/{id}` | - | `204` (disconnect; again = `204`, nothing changes) |
 | GET | `/sources/{id}/forms` | - | `{"formsMode", "formIds", "tosAccepted", "data": [Form]}` |
 | PUT | `/sources/{id}/forms` | `{"formsMode": "all"}` or `{"formsMode": "pick", "formIds": ["<form id>", ...]}` | `Source` |
@@ -440,3 +452,83 @@ the cursor you sent; an empty first `since` page has `nextCursor: null`, so call
 `hasMore: true` means call again now. `source=<sourceId>` limits to one source. `cursor` wins over `since`. A lead
 appears in the pull about 5 seconds after it is stored (so a cursor never passes a lead that is still being saved);
 the webhook is sent at once.
+
+## 7. Connect a source: the hosted wizard, or your own
+
+Two ways, same functions behind both (owner, 17 Nov 2026: the Shared Service provides the API and the middleware;
+the hosted wizard is the reference UI).
+
+### 7a. Hosted wizard (a "Connect a source" button)
+
+1. A Shared Service admin lists your CRM's origin on the key: Lead Capture > Keys, or `POST /lead-capture/keys`
+   `{"name", "allowedOrigins": ["https://crm.example.com"]}` / `PUT /lead-capture/keys/{id}/origins`
+   `{"allowedOrigins": [...]}` (staff, `lead_capture.keys.manage`). An origin is `https://host[:port]` only (no path);
+   `http` only for `localhost`. At most 10. A key with no origin cannot open connect sessions.
+2. Your server asks for a session (the key never reaches a browser):
+
+   ```
+   POST /api/v1/lead-capture/connect-sessions
+   {"returnOrigin": "https://crm.example.com", "sourceId": null}
+   -> 201 {"url": "https://<shared-service-host>/public/lead-capture/connect#s=<secret>", "expiresAt": "2026-11-17T09:10:00Z"}
+   ```
+
+   - `returnOrigin` must be on the key's allowed origins, else `422 ORIGIN_NOT_ALLOWED`.
+   - `sourceId` (optional) reopens the wizard for one of your sources: Reconnect (`NEEDS_RECONNECT`,
+     `DISCONNECTED`) or Map fields (`needsMapping` not empty). Another tenant's id = `404 source_not_found`.
+   - The URL works ONCE and for 10 minutes. The secret is in the `#` fragment, so it never reaches a server log or a
+     `Referer`. A used or expired URL shows "This link has expired" and nothing of the account.
+3. Your page opens `url` in a popup on the user's click:
+
+   ```js
+   const popup = window.open(url, 'lead_capture', 'popup,width=720,height=860');
+   window.addEventListener('message', (event) => {
+     if (event.origin !== '<shared-service-origin>') return;   // check the sender
+     if (event.data?.type === 'lead-capture:done') refreshSources(event.data.sourceId);
+     if (event.data?.type === 'lead-capture:closed') refreshSources();
+   });
+   ```
+
+4. The wizard runs on its own scoped token (30 minutes; it can do the wizard's steps for this session's source and
+   nothing else; every other route answers 401). It shows your tenant's name and logo (Shared Service > Settings >
+   Branding), never the platform's. Steps: Channel (Facebook) -> Sign in -> Page -> Forms -> Fields -> Test -> Done.
+5. When the person finishes or closes it, the wizard posts ONE message to `window.opener` with `targetOrigin` =
+   your `returnOrigin` (never `*`), then closes:
+
+   | `type` | `sourceId` | When |
+   |---|---|---|
+   | `lead-capture:done` | always | Finished; the source passed its test lead (`LIVE`) |
+   | `lead-capture:closed` | when a Page was connected | Closed before the end (the source may be `WAITING_FOR_TEST`) |
+
+   Treat the message as a hint to refresh `GET /sources`; the list is the truth.
+
+### 7b. Your own wizard (every step is an API)
+
+| Step | Call |
+|---|---|
+| Channel | `GET /channels` -> `{"data": [{"key": "facebook", "label": "Facebook", "setup": "automatic"}]}`; only channels set up on this server are listed |
+| Sign in | `GET /facebook/login-config` -> `{"available", "simulated", "appId", "configId", "graphVersion", "scopes"}`. Open Facebook Login for Business with `appId` + `configId` (`response_type=code`, your registered redirect URI). Then `POST /facebook/login {"code", "redirectUri"}` -> `{"loginId", "pages": [{"id", "name"}], "expiresAt"}`. The Facebook token stays on the server; `loginId` is opaque, works for 30 minutes, for this key only. `simulated: true` = no Meta app on this server (development): any non-empty `code` works and two sample Pages come back |
+| Page | Pick from `pages` (one Page = choose it for the person). `GET /facebook/logins/{loginId}/pages` lists them again |
+| Connect | `POST /sources/facebook {"pageId", "loginId", "formsMode": "all"}` -> `201 Source` (`WAITING_FOR_TEST`). `409 PAGE_IN_USE`: the Page belongs to another product |
+| Forms | `GET /sources/{id}/forms`, `PUT /sources/{id}/forms` |
+| Fields | `GET /fields`, `GET /sources/{id}/forms/{formId}/questions`, `PUT /sources/{id}/field-map` |
+| Test | `POST /sources/{id}/test-lead {"formId"}`, then poll `GET /sources` until the source is `LIVE` (or wait for `source.updated`) |
+
+Error screens your wizard should have (the hosted one's wording, plain words only):
+
+| Code | Screen |
+|---|---|
+| `PERMISSION_DECLINED` | "Facebook did not give permission to read leads. Leave every permission ticked on the Facebook screen." + Try again |
+| `pages: []` | "No Page was shared. You need to be an admin of the Page that runs the ads." + Try again |
+| `meta_refused` on forms (Leads Access) | The Page only lets chosen apps read its leads: add the app under Business settings > Integrations > Leads Access + Check again |
+| `PAGE_IN_USE` | "<Page> is already connected to another account." + Choose another Page |
+| `token_invalid` / `LOGIN_REQUIRED` | Facebook stopped sharing leads for the Page / the sign-in expired: sign in again |
+
+### Hosted wizard API (for reference)
+
+The hosted page calls `/public/lead-capture/*` with its scoped token; you never call these with a key:
+`POST /connect/redeem {"token": "<secret>"}` (once; `410 SESSION_EXPIRED` after), `GET /wizard/context`,
+`POST /wizard/facebook/login`, `GET /wizard/facebook/pages`, `POST /wizard/facebook/connect {"pageId"}`,
+`GET /wizard/sources/{id}`, `GET|PUT /wizard/sources/{id}/forms`, `GET /wizard/fields`,
+`GET /wizard/sources/{id}/forms/{formId}/questions`, `PUT /wizard/sources/{id}/field-map`,
+`POST /wizard/sources/{id}/test-lead`, `POST /wizard/finish`.
+
