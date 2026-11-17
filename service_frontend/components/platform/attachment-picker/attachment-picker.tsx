@@ -174,7 +174,7 @@ export function AttachmentPicker({ draft }: { draft: AttachmentDraft }) {
                   <FileText className="size-6 text-muted-foreground" aria-hidden />
                 )}
               </div>
-              <ClampedText text={file.name} lines={1} className="mt-1 text-2xs text-muted-foreground" />
+              <ClampedText text={file.name} lines={1} className="mt-1 break-all text-2xs text-muted-foreground" />
               <button
                 type="button"
                 aria-label={`Remove ${file.name}`}

@@ -72,7 +72,7 @@ export function AttachmentThumbs({ attachments, fetchContent, className }: Attac
             >
               {a.kind === 'image' ? <ImageThumb attachment={a} fetchContent={fetchContent} /> : <KindIcon kind={a.kind} />}
             </button>
-            <ClampedText text={a.name} lines={1} className="mt-1 text-2xs text-muted-foreground" />
+            <ClampedText text={a.name} lines={1} className="mt-1 break-all text-2xs text-muted-foreground" />
           </li>
         ))}
       </ul>
