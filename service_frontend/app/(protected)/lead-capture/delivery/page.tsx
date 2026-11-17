@@ -53,8 +53,11 @@ export default function LeadCaptureDeliveryPage() {
   useEffect(() => {
     if (!receivers.data) return;
     const next = receivers.data.length;
-    setMode((current) => nextDeliveryMode(current, prevCount.current, next));
+    // Read the previous count NOW: React may run the updater later, after the
+    // ref already holds the new count.
+    const prev = prevCount.current;
     prevCount.current = next;
+    setMode((current) => nextDeliveryMode(current, prev, next));
   }, [receivers.data]);
 
   const onCreate = useCallback(() => setAdding(true), []);
