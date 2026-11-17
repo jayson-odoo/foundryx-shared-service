@@ -384,3 +384,25 @@ describe('IdeaComments - delete dialog accessibility (AC-19-43)', () => {
     expect(document.getElementById(id as string)?.textContent?.trim()).toBeTruthy();
   });
 });
+
+describe('IdeaComments - attachments (FEEDBACK-ATTACH-IMAGE AC-A-26)', () => {
+  it('the staff comment box has an attach control and sends picked files through add()', async () => {
+    const value = hookValue([]);
+    const { container } = render(<IdeaComments ideaId="idea-1" />);
+    expect(screen.getByRole('button', { name: /attach/i })).toBeInTheDocument();
+    const file = new File(['x'], 'shot.png', { type: 'image/png' });
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement | null;
+    expect(input, 'a file input must exist').not.toBeNull();
+    await userEvent.upload(input as HTMLInputElement, file);
+    await userEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    expect(value.add).toHaveBeenCalledTimes(1);
+    expect(value.add.mock.calls[0].flat(2)).toContain(file);
+  });
+
+  it('a comment shows its attachment thumbnails', () => {
+    const att = { id: 'a1', kind: 'file', name: 'spec.pdf', sizeBytes: 10, contentPath: '/ideation/ideas/idea-1/attachments/a1/content', url: '' };
+    hookValue([{ root: aComment({ attachments: [att] } as Partial<IdeaComment>), replies: [] }]);
+    render(<IdeaComments ideaId="idea-1" />);
+    expect(screen.getByRole('button', { name: /spec\.pdf/ })).toBeInTheDocument();
+  });
+});
