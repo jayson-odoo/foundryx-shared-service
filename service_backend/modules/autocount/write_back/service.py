@@ -706,18 +706,13 @@ class WriteBackService(WriteFrame):
         so_key = (po_row or {}).get("FromSODtlKey")
         if not so_key:
             return ""
-        found = []
-        for staged in self.staged.for_entity(company.tenant_id, company.id, ENTITY_SALES_ORDER):
-            for line in _lines(staged.raw_json):
-                if line.get("DtlKey") == so_key:
-                    found.append((staged.created_at, str(line.get("Location") or "")))
-        if not found:
+        found = self._so_row(company.tenant_id, company.id, int(so_key))  # C.d: one indexed query
+        if found is None:
             return ""
-        newest = max(created for created, _loc in found)
-        locations = {loc for created, loc in found if created == newest}
-        if len(locations) > 1:
+        _doc_no, location, ambiguous = found
+        if ambiguous:
             raise WriteRefusal(SO_LOCATION_AMBIGUOUS, "staged sales order copies disagree")
-        return locations.pop()
+        return location or ""
 
     def _so_linked_qty(self, company: AcCompany, fresh_po: Doc, so_dtl_key: int) -> Decimal:
         """Qty of the SO row already covered by PO rows: the fresh edited PO plus the

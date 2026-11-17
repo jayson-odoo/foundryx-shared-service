@@ -772,6 +772,16 @@ def _staged_so(h):
     ).one()
 
 
+def _reindex_so(h):
+    """A raw edit of the staged SO stands in for a staging write: refresh the SO-row index as that write does."""
+    from modules.autocount.write_back.link_index import refresh_links
+
+    ref = h.db.query(AcStagedRecord.source_ref).filter(
+        AcStagedRecord.company_id == h.company.id, AcStagedRecord.entity_type == "sales_order").first()[0]
+    refresh_links(h.db, DEFAULT_TENANT_ID, h.company.id, "sales_order", ref)
+    h.db.commit()
+
+
 def _stranded(h) -> int:
     h.ac.put2_mode = "ignore"
     assert h.link_split().error_code == "LOCATION_NOT_MOVED"
@@ -811,6 +821,7 @@ def test_relocate_lookup_uses_the_newest_staged_so_record(vh, live_books_open):
     newest.created_at = now
     _add_old_so(h, "BRW-OLD", now - timedelta(days=1))
     h.db.commit()
+    _reindex_so(h)
     res = h.service().relocate(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=dtl
     )
@@ -827,6 +838,7 @@ def test_relocate_lookup_refuses_two_equally_new_conflicting_records(vh, live_bo
     first.created_at = same
     _add_old_so(h, "BRW-TWO", same)
     h.db.commit()
+    _reindex_so(h)
     res = h.service().relocate(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=dtl
     )

@@ -53,7 +53,6 @@ from .activity import (
     record_client_calls,
     trace_id_for_job,
 )
-from .canonical.documents import ENTITY_PURCHASE_ORDER
 from .canonical.grn import (
     ENTITY_GOODS_RECEIVED_NOTE,
     VENDOR_DETAIL_KEY,
@@ -69,7 +68,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
-from .write_back.link_index import refresh_po_links
+from .write_back.link_index import refresh_links
 from .http_source.book import billing_link_book, identity_scope
 from .http_source.combine import (
     CombineDropError,
@@ -1425,8 +1424,8 @@ def _stage_documents(
                     status=STAGED,
                 )
             )
-        if entity_type == ENTITY_PURCHASE_ORDER:  # plan 62 D8: keep the over-link index true
-            refresh_po_links(db, tenant_id, company_id, record.source_ref)
+        # plan 62 D8 + lane AUTOCOUNT-STRANDED-OPS C.d: keep the PO->SO / SPO->PO link indexes true
+        refresh_links(db, tenant_id, company_id, entity_type, record.source_ref)
         staged += 1
         service.advance(job, done=1)
         db.commit()
@@ -2564,8 +2563,8 @@ def _stage_deletes(
                     op=STAGED_OP_DELETE,
                 )
             )
-            if entity_type == ENTITY_PURCHASE_ORDER:  # plan 62 D8: a deleted PO has no link rows
-                refresh_po_links(db, tenant_id, company_id, ref, deleted=True)
+            # plan 62 D8 / C.d: a deleted PO or SPO has no link rows
+            refresh_links(db, tenant_id, company_id, entity_type, ref, deleted=True)
             count += 1
     db.commit()
     return count

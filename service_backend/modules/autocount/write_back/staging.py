@@ -23,9 +23,8 @@ from modules.autocount.models import (
     AcCompany,
     AcStagedRecord,
 )
-from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
 from modules.autocount.write_back.constants import STAGING_JOB_ID  # noqa: F401 (re-exported)
-from modules.autocount.write_back.link_index import refresh_po_links, refresh_po_links_from_doc
+from modules.autocount.write_back.link_index import refresh_links, refresh_po_links_from_doc
 from modules.autocount.write_back.doc_mapping import (
     ENTITY_BY_KIND,
     WrapperMappingError,
@@ -133,9 +132,8 @@ class DocStager:
         return row, True
 
     def _refresh_links(self, company: AcCompany, entity_type: str, ref: str) -> None:
-        """Plan 62 D8: a PO staging write rewrites the PO's over-link index rows."""
-        if entity_type == ENTITY_PURCHASE_ORDER:
-            refresh_po_links(self.db, company.tenant_id, company.id, ref)
+        """Plan 62 D8 / C.d: a PO or SPO staging write rewrites its link index rows."""
+        refresh_links(self.db, company.tenant_id, company.id, entity_type, ref)
 
     def _push(
         self, company: AcCompany, doc: Doc, kind: str, row: AcStagedRecord,

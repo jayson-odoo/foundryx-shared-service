@@ -97,14 +97,23 @@ async def lifespan(_: FastAPI):
         if not settings.background_job_orphan_sweep_on_startup:
             raise _SweepDisabled()
 
+        from app.module_loader import run_module_startup_sweeps
+
         _db = SessionLocal()
         try:
             _swept = sweep_orphaned_jobs(_db)
+            # module-owned leftovers of a dead process (e.g. an AutoCount write
+            # operation stranded in_progress); each module isolated (D8)
+            _module_swept = run_module_startup_sweeps(_db)
         finally:
             _db.close()
         if _swept:
             logging.getLogger("foundryx.jobs").warning(
                 "startup orphan sweep failed %d job(s) left running by a previous process", _swept
+            )
+        for _name, _count in _module_swept.items():
+            logging.getLogger("foundryx.jobs").warning(
+                "startup sweep: module %s reconciled %d item(s) left by a previous process", _name, _count
             )
     except _SweepDisabled:
         pass

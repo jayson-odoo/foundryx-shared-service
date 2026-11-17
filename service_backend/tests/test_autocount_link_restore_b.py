@@ -146,10 +146,12 @@ def test_ac_65_32_resume_of_the_stale_in_progress_op_itself_expires_it_and_answe
     before = op_row(h, stuck).updated_at
     res = resume(h, SimpleNamespace(operation_id=stuck))
     assert res.error_code != "OPERATION_IN_PROGRESS", (res.outcome, res.error_code)
-    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
-    assert h.vendor.calls == []  # no snapshot: its stored answer, nothing sent
+    # BL-SS-368 (lane AUTOCOUNT-STRANDED-OPS): no snapshot = no write could have happened, so the expired op
+    # settles recovered / OPERATION_NOT_APPLIED (its key is then free), still with nothing sent
+    assert (res.outcome, res.error_code) == ("recovered", "OPERATION_NOT_APPLIED"), (res.outcome, res.error_code)
+    assert h.vendor.calls == []
     row = op_row(h, stuck)
-    assert row.status == "pending_verification" and row.updated_at == before
+    assert row.status == "recovered" and before is not None
 
 
 def test_ac_65_32_control_a_young_in_progress_op_still_answers_operation_in_progress(h, rig):

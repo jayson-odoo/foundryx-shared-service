@@ -5,9 +5,9 @@ Pure SQLAlchemy, every query tenant-scoped.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 from modules.autocount.models import (
     AcEntityConfig,
     AcPoSoLink,
+    AcSoRowIndex,
+    AcSpoPoLink,
     AcStagedRecord,
     AcWriteAction,
     AcWriteOperation,
@@ -240,6 +242,75 @@ class OperationRepository:
                     synchronize_session=False)
         )
 
+    def expire_stale_operation(self, tenant_id: str, company_id: str, operation_id: str, before: datetime) -> bool:
+        """Flip ONE ``in_progress`` operation that has not moved since ``before`` to
+        ``pending_verification`` (a same-key resend of a crashed run); updated_at kept."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+                AcWriteOperation.status == "in_progress",
+                AcWriteOperation.updated_at < before,
+            )
+            .update({"status": "pending_verification", "updated_at": AcWriteOperation.updated_at},
+                    synchronize_session=False)
+        ) == 1
+
+    def store_snapshot(self, tenant_id: str, company_id: str, operation_id: str, snapshot: dict) -> bool:
+        """Conditional first-snapshot write: only while the operation is still ``in_progress`` (a run whose row
+        was expired and settled meanwhile must never go on to write); bumps updated_at (heartbeat)."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+                AcWriteOperation.status == "in_progress",
+            )
+            # wall clock, not func.now() (Postgres: the transaction START, which can predate the guard reads)
+            .update({"snapshot_json": snapshot, "updated_at": datetime.now(timezone.utc)}, synchronize_session=False)
+        ) == 1
+
+    def sweep_stale_in_progress(self, before: datetime) -> int:
+        """API-start crash sweep (system context, every tenant): every ``in_progress`` operation
+        that has not moved since ``before`` is a run whose process died -> ``pending_verification``
+        (updated_at kept). A live run heartbeats, so it is never older than the busy window."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(AcWriteOperation.status == "in_progress", AcWriteOperation.updated_at < before)
+            .update({"status": "pending_verification", "updated_at": AcWriteOperation.updated_at},
+                    synchronize_session=False)
+        )
+
+    def settle_not_applied(
+        self, tenant_id: str, company_id: str, operation_id: str, error_code: str, result: dict
+    ) -> bool:
+        """Conditional ``pending_verification`` -> ``recovered`` for an operation that never stored its
+        snapshot (BL-SS-368): True only for the one caller whose update matched."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+                AcWriteOperation.status == "pending_verification",
+                AcWriteOperation.snapshot_json.is_(None),
+            )
+            .update({"status": "recovered", "error_code": error_code, "result_json": result},
+                    synchronize_session=False)
+        ) == 1
+
+    def has_actions(self, tenant_id: str, operation_id: str) -> bool:
+        """Any write action recorded under the operation (a step that may have reached AutoCount)."""
+        return (
+            self.db.query(AcWriteAction.id)
+            .filter(AcWriteAction.tenant_id == tenant_id, AcWriteAction.operation_id == operation_id)
+            .first()
+            is not None
+        )
+
     def has_recent_pending(
         self, tenant_id: str, company_id: str, doc_type: str, doc_key: int, since: datetime
     ) -> bool:
@@ -318,21 +389,64 @@ class StagedDocRepository:
         self.db = db
 
     def newest(
-        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
+        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str, *, skip_failed: bool = False
     ) -> Optional[AcStagedRecord]:
-        """The newest non-delete staged row of one document."""
-        return (
+        """The newest non-delete staged row of one document. ``skip_failed``: leave out copies whose mapping
+        FAILED (their raw may be truncated; the SPO / SO indexes read the newest GOOD copy, C.d review)."""
+        query = self.db.query(AcStagedRecord).filter(
+            AcStagedRecord.tenant_id == tenant_id,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.entity_type == entity_type,
+            AcStagedRecord.source_ref == source_ref,
+            AcStagedRecord.op != "delete",
+        )
+        if skip_failed:
+            query = query.filter(AcStagedRecord.status != "FAILED")
+        return query.order_by(AcStagedRecord.created_at.desc(), AcStagedRecord.id).first()
+
+    def copies_at(
+        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str, created_at: datetime
+    ) -> List[AcStagedRecord]:
+        """Every non-delete staged copy of one document staged at ``created_at`` (equally new copies). The
+        instant is matched in Python over the document's (id, created_at) pairs (exact on every engine), and
+        only the matching copies' payloads are loaded."""
+        scope = (
+            AcStagedRecord.tenant_id == tenant_id,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.entity_type == entity_type,
+            AcStagedRecord.source_ref == source_ref,
+            AcStagedRecord.op != "delete",
+            AcStagedRecord.status != "FAILED",
+        )
+        ids = [rid for rid, at in self.db.query(AcStagedRecord.id, AcStagedRecord.created_at).filter(*scope)
+               if at == created_at]
+        if not ids:
+            return []
+        return self.db.query(AcStagedRecord).filter(*scope, AcStagedRecord.id.in_(ids)).order_by(AcStagedRecord.id).all()
+
+    def newest_by_doc_nos(
+        self, tenant_id: str, company_id: str, entity_type: str, doc_nos: "set[str]"
+    ) -> List[AcStagedRecord]:
+        """The newest non-delete staged copy of each document whose ``doc_no`` is in ``doc_nos`` (indexed on
+        (tenant, company, entity_type, doc_no), 0048)."""
+        if not doc_nos:
+            return []
+        rows = (
             self.db.query(AcStagedRecord)
             .filter(
                 AcStagedRecord.tenant_id == tenant_id,
                 AcStagedRecord.company_id == company_id,
                 AcStagedRecord.entity_type == entity_type,
-                AcStagedRecord.source_ref == source_ref,
+                AcStagedRecord.doc_no.in_(sorted(doc_nos)),
                 AcStagedRecord.op != "delete",
             )
             .order_by(AcStagedRecord.created_at.desc(), AcStagedRecord.id)
-            .first()
+            .all()
         )
+        newest: Dict[str, AcStagedRecord] = {}
+        for row in rows:
+            newest.setdefault(row.source_ref, row)
+        return list(newest.values())
 
     def for_entity(
         self, tenant_id: str, company_id: str, entity_type: str
@@ -436,3 +550,104 @@ class PoSoLinkRepository:
         if except_ref is not None:
             query = query.filter(AcPoSoLink.po_source_ref != except_ref)
         return Decimal(str(query.scalar() or 0))
+
+
+class SpoPoLinkRepository:
+    """The SPO -> PO-row index ``ac_spo_po_link`` (lane AUTOCOUNT-STRANDED-OPS, C.d); every call is tenant +
+    company scoped."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def replace_for_spo(
+        self, tenant_id: str, company_id: str, spo_source_ref: str, spo_doc_no: Optional[str],
+        links: "List[tuple[Optional[int], int, Decimal]]",
+    ) -> None:
+        """Swap one SPO's rows for ``links`` (``(spo_dtl_key, po_dtl_key, qty)``)."""
+        self.db.query(AcSpoPoLink).filter(
+            AcSpoPoLink.tenant_id == tenant_id,
+            AcSpoPoLink.company_id == company_id,
+            AcSpoPoLink.spo_source_ref == spo_source_ref,
+        ).delete(synchronize_session=False)
+        for spo_dtl_key, po_dtl_key, qty in links:
+            self.db.add(AcSpoPoLink(
+                tenant_id=tenant_id, company_id=company_id, spo_source_ref=spo_source_ref, spo_doc_no=spo_doc_no,
+                spo_dtl_key=spo_dtl_key, po_dtl_key=po_dtl_key, qty=qty,
+            ))
+        self.db.flush()
+
+    def spo_doc_no(self, tenant_id: str, company_id: str, po_dtl_key: int) -> Optional[str]:
+        """DocNo of an indexed SPO with a row pointing at the PO row (None = none)."""
+        row = (
+            self.db.query(AcSpoPoLink.spo_doc_no, AcSpoPoLink.spo_source_ref)
+            .filter(
+                AcSpoPoLink.tenant_id == tenant_id,
+                AcSpoPoLink.company_id == company_id,
+                AcSpoPoLink.po_dtl_key == po_dtl_key,
+            )
+            .first()  # any one SPO answers the guard; no ORDER BY, so the po_dtl_key index drives the plan
+        )
+        return None if row is None else str(row[0] or row[1])
+
+    def linked_qty(
+        self, tenant_id: str, company_id: str, po_dtl_key: int, *, except_ref: Optional[str] = None
+    ) -> Decimal:
+        """Qty of one PO row taken by the indexed SPO rows, leaving out ``except_ref``."""
+        query = self.db.query(func.coalesce(func.sum(AcSpoPoLink.qty), 0)).filter(
+            AcSpoPoLink.tenant_id == tenant_id,
+            AcSpoPoLink.company_id == company_id,
+            AcSpoPoLink.po_dtl_key == po_dtl_key,
+        )
+        if except_ref is not None:
+            query = query.filter(AcSpoPoLink.spo_source_ref != except_ref)
+        return Decimal(str(query.scalar() or 0))
+
+
+class SoRowIndexRepository:
+    """The SO-row index ``ac_so_row_index`` (lane AUTOCOUNT-STRANDED-OPS, C.d); every call is tenant + company
+    scoped."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def replace_for_so(
+        self, tenant_id: str, company_id: str, so_source_ref: str, so_doc_no: Optional[str],
+        staged_at: Optional[datetime], rows: "List[tuple[int, Optional[str], bool]]", so_doc_key: Optional[str] = None,
+    ) -> None:
+        """Swap one SO's rows for ``rows`` (``(so_dtl_key, location, ambiguous)``)."""
+        self.db.query(AcSoRowIndex).filter(
+            AcSoRowIndex.tenant_id == tenant_id,
+            AcSoRowIndex.company_id == company_id,
+            AcSoRowIndex.so_source_ref == so_source_ref,
+        ).delete(synchronize_session=False)
+        for so_dtl_key, location, ambiguous in rows:
+            self.db.add(AcSoRowIndex(
+                tenant_id=tenant_id, company_id=company_id, so_source_ref=so_source_ref, so_doc_no=so_doc_no,
+                so_dtl_key=so_dtl_key, location=location, ambiguous=ambiguous, staged_at=staged_at,
+                so_doc_key=so_doc_key,
+            ))
+        self.db.flush()
+
+    def rows_for_keys(self, tenant_id: str, company_id: str, so_dtl_keys: "List[int]") -> List[AcSoRowIndex]:
+        """The indexed rows holding any of ``so_dtl_keys`` (chunked IN lists)."""
+        keys = sorted(set(so_dtl_keys))
+        out: List[AcSoRowIndex] = []
+        for start in range(0, len(keys), 500):
+            out.extend(self.db.query(AcSoRowIndex).filter(
+                AcSoRowIndex.tenant_id == tenant_id,
+                AcSoRowIndex.company_id == company_id,
+                AcSoRowIndex.so_dtl_key.in_(keys[start:start + 500]),
+            ).all())
+        return out
+
+    def rows_for(self, tenant_id: str, company_id: str, so_dtl_key: int) -> List[AcSoRowIndex]:
+        """The indexed rows holding ``so_dtl_key`` (normally one SO), newest staged first."""
+        return (
+            self.db.query(AcSoRowIndex)
+            .filter(
+                AcSoRowIndex.tenant_id == tenant_id,
+                AcSoRowIndex.company_id == company_id,
+                AcSoRowIndex.so_dtl_key == so_dtl_key,
+            )
+            .all()
+        )

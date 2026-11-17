@@ -136,6 +136,22 @@ def register_engine_entities() -> None:
     register_autocount_deferred_actions()
 
 
+def sweep_stranded_write_operations(db: Session) -> int:
+    """Lane AUTOCOUNT-STRANDED-OPS (C.c): at API start, every write operation a dead process left
+    ``in_progress`` past the busy window becomes ``pending_verification``; a never-applied ROW operation
+    (link / unlink / relink / batch / split) is then settled ``recovered`` by its next resend / resume, so
+    its card no longer waits for ever. (A single-document primitive left pending without an answer still
+    replays as in progress: its outcome is unknown and needs a document lookup first - follow-up.)"""
+    from .write_back.operations import sweep_stranded_operations
+
+    return sweep_stranded_operations(db)
+
+
+def on_api_startup(db: Session) -> int:
+    """API-start hook (``app.module_loader.run_module_startup_sweeps``)."""
+    return sweep_stranded_write_operations(db)
+
+
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
     if engine.dialect.name == "postgresql":
