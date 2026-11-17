@@ -2,6 +2,7 @@
  * Idea portal wire types (lane IDEA-PORTAL) - mirror of
  * `service_backend/modules/ideation/schemas.py` `Portal*` models.
  */
+import type { IdeaAttachment } from '@/types/ideation';
 
 /** `contact` = a dealer on a personal feedback link (lane PUBLIC-IDEAS-BOARD). */
 /** `share` = anyone on one item's read-only share link (lane FEEDBACK-SUBSCRIBE). */
@@ -94,6 +95,9 @@ export interface PortalIdea extends PortalCard {
   followerCount?: number;
   /** This viewer gets its WhatsApp status updates (submitter or follower). */
   following?: boolean;
+  /** Report-level files (comment files ride their comment). Omitted for a
+   * contact viewer on another dealer's item, like the free text. */
+  attachments?: IdeaAttachment[];
 }
 
 export interface PortalFollow {
@@ -138,6 +142,7 @@ export interface PortalComment {
   editedAt: string | null;
   likeCount: number;
   likedByMe: boolean;
+  attachments?: IdeaAttachment[];
 }
 
 export interface PortalLike {

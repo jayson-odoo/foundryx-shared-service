@@ -495,8 +495,14 @@ class IdeaActionService:
                 model.tenant_id == tenant_id, model.idea_id == idea_id
             ).delete(synchronize_session=False)
         # AC-19-09: comments go with the idea (replies first, then parents).
+        from .attachments import IdeaAttachmentService
         from .comments import IdeaCommentService
 
+        # Files first (report AND comment files): a comment file's FK points at
+        # its comment, so the rows must go before the comments do.
+        attachments = IdeaAttachmentService(self.db)
+        blob_keys = attachments.purge_for_idea(tenant_id, idea_id)
         IdeaCommentService(self.db).purge_for_idea(tenant_id, idea_id)
         self.db.delete(idea)
         self.db.commit()
+        attachments.delete_blobs(tenant_id, blob_keys)

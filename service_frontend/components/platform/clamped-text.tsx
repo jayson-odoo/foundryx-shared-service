@@ -27,6 +27,9 @@ const CLAMP: Record<number, string> = {
 };
 
 export function ClampedText({ text, lines = 3, className }: ClampedTextProps) {
+  // A callback ref, not useRef: once the text truncates the <p> remounts inside
+  // the tooltip trigger, and the observer must follow the NEW node (a detached
+  // one measures 0 and would switch the tooltip back off).
   const [el, setEl] = useState<HTMLParagraphElement | null>(null);
   const [truncated, setTruncated] = useState(false);
 
@@ -35,8 +38,7 @@ export function ClampedText({ text, lines = 3, className }: ClampedTextProps) {
     setTruncated(el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
   }, [el]);
 
-  // Observe whichever <p> is mounted (wrapping it in the tooltip remounts it),
-  // and re-measure on text / clamp changes.
+  // Re-measure on text / clamp changes and on every resize of the mounted node.
   useEffect(() => {
     if (!el) return;
     measure();

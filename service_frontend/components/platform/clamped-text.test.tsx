@@ -1,12 +1,13 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ClampedText } from './clamped-text';
 
 /** Crew pass 70e96f2b: a long name in a one-line table cell was clipped
  * mid-word with no "..." and no full text on hover - the overflow is
  * sideways, and the old measure only checked height. */
-const wrap = (ui: React.ReactElement) => render(<TooltipProvider>{ui}</TooltipProvider>);
+const wrap = (ui: React.ReactElement) =>
+  render(<TooltipProvider>{ui}</TooltipProvider>);
 
 describe('ClampedText', () => {
   afterEach(() => vi.restoreAllMocks());
@@ -35,7 +36,9 @@ describe('ClampedText', () => {
 
   it('re-checks on hover: a cut that appears after mount still offers the full text', async () => {
     let width = 100;
-    vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(() => width);
+    vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(
+      () => width,
+    );
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(255);
     wrap(<ClampedText text="Name that becomes cut" lines={1} />);
     await act(async () => {});
@@ -45,6 +48,76 @@ describe('ClampedText', () => {
     await act(async () => {
       fireEvent.pointerEnter(p);
     });
-    expect(screen.getByText('Name that becomes cut')).toHaveAttribute('data-state');
+    expect(screen.getByText('Name that becomes cut')).toHaveAttribute(
+      'data-state',
+    );
+  });
+});
+
+/** A detached element measures 0, like a real browser; a connected clamped one
+ * overflows. Observer callbacks can be fired by hand. */
+describe('ClampedText (resize observer)', () => {
+  const callbacks: Array<() => void> = [];
+
+  beforeEach(() => {
+    callbacks.length = 0;
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        private cb: () => void;
+        constructor(cb: () => void) {
+          this.cb = cb;
+        }
+        observe() {
+          callbacks.push(this.cb);
+        }
+        unobserve() {}
+        disconnect() {
+          const i = callbacks.indexOf(this.cb);
+          if (i >= 0) callbacks.splice(i, 1);
+        }
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(
+      function (this: HTMLElement) {
+        return this.isConnected ? 40 : 0;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(
+      function (this: HTMLElement) {
+        return this.isConnected ? 13 : 0;
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('stays a tooltip trigger after a resize once it truncates (no remount onto a detached element)', () => {
+    render(
+      <TooltipProvider>
+        <ClampedText
+          text="showroom-display-unit-cracked-front-glass.jpg"
+          lines={1}
+        />
+      </TooltipProvider>,
+    );
+    act(() => {
+      callbacks.slice().forEach((cb) => cb());
+    });
+    const p = screen.getByText('showroom-display-unit-cracked-front-glass.jpg');
+    expect(p).toHaveAttribute('data-slot', 'tooltip-trigger');
+  });
+
+  it('short text is plain (no tooltip trigger)', () => {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(13);
+    render(
+      <TooltipProvider>
+        <ClampedText text="a.png" lines={1} />
+      </TooltipProvider>,
+    );
+    expect(screen.getByText('a.png')).not.toHaveAttribute('data-slot');
   });
 });

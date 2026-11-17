@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -231,6 +231,8 @@ class IdeaCommentOut(ApiModel):
     # Set on a survivor's read of a merged child's comment (plan 20, AC-20-14);
     # such a row is read-only on the survivor (canEdit/canDelete false).
     fromIdea: Optional[IdeaSourceOut] = None
+    # Files attached to this comment (empty on a deleted placeholder).
+    attachments: List[IdeaAttachmentOut] = []
 
 
 # NUL and the other C0 controls, except newline and tab (AC-19-36), and lone
@@ -249,11 +251,11 @@ def _clean_parent_id(value: Optional[str]) -> Optional[str]:
         raise ValueError("parentId must be a comment id.")
 
 
-def _clean_comment_body(value: str, limit: int) -> str:
+def _clean_comment_body(value: str, limit: int, allow_empty: bool = False) -> str:
     if _CONTROL_CHARS.search(value or ""):
         raise ValueError("Comment contains unsupported characters.")
     cleaned = (value or "").strip()
-    if not cleaned:
+    if not cleaned and not allow_empty:
         raise ValueError("Comment cannot be empty.")
     if len(cleaned) > limit:
         raise ValueError(f"Comment is too long (max {limit} characters).")
@@ -261,8 +263,12 @@ def _clean_comment_body(value: str, limit: int) -> str:
 
 
 class IdeaCommentCreate(ApiModel):
-    """Operator / embed comment create: body stripped, 1..5000 chars."""
+    """Operator / embed / portal comment create: body stripped, 1..5000 chars.
+    An empty body is allowed only with ``hasAttachments`` (the files follow in
+    separate uploads, lane FEEDBACK-ATTACH-IMAGE)."""
 
+    # Declared before ``body`` so the body validator can read it.
+    hasAttachments: bool = False
     body: str
     parentId: Optional[str] = None
 
@@ -273,8 +279,8 @@ class IdeaCommentCreate(ApiModel):
 
     @field_validator("body")
     @classmethod
-    def _body(cls, v: str) -> str:
-        return _clean_comment_body(v, 5000)
+    def _body(cls, v: str, info: ValidationInfo) -> str:
+        return _clean_comment_body(v, 5000, allow_empty=bool(info.data.get("hasAttachments")))
 
 
 class IdeaCommentEdit(ApiModel):
@@ -965,6 +971,9 @@ class PortalIdeaOut(PortalCardOut):
     # viewer (a contact: submitter or follower) gets its WhatsApp updates.
     followerCount: int = 0
     following: bool = False
+    # Report-level files only (comment files ride their comment). Omitted for a
+    # dealer on an item they did not file (WITHHELD_DETAIL_KEYS).
+    attachments: Optional[List[IdeaAttachmentOut]] = None
 
 
 class PortalFollowOut(ApiModel):

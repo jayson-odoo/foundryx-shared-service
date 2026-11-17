@@ -67,6 +67,7 @@ THROTTLE_SCOPE_IDEA_COMMENT_IP = "idea_comment_ip"
 # signed-in principal (key = sha256 of tenant + voter id).
 THROTTLE_SCOPE_IDEA_PORTAL_COMMENT = "idea_portal_comment"
 THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT = "idea_portal_submit"
+THROTTLE_SCOPE_IDEA_PORTAL_UPLOAD = "idea_portal_upload"
 # Personal feedback link exchange (lane PUBLIC-IDEAS-BOARD): failed exchanges
 # per client IP (an own bucket; a guessing run never touches the login buckets).
 THROTTLE_SCOPE_IDEA_FEEDBACK_LINK = "idea_feedback_link"
