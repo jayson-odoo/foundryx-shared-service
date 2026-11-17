@@ -43,13 +43,17 @@ Every gateway error has one shape:
 | 404 | `endpoint_not_found` | Webhook id not found for this tenant |
 | 404 | `source_not_found` | Source id not found for this tenant |
 | 404 | `delivery_not_found` | Delivery id not found for this tenant |
+| 400 | `token_invalid` | Meta no longer accepts the source's Page token (or it has none): reconnect the Page |
+| 400 | `meta_refused` | Meta refused the form or test-lead call; `message` is Meta's reason, cleaned |
 | 409 | `endpoint_limit` | Already 5 webhook endpoints |
+| 409 | `test_lead_exists` | Meta still holds the form's previous test lead after clearing it; delete it in Meta's Lead Ads Testing Tool, then retry |
 | 409 | `lead_purged` | Redeliver of a lead whose personal data was deleted |
 | 422 | `invalid_request` | Body or query fails validation (e.g. `limit=500`, no `url`); `details` lists the fields |
 | 422 | `invalid_url` | Callback URL is not public `https://` |
 | 422 | `invalid_fields` | Field list: bad key, repeated key, unknown type, more than 50 |
 | 422 | `invalid_field_map` | Field map: bad form id, target not in your field list |
 | 422 | `invalid_events` | No event, or an unknown event |
+| 422 | `invalid_form_id` | `formId` is not an Instant Form id (digits only) |
 | 422 | `invalid_cursor` | `cursor` is not one this API returned |
 | 422 | `invalid_since` | `since` is not an ISO-8601 time |
 | 429 | `rate_limited` | Throttled; see `Retry-After` |
@@ -63,6 +67,8 @@ Every gateway error has one shape:
 | PUT | `/settings` | `{"allowSharedPages": bool}` | `Settings` |
 | GET | `/fields` | - | `{"data": [Field], "isDefault"}` |
 | PUT | `/fields` | `[Field]` (replaces the list; `[]` = defaults) | `{"data": [Field], "isDefault"}` |
+| GET | `/sources/{id}/forms/{formId}/questions` | - | `{"formId", "formName", "data": [Question]}` |
+| POST | `/sources/{id}/test-lead` | `{"formId": "<form id>"}` | `202` `{"formId"}` |
 | PUT | `/sources/{id}/field-map` | `{"formId": "<form id>" or "*", "map": {"<question key>": "<field key>"}}` | `Source` |
 | GET | `/webhooks` | - | `{"data": [Webhook]}` |
 | POST | `/webhooks` | `{"url", "events"}` | `201` `Webhook` + `secret` (shown once) |
@@ -88,7 +94,10 @@ Every gateway error has one shape:
 }
 ```
 
-`status` is one of `DRAFT`, `WAITING_FOR_TEST`, `LIVE`, `NEEDS_RECONNECT`, `DISCONNECTED`. `needsMapping` lists forms
+`status` is one of `DRAFT`, `WAITING_FOR_TEST`, `LIVE`, `NEEDS_RECONNECT`, `DISCONNECTED`. A newly connected Page is
+`WAITING_FOR_TEST` until its first test lead (`isTest: true`) is received, then `LIVE`. Leads, test or real, are
+stored and delivered in both states; only a test lead moves it to `LIVE`. Reconnecting a Page keeps its status.
+`needsMapping` lists forms
 whose leads arrived with no field map and had answers that went to notes: those leads were still delivered.
 Saving a map for that form (or for `"*"`) clears its entry.
 
@@ -113,6 +122,37 @@ Your CRM's own lead fields are the targets:
 - Per answer: the mapped field; else Facebook's standard questions fill the first field of their type (`full_name`,
   or `first_name` + `last_name` -> `name`; `email` -> `email`; `phone_number` -> `phone`); else one `key: value` line
   in the first `notes`-type field (none: the answer is only in `answers`).
+
+### Form questions
+
+`GET /sources/{id}/forms/{formId}/questions` reads the Instant Form's questions from Meta with the source's Page
+token, so your mapping screen can show real labels and your CRM can keep its own lookup of choice answers:
+
+```json
+{"formId": "400000000000001", "formName": "Solar enquiry",
+ "data": [
+   {"key": "full_name", "label": "Full name", "type": "FULL_NAME", "options": []},
+   {"key": "interest", "label": "What are you interested in?", "type": "CUSTOM",
+    "options": [{"key": "solar", "value": "Solar panels"}, {"key": "battery", "value": "Battery"}]}
+ ]}
+```
+
+- `key` is the question key used in the field map and in a lead's `answers[].key`. `type` is Meta's question type
+  as given (`FULL_NAME`, `EMAIL`, `PHONE`, `CUSTOM`, ...). `options` is empty for a free-text question; for a
+  multiple-choice question `value` is the text the person picked, which is what arrives in the lead's answer.
+- The source must belong to your key's tenant (`404 source_not_found` otherwise). Meta refusing the read answers
+  `400 token_invalid` or `400 meta_refused`.
+
+### Test lead
+
+`POST /sources/{id}/test-lead` with `{"formId": "<form id>"}` asks Meta for a test lead on that form and answers
+`202 {"formId"}` at once. The lead then arrives the normal way: a `lead.created` delivery (and in `/leads`) with
+`isTest: true`, usually within a minute. That first test lead moves a `WAITING_FOR_TEST` source to `LIVE`.
+
+- Meta keeps one test lead per form, so the previous test lead on the form is deleted first. If Meta still holds
+  it afterwards the call answers `409 test_lead_exists`: delete it in Meta's Lead Ads Testing Tool and retry.
+- Errors as for form questions (`404 source_not_found`, `400 token_invalid`, `400 meta_refused`, `422
+  invalid_form_id`).
 
 ### Settings
 
