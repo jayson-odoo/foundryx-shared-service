@@ -9,7 +9,7 @@ Tags: [BE] backend, [FE] frontend unit, [E2E] browser pass, [T] test-only.
 ## Slice 1 - backend
 
 - **AC-A-01 [BE]** Given a board session that can see an item, When it POSTs a file to
-  `/ideation/portal/{id}/attachments` (multipart `file`), Then 201 with `{id, kind, name, sizeBytes, contentPath}`
+  `/portal/ideas/{id}/attachments` (multipart `file`), Then 201 with `{id, kind, name, sizeBytes, contentPath}`
   and the bytes are in tenant storage. Uses the SAME `IdeaAttachmentService.upload` as staff + embed.
 - **AC-A-02 [BE]** Report-level upload (no `commentId`) is allowed only for the item's own submitter
   (`isMine`) or a board manager; anyone else gets 403.
@@ -19,11 +19,11 @@ Tags: [BE] backend, [FE] frontend unit, [E2E] browser pass, [T] test-only.
 - **AC-A-04 [BE]** Limits: file > 25 MB = 413; unverifiable / markup / executable = 415; an 11th file on one
   comment = 422 "This comment has reached its attachment limit."; the 51st file on one item (report +
   comments together) = 422 "This feedback has reached its attachment limit."
-- **AC-A-05 [BE]** `GET /ideation/portal/{id}` returns `attachments[]` (report-level only, never comment
+- **AC-A-05 [BE]** `GET /portal/ideas/{id}` returns `attachments[]` (report-level only, never comment
   files) - omitted with the other withheld keys when the text is withheld from this viewer.
-- **AC-A-06 [BE]** `GET /ideation/portal/{id}/comments` (and the activity feed's embedded comments) return each
+- **AC-A-06 [BE]** `GET /portal/ideas/{id}/comments` (and the activity feed's embedded comments) return each
   comment's own `attachments[]`; a deleted comment's placeholder returns `[]`.
-- **AC-A-07 [BE]** `GET /ideation/portal/{id}/attachments/{attId}/content` serves the bytes with
+- **AC-A-07 [BE]** `GET /portal/ideas/{id}/attachments/{attId}/content` serves the bytes with
   `Content-Security-Policy: sandbox`, `nosniff`, private cache; 404 for another tenant's / item's
   attachment, for a report attachment the viewer may not see (withheld), and for a deleted comment's file.
 - **AC-A-08 [BE]** A comment body may be empty when the request says files follow:
@@ -37,6 +37,12 @@ Tags: [BE] backend, [FE] frontend unit, [E2E] browser pass, [T] test-only.
   = report-level, which is what every existing row is).
 - **AC-A-11 [BE]** Throttle: board uploads count against a per-principal bucket (reuse the board comment
   throttle family) so a link holder cannot flood storage.
+
+- **AC-A-12 [BE]** (review) Content routes take `?variant=thumb`: a <= 320 px preview made on first view
+  (Pillow) and kept as `thumb_key`; non-image / corrupt = 404. This lazy path is the backfill for older uploads.
+- **AC-A-13 [BE]** (security review) The anonymous status page (`/public/ideas/{token}/comments`) never lists
+  files; board uploads are authorised + throttled before the body is read and refused attempts count; served
+  board files are `private, no-cache`; deleting an item removes its attachment rows first (FK-safe).
 
 ## Slice 2 - frontend (one shared component)
 
@@ -56,6 +62,10 @@ Tags: [BE] backend, [FE] frontend unit, [E2E] browser pass, [T] test-only.
   clicking opens the shared preview popup (moved to `components/platform/attachment-preview/`) with Download.
 - **AC-A-26 [FE]** CRM staff comment box (`feedback/components/idea-comments.tsx`) gets the same picker and
   shows comment thumbnails.
+
+- **AC-A-27 [FE]** Thumbnail tiles load `?variant=thumb`, never the original; the preview popup loads the original.
+- **AC-A-28 [FE]** A comment that finishes sending removes only the files and text it sent; anything added
+  meanwhile stays. A failed comment file stays in the box with "Try again" (re-uploads to the same comment).
 
 ## Slice 3 - verification
 
