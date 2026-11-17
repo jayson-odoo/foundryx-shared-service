@@ -59,7 +59,7 @@ Every gateway error has one shape:
 | 409 | `lead_purged` | Redeliver of a lead whose personal data was deleted |
 | 409 | `key_in_use` | Revoke of the key the request itself uses: revoke it with another key |
 | 422 | `invalid_request` | Body or query fails validation (e.g. `limit=500`, no `url`); `details` lists the fields |
-| 422 | `invalid_url` | Callback URL is not public `https://` |
+| 422 | `invalid_url` | The receiver URL is not public `https://` (message names it "The URL") |
 | 422 | `invalid_fields` | Field list: bad key, repeated key, unknown type, more than 50 |
 | 422 | `invalid_field_map` | Field map: bad form id, target not in your field list |
 | 422 | `invalid_events` | No event, or an unknown event |

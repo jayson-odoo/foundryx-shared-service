@@ -86,3 +86,12 @@ revoke/remove through the core grace-window engine.
 - "Use defaults" = grace-window countdown with Cancel (`lead_capture_fields.reset`, same `set_fields` call).
 - Dates dd/mm/yyyy, h:mm am/pm (shared `formatDmyDateTime`); Save fields is secondary (Form maps Create is the one
   filled button); Delivery and Form maps keep their list state in the address bar; "At most 5 receivers.".
+
+## Round 5 (crew-pass 4575cc46 NOT READY; merged main with #253 row menu)
+- "Map fields: All forms" lists every question of the Page's forms by Meta's label (each once), plus any stored key no
+  form asks any more in plain words ("Full name", "Q budget"); never a raw key. Meta unreadable = the stored lines.
+- A refused receiver URL uses the screen's word: "The URL must use https://.", "The URL cannot target localhost.",
+  "The URL cannot target a private or reserved IP.", "Enter a valid URL.".
+- Right-click / long-press row menu comes from the shared list (#253); Delivery refreshes Push / Pull only after a
+  Remove from it.
+

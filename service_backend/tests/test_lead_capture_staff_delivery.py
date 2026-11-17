@@ -87,6 +87,23 @@ def test_staff_receiver_refuses_bad_url_and_unknown_event(client, lc):
     assert res.json()["detail"]["code"] == "invalid_events"
 
 
+@pytest.mark.parametrize(
+    "url,message",
+    [
+        ("http://hooks.example.com/lead", "The URL must use https://."),
+        ("https://localhost/lead", "The URL cannot target localhost."),
+        ("https://10.0.0.1/lead", "The URL cannot target a private or reserved IP."),
+        ("https://[::1/lead", "Enter a valid URL."),
+    ],
+)
+def test_refused_receiver_url_uses_the_screen_words(client, lc, url, message):
+    # Crew pass 4575cc46: the Add receiver field is "URL"; never "Callback URL".
+    res = _create(client, _login(client), url=url)
+    assert res.status_code == 422
+    assert res.json()["detail"]["code"] == "invalid_url"
+    assert res.json()["detail"]["message"] == message
+
+
 def test_test_push_sends_one_signed_test_lead_to_that_receiver_only(client, lc, posts):
     headers = _login(client)
     a = _create(client, headers, url="https://a.example/leads").json()

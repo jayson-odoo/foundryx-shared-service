@@ -158,13 +158,52 @@ export function fieldMapPayload(
   return out;
 }
 
+/** Meta's own wording for its standard question keys. */
+const STANDARD_LABELS: Record<string, string> = {
+  full_name: 'Full name',
+  first_name: 'First name',
+  last_name: 'Last name',
+  email: 'Email',
+  phone_number: 'Phone number',
+};
+
+/** A question key in plain words when no form gives its label ("q_budget" -> "Q budget"). */
+export function questionLabel(key: string): string {
+  const std = STANDARD_LABELS[key];
+  if (std) return std;
+  const words = key.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
+}
+
 /**
- * The "All forms" ("*") map has no single form to read questions from, so its
- * lines are the question keys it already maps, labelled by key.
+ * The "All forms" ("*") lines from its stored map alone (no form read):
+ * the question keys it already names, in plain words.
  */
 export function storedMapQuestions(
   fieldMap: LeadSourceItem['fieldMap'],
   formId: string,
 ): LeadFormQuestion[] {
-  return Object.keys(fieldMap?.[formId] ?? {}).map((key) => ({ key, label: key, type: '' }));
+  return Object.keys(fieldMap?.[formId] ?? {}).map((key) => ({ key, label: questionLabel(key), type: '' }));
+}
+
+/**
+ * The "All forms" lines: every question of the Page's forms (each once, Meta's
+ * label from the first form that asks it), then any stored key no form asks
+ * any more, in plain words.
+ */
+export function allFormsQuestions(
+  perForm: LeadFormQuestion[][],
+  fieldMap: LeadSourceItem['fieldMap'],
+): LeadFormQuestion[] {
+  const out: LeadFormQuestion[] = [];
+  const seen = new Set<string>();
+  for (const q of perForm.flat()) {
+    if (seen.has(q.key)) continue;
+    seen.add(q.key);
+    out.push(q.label?.trim() ? q : { ...q, label: questionLabel(q.key) });
+  }
+  for (const q of storedMapQuestions(fieldMap, ALL_FORMS)) {
+    if (!seen.has(q.key)) out.push(q);
+  }
+  return out;
 }

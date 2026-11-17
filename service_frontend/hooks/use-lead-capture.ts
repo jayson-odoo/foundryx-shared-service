@@ -8,6 +8,7 @@ import type {
   LeadField,
   LeadFieldList,
   LeadFormList,
+  LeadFormQuestion,
   LeadFormQuestions,
   LeadKeyCreated,
   LeadReceiverCreated,
@@ -160,4 +161,29 @@ export function useSourceForms(sourceId: string): LoadState<LeadFormList> {
     [sourceId],
   );
   return useLoad(load, "Could not load the Page's forms.");
+}
+
+/** At most this many forms are read for the "All forms" popup. */
+const ALL_FORMS_READ_CAP = 25;
+
+/**
+ * Every Instant Form's questions for one Page (the "All forms" popup). Never
+ * fails: a form (or the whole form list) Meta will not answer is skipped, and
+ * the popup falls back to the stored lines. `enabled: false` loads nothing.
+ */
+export function useAllFormsQuestions(sourceId: string, enabled: boolean): LoadState<LeadFormQuestion[][]> {
+  const load = useCallback(async (): Promise<LeadFormQuestion[][]> => {
+    if (!enabled || !sourceId) return [];
+    let forms: LeadFormList['data'] = [];
+    try {
+      forms = (await leadCaptureService.listForms(sourceId)).data;
+    } catch {
+      return [];
+    }
+    const read = await Promise.allSettled(
+      forms.slice(0, ALL_FORMS_READ_CAP).map((f) => leadCaptureService.formQuestions(sourceId, f.id)),
+    );
+    return read.flatMap((r) => (r.status === 'fulfilled' ? [r.value.data] : []));
+  }, [sourceId, enabled]);
+  return useLoad(load, 'Could not load the form questions.');
 }

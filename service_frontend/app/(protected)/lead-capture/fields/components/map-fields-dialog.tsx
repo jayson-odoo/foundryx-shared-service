@@ -15,9 +15,15 @@ import {
 } from '@/components/ui/dialog';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { SearchSelect } from '@/components/platform/search-select';
-import { leadCaptureErrorMessage, useFormQuestions, useSaveFieldMap } from '@/hooks/use-lead-capture';
-import { fieldMapPayload, initialTargets, storedMapQuestions, targetOptions } from '@/lib/lead-field-map';
-import { ALL_FORMS, type LeadField, type LeadSourceItem } from '@/types/lead-capture';
+import {
+  leadCaptureErrorMessage,
+  type LoadState,
+  useAllFormsQuestions,
+  useFormQuestions,
+  useSaveFieldMap,
+} from '@/hooks/use-lead-capture';
+import { allFormsQuestions, fieldMapPayload, initialTargets, targetOptions } from '@/lib/lead-field-map';
+import { ALL_FORMS, type LeadField, type LeadFormQuestions, type LeadSourceItem } from '@/types/lead-capture';
 
 export interface MapTarget {
   sourceId: string;
@@ -56,17 +62,24 @@ function MapFieldsBody({
 }: MapFieldsDialogProps & { target: MapTarget }) {
   const allForms = target.formId === ALL_FORMS;
   const loaded = useFormQuestions(target.sourceId, target.formId, !allForms);
+  const everyForm = useAllFormsQuestions(target.sourceId, allForms);
   const { saving, save } = useSaveFieldMap();
   // The user's picks over the starting map (derived, so no first-paint flicker).
   const [picked, setPicked] = useState<Record<string, string>>({});
   const source = sources.find((s) => s.id === target.sourceId);
-  // "All forms" lists the question keys its stored map already names.
-  const questions = useMemo(
+  // "All forms" lists every question of the Page's forms (real labels) plus
+  // any stored line no form asks any more.
+  const questions = useMemo<LoadState<LeadFormQuestions>>(
     () =>
-      allForms && loaded.data
-        ? { ...loaded, data: { ...loaded.data, data: storedMapQuestions(source?.fieldMap ?? {}, ALL_FORMS) } }
+      allForms
+        ? {
+            ...everyForm,
+            data: everyForm.data
+              ? { formId: ALL_FORMS, formName: null, data: allFormsQuestions(everyForm.data, source?.fieldMap ?? {}) }
+              : null,
+          }
         : loaded,
-    [allForms, loaded, source],
+    [allForms, everyForm, loaded, source],
   );
   const title = questions.data?.formName || target.formName;
   const initial = useMemo(

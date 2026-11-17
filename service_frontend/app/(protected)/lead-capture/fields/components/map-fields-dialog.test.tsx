@@ -6,9 +6,11 @@ import { MapFieldsDialog } from './map-fields-dialog';
 
 const formQuestions = vi.fn();
 const saveFieldMap = vi.fn();
+const listForms = vi.fn();
 vi.mock('@/services/lead-capture-service', () => ({
   leadCaptureService: {
     formQuestions: (...a: unknown[]) => formQuestions(...a),
+    listForms: (...a: unknown[]) => listForms(...a),
     saveFieldMap: (...a: unknown[]) => saveFieldMap(...a),
   },
 }));
@@ -93,8 +95,15 @@ describe('MapFieldsDialog', () => {
     expect(formQuestions).toHaveBeenCalledTimes(2);
   });
 
-  it('All forms lists its stored lines without calling Meta, and saves them', async () => {
+  it("All forms lists every question of the Page's forms by its real label, and saves them", async () => {
+    // Crew pass 4575cc46: the All forms popup showed raw keys ("full_name").
     const allForms: LeadSourceItem = { ...source, fieldMap: { '*': { what_is_your_budget: 'budget', full_name: 'name' } } };
+    listForms.mockResolvedValue({
+      formsMode: 'all',
+      formIds: [],
+      tosAccepted: true,
+      data: [{ id: '222', name: 'Show unit enquiry', status: 'ACTIVE', createdAt: null }],
+    });
     const onSaved = vi.fn();
     render(
       <MapFieldsDialog
@@ -106,11 +115,36 @@ describe('MapFieldsDialog', () => {
         onSaved={onSaved}
       />,
     );
-    await waitFor(() => expect(screen.getByRole('combobox', { name: 'what_is_your_budget' })).toHaveTextContent('Budget'));
-    expect(screen.getByRole('combobox', { name: 'full_name' })).toHaveTextContent('Name');
-    expect(formQuestions).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'What is your budget?' })).toHaveTextContent('Budget'),
+    );
+    expect(screen.getByRole('combobox', { name: 'Full name' })).toHaveTextContent('Name');
+    expect(screen.getByRole('combobox', { name: 'Best time to call' })).toHaveTextContent('Leave in lead notes');
+    expect(screen.queryByText('full_name')).not.toBeInTheDocument();
+    expect(formQuestions).toHaveBeenCalledWith('src1', '222');
+    expect(formQuestions).not.toHaveBeenCalledWith('src1', '*');
     fireEvent.click(screen.getByRole('button', { name: 'Save map' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
-    expect(saveFieldMap).toHaveBeenCalledWith('src1', '*', { what_is_your_budget: 'budget', full_name: 'name' });
+    expect(saveFieldMap).toHaveBeenCalledWith('src1', '*', {
+      full_name: 'name',
+      what_is_your_budget: 'budget',
+      best_time: null,
+    });
+  });
+
+  it('All forms still opens from its stored lines, in plain words, when Meta cannot be read', async () => {
+    const allForms: LeadSourceItem = { ...source, fieldMap: { '*': { q_budget: 'budget' } } };
+    listForms.mockRejectedValue(new ApiError('x', 502, null, { code: 'meta_unreachable', message: 'Meta did not answer.' }));
+    render(
+      <MapFieldsDialog
+        target={{ sourceId: 'src1', formId: '*', formName: 'All forms' }}
+        sources={[allForms]}
+        fields={fields}
+        canManage
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Q budget' })).toHaveTextContent('Budget'));
   });
 });

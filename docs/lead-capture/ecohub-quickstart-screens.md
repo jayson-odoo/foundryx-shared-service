@@ -82,7 +82,8 @@ Show:
 
 Errors:
 
-- `422 invalid_url`: the URL is not public `https://`. Show the message under the URL field.
+- `422 invalid_url`: the URL is not public `https://`. Show the message under the URL field as-is (e.g. "The URL
+  must use https://.", "The URL cannot target localhost.").
 - `422 invalid_events`: no event chosen, or an unknown one.
 - `409 endpoint_limit`: already 5 receivers ("At most 5 receivers.").
 - `404 endpoint_not_found` (test push, remove): the receiver is gone. Reload the list.
@@ -136,8 +137,12 @@ Show:
   - any other answer goes to the notes field; label it "Leave in notes".
   Keep the automatic field in the picker too: a stored map may name it, and the picker must show what is stored.
   Send every question on Save, `null` for the automatic / notes choice. Saving clears the form's "Needs mapping".
-- All forms (`"*"`): there is no single form to read questions from, so do NOT call the questions route for it
-  (it answers `422 invalid_form_id`). Its lines are the question keys its stored map already names, labelled by key.
+- All forms (`"*"`): there is no single form to read questions from, so do NOT call the questions route with `"*"`
+  (it answers `422 invalid_form_id`). Instead read `GET /sources/{sourceId}/forms`, then the questions of each form,
+  and list every question once with its `label`. Add any key the stored `"*"` map names that no form asks any more,
+  in plain words (Shared Service uses "Full name", "Email", "Phone number", "First name", "Last name" for the
+  standard keys and turns `_` into spaces otherwise). Never show a raw key. If Meta cannot be read, show the stored
+  lines that way.
 - Add form: Page picker, then a Form picker filled from `GET /sources/{sourceId}/forms`; then open the map popup.
 
 Errors:

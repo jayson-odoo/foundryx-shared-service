@@ -4,6 +4,8 @@ import {
   fieldMapPayload,
   formMapRows,
   initialTargets,
+  allFormsQuestions,
+  questionLabel,
   storedMapQuestions,
   targetOptions,
   validateLeadFields,
@@ -91,12 +93,39 @@ describe('initialTargets + targetOptions + payload', () => {
     expect(targetOptions(questions[0], fields).map((o) => o.value)).toContain('name');
   });
 
-  it('All forms lines are the stored question keys', () => {
-    expect(storedMapQuestions({ '*': { budget_q: 'budget', best: 'budget' } }, '*').map((q) => q.key)).toEqual([
-      'budget_q',
-      'best',
+  it('All forms lines are the stored question keys, with readable labels', () => {
+    expect(storedMapQuestions({ '*': { budget_q: 'budget', full_name: 'name' } }, '*')).toEqual([
+      { key: 'budget_q', label: 'Budget q', type: '' },
+      { key: 'full_name', label: 'Full name', type: '' },
     ]);
     expect(storedMapQuestions({}, '*')).toEqual([]);
+  });
+
+  it('labels a question key in plain words, never the raw key', () => {
+    expect(questionLabel('full_name')).toBe('Full name');
+    expect(questionLabel('phone_number')).toBe('Phone number');
+    expect(questionLabel('email')).toBe('Email');
+    expect(questionLabel('q_budget')).toBe('Q budget');
+    expect(questionLabel('what_is_your_budget?')).toBe('What is your budget?');
+  });
+
+  it("All forms = every question of the Page's forms (Meta labels) plus stored keys no form asks", () => {
+    const perForm = [
+      [
+        { key: 'full_name', label: 'Full name', type: 'FULL_NAME' },
+        { key: 'q_budget', label: 'What is your budget?', type: 'CUSTOM' },
+      ],
+      [
+        { key: 'q_budget', label: 'Budget (other wording)', type: 'CUSTOM' },
+        { key: 'best_time', label: 'Best time to call', type: 'CUSTOM' },
+      ],
+    ];
+    expect(allFormsQuestions(perForm, { '*': { q_budget: 'budget', old_q: 'budget' } })).toEqual([
+      { key: 'full_name', label: 'Full name', type: 'FULL_NAME' },
+      { key: 'q_budget', label: 'What is your budget?', type: 'CUSTOM' },
+      { key: 'best_time', label: 'Best time to call', type: 'CUSTOM' },
+      { key: 'old_q', label: 'Old q', type: '' },
+    ]);
   });
 
   it('drops a mapped target that is no longer a product field', () => {

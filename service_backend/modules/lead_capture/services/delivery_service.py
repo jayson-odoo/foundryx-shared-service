@@ -35,7 +35,7 @@ from app.models.tenant import Tenant
 from app.repositories.module_repository import ModuleRepository
 from app.secrets import decrypt_secret, encrypt_secret
 from app.services import webhook_post
-from app.services.url_guard import GuardedAsyncTransport, UrlGuardError
+from app.services.url_guard import GuardedAsyncTransport, UnparseableUrlError, UrlGuardError
 from app.services.url_guard import assert_deliverable as core_assert_deliverable
 from app.services.url_guard import validate_public_https_url
 
@@ -106,7 +106,10 @@ def _validate_events(events: List[str]) -> List[str]:
 def create_endpoint(db: Session, tenant_id: str, url: str, events: List[str]) -> Tuple[LcWebhookEndpoint, str]:
     """Returns ``(row, secret)``; the secret is shown ONCE."""
     try:
-        clean_url = validate_public_https_url(url, strict_dns=False, subject="Callback URL")
+        # The Add receiver screen calls the field "URL": the refusal uses that word.
+        clean_url = validate_public_https_url(url, strict_dns=False, subject="The URL")
+    except UnparseableUrlError:
+        raise DeliveryError(422, "invalid_url", "Enter a valid URL.") from None
     except UrlGuardError as exc:
         raise DeliveryError(422, "invalid_url", str(exc)) from None
     clean_events = _validate_events(events)
