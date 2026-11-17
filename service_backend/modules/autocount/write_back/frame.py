@@ -135,6 +135,12 @@ class WriteFrame:
         self.acting_user_id: Optional[str] = None
         self.acting_user_name: Optional[str] = None
         self._operation_id = operation_id  # set when an operation runs this flow (the split link)
+        # AUTOCOUNT-STRANDED-OPS-B: the operation row a single-document primitive runs under (``run_primitive``):
+        # its action rows and GETs carry it, so a same-key resend can look the outcome up. Never ``call.operation_id``
+        # (that marks a step of a multi-step operation, which skips the busy check).
+        self._owner_operation_id: Optional[str] = None
+        # the action whose unknown outcome the next primitive call looks up instead of writing (``look_up``)
+        self._lookup_action: Optional[Any] = None
         self._call_log: Optional[cl.CallLog] = None
         self._refused_base_url: Optional[str] = None
         self._write_headers: Dict[str, str] = {}
@@ -166,7 +172,7 @@ class WriteFrame:
         context = cl.CallContext(
             tenant_id=company.tenant_id, company_id=company.id,
             actor=key_id or self._actor or cl.ACTOR_SYSTEM, request_id=self.request_id,
-            operation_id=operation_id or self._operation_id, action_id=action_id, doc_type=kind,
+            operation_id=operation_id or self._operation_id or self._owner_operation_id, action_id=action_id, doc_type=kind,
             doc_no=doc_no, doc_key=doc_key, acting_user_id=self.acting_user_id,
             acting_user_name=self.acting_user_name,
         )

@@ -44,9 +44,19 @@ ROW_KEYS = (
 class WriteRefusal(Exception):
     """A request the builders refuse; ``code`` is stable, the text is operator-safe."""
 
-    def __init__(self, code: str, message: str = "") -> None:
+    def __init__(self, code: str, message: str = "", *, plain: bool = False) -> None:
+        """``plain``: ``message`` is the user-facing reason as is (no code prefix)."""
         self.code = code
-        super().__init__(f"{code}: {message}" if message else code)
+        super().__init__(message if plain and message else (f"{code}: {message}" if message else code))
+
+
+def on_spo_message(spo_ref: Optional[str] = None) -> str:
+    """The plain reason for ``ROW_ON_SPO`` (the CRM shows it as is): one text for the operations, the
+    batch link and the single-line primitives."""
+    where = f"shipping purchase order {spo_ref}" if spo_ref else "a shipping purchase order"
+    that = "that shipping purchase order" if spo_ref else "the shipping purchase order"
+    return (f"This purchase order line is on {where}, so the change was not made. "
+            f"Remove it from {that} first, then try again.")
 
 
 def _dec(value: Any) -> Decimal:
@@ -173,7 +183,7 @@ def _deleted(row: Doc) -> Doc:
 
 def _refuse_on_spo(spo_ref: Optional[str]) -> None:
     if spo_ref:
-        raise WriteRefusal("ROW_ON_SPO", f"row is referenced by {spo_ref}; unlink it there first")
+        raise WriteRefusal("ROW_ON_SPO", on_spo_message(spo_ref), plain=True)
 
 
 MAX_QTY = Decimal(1_000_000_000)
