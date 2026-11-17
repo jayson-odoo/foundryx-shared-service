@@ -645,28 +645,27 @@ class ContactRepository:
 
     def identities_with_channel_types(
         self, contact_ids: List[str], tenant_id: str
-    ) -> Dict[str, List[Tuple[ContactChannelIdentity, str]]]:
-        """Every identity of each contact on a live (not trashed) channel, with
-        that channel's type - ONE query for a whole page (the `windows[]` list
-        on a version 2 `ThreadItem`). Tenant-scoped on both tables."""
+    ) -> List[Tuple[ContactChannelIdentity, str, bool]]:
+        """Every identity of the given contacts with its channel's type and
+        trashed flag - ONE query for a whole page. `_thread_items` derives both
+        the per-thread window (what `identity_windows_for` answers) and the
+        version 2 `windows[]` list from it. Tenant-scoped on both tables."""
         ids = [c for c in set(contact_ids) if c]
         if not ids:
-            return {}
-        rows = (
-            self.db.query(ContactChannelIdentity, Channel.channel_type)
-            .join(Channel, Channel.id == ContactChannelIdentity.channel_id)
-            .filter(
-                ContactChannelIdentity.tenant_id == tenant_id,
-                ContactChannelIdentity.contact_id.in_(ids),
-                Channel.tenant_id == tenant_id,
-                Channel.is_trashed.is_(False),
+            return []
+        return [
+            (identity, channel_type, bool(is_trashed))
+            for identity, channel_type, is_trashed in (
+                self.db.query(ContactChannelIdentity, Channel.channel_type, Channel.is_trashed)
+                .join(Channel, Channel.id == ContactChannelIdentity.channel_id)
+                .filter(
+                    ContactChannelIdentity.tenant_id == tenant_id,
+                    ContactChannelIdentity.contact_id.in_(ids),
+                    Channel.tenant_id == tenant_id,
+                )
+                .all()
             )
-            .all()
-        )
-        out: Dict[str, List[Tuple[ContactChannelIdentity, str]]] = {}
-        for identity, channel_type in rows:
-            out.setdefault(identity.contact_id, []).append((identity, channel_type))
-        return out
+        ]
 
     def find_by_phone_digits(
         self, phone_digits: str, workspace_id: str, tenant_id: str
