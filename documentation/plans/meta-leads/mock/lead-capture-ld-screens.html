@@ -72,16 +72,19 @@ label{display:block;font-size:13px;margin:0 0 4px}
 </head>
 <body>
 <div class="wrap">
-  <h1>Lead Capture: Keys, Delivery, Fields (lane L-D, mock v1)</h1>
-  <p class="sub">Fake data only. One page per product company; the tab sits in the address bar.</p>
+  <h1>Lead Capture: Keys, Delivery, Fields (lane L-D, mock v1 as built)</h1>
+  <p class="sub">Fake data only. Sidebar block "Lead Capture" with three pages: Keys, Delivery, Fields. Each page shows only to users holding its permission, and only while Lead Capture is installed for the company.</p>
 
   <div class="tabs" role="tablist">
     <button role="tab" aria-selected="true" data-s="k1">Keys</button>
-    <button role="tab" aria-selected="false" data-s="k2">Key created</button>
-    <button role="tab" aria-selected="false" data-s="d1">Delivery: push</button>
-    <button role="tab" aria-selected="false" data-s="d2">Receiver added</button>
+    <button role="tab" aria-selected="false" data-s="k2">Create key</button>
+    <button role="tab" aria-selected="false" data-s="k3">Key created</button>
     <button role="tab" aria-selected="false" data-s="d3">Delivery: pull only</button>
+    <button role="tab" aria-selected="false" data-s="d1">Delivery: push</button>
+    <button role="tab" aria-selected="false" data-s="d2">Add receiver</button>
+    <button role="tab" aria-selected="false" data-s="d4">Switch to pull only</button>
     <button role="tab" aria-selected="false" data-s="f1">Fields</button>
+    <button role="tab" aria-selected="false" data-s="f4">Add form</button>
     <button role="tab" aria-selected="false" data-s="f2">Map fields</button>
     <button role="tab" aria-selected="false" data-s="f3">Map fields: Meta refused</button>
     <button role="tab" aria-selected="false" data-s="el">Element list</button>
@@ -89,45 +92,62 @@ label{display:block;font-size:13px;margin:0 0 4px}
 
   <!-- K1 -->
   <section class="frame" data-p="k1">
-    <div class="bar"><b>Lead Capture</b><span class="crumb">Lead Capture &gt; Keys</span></div>
-    <div class="steps"><span class="on">Keys</span><span>Delivery</span><span>Fields</span></div>
+    <div class="bar"><b>Keys</b><span class="crumb">Dashboard &gt; Lead Capture &gt; Keys</span></div>
     <div class="body">
-      <div class="tool"><input placeholder="Search keys"><button class="btn btn2">Filters</button><button class="btn btn2">Columns</button><button class="btn">Create</button></div>
+      <div class="tool"><input placeholder="Search keys..."><button class="btn btn2">Filters</button><button class="btn btn2">Export</button><button class="btn btn2">Columns</button><button class="btn">Create</button></div>
       <div class="scroll"><table>
-        <thead><tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th>Status</th></tr></thead>
+        <thead><tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
         <tbody>
-          <tr><td>CRM sync</td><td>fxl_live_ab12...</td><td>17/11/2026, 10:02 am</td><td>17/11/2026, 3:40 pm</td><td><span class="pill ok">Active</span></td></tr>
-          <tr><td>Old server</td><td>fxl_live_9f0c...</td><td>02/11/2026, 9:15 am</td><td>-</td><td><span class="pill bad">Revoked</span></td></tr>
+          <tr><td>CRM sync</td><td>fxl_live_****Jk4Q</td><td>17 Nov 2026, 10:02</td><td>17 Nov 2026, 15:40</td><td><span class="pill ok">Active</span></td><td>...</td></tr>
+          <tr><td>Old server</td><td>fxl_live_****9f0c</td><td>02 Nov 2026, 09:15</td><td>-</td><td><span class="pill">Revoked</span></td><td>...</td></tr>
         </tbody>
       </table></div>
       <div class="ctx"><div>Revoke</div></div>
-      <p class="cap">Row menu: Revoke (grace window).</p>
+      <p class="cap">Row "..." menu: Revoke. Toast "Revoking in 9s - Cancel"; when it lapses the row reads Revoked and stays listed. Every column sorts; Filters = Status (multi-select).</p>
     </div>
   </section>
 
   <!-- K2 -->
   <section class="frame" data-p="k2" hidden>
     <div class="body">
+      <div class="pop"><h3>Create key</h3><div class="pb">
+        <div class="fld"><label>Name *</label><input value="CRM sync"></div>
+      </div><div class="pf"><button class="btn btn2">Cancel</button><button class="btn">Create</button></div></div>
+    </div>
+  </section>
+
+  <!-- K3 -->
+  <section class="frame" data-p="k3" hidden>
+    <div class="body">
       <div class="pop"><h3>Key created</h3><div class="pb">
-        <div class="note warn">Copy this key now. It is shown only once.</div>
-        <div class="row"><div class="code" style="flex:1">fxl_live_ab12cd34ef56gh78ij90kl12mn34op56</div><button class="btn btn2">Copy</button></div>
+        <div class="row"><div class="code" style="flex:1">fxl_live_Qm9vYmFyYmF6cXV4cXV1eDEyMzQ1Njc4Jk4Q</div><button class="btn btn2">Copy</button></div>
+        <p style="color:var(--bad);font-weight:600;margin:10px 0 0">Copy this key now - it won't be shown again.</p>
       </div><div class="pf"><button class="btn">Done</button></div></div>
+    </div>
+  </section>
+
+  <!-- D3 -->
+  <section class="frame" data-p="d3" hidden>
+    <div class="bar"><b>Delivery</b><span class="crumb">Dashboard &gt; Lead Capture &gt; Delivery</span></div>
+    <div class="body">
+      <div class="seg"><button>Push to my system</button><button class="on">Pull only</button></div>
+      <div class="sw" style="display:block"><label>Leads address</label><div class="row"><div class="code" style="flex:1">https://ss.example.com/api/v1/lead-capture/leads</div><button class="btn btn2">Copy</button></div></div>
+      <p class="cap">First view follows what is stored: no receivers = Pull only, receivers = Push.</p>
     </div>
   </section>
 
   <!-- D1 -->
   <section class="frame" data-p="d1" hidden>
-    <div class="bar"><b>Lead Capture</b><span class="crumb">Lead Capture &gt; Delivery</span></div>
-    <div class="steps"><span>Keys</span><span class="on">Delivery</span><span>Fields</span></div>
+    <div class="bar"><b>Delivery</b><span class="crumb">Dashboard &gt; Lead Capture &gt; Delivery</span></div>
     <div class="body">
       <div class="seg"><button class="on">Push to my system</button><button>Pull only</button></div>
-      <div class="tool"><input placeholder="Search receivers"><button class="btn btn2">Columns</button><button class="btn">Create</button></div>
+      <div class="tool"><input placeholder="Search receivers..."><button class="btn btn2">Filters</button><button class="btn btn2">Export</button><button class="btn btn2">Columns</button><button class="btn">Create</button></div>
       <div class="scroll"><table>
-        <thead><tr><th>URL</th><th>Events</th><th>Added</th><th>Last delivered</th></tr></thead>
-        <tbody><tr><td>https://crm.example.com/hooks/leads</td><td>New lead</td><td>17/11/2026, 10:05 am</td><td>17/11/2026, 3:41 pm</td></tr></tbody>
+        <thead><tr><th>URL</th><th>Events</th><th>Added</th><th>Last delivered</th><th></th></tr></thead>
+        <tbody><tr><td>https://crm.example.com/hooks/leads</td><td><span class="pill">New lead</span></td><td>17 Nov 2026, 10:05</td><td>17 Nov 2026, 15:41</td><td>...</td></tr></tbody>
       </table></div>
       <div class="ctx"><div>Send test push</div><div>Remove</div></div>
-      <p class="cap">Row menu: Send test push, Remove (grace window). Toast after a test push: "Test push sent" or the plain reason.</p>
+      <p class="cap">Row "..." menu: Send test push (toast "Test push sent." or the plain reason), Remove (toast "Removing in 9s - Cancel"). Filters = Events (multi-select).</p>
     </div>
   </section>
 
@@ -137,52 +157,65 @@ label{display:block;font-size:13px;margin:0 0 4px}
       <div class="pop"><h3>Add receiver</h3><div class="pb">
         <div class="fld"><label>URL *</label><input value="https://crm.example.com/hooks/leads"></div>
         <div class="fld"><label>Events *</label><span class="sel">New lead</span></div>
-        <div class="note warn">Copy this signing secret now. It is shown only once.</div>
+      </div><div class="pf"><button class="btn btn2">Cancel</button><button class="btn">Add</button></div></div>
+      <div class="pop"><h3>Receiver added</h3><div class="pb">
         <div class="row"><div class="code" style="flex:1">whsec_Qm9vYmFyYmF6cXV4cXV1eDEyMzQ1Njc4OTA</div><button class="btn btn2">Copy</button></div>
+        <p style="color:var(--bad);font-weight:600;margin:10px 0 0">Copy this signing secret now - it won't be shown again.</p>
       </div><div class="pf"><button class="btn">Done</button></div></div>
+      <p class="cap">A refused URL (not https, private address) shows the plain reason under the URL field.</p>
     </div>
   </section>
 
-  <!-- D3 -->
-  <section class="frame" data-p="d3" hidden>
-    <div class="bar"><b>Lead Capture</b><span class="crumb">Lead Capture &gt; Delivery</span></div>
-    <div class="steps"><span>Keys</span><span class="on">Delivery</span><span>Fields</span></div>
+  <!-- D4 -->
+  <section class="frame" data-p="d4" hidden>
     <div class="body">
-      <div class="seg"><button>Push to my system</button><button class="on">Pull only</button></div>
-      <div class="fld"><label>Leads address</label><div class="code">https://ss.example.com/api/v1/lead-capture/leads</div></div>
       <div class="pop"><h3>Switch to pull only?</h3><div class="pb">1 receiver will be removed. New leads will no longer be pushed to it.</div>
         <div class="pf"><button class="btn btn2">Cancel</button><button class="btn">Remove receivers</button></div></div>
+      <p class="cap">Then toast "Leads are now pull only." and the Leads address shows.</p>
     </div>
   </section>
 
   <!-- F1 -->
   <section class="frame" data-p="f1" hidden>
-    <div class="bar"><b>Lead Capture</b><span class="crumb">Lead Capture &gt; Fields</span></div>
-    <div class="steps"><span>Keys</span><span>Delivery</span><span class="on">Fields</span></div>
+    <div class="bar"><b>Fields</b><span class="crumb">Dashboard &gt; Lead Capture &gt; Fields</span></div>
     <div class="body">
-      <p class="q">Lead fields</p>
-      <div class="scroll"><table>
-        <thead><tr><th>Key</th><th>Label</th><th>Type</th></tr></thead>
-        <tbody>
-          <tr><td>name</td><td>Name</td><td>Name</td></tr>
-          <tr><td>phone</td><td>Phone</td><td>Phone</td></tr>
-          <tr><td>email</td><td>Email</td><td>Email</td></tr>
-          <tr><td>budget</td><td>Budget</td><td>Text</td></tr>
-          <tr><td>notes</td><td>Lead notes</td><td>Notes</td></tr>
-        </tbody>
-      </table></div>
-      <div class="row" style="margin:10px 0 22px"><button class="btn btn2">Add field</button><button class="btn btn2">Use defaults</button><button class="btn">Save</button></div>
+      <div class="sw" style="display:block">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px"><b>Lead fields</b><span class="row"><button class="btn btn2">Use defaults</button><button class="btn">Save fields</button></span></div>
+        <div class="scroll"><table>
+          <thead><tr><th>Key *</th><th>Label</th><th>Type *</th><th></th></tr></thead>
+          <tbody>
+            <tr><td><span class="sel">name</span></td><td><span class="sel">Name</span></td><td><span class="sel">Name</span></td><td>...</td></tr>
+            <tr><td><span class="sel">phone</span></td><td><span class="sel">Phone</span></td><td><span class="sel">Phone</span></td><td>...</td></tr>
+            <tr><td><span class="sel">email</span></td><td><span class="sel">Email</span></td><td><span class="sel">Email</span></td><td>...</td></tr>
+            <tr><td><span class="sel">notes</span></td><td><span class="sel">Lead notes</span></td><td><span class="sel">Lead notes</span></td><td>...</td></tr>
+            <tr><td><span class="sel">budget</span></td><td><span class="sel">Budget</span></td><td><span class="sel">Text</span></td><td>...</td></tr>
+          </tbody>
+        </table></div>
+        <button class="btn btn2" style="margin-top:10px">+ Add field</button>
+        <p class="cap">Line "..." menu: Move up, Move down, Remove. Save fields is enabled once something changed. "Use defaults" shows only when a list is saved (back to Name, Phone, Email, Lead notes).</p>
+      </div>
       <p class="q">Form maps</p>
-      <div class="tool"><input placeholder="Search forms"><button class="btn btn2">Filters</button><button class="btn btn2">Columns</button><button class="btn btn2">Add form</button></div>
+      <div class="tool"><input placeholder="Search forms..."><button class="btn btn2">Filters</button><button class="btn btn2">Export</button><button class="btn btn2">Columns</button><button class="btn">Create</button></div>
       <div class="scroll"><table>
-        <thead><tr><th>Page</th><th>Form</th><th>Mapped</th><th>Status</th></tr></thead>
+        <thead><tr><th>Page</th><th>Form</th><th>Mapped questions</th><th>Answers in notes</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td>Sample Home Page</td><td>All forms</td><td>3</td><td><span class="pill ok">Mapped</span></td></tr>
-          <tr><td>Sample Home Page</td><td>Show unit enquiry</td><td>2 of 5</td><td><span class="pill warn">Needs mapping</span></td></tr>
-          <tr><td>Sample Home Page</td><td>Viewing booking</td><td>4 of 4</td><td><span class="pill ok">Mapped</span></td></tr>
+          <tr><td>Sample Home Page</td><td>Show unit enquiry</td><td>0</td><td>3</td><td><span class="pill warn">Needs mapping</span></td></tr>
+          <tr><td>Sample Home Page</td><td>All forms</td><td>2</td><td>-</td><td><span class="pill ok">Mapped</span></td></tr>
+          <tr><td>Sample Home Page</td><td>Instant Form 1234567890</td><td>1</td><td>-</td><td><span class="pill ok">Mapped</span></td></tr>
         </tbody>
       </table></div>
-      <p class="cap">Click a row: the Map fields popup.</p>
+      <p class="cap">Click a row: the Map fields popup. Create = Add form. A form's name shows when Meta reported it on a "Map fields" notice; otherwise "Instant Form &lt;id&gt;" (the form list route comes with lane L-B).</p>
+    </div>
+  </section>
+
+  <!-- F4 -->
+  <section class="frame" data-p="f4" hidden>
+    <div class="body">
+      <div class="pop"><h3>Add form</h3><div class="pb">
+        <div class="fld"><label>Page *</label><span class="sel">Sample Home Page</span></div>
+        <div class="fld"><label>Instant Form ID *</label><input value="1234567890"></div>
+      </div><div class="pf"><button class="btn btn2">Cancel</button><button class="btn">Next</button></div></div>
+      <p class="cap">With no Page connected the popup reads "No Facebook Page is connected yet."; a non-digit id reads "Enter the Instant Form ID (digits only)."</p>
     </div>
   </section>
 
@@ -193,14 +226,15 @@ label{display:block;font-size:13px;margin:0 0 4px}
         <div class="scroll"><table class="map">
           <thead><tr><th>Question</th><th>Lead field</th></tr></thead>
           <tbody>
-            <tr><td>Full name</td><td><span class="sel">Name</span></td></tr>
-            <tr><td>Phone number</td><td><span class="sel">Phone</span></td></tr>
-            <tr><td>Email</td><td><span class="sel">Email</span></td></tr>
+            <tr><td>Full name</td><td><span class="sel">Name (automatic)</span></td></tr>
+            <tr><td>Phone number</td><td><span class="sel">Phone (automatic)</span></td></tr>
+            <tr><td>Email</td><td><span class="sel">Email (automatic)</span></td></tr>
             <tr><td>What is your budget?</td><td><span class="sel">Budget</span></td></tr>
             <tr><td>Best time to call</td><td><span class="sel">Leave in lead notes</span></td></tr>
           </tbody>
         </table></div>
-      </div><div class="pf"><button class="btn btn2">Cancel</button><button class="btn">Save</button></div></div>
+      </div><div class="pf"><button class="btn btn2">Cancel</button><button class="btn">Save map</button></div></div>
+      <p class="cap">Each picker is searchable and lists the product's own fields. Phone width: each question sits above its picker.</p>
     </div>
   </section>
 
@@ -208,9 +242,9 @@ label{display:block;font-size:13px;margin:0 0 4px}
   <section class="frame" data-p="f3" hidden>
     <div class="body">
       <div class="pop"><h3>Map fields: Show unit enquiry</h3><div class="pb">
-        <div class="note bad">Facebook did not return this form's questions: this Page has not given Leads Access yet.</div>
+        <div class="note bad">This Page has not given Leads Access yet.</div>
         <div class="row"><button class="btn">Try again</button></div>
-      </div></div>
+      </div><div class="pf"><button class="btn btn2">Cancel</button></div></div>
     </div>
   </section>
 
@@ -219,20 +253,24 @@ label{display:block;font-size:13px;margin:0 0 4px}
     <div class="body scroll"><table class="el">
       <thead><tr><th>Element</th><th>Component (repo path)</th></tr></thead>
       <tbody>
-        <tr><td>Page shell + tabs (tab in URL)</td><td>components/platform/resource-form (Tabs) / components/ui/tabs.tsx</td></tr>
-        <tr><td>Keys list, receivers list, form maps list</td><td>components/platform/resource-list (ResourceList, embedded like omnichannel workspace-api-keys-tab.tsx)</td></tr>
-        <tr><td>Row "..." menu actions</td><td>components/platform/resource-actions (action registry, surfaces row/bulk)</td></tr>
-        <tr><td>Key created reveal + Copy</td><td>pattern of omnichannel/settings/workspaces/components/mint-api-key-dialog.tsx + hooks/use-copy-to-clipboard</td></tr>
-        <tr><td>Signing secret reveal</td><td>omnichannel/settings/channels/components/webhook-secret-panel.tsx</td></tr>
-        <tr><td>Revoke / Remove / Pull-only confirm</td><td>components/platform/resource-actions ConfirmActionDialog</td></tr>
-        <tr><td>Push / Pull only choice</td><td>components/ui/toggle-group (segmented control as Active|Trashed)</td></tr>
+        <tr><td>Menu block + page title/breadcrumb</td><td>service_frontend/config/menu.config.tsx (module + permission tags, all 3 copies); components/platform/page-header</td></tr>
+        <tr><td>Keys, receivers, form maps lists (search, filters, sort, columns, export, Create)</td><td>components/platform/resource-list (ResourceList; client-side query via new shared lib/client-list-query.ts)</td></tr>
+        <tr><td>Row "..." menu actions</td><td>components/platform/resource-actions/action-menu.tsx</td></tr>
+        <tr><td>Revoke / Remove countdown + Cancel</td><td>core grace-window engine (ResourceAction.deferred; backend modules/lead_capture/deferred_actions.py)</td></tr>
+        <tr><td>Key / signing secret shown once + Copy</td><td>new shared components/platform/one-time-secret.tsx (omnichannel webhook-secret-panel.tsx now uses it); hooks/use-copy-to-clipboard</td></tr>
+        <tr><td>Create key / Add receiver / Add form / Map fields popups</td><td>components/ui/dialog</td></tr>
+        <tr><td>Switch to pull only confirm</td><td>components/ui/alert-dialog</td></tr>
+        <tr><td>Push / Pull only choice</td><td>components/ui/toggle-group (same styling as the shell's Active | Trashed control)</td></tr>
         <tr><td>Events picker</td><td>components/platform/multi-select</td></tr>
-        <tr><td>Lead field picker per question, field Type</td><td>components/platform/search-select</td></tr>
+        <tr><td>Type picker, Page picker, Lead field picker</td><td>components/platform/search-select</td></tr>
         <tr><td>Status pills</td><td>components/platform/status-badge</td></tr>
-        <tr><td>Dates</td><td>hooks/use-datetime.ts (dd/mm/yyyy, h:mm am/pm)</td></tr>
-        <tr><td>Long URL / names</td><td>components/platform/clamped-text.tsx</td></tr>
-        <tr><td>Map fields popup</td><td>components/ui/dialog</td></tr>
+        <tr><td>Event pills in a cell</td><td>components/platform/overflow-pills</td></tr>
+        <tr><td>Long URLs / names / form titles</td><td>components/platform/clamped-text.tsx</td></tr>
+        <tr><td>Dates</td><td>hooks/use-datetime.ts (shared formatter)</td></tr>
+        <tr><td>Lead fields card</td><td>components/ui/card + input + dropdown-menu</td></tr>
         <tr><td>Error + Try again</td><td>components/ui/alert</td></tr>
+        <tr><td>Toasts</td><td>lib/toast</td></tr>
+        <tr><td>Page loading</td><td>components/platform/skeletons/list-page-skeleton</td></tr>
       </tbody>
     </table></div>
   </section>
