@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
+from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER
 
 from sqlalchemy import Text, and_, cast, exists, func, not_, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
@@ -818,7 +818,7 @@ class StagedRecordRepository:
         revived: List[str] = []
         for start in range(0, len(refs), _IN_CHUNK):
             chunk = refs[start : start + _IN_CHUNK]
-            if entity_type == ENTITY_PURCHASE_ORDER:  # plan 62: remember which POs get their copy back
+            if entity_type in (ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER):  # plan 62 / C.d: copy comes back
                 revived.extend(
                     r[0] for r in self.db.query(AcStagedRecord.source_ref).filter(
                         AcStagedRecord.tenant_id == tenant_id,
@@ -842,11 +842,11 @@ class StagedRecordRepository:
                 .update({"status": STAGED_DISCARDED}, synchronize_session=False)
             )
         self.db.flush()
-        if revived:  # a cancelled delete intent: the PO's over-link index rows come back from its last copy
-            from modules.autocount.write_back.link_index import refresh_po_links
+        if revived:  # a cancelled delete intent: the PO / SPO link index rows come back from its last copy
+            from modules.autocount.write_back.link_index import refresh_links
 
             for ref in revived:
-                refresh_po_links(self.db, tenant_id, company_id, ref)
+                refresh_links(self.db, tenant_id, company_id, entity_type, ref)
         return discarded
 
     def discard_for_job(self, tenant_id: str, company_id: str, job_id: str) -> int:

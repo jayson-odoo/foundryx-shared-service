@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from modules.autocount.models import (
     AcEntityConfig,
     AcPoSoLink,
+    AcSpoPoLink,
     AcStagedRecord,
     AcWriteAction,
     AcWriteOperation,
@@ -489,4 +490,56 @@ class PoSoLinkRepository:
         )
         if except_ref is not None:
             query = query.filter(AcPoSoLink.po_source_ref != except_ref)
+        return Decimal(str(query.scalar() or 0))
+
+
+class SpoPoLinkRepository:
+    """The SPO -> PO-row index ``ac_spo_po_link`` (lane AUTOCOUNT-STRANDED-OPS, C.d); every call is tenant +
+    company scoped."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def replace_for_spo(
+        self, tenant_id: str, company_id: str, spo_source_ref: str, spo_doc_no: Optional[str],
+        links: "List[tuple[Optional[int], int, Decimal]]",
+    ) -> None:
+        """Swap one SPO's rows for ``links`` (``(spo_dtl_key, po_dtl_key, qty)``)."""
+        self.db.query(AcSpoPoLink).filter(
+            AcSpoPoLink.tenant_id == tenant_id,
+            AcSpoPoLink.company_id == company_id,
+            AcSpoPoLink.spo_source_ref == spo_source_ref,
+        ).delete(synchronize_session=False)
+        for spo_dtl_key, po_dtl_key, qty in links:
+            self.db.add(AcSpoPoLink(
+                tenant_id=tenant_id, company_id=company_id, spo_source_ref=spo_source_ref, spo_doc_no=spo_doc_no,
+                spo_dtl_key=spo_dtl_key, po_dtl_key=po_dtl_key, qty=qty,
+            ))
+        self.db.flush()
+
+    def spo_doc_no(self, tenant_id: str, company_id: str, po_dtl_key: int) -> Optional[str]:
+        """DocNo of an indexed SPO with a row pointing at the PO row (None = none)."""
+        row = (
+            self.db.query(AcSpoPoLink.spo_doc_no, AcSpoPoLink.spo_source_ref)
+            .filter(
+                AcSpoPoLink.tenant_id == tenant_id,
+                AcSpoPoLink.company_id == company_id,
+                AcSpoPoLink.po_dtl_key == po_dtl_key,
+            )
+            .order_by(AcSpoPoLink.spo_source_ref)
+            .first()
+        )
+        return None if row is None else str(row[0] or row[1])
+
+    def linked_qty(
+        self, tenant_id: str, company_id: str, po_dtl_key: int, *, except_ref: Optional[str] = None
+    ) -> Decimal:
+        """Qty of one PO row taken by the indexed SPO rows, leaving out ``except_ref``."""
+        query = self.db.query(func.coalesce(func.sum(AcSpoPoLink.qty), 0)).filter(
+            AcSpoPoLink.tenant_id == tenant_id,
+            AcSpoPoLink.company_id == company_id,
+            AcSpoPoLink.po_dtl_key == po_dtl_key,
+        )
+        if except_ref is not None:
+            query = query.filter(AcSpoPoLink.spo_source_ref != except_ref)
         return Decimal(str(query.scalar() or 0))

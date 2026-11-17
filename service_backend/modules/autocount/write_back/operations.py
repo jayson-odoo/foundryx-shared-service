@@ -35,7 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from modules.autocount.alerts import _safe_subject, alert_recipients
-from modules.autocount.canonical.documents import ENTITY_SALES_ORDER, ENTITY_SHIPPING_ORDER
+from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
 from modules.autocount.models import AcCompany, AcWriteOperation
 from modules.autocount.repositories import CompanyRepository
 from modules.autocount.write_back import call_log as cl, capabilities, frame, guard, payloads
@@ -68,7 +68,7 @@ from modules.autocount.write_back.primitives import (
     PrimitiveService,
 )
 from modules.autocount.write_back.reader import DocReadError
-from modules.autocount.write_back.repository import OperationRepository
+from modules.autocount.write_back.repository import OperationRepository, SpoPoLinkRepository
 from modules.autocount.write_back.service import WriteBackService
 
 logger = logging.getLogger("foundryx.autocount")
@@ -614,7 +614,8 @@ class OperationService:
             self._check_row_resolved(company, spec, doc)
         if defn.kind == "PO" and defn.mode in ("link", "relink"):
             self._log_remark_overwrite(doc)
-        plan = self._guards(company, defn, spec, doc)
+        with self.prims.staged_memo():  # C.d: one staged read per document for the row AND every merge candidate
+            plan = self._guards(company, defn, spec, doc)
         snapshot = self._snapshot(company, defn, spec, doc, doc_date, plan)
         row.snapshot_json = snapshot
         self.db.commit()
@@ -850,17 +851,14 @@ class OperationService:
         """Qty of one PO row already taken by SPO rows: the fresh SPO (minus the row
         being moved) plus every other staged, non-cancelled SPO."""
         own_ref = f"{company.database_name}:{fresh_spo.get('DocKey')}"
-        sources: List[List[Doc]] = [
-            [r for r in fresh_spo.get("Details") or [] if r.get("DtlKey") != own_dtl]
-        ]
-        for staged in self.prims.staged.for_entity(company.tenant_id, company.id, ENTITY_SHIPPING_ORDER):
-            raw = staged.raw_json or {}
-            if raw.get("Cancelled") != "T" and staged.source_ref != own_ref:
-                sources.append(_lines(raw))
-        return sum(
-            (_dec(r.get("Qty")) for lines in sources for r in lines if r.get("FromDocDtlKey") == po_dtl_key),
+        own = sum(
+            (_dec(r.get("Qty")) for r in fresh_spo.get("Details") or []
+             if r.get("DtlKey") != own_dtl and r.get("FromDocDtlKey") == po_dtl_key),
             Decimal(0),
         )
+        # C.d: every OTHER SPO from the indexed newest copies (one query), never a load of every staged SPO
+        return own + SpoPoLinkRepository(self.db).linked_qty(
+            company.tenant_id, company.id, po_dtl_key, except_ref=own_ref)
 
     # ── snapshot ─────────────────────────────────────────────────────────────
 

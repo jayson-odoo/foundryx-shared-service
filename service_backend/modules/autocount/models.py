@@ -1181,6 +1181,29 @@ class AcWriteOperation(AutocountBase):
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
 
 
+class AcSpoPoLink(AutocountBase):
+    """SPO -> PO-row index (lane AUTOCOUNT-STRANDED-OPS, C.d): one row per line (``FromDocDtlKey``) of a
+    shipping purchase order's NEWEST staged copy, so "is an SPO row pointing at this PO row?" and "how
+    much of the PO row do SPO rows take?" are one indexed query instead of loading every staged SPO into
+    the request (20k+ docs on the live book). A cancelled or deleted SPO has no rows. Rewritten by
+    ``write_back/link_index.py`` on every SPO staging write."""
+
+    __tablename__ = "ac_spo_po_link"
+    __table_args__ = (
+        Index("ix_ac_spo_po_link_po_dtl", "tenant_id", "company_id", "po_dtl_key"),
+        Index("ix_ac_spo_po_link_spo_ref", "tenant_id", "company_id", "spo_source_ref"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    spo_source_ref = Column(String, nullable=False)
+    spo_doc_no = Column(String, nullable=True)
+    spo_dtl_key = Column(BigInteger, nullable=True)
+    po_dtl_key = Column(BigInteger, nullable=False)
+    qty = Column(Numeric(20, 8), nullable=False)
+
+
 class AcApiCallLog(AutocountBase):
     """One row per HTTP call the write layer makes to AutoCount (plan 61 section 4.8,
     owner ruling R3): writes, read-backs, bydocno and day-list reads, debtor term,

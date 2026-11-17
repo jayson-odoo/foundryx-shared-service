@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
-from modules.autocount.write_back.repository import PoSoLinkRepository, StagedDocRepository
+from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER
+from modules.autocount.write_back.repository import PoSoLinkRepository, SpoPoLinkRepository, StagedDocRepository
 
 Link = Tuple[Optional[int], int, Decimal]
 
@@ -60,3 +60,49 @@ def refresh_po_links_from_doc(db: Session, tenant_id: str, company_id: str, sour
     the case where the staged copy belongs to another job and is left alone."""
     links = [] if doc.get("Cancelled") == "T" else links_of({"_lines": doc.get("Details")})
     PoSoLinkRepository(db).replace_for_po(tenant_id, company_id, source_ref, links)
+
+
+# ── SPO -> PO-row index (lane AUTOCOUNT-STRANDED-OPS, C.d) ──────────────────────────────────────────
+
+SpoLink = Tuple[Optional[int], int, Decimal]
+
+
+def spo_links_of(raw: Optional[Dict[str, Any]]) -> List[SpoLink]:
+    """``(spo_dtl_key, po_dtl_key, qty)`` of every line of a staged SPO copy that points at a PO row
+    (``FromDocDtlKey``), whatever its qty: a zero-qty row still holds the PO row (``ROW_ON_SPO``)."""
+    lines = (raw or {}).get("_lines")
+    out: List[SpoLink] = []
+    for line in lines if isinstance(lines, list) else []:
+        if not isinstance(line, dict):
+            continue
+        po_key = _int(line.get("FromDocDtlKey"))
+        if not po_key:
+            continue
+        try:
+            qty = Decimal(str(line.get("Qty") if line.get("Qty") is not None else 0))
+        except InvalidOperation:
+            qty = Decimal(0)
+        out.append((_int(line.get("DtlKey")), po_key, qty))
+    return out
+
+
+def refresh_spo_links(db: Session, tenant_id: str, company_id: str, source_ref: str, *, deleted: bool = False) -> None:
+    """Rewrite one SPO's index rows from its newest staged copy (none when it is deleted or cancelled)."""
+    links: List[SpoLink] = []
+    doc_no: Optional[str] = None
+    if not deleted:
+        newest = StagedDocRepository(db).newest(tenant_id, company_id, ENTITY_SHIPPING_ORDER, source_ref)
+        raw = (newest.raw_json or {}) if newest is not None else {}
+        if newest is not None and raw.get("Cancelled") != "T":
+            links = spo_links_of(raw)
+            doc_no = str(raw.get("DocNo") or newest.doc_no or source_ref)
+    SpoPoLinkRepository(db).replace_for_spo(tenant_id, company_id, source_ref, doc_no, links)
+
+
+def refresh_links(db: Session, tenant_id: str, company_id: str, entity_type: str, source_ref: str, *,
+                  deleted: bool = False) -> None:
+    """The ONE hook every staging write calls: keeps whichever link index the entity feeds true."""
+    if entity_type == ENTITY_PURCHASE_ORDER:
+        refresh_po_links(db, tenant_id, company_id, source_ref, deleted=deleted)
+    elif entity_type == ENTITY_SHIPPING_ORDER:
+        refresh_spo_links(db, tenant_id, company_id, source_ref, deleted=deleted)

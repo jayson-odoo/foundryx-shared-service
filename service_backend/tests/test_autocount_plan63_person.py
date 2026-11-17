@@ -130,7 +130,7 @@ def test_ac_63_23_there_is_a_single_module_migration_head():
         if d:
             downs.add(d.group(1))
     heads = revisions - downs
-    assert heads == {"0046_autocount_call_person"}, heads
+    assert heads == {"0047_autocount_spo_po_link"}, heads  # AUTOCOUNT-STRANDED-OPS C.d ships 0047
 
 
 # ------------------------------------------------------------------ rig

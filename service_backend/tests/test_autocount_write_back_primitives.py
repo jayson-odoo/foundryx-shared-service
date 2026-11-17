@@ -107,6 +107,11 @@ class Harness:
             raw_json=raw, canonical_json={"sourceRef": f"{DBNAME}:{doc['DocKey']}"}, status=STAGED,
         )
         self.db.add(row)
+        self.db.flush()
+        if entity == "shipping_order":  # C.d: a real staging write keeps the SPO -> PO-row index true
+            from modules.autocount.write_back.link_index import refresh_spo_links
+
+            refresh_spo_links(self.db, DEFAULT_TENANT_ID, self.company.id, row.source_ref)
         self.db.commit()
         return row
 
