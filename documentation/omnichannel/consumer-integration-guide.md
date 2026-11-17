@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Template header and button variables** (sections 3b, 4.1, 5). A template send accepts optional `template.headerVariables` (text-header `{{n}}` values) and `template.buttonVariables` (one value per dynamic URL button), so templates with a text header or a dynamic URL button can now be sent through this API. At payload version 2, each `GET /templates` item gains `headerFormat`, `headerVariableCount` and `buttonVariableCount`. Templates with an image, video or document header still cannot be sent through this API. Additive: a send without the new fields behaves as before. |
 > | **2026-11-18** | **Sender attribution** (sections 3b, 4, 4.3, 9.1). `POST /messages` accepts an optional `sender {externalId, displayName, avatarUrl?}` (JSON body and multipart `payload`) naming the person on your side who wrote the message. It is stored on the message only: the customer receives exactly the same text, and the send stays an API send (`senderId` `apikey:<id>`, `message.outbound` `source` `api`). At payload version 2, `MessageItem` (history, single message, comment, `message.inbound` / `message.outbound`) gains `sender {type, externalId?, displayName?, avatarUrl?, userId?}`. `senderName`, `senderAvatarUrl` and `senderType` are unchanged at every version. A malformed `sender` answers `422 invalid_request`; a send without it behaves as before. |
 > | **2026-11-18** | **Window state and refusal details, version 2 only** (sections 3b, 6, 9.1, 10). At payload version 2 (`X-Fx-Api-Version: 2`, or an endpoint with `payloadVersion: 2`) `ThreadItem` gains `windowOpen`, `allowedSendTypes`, `windowReason` and `windows[]` (one entry per channel identity of the contact, so each WhatsApp number has its own window); the message history gains `window`; and the window refusals (`409 csw_window_closed` / `messaging_window_closed`) gain `details {channelId, windowExpiresAt, allowedSendTypes, reason}`. Status codes, `code` and `message` are unchanged at every version; version 1 bodies are unchanged byte for byte. |
 > | **2026-11-18** | **Payload versions** (sections 3b, 7, 10). A webhook endpoint can carry an optional `payloadVersion` (integer, set on `POST /webhooks` or `PATCH /webhooks/{id}`), and any `/api/v1/omnichannel/*` request can send an optional `X-Fx-Api-Version` header. Leaving both out keeps version 1: every webhook body and response stays exactly as it is today. New fields on an existing event or response will only ever appear at a higher version. Version 2 currently adds one key, `payloadVersion`, on the webhook endpoint item. An unknown version answers `422 invalid_request`. Non-breaking: nothing changes for an integration that does not opt in. |
@@ -171,6 +172,7 @@ Every webhook body and every response shape has a **payload version**. **The def
 |----|----|
 | 1 | The shapes in this guide. |
 | 2 | `payloadVersion` (integer) on the webhook endpoint item (§7): the version that endpoint's deliveries use. |
+| 2 | `headerFormat`, `headerVariableCount`, `buttonVariableCount` on each `GET /templates` item (§5). |
 | 2 | `sender` on `MessageItem` (§9.1, also `data.message` in `message.inbound` / `message.outbound`). |
 | 2 | Window state on `ThreadItem` (§9.1, also the `contact` in webhooks): `windowOpen`, `allowedSendTypes`, `windowReason`, `windows[]`. `window` on the message history (§6). `details` on the window refusals (§10). |
 
@@ -264,6 +266,8 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/messages \
 #### Template (re-engage outside the 24h window)
 
 `variables` fill the body placeholders `{{1}}, {{2}}, …` in order. List your approved templates with `GET /templates` (§5).
+
+A template with a text header that has a placeholder also needs `headerVariables` (in order), and one with a dynamic URL button needs `buttonVariables` (one value per such button, in button order): `{ "name": "quote_ready", "variables": ["Jayson", "Q-1"], "headerVariables": ["#88"], "buttonVariables": ["Q-1"] }`. A missing or extra value answers `422 send_rejected` and nothing is sent. `GET /templates` at payload version 2 tells you how many each template needs (§5). Templates with an image, video or document header cannot be sent through this API.
 
 ```json
 { "to": "+60123456789", "type": "template",
@@ -411,7 +415,9 @@ Only **APPROVED** templates on the workspace's active channel. When the workspac
 ] }
 ```
 
-Use `name` (or `id`) + fill `variableCount` values in `template.variables` when sending (§4.1). Templates are authored + submitted to Meta by the Foundryx admin in the dashboard; you only consume the approved ones.
+Use `name` (or `id`) + fill `variableCount` values in `template.variables` when sending (§4.1).
+
+**Payload version 2 (§3b):** each item also carries `headerFormat` (`null` | `TEXT` | `IMAGE` | `VIDEO` | `DOCUMENT`), `headerVariableCount` (values for `template.headerVariables`) and `buttonVariableCount` (values for `template.buttonVariables`). Templates are authored + submitted to Meta by the Foundryx admin in the dashboard; you only consume the approved ones.
 
 
 ---

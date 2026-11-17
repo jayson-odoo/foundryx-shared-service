@@ -1493,6 +1493,10 @@ class PublicTemplateBody(ApiModel):
     id: Optional[str] = None  # our template id (from GET /templates)
     name: Optional[str] = None  # OR the Meta template name
     variables: Optional[List[str]] = None
+    # Track A S4 (optional): TEXT-header {{n}} values and dynamic URL-button
+    # values, in order; see `headerVariableCount` / `buttonVariableCount`.
+    headerVariables: Optional[List[str]] = None
+    buttonVariables: Optional[List[str]] = None
 
 
 class PublicMediaBody(ApiModel):
@@ -1591,13 +1595,17 @@ class PublicSendResponse(ApiModel):
     idempotencyReplay: bool = False
 
 
-class PublicTemplateItem(ApiModel):
+class PublicTemplateItem(VersionedPayload, ApiModel):
     id: str
     name: str
     language: Optional[str] = None
     category: Optional[str] = None
     bodyText: str
     variableCount: int
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS).
+    headerFormat: Optional[str] = None  # null | TEXT | IMAGE | VIDEO | DOCUMENT
+    headerVariableCount: Optional[int] = None  # TEXT-header {{n}} count
+    buttonVariableCount: Optional[int] = None  # dynamic URL-button count
 
 
 class PublicTemplateListResponse(ApiModel):

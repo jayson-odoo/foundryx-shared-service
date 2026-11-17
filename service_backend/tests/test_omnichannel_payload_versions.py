@@ -123,7 +123,7 @@ V2_CHANGED_API = {
     "api.webhooks.create", "api.webhooks.list", "api.webhooks.update",
     "api.webhooks.disable", "api.webhooks.enable",
     "api.contacts.list", "api.contacts.get", "api.contacts.update", "api.contacts.messages",
-    "api.contacts.message", "api.contacts.comment",
+    "api.contacts.message", "api.contacts.comment", "api.templates.list",
 }
 
 
@@ -146,6 +146,7 @@ def test_header_2_adds_only_v2_keys_and_keeps_rio_and_webhooks_identical(client,
     assert '"window":{' in out["api.contacts.messages"]
     assert '"sender":{"type":"API"' in out["api.contacts.messages"]
     assert '"sender":{"type":"SYSTEM"' in out["api.contacts.comment"]
+    assert '"headerFormat":null,"headerVariableCount":0,"buttonVariableCount":0' in out["api.templates.list"]
 
 
 @pytest.mark.parametrize("value", ["3", "0", "-1", "abc", "v2", "1.0", "2 2", " ", "99999"])
@@ -846,3 +847,60 @@ def test_sender_types_for_customer_note_workflow_and_agent():
     assert (native.type, native.userId, native.displayName) == ("AGENT", "u1", "Staff One")
     embed = _message_sender(msg("AGENT", None, "ext-1"), {}, SimpleNamespace(name="Embed Agent", avatar_url=None), None)
     assert (embed.type, embed.displayName, embed.userId) == ("AGENT", "Embed Agent", None)
+
+
+# ── Track A S4: template header/button fields ────────────────────────────────
+RICH_COMPONENTS = [
+    {"type": "HEADER", "format": "TEXT", "text": "Order {{1}}"},
+    {"type": "BODY", "text": "Hi {{1}}, your quote {{2}} is ready"},
+    {"type": "BUTTONS", "buttons": [{"type": "URL", "text": "Open", "url": "https://shop.example.com/q/{{1}}"}]},
+]
+
+
+def _rich_template(session_factory, channel_id, name="quote_ready", components=RICH_COMPONENTS):
+    from modules.omnichannel.models import WhatsappTemplate
+
+    db = session_factory()
+    try:
+        t = WhatsappTemplate(
+            tenant_id=DEFAULT_TENANT_ID, channel_id=channel_id, name=name, language="en",
+            status="APPROVED", category="UTILITY", components_json=components,
+        )
+        db.add(t)
+        db.commit()
+        return t.id
+    finally:
+        db.close()
+
+
+def test_template_list_shape_fields_only_at_version_2(client, session_factory):
+    hdr, channel_id = _key(client, session_factory)
+    _rich_template(session_factory, channel_id)
+    _rich_template(session_factory, channel_id, name="image_promo", components=[
+        {"type": "HEADER", "format": "IMAGE"}, {"type": "BODY", "text": "Sale"},
+    ])
+    v1 = client.get(f"{BASE}/templates", headers=hdr).json()["data"]
+    assert all("headerFormat" not in t and "buttonVariableCount" not in t for t in v1)
+    v2 = {t["name"]: t for t in client.get(f"{BASE}/templates", headers={**hdr, HEADER: "2"}).json()["data"]}
+    q = v2["quote_ready"]
+    assert (q["variableCount"], q["headerFormat"], q["headerVariableCount"], q["buttonVariableCount"]) == (2, "TEXT", 1, 1)
+    img = v2["image_promo"]
+    assert (img["headerFormat"], img["headerVariableCount"], img["buttonVariableCount"]) == ("IMAGE", 0, 0)
+
+
+def test_template_send_with_header_and_button_variables(client, session_factory, spy):
+    hdr, channel_id, _ = _open_contact(client, session_factory, "+60123450061")
+    tid = _rich_template(session_factory, channel_id)
+    base = {"to": "+60123450061", "type": "template"}
+    # Without them the send is refused exactly as before (Meta needs every parameter).
+    res = client.post(f"{BASE}/messages", json={**base, "template": {"id": tid, "variables": ["Sam", "Q-1"]}}, headers=hdr)
+    assert res.status_code == 422, res.text
+    assert spy.calls == []
+    res = client.post(
+        f"{BASE}/messages",
+        json={**base, "template": {"id": tid, "variables": ["Sam", "Q-1"], "headerVariables": ["#88"], "buttonVariables": ["Q-1"]}},
+        headers=hdr,
+    )
+    assert res.status_code == 202, res.text
+    sent = repr(spy.calls)
+    assert "#88" in sent and "Q-1" in sent and "Sam" in sent
