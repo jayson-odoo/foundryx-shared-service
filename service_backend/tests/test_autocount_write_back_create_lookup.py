@@ -131,11 +131,10 @@ def test_a_document_with_different_lines_is_not_ours(client, h, gw):
 
 
 def test_a_window_straddling_midnight_reads_both_day_lists(client, h, gw, db):
-    # The midnight between yesterday and today (MYT), relative to the run date:
-    # the lookup only reads LOOKUP_MAX_DAYS back, so fixed calendar dates stop
-    # being reachable a week later and the test would fail on the date alone.
-    today = datetime.now(MYT).date()
-    before, after = today - timedelta(days=1), today
+    # The midnight that starts yesterday (MYT), so the window always sits inside the
+    # LOOKUP_MAX_DAYS reach whatever day the suite runs (fixed dates aged out).
+    after = datetime.now(MYT).date() - timedelta(days=1)
+    before = after - timedelta(days=1)
     first_attempt_landed(client, h, gw, "cl-5", body())
     shift(h.vendor.docs["PO"][0], to=f"{after.isoformat()}T00:00:02.000")  # created just after MYT midnight
     op = db.query(AcWriteOperation).filter_by(op="create_doc:PO").one()
@@ -147,7 +146,8 @@ def test_a_window_straddling_midnight_reads_both_day_lists(client, h, gw, db):
     assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
     assert len(posts(h)) == 1
     days = sorted(c.query["lastModified"] for c in lookups(h))
-    assert days[:2] == [before.strftime("%Y%m%d"), after.strftime("%Y%m%d")], days  # both sides of the midnight
+    # both sides of the midnight (later days may follow, up to today)
+    assert days[:2] == [before.strftime("%Y%m%d"), after.strftime("%Y%m%d")], days
 
 
 def test_every_lookup_get_is_in_the_api_call_log(client, h, gw):
