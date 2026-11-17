@@ -1975,6 +1975,7 @@ class OperationService:
         document to a later list), at most ``LOOKUP_MAX_DAYS`` back; an attempt older than that and not found
         stays locked. A document another done create of this company already owns is never adopted. Every GET
         is logged under the stored operation (``key_id``, ``operation_id``)."""
+        from modules.autocount.doc_feed import clock
         from modules.autocount.doc_feed.clock import MYT
 
         base_url, _refusal = self.prims._resolve_write_base_url(company)
@@ -2022,7 +2023,7 @@ class OperationService:
             low = (start - timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
             high = (end + timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
             matches: List[Doc] = []
-            today = datetime.now(timezone.utc).astimezone(MYT).date()
+            today = clock.myt_today()
             oldest = today - timedelta(days=LOOKUP_MAX_DAYS)
             day = max(low.date(), oldest)
             too_old = low.date() < oldest
