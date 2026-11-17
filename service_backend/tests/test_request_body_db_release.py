@@ -32,6 +32,7 @@ import gc
 import json
 import os
 import tempfile
+import time
 import uuid
 import weakref
 from dataclasses import dataclass, field
@@ -1038,6 +1039,22 @@ def _open_spooled_files() -> int:
     return sum(1 for obj in list(_LIVE_SPOOLED) if not obj.closed)
 
 
+# The last request of a run can stay referenced for a moment after its event loop
+# closes (loop / worker-thread teardown). The old full-heap walk took seconds per
+# check and so hid that window; a check now takes milliseconds, so it re-checks
+# until the count settles. A real leak never settles and still fails.
+SETTLE_SECONDS = 5.0
+
+
+def _settled(count: Callable[[], int], expected: int = 0) -> int:
+    deadline = time.monotonic() + SETTLE_SECONDS
+    value = count()
+    while value != expected and time.monotonic() < deadline:
+        time.sleep(0.05)
+        value = count()
+    return value
+
+
 def test_memory_scan_control_sees_a_live_request_and_an_open_file(memory_tracking):
     from starlette.requests import Request
 
@@ -1119,7 +1136,7 @@ def test_a_refused_request_does_not_stay_in_memory(scenario, kind, session_facto
         scn = dataclasses.replace(scenario, body=body, content_type="application/json")
         statuses.add(asyncio.run(_drive(scn, hold=False, headers=headers)).status)
     assert statuses and all(s in (401, 403) for s in statuses), statuses  # every request was refused
-    held = sum(_requests_holding(marker) for marker in markers)
+    held = _settled(lambda: sum(_requests_holding(marker) for marker in markers))
     assert held == 0, f"{held} refused request(s) still hold their body in memory"
 
 
@@ -1140,9 +1157,9 @@ def test_a_refused_upload_does_not_leave_its_file_open(scenario, kind, session_f
         scn = dataclasses.replace(scenario, body=body, content_type=ctype)
         statuses.add(asyncio.run(_drive(scn, hold=False, headers=headers)).status)
     assert statuses and all(s in (401, 403) for s in statuses), statuses
-    forms_after = _requests_holding(b"no-such-marker", forms=True)
+    forms_after = _settled(lambda: _requests_holding(b"no-such-marker", forms=True), forms_before)
     assert forms_after - forms_before == 0, "a refused upload's parsed form is still reachable"
-    assert _open_spooled_files() - opened_before == 0, "refused uploads left temp files open"
+    assert _settled(_open_spooled_files, opened_before) - opened_before == 0, "refused uploads left temp files open"
 
 
 # ── a token of the wrong kind is refused before the body ────────────────────
