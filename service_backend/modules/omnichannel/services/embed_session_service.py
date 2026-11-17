@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.models.connection import Connection
 from app.repositories.module_repository import ModuleRepository
 from app.secrets import decrypt_secret
-from app.security import create_access_token
+from app.scoped_tokens import mint_scoped_token
 
 from ..models import EmbedJti, Workspace
 from .external_agent_service import ExternalAgentService
@@ -230,10 +230,10 @@ class EmbedSessionService:
 
         # 9) Mint the access token (no cookie). It carries everything §4 needs to
         #    authorize without a DB round-trip on scope/caps.
-        access_token = create_access_token(
+        access_token = mint_scoped_token(
+            "embed",
             {
                 "sub": agent.id,
-                "typ": "embed",
                 "tenant_id": conn.tenant_id,
                 "connection_id": conn.id,
                 "workspaceId": workspace.id,
@@ -241,7 +241,7 @@ class EmbedSessionService:
                 "scope": scope,
                 "caps": caps,
             },
-            expires_minutes=ACCESS_TOKEN_TTL_MINUTES,
+            ttl_minutes=ACCESS_TOKEN_TTL_MINUTES,
         )
 
         return {

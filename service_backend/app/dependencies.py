@@ -46,12 +46,14 @@ def _tenant_inactive_exc() -> HTTPException:
 
 def assert_staff_token(payload: dict) -> None:
     """Refuse token types that must never authenticate a staff session route:
-    Profile-portal tokens (kind="profile") and omnichannel embed access tokens
-    (typ="embed"), whose `sub` is not a staff user id. Staff tokens carry
-    neither claim."""
+    Profile-portal tokens (kind="profile") and every scoped token carrying a
+    ``typ`` (omnichannel embed, Lead Capture wizard, ...), whose `sub` is not
+    a staff user id. Staff tokens carry neither claim."""
     if payload.get("kind") == "profile":
         raise _credentials_exc()
-    if payload.get("typ") == "embed":
+    # Any typed token is a scoped token (``app/scoped_tokens.py``: omnichannel
+    # embed, Lead Capture wizard, webchat visitor, ...), never a staff session.
+    if payload.get("typ"):
         raise _credentials_exc()
 
 
