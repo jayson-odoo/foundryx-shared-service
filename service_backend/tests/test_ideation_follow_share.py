@@ -357,9 +357,10 @@ def test_ac_fs_02_share_view_read_only_no_phones(setup):
     assert c.get(f"/portal/ideas/shared/{token}/activity").status_code == 200
 
 
-@pytest.mark.parametrize("token", ["", "short", "x" * 43, "../../etc"])
+@pytest.mark.parametrize("token", ["short", "x" * 43, "..%2F..%2Fetc"])
 def test_ac_fs_02_bad_share_token_uniform_404(setup, token):
-    assert setup["client"].get(f"/portal/ideas/shared/{token}").status_code in (404, 405)
+    res = setup["client"].get(f"/portal/ideas/shared/{token}")
+    assert res.status_code == 404
 
 
 def test_ac_fs_02_hidden_item_share_view_404(setup):
@@ -378,3 +379,285 @@ def test_ac_fs_02_share_token_is_not_a_portal_session(setup):
     h = {"Authorization": f"Bearer {token}"}
     assert s["client"].post(f"/portal/ideas/{iid}/vote", headers=h).status_code == 401
     assert s["client"].post(f"/portal/ideas/{iid}/follow", headers=h).status_code == 401
+
+
+# ── AC-FS-3/4: the phone step (owner Q1 a WhatsApp code, Q2 a stop; crew
+#    contract: SS makes + checks the code, the product only looks the phone up
+#    and delivers the code over its existing template) ──────────────────────────
+
+import json  # noqa: E402
+
+import httpx  # noqa: E402
+
+PRODUCT_BASE = "https://crm.example.test"
+PRODUCT_KEY = "product-test-key-not-real"
+
+
+@pytest.fixture
+def product(monkeypatch):
+    """The item's product answering lookup / send-code (mock transport). The
+    delivered codes land in ``state["codes"]``."""
+    from modules.ideation.services import phone_verify
+
+    state = {"requests": [], "lookup": 200, "send": 202, "name": "Manager B", "codes": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["requests"].append(request)
+        body = json.loads(request.content or b"{}")
+        if request.url.path.endswith("/contacts/lookup"):
+            if state["lookup"] == 200:
+                return httpx.Response(200, json={"contactId": "crm-77", "name": state["name"], "phone": body["phone"]})
+            return httpx.Response(state["lookup"], json={})
+        state["codes"].append(body["code"])
+        return httpx.Response(state["send"], json={})
+
+    monkeypatch.setattr(phone_verify, "_transport", httpx.MockTransport(handler))
+    return state
+
+
+def _product_connection(s, *, product_id=None, provider="sorento"):
+    from app.models.connection import Connection
+    from app.secrets import encrypt_secret
+
+    db = s["factory"]()
+    try:
+        cfg = {"baseUrl": PRODUCT_BASE}
+        if product_id:
+            cfg["productId"] = product_id
+        conn = Connection(
+            tenant_id=DEFAULT_TENANT_ID,
+            provider=provider,
+            type="consumer",
+            name="Product",
+            config_json=cfg,
+            credentials_json=encrypt_secret({"apiKey": PRODUCT_KEY}),
+            is_active=True,
+        )
+        db.add(conn)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _send(s, token, phone):
+    return s["client"].post(f"/portal/ideas/shared/{token}/phone/send-code", json={"phone": phone})
+
+
+def _verify(s, token, phone, code):
+    return s["client"].post(f"/portal/ideas/shared/{token}/phone/verify", json={"phone": phone, "code": code})
+
+
+def _shared_item(s, n):
+    iid = _idea(s, n, submitter_contact_id=_contact(s, phone="+60123450001"))
+    return iid, _share_token(s, iid)
+
+
+def _prove(s, product, token, phone):
+    assert _send(s, token, phone).status_code == 200
+    res = _verify(s, token, phone, product["codes"][-1])
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_ac_fs_03_send_code_looks_up_then_delivers_a_code(setup, product):
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 541)
+    res = _send(s, token, "012-345 0002")
+    assert res.status_code == 200, res.text
+    assert res.json() == {"sent": True}
+    lookup, send = product["requests"]
+    assert str(lookup.url) == f"{PRODUCT_BASE}/api/v1/external/ideation/contacts/lookup"
+    assert json.loads(lookup.content) == {"phone": "+60123450002", "phoneDigits": "60123450002"}
+    assert str(send.url) == f"{PRODUCT_BASE}/api/v1/external/ideation/phone/send-code"
+    body = json.loads(send.content)
+    assert body["phone"] == "+60123450002" and len(body["code"]) == 6 and body["code"].isdigit()
+    assert lookup.headers["X-API-Key"] == PRODUCT_KEY
+
+
+def test_ac_fs_03_code_never_stored_in_clear(setup, product):
+    from modules.ideation.models import IdeaPhoneCode
+
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 553)
+    _send(s, token, "+60123450002")
+    db = s["factory"]()
+    try:
+        row = db.query(IdeaPhoneCode).one()
+    finally:
+        db.close()
+    assert product["codes"][0] not in row.code_hash
+
+
+def test_ac_fs_03_unknown_phone_names_the_product_and_sends_nothing(setup, product):
+    s = setup
+    _product_connection(s)
+    product["lookup"] = 404
+    _iid, token = _shared_item(s, 542)
+    res = _send(s, token, "+60123450002")
+    assert res.status_code == 404
+    err = res.json()["error"]
+    assert err["code"] == "not_registered"
+    assert "Sorento CRM" in err["message"]
+    assert product["codes"] == []
+
+
+def test_ac_fs_03_junk_phone_422_without_calling_the_product(setup, product):
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 543)
+    assert _send(s, token, "12ab").status_code == 422
+    assert product["requests"] == []
+
+
+def test_ac_fs_03_no_product_connection_is_a_retryable_error(setup, product):
+    s = setup
+    _iid, token = _shared_item(s, 544)
+    res = _send(s, token, "+60123450002")
+    assert res.status_code == 503
+    assert res.json()["error"]["code"] == "unavailable"
+
+
+def test_ac_fs_03_undelivered_code_is_dead(setup, product):
+    s = setup
+    _product_connection(s)
+    product["send"] = 500
+    _iid, token = _shared_item(s, 545)
+    assert _send(s, token, "+60123450002").status_code == 503
+    assert _verify(s, token, "+60123450002", product["codes"][0]).status_code == 400
+
+
+def test_ac_fs_03_another_products_connection_is_never_used(setup, product):
+    """Multi-product: a consumer connection tagged for ANOTHER product never
+    answers for this item."""
+    s = setup
+    from tests.test_ideation_public_status import _create_software_product
+
+    other = _create_software_product(s["client"], s["h"], name="EcoHub")
+    _product_connection(s, product_id=other, provider="ecohub")
+    _iid, token = _shared_item(s, 546)
+    assert _send(s, token, "+60123450002").status_code == 503
+    assert product["requests"] == []
+
+
+def test_ac_fs_03_connection_tagged_for_the_items_product(setup, product):
+    s = setup
+    _product_connection(s, product_id=s["product_id"])
+    _iid, token = _shared_item(s, 552)
+    assert _send(s, token, "+60123450002").status_code == 200
+
+
+def test_ac_fs_03_throttled(setup, product, monkeypatch):
+    from app.config import settings
+
+    s = setup
+    _product_connection(s)
+    monkeypatch.setattr(settings, "throttle_idea_follow_phone_max", 2)
+    _iid, token = _shared_item(s, 547)
+    assert _send(s, token, "+60123450002").status_code == 200
+    assert _send(s, token, "+60123450002").status_code == 200
+    assert _send(s, token, "+60123450002").status_code == 429
+
+
+def test_ac_fs_04_verify_gives_own_session_and_follow_works(setup, product):
+    s = setup
+    _product_connection(s)
+    iid, token = _shared_item(s, 548)
+    body = _prove(s, product, token, "012-345 0002")
+    assert body["principal"]["kind"] == "contact"
+    assert body["principal"]["name"] == "Manager"
+    assert "/public/feedback/board/" in body["boardUrl"] and body["boardUrl"].endswith("/FB-0548")
+    h = {"Authorization": f"Bearer {body['token']}"}
+    assert _follow(s, h, iid).json() == {"following": True, "followerCount": 1}
+
+    # The SS contact was created for the WhatsApp updates.
+    _move(s, iid)
+    assert [(r["requester_phone"], r["recipient_role"]) for r in _events(s, iid)] == [
+        ("+60123450001", "requester"),
+        ("+60123450002", "follower"),
+    ]
+
+
+def test_ac_fs_04_code_is_single_use(setup, product):
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 554)
+    _prove(s, product, token, "+60123450002")
+    assert _verify(s, token, "+60123450002", product["codes"][-1]).status_code == 400
+
+
+def test_ac_fs_04_new_code_cancels_the_old(setup, product):
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 555)
+    _send(s, token, "+60123450002")
+    _send(s, token, "+60123450002")
+    old, new = product["codes"]
+    if old != new:
+        assert _verify(s, token, "+60123450002", old).status_code == 400
+    assert _verify(s, token, "+60123450002", new).status_code == 200
+
+
+def test_ac_fs_04_five_wrong_codes_end_it(setup, product):
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 556)
+    _send(s, token, "+60123450002")
+    good = product["codes"][0]
+    bad = "000000" if good != "000000" else "111111"
+    for _ in range(5):
+        res = _verify(s, token, "+60123450002", bad)
+        assert res.status_code == 400
+        assert res.json()["error"]["code"] == "wrong_code"
+    assert _verify(s, token, "+60123450002", good).json()["error"]["code"] == "code_expired"
+
+
+def test_ac_fs_04_expired_code(setup, product):
+    from datetime import datetime, timedelta, timezone
+
+    from modules.ideation.models import IdeaPhoneCode
+
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 557)
+    _send(s, token, "+60123450002")
+    db = s["factory"]()
+    try:
+        db.query(IdeaPhoneCode).one().expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+    finally:
+        db.close()
+    res = _verify(s, token, "+60123450002", product["codes"][0])
+    assert res.json()["error"]["code"] == "code_expired"
+
+
+def test_ac_fs_04_code_bound_to_its_phone(setup, product):
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 558)
+    _send(s, token, "+60123450002")
+    assert _verify(s, token, "+60123450003", product["codes"][0]).status_code == 400
+
+
+def test_ac_fs_04_verify_reuses_the_existing_contact(setup, product):
+    s = setup
+    _product_connection(s)
+    existing = _contact(s, first_name="Known", phone="+60123450002")
+    iid, token = _shared_item(s, 549)
+    body = _prove(s, product, token, "0123450002")
+    h = {"Authorization": f"Bearer {body['token']}"}
+    _follow(s, h, iid)
+    listed = s["client"].get(f"/ideation/ideas/{iid}/followers", headers=s["h"]).json()
+    assert [f["contactId"] for f in listed] == [existing]
+
+
+def test_ac_fs_04_the_submitter_lands_as_himself(setup, product):
+    s = setup
+    _product_connection(s)
+    iid, token = _shared_item(s, 551)
+    body = _prove(s, product, token, "+60123450001")
+    h = {"Authorization": f"Bearer {body['token']}"}
+    detail = s["client"].get(f"/portal/ideas/{iid}", headers=h).json()
+    assert detail["isMine"] is True
+    assert detail["following"] is True

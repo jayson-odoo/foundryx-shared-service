@@ -163,16 +163,21 @@ def resolve_link_by_id(db: Session, tenant_id: str, link_id: str) -> Optional[Tu
     return row, contact
 
 
-def board_base(db: Session, tenant_id: str) -> str:
-    """Where the board lives for this tenant. A tenant ``public_link_base_url``
-    that is a TEMPLATE (``{token}``/``{ideaId}``) points at the Sorento CRM: the
-    board is the CRM public page ``{origin}/feedback/board``. A plain tenant
-    base (or none) is the shared-service frontend: ``{base}/public/feedback/board``."""
+def feedback_base(db: Session, tenant_id: str) -> str:
+    """Where the public feedback pages live for this tenant. A tenant
+    ``public_link_base_url`` that is a TEMPLATE (``{token}``/``{ideaId}``)
+    points at the Sorento CRM: ``{origin}/feedback``. A plain tenant base (or
+    none) is the shared-service frontend: ``{base}/public/feedback``."""
     tenant_base = tenant_public_link_base(db, tenant_id)
     if tenant_base and any(p in tenant_base for p in LINK_PLACEHOLDERS):
         parts = urlsplit(tenant_base)
-        return f"{parts.scheme}://{parts.netloc}/feedback/board"
-    return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback/board"
+        return f"{parts.scheme}://{parts.netloc}/feedback"
+    return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback"
+
+
+def board_base(db: Session, tenant_id: str) -> str:
+    """Where the board lives for this tenant (``feedback_base`` + ``/board``)."""
+    return f"{feedback_base(db, tenant_id)}/board"
 
 
 def _owns_test_item(db: Session, idea: Idea, contact_id: str) -> bool:

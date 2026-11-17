@@ -433,6 +433,13 @@ class IdeaActionService:
         self.db.query(IdeaVote).filter(IdeaVote.idea_id == idea_id).delete(
             synchronize_session=False
         )
+        # Lane FEEDBACK-SUBSCRIBE: followers + share links go with the idea.
+        from ..models import IdeaFollower, IdeaShareLink
+
+        for model in (IdeaFollower, IdeaShareLink):
+            self.db.query(model).filter(
+                model.tenant_id == tenant_id, model.idea_id == idea_id
+            ).delete(synchronize_session=False)
         # AC-19-09: comments go with the idea (replies first, then parents).
         from .comments import IdeaCommentService
 

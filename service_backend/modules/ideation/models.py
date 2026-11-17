@@ -785,3 +785,78 @@ class IdeaContactLink(IdeationBase):
             sqlite_where=text("revoked_at IS NULL"),
         ),
     )
+
+
+class IdeaFollower(IdeationBase):
+    """A contact following a feedback item (lane FEEDBACK-SUBSCRIBE): they get
+    the same WhatsApp status update as the submitter, with their own board
+    link. The submitter is implicitly followed and never has a row.
+    ``contact_id`` is a plain indexed column, no FK into the omnichannel module
+    (cross-module = no FK); it is always resolved with THIS row's
+    ``tenant_id``. A merged item keeps its rows: the survivor's update reads
+    the followers of the survivor AND of its merged children, so unmerge needs
+    no bookkeeping. ``added_by_user_id`` set = staff added them."""
+
+    __tablename__ = "idea_followers"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
+    contact_id = Column(String, nullable=False, index=True)
+    added_by_user_id = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("idea_id", "contact_id", name="uq_idea_follower_contact"),
+    )
+
+
+class IdeaShareLink(IdeationBase):
+    """The read-only share link of ONE feedback item (lane FEEDBACK-SUBSCRIBE,
+    owner 17 Nov: "a general share link"). The token carries no person: it
+    opens the item read-only for anyone; any action asks for the visitor's
+    phone first. ``token`` is ``secrets.token_urlsafe(32)``, looked up across
+    tenants (it IS the credential); everything else is then resolved with
+    THIS row's ``tenant_id``. One live row per item; staff "Stop sharing" sets
+    ``revoked_at`` and the next Share mints a fresh token."""
+
+    __tablename__ = "idea_share_links"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
+    token = Column(String, nullable=False, unique=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    revoked_at = Column(UTCDateTime(), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_idea_share_links_live",
+            "idea_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
+    )
+
+
+class IdeaPhoneCode(IdeationBase):
+    """A WhatsApp code proving a share-link visitor's phone (lane
+    FEEDBACK-SUBSCRIBE). SS makes and checks the code; the item's product only
+    looks the phone up in its contacts and delivers the code over its own
+    WhatsApp template. Same rules as the CRM's own sign-in code: 6 digits,
+    hashed (never stored in clear), 10 minutes, 5 tries, single use; a new
+    request cancels the phone's earlier codes. ``contact_name`` = the name the
+    product answered with, used if SS has to create its contact copy."""
+
+    __tablename__ = "idea_phone_codes"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    phone_digits = Column(String, nullable=False, index=True)
+    code_hash = Column(String, nullable=False)
+    contact_name = Column(String, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    expires_at = Column(UTCDateTime(), nullable=False)
+    used_at = Column(UTCDateTime(), nullable=True)

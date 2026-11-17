@@ -62,6 +62,7 @@ from ..models import (
     IdeaStatusEvent,
     IdeaVote,
 )
+from . import followers
 from .comments import AUTHOR_CONTACT, AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
 from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
@@ -90,6 +91,11 @@ KIND_CONTACT = "contact"
 DEALER_ROLE = "Dealer"
 ROLE_BY_KIND = {KIND_STAFF: "Staff", KIND_CRM: "Staff", KIND_CONTACT: DEALER_ROLE}
 STAFF_ROLE = "Staff"
+# Lane FEEDBACK-SUBSCRIBE: anyone opening one item's read-only share link. Never
+# in ``ROLE_BY_KIND`` on purpose: no portal token is ever minted for it, so a
+# token claiming this kind is refused by ``resolve_portal_token``.
+KIND_SHARE = "share"
+SHARE_ROLE = "Visitor"
 
 VIEW_PERMISSION = "ideation.ideas.view"
 MANAGE_PERMISSION = "ideation.triage.manage"
@@ -168,6 +174,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+
 # ── principal + token ─────────────────────────────────────────────────────────
 
 
@@ -186,7 +193,7 @@ class PortalPrincipal:
 
     @property
     def role(self) -> str:
-        return ROLE_BY_KIND[self.kind]
+        return ROLE_BY_KIND.get(self.kind, SHARE_ROLE)
 
     @property
     def voter_id(self) -> str:
@@ -199,6 +206,9 @@ class PortalPrincipal:
             # The bare contact id: the SAME voter id the WhatsApp intake upvote
             # uses, so a dealer has one vote per item everywhere.
             return self.subject
+        if self.kind == KIND_SHARE:
+            # Matches no vote / like / comment author: the share view is read-only.
+            return f"share:{self.subject}"
         return f"embed-user:{self.subject}"
 
     @property
@@ -325,6 +335,27 @@ def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
         p.phone = claims.get("ph")
         p.can_manage = claims.get("mg") is True
     return p
+
+
+def share_principal(db: Session, token: str) -> Tuple[PortalPrincipal, str]:
+    """``(read-only principal, idea id)`` for a live share link (lane
+    FEEDBACK-SUBSCRIBE), else a uniform 404. Scoped to the link's own tenant
+    and the item's product; the tenant must be active with the module on."""
+    from .share_links import resolve_share
+
+    resolved = resolve_share(db, token)
+    if resolved is None:
+        raise _not_found()
+    link, idea = resolved
+    if not _tenant_ok(db, link.tenant_id):
+        raise _not_found()
+    p = PortalPrincipal(
+        tenant_id=link.tenant_id,
+        kind=KIND_SHARE,
+        subject=link.id,
+        product_id=idea.product_id,
+    )
+    return p, idea.id
 
 
 # ── sessions ──────────────────────────────────────────────────────────────────
@@ -810,6 +841,11 @@ class IdeaPortalService:
         for wire, attr in CORE_FIELDS:
             out[wire] = self._core_field(idea, attr)
         out["note"] = idea.portal_note
+        # Lane FEEDBACK-SUBSCRIBE: follower count + "Following" for this viewer.
+        out["followerCount"] = followers.follower_count(self.db, self.p.tenant_id, idea.id)
+        out["following"] = self.p.kind == KIND_CONTACT and followers.is_following(
+            self.db, self.p.tenant_id, idea.id, self._my_voter_ids()
+        )
         if self._text_withheld(card["isMine"]):
             # Owner ruling (b), strict (15 Nov + crew-pass): a dealer sees the
             # full text only on their own items; on everyone else's ONLY title,
@@ -818,6 +854,53 @@ class IdeaPortalService:
             for key in WITHHELD_DETAIL_KEYS:
                 out.pop(key, None)
         return out
+
+    # ---- follow + share (lane FEEDBACK-SUBSCRIBE) -------------------------
+
+    def _follow_target(self, idea_id: str) -> Idea:
+        if self.p.kind != KIND_CONTACT:
+            # Updates go to a phone: only a contact (personal link) follows
+            # here; staff add followers on the operator idea page.
+            raise _forbidden()
+        idea = self._resolve(idea_id, follow_merge=True)
+        if idea.is_test:
+            raise _not_found()
+        return idea
+
+    def _follow_state(self, idea: Idea) -> Dict[str, Any]:
+        return {
+            "following": followers.is_following(
+                self.db, self.p.tenant_id, idea.id, self._my_voter_ids()
+            ),
+            "followerCount": followers.follower_count(self.db, self.p.tenant_id, idea.id),
+        }
+
+    def follow(self, idea_id: str) -> Dict[str, Any]:
+        idea = self._follow_target(idea_id)
+        mine = self._my_voter_ids()
+        if not followers.is_following(self.db, self.p.tenant_id, idea.id, mine):
+            followers.follow(self.db, self.p.tenant_id, idea, self.p.subject)
+            self.db.commit()
+        return self._follow_state(idea)
+
+    def unfollow(self, idea_id: str) -> Dict[str, Any]:
+        idea = self._follow_target(idea_id)
+        followers.unfollow(self.db, self.p.tenant_id, idea.id, self._my_voter_ids())
+        self.db.commit()
+        return self._follow_state(idea)
+
+    def share(self, idea_id: str) -> Dict[str, Any]:
+        """The item's read-only share link (any signed-in portal viewer)."""
+        from .share_links import get_or_create_share_link, share_url
+
+        if self.p.kind == KIND_SHARE:
+            raise _forbidden()
+        idea = self._resolve(idea_id, follow_merge=True)
+        row = get_or_create_share_link(self.db, idea)
+        if row is None:
+            raise _not_found()
+        self.db.commit()
+        return {"url": share_url(self.db, row)}
 
     def _is_owned(self, idea_id: str) -> bool:
         return self._owned_q().filter(Idea.id == idea_id).first() is not None
@@ -846,7 +929,7 @@ class IdeaPortalService:
     def _text_withheld(self, is_mine: bool) -> bool:
         """A dealer on a personal link never reads another submitter's free
         text (owner ruling (b), security review #3)."""
-        return self.p.kind == KIND_CONTACT and not is_mine
+        return self.p.kind in (KIND_CONTACT, KIND_SHARE) and not is_mine
 
     def set_hidden(self, idea_id: str, hidden: bool) -> Dict[str, Any]:
         """Q5: managers hide/show an idea on the portal."""

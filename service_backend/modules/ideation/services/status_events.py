@@ -42,7 +42,9 @@ from modules.omnichannel.models import Contact
 from ..models import Idea, IdeaStatusEvent
 from .numbering import mint_idea_identity
 from .crm_poke import queue_crm_poke
-from .feedback_links import mint_board_link
+from .feedback_links import SUBMITTER, mint_board_link
+from .followers import followers_of
+from .ownership import phone_digits
 from .sinks import mint_idea_link
 from .statuses import IDEA_ENTITY
 
@@ -56,6 +58,11 @@ MAX_FEED_LIMIT = 200
 KIND_STATUS_CHANGED = "status_changed"
 KIND_MERGED = "merged"
 KIND_UNMERGED = "unmerged"
+
+# Who a feed row is for (lane FEEDBACK-SUBSCRIBE R7): the CRM sends the same
+# update to both and may word it per role.
+ROLE_REQUESTER = "requester"
+ROLE_FOLLOWER = "follower"
 
 
 def _iso_z(dt: datetime) -> str:
@@ -97,6 +104,8 @@ def _write_event(
     from_status_label: Optional[str] = None,
     merged_into: Optional[Dict[str, Optional[str]]] = None,
     separated_from: Optional[Dict[str, Optional[str]]] = None,
+    recipient_role: str = ROLE_REQUESTER,
+    board_contact_id: object = SUBMITTER,
 ) -> None:
     """Mint the recipient's identity (idempotent), insert the row, then fill
     ``payload_json`` (needs the DB-assigned ``seq``, so a flush comes first).
@@ -115,7 +124,8 @@ def _write_event(
     # Lane PUBLIC-IDEAS-BOARD: the requester's personal feedback board link,
     # opening this idea (``None`` when the idea has no same-tenant contact).
     # ``track_url`` stays the per-idea status page, unchanged.
-    board_url = mint_board_link(db, recipient)
+    # A follower's row carries THEIR OWN board link (lane FEEDBACK-SUBSCRIBE).
+    board_url = mint_board_link(db, recipient, board_contact_id)
 
     row = IdeaStatusEvent(
         id=str(uuid.uuid4()),
@@ -147,6 +157,9 @@ def _write_event(
         "merged_into": merged_into,
         "separated_from": separated_from,
         "is_test": bool(recipient.is_test),
+        # Lane FEEDBACK-SUBSCRIBE: ``requester_phone`` is the send target for
+        # both roles (field name kept for the CRM contract).
+        "recipient_role": recipient_role,
     }
     db.flush()
     # Owner ruling 15 Nov (CRM #2433, c): poke the tenant's CRM right after
@@ -159,26 +172,57 @@ def _write_event(
 # ── 1. the CRUD event-bus subscriber (status_changed) ───────────────────────
 
 
-def _fan_out_recipients(db: Session, tenant_id: str, moved_idea: Idea) -> List[Tuple[Idea, str]]:
+class _Recipient:
+    """One feed row to write: who gets it and for which idea row."""
+
+    __slots__ = ("idea", "phone", "role", "contact_id")
+
+    def __init__(self, idea: Idea, phone: str, role: str, contact_id: object):
+        self.idea = idea
+        self.phone = phone
+        self.role = role
+        self.contact_id = contact_id
+
+
+def _recipients(
+    db: Session, tenant_id: str, candidates: List[Idea], seen: Optional[set] = None
+) -> List[_Recipient]:
+    """Requesters of ``candidates`` first (in order), then their followers
+    (lane FEEDBACK-SUBSCRIBE R7/R10), deduped by normalized phone so one person
+    gets one message per change (R8). ``seen`` carries the dedupe set across
+    calls when the caller wants it."""
+    seen = seen if seen is not None else set()
+    out: List[_Recipient] = []
+    for candidate in candidates:
+        contact = _resolve_requester_contact(db, tenant_id, candidate)
+        phone = contact.phone if contact else None
+        key = phone_digits(phone) or phone
+        if not phone or key in seen:
+            continue
+        seen.add(key)
+        out.append(_Recipient(candidate, phone, ROLE_REQUESTER, SUBMITTER))
+    if any(not c.is_test for c in candidates):
+        for idea, contact in followers_of(db, tenant_id, [c for c in candidates if not c.is_test]):
+            key = phone_digits(contact.phone) or contact.phone
+            if not contact.phone or key in seen:
+                continue
+            seen.add(key)
+            out.append(_Recipient(idea, contact.phone, ROLE_FOLLOWER, contact.id))
+    return out
+
+
+def _fan_out_recipients(db: Session, tenant_id: str, moved_idea: Idea) -> List[_Recipient]:
     """The moved idea plus, when it is a survivor, each merged child (plan
-    7.1) - deduped by phone, the SURVIVOR's own row winning a collision
-    (moved idea is candidate 0, so it is always seen first)."""
+    7.1) - their requesters and then their followers, deduped by phone, the
+    SURVIVOR's own requester winning a collision (moved idea is candidate 0,
+    so it is always seen first)."""
     candidates: List[Idea] = [moved_idea]
     candidates.extend(
         db.query(Idea)
         .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id == moved_idea.id)
         .all()
     )
-    seen_phones = set()
-    recipients: List[Tuple[Idea, str]] = []
-    for candidate in candidates:
-        contact = _resolve_requester_contact(db, tenant_id, candidate)
-        phone = contact.phone if contact else None
-        if not phone or phone in seen_phones:
-            continue
-        seen_phones.add(phone)
-        recipients.append((candidate, phone))
-    return recipients
+    return _recipients(db, tenant_id, candidates)
 
 
 def on_domain_event(db: Session, ev: Dict[str, Any]) -> None:
@@ -210,16 +254,18 @@ def on_domain_event(db: Session, ev: Dict[str, Any]) -> None:
     if not recipients:
         return  # no requester anywhere in this fan-out (AC-94-62)
 
-    for recipient, phone in recipients:
+    for r in recipients:
         _write_event(
             db,
             tenant_id=tenant_id,
             kind=KIND_STATUS_CHANGED,
-            recipient=recipient,
-            requester_phone=phone,
+            recipient=r.idea,
+            requester_phone=r.phone,
             status_label=to_status_label or "",
             from_status_label=from_status.label,
-            merged_into=_merged_into_dict(idea) if recipient.id != idea.id else None,
+            merged_into=_merged_into_dict(idea) if r.idea.id != idea.id else None,
+            recipient_role=r.role,
+            board_contact_id=r.contact_id,
         )
 
 
@@ -252,18 +298,19 @@ def record_merge_events(
     survivor_status = db.query(Status).filter(Status.id == survivor.status_id).first()
     status_label = survivor_status.label if survivor_status else ""
     for member in members:
-        contact = _resolve_requester_contact(db, tenant_id, member)
-        if contact is None or not contact.phone:
-            continue
-        _write_event(
-            db,
-            tenant_id=tenant_id,
-            kind=KIND_MERGED,
-            recipient=member,
-            requester_phone=contact.phone,
-            status_label=status_label,
-            merged_into=_merged_into_dict(survivor),
-        )
+        # The member's requester, then its followers (lane FEEDBACK-SUBSCRIBE).
+        for r in _recipients(db, tenant_id, [member]):
+            _write_event(
+                db,
+                tenant_id=tenant_id,
+                kind=KIND_MERGED,
+                recipient=member,
+                requester_phone=r.phone,
+                status_label=status_label,
+                merged_into=_merged_into_dict(survivor),
+                recipient_role=r.role,
+                board_contact_id=r.contact_id,
+            )
 
 
 def record_flatten_events(
@@ -283,18 +330,18 @@ def record_flatten_events(
     survivor_status = db.query(Status).filter(Status.id == survivor.status_id).first()
     status_label = survivor_status.label if survivor_status else ""
     for child in children:
-        contact = _resolve_requester_contact(db, tenant_id, child)
-        if contact is None or not contact.phone:
-            continue
-        _write_event(
-            db,
-            tenant_id=tenant_id,
-            kind=KIND_MERGED,
-            recipient=child,
-            requester_phone=contact.phone,
-            status_label=status_label,
-            merged_into=_merged_into_dict(survivor),
-        )
+        for r in _recipients(db, tenant_id, [child]):
+            _write_event(
+                db,
+                tenant_id=tenant_id,
+                kind=KIND_MERGED,
+                recipient=child,
+                requester_phone=r.phone,
+                status_label=status_label,
+                merged_into=_merged_into_dict(survivor),
+                recipient_role=r.role,
+                board_contact_id=r.contact_id,
+            )
 
 
 def record_unmerge_events(
@@ -311,14 +358,11 @@ def record_unmerge_events(
     ``former_survivor_ids`` BEFORE clearing ``merged_into_id``). Deduped by
     phone within this one unmerge call (plan 7.1); no event for the former
     survivor."""
-    seen_phones = set()
+    seen_phones: set = set()
     for child in restored:
-        contact = _resolve_requester_contact(db, tenant_id, child)
-        if contact is None or not contact.phone:
+        recipients = _recipients(db, tenant_id, [child], seen_phones)
+        if not recipients:
             continue
-        if contact.phone in seen_phones:
-            continue
-        seen_phones.add(contact.phone)
 
         former_survivor_id = former_survivor_ids.get(child.id)
         former_survivor = (
@@ -329,15 +373,18 @@ def record_unmerge_events(
             else None
         )
         status = db.query(Status).filter(Status.id == child.status_id).first()
-        _write_event(
-            db,
-            tenant_id=tenant_id,
-            kind=KIND_UNMERGED,
-            recipient=child,
-            requester_phone=contact.phone,
-            status_label=status.label if status else "",
-            separated_from=_merged_into_dict(former_survivor),
-        )
+        for r in recipients:
+            _write_event(
+                db,
+                tenant_id=tenant_id,
+                kind=KIND_UNMERGED,
+                recipient=child,
+                requester_phone=r.phone,
+                status_label=status.label if status else "",
+                separated_from=_merged_into_dict(former_survivor),
+                recipient_role=r.role,
+                board_contact_id=r.contact_id,
+            )
 
 
 # ── 3. the feed (CRM workspace-key read) ─────────────────────────────────────

@@ -70,6 +70,9 @@ THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT = "idea_portal_submit"
 # Personal feedback link exchange (lane PUBLIC-IDEAS-BOARD): failed exchanges
 # per client IP (an own bucket; a guessing run never touches the login buckets).
 THROTTLE_SCOPE_IDEA_FEEDBACK_LINK = "idea_feedback_link"
+# Follow / comment from a feedback share link (lane FEEDBACK-SUBSCRIBE): every
+# send-code / verify-code request, keyed per client IP and per phone digits.
+THROTTLE_SCOPE_IDEA_FOLLOW_PHONE = "idea_follow_phone"
 # Omnichannel replace-token attempts per channel (plan 42): every attempt counts,
 # refused ones included (key = channel id).
 THROTTLE_SCOPE_CHANNEL_TOKEN = "channel_token"
