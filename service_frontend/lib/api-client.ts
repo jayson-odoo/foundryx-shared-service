@@ -21,18 +21,55 @@ export class ApiError extends Error {
    * form engine's 422 `{problems}` / `{fieldErrors}` contracts) - `message`
    * always stays a string. */
   detail: unknown;
+  /** Machine code from `{"error": {"code"}}` or an object `detail.code`
+   * (e.g. `ORIGIN_NOT_ALLOWED`, `SESSION_EXPIRED`); null when none. */
+  code: string | null;
   constructor(
     message: string,
     status: number,
     retryAfterSeconds: number | null = null,
     detail: unknown = undefined,
+    code: string | null = null,
   ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.retryAfterSeconds = retryAfterSeconds;
     this.detail = detail;
+    this.code = code;
   }
+}
+
+interface ErrorBody {
+  message: string;
+  detail: unknown;
+  code: string | null;
+}
+
+/** The ONE error-body reader for every fetch helper: FastAPI `detail`
+ * (string or object) and the gateway `{"error": {code, message}}` envelope. */
+async function readErrorBody(res: Response): Promise<ErrorBody> {
+  let message = res.statusText || 'Request failed';
+  let detail: unknown;
+  let code: string | null = null;
+  try {
+    const data = await res.json();
+    detail = data.detail;
+    const objDetail = detail && typeof detail === 'object' ? (detail as { code?: unknown; message?: unknown }) : null;
+    const objMessage = typeof objDetail?.message === 'string' ? objDetail.message : undefined;
+    // message stays a STRING - object details ride ApiError.detail.
+    message =
+      (typeof data.detail === 'string' ? data.detail : undefined) ??
+      data.message ??
+      data.error?.message ??
+      objMessage ??
+      message;
+    const rawCode = data.error?.code ?? objDetail?.code;
+    code = typeof rawCode === 'string' ? rawCode : null;
+  } catch {
+    // non-JSON error body (proxy HTML, network blip)
+  }
+  return { message, detail, code };
 }
 
 /** Parse the (delta-seconds form of the) Retry-After header, if present. */
@@ -146,19 +183,9 @@ async function apiFetchOnce<T>(
         return apiFetchOnce<T>(path, init, false); // retry once, no further re-mint
       }
     }
-    let message = res.statusText || 'Request failed';
-    let detail: unknown;
-    try {
-      const data = await res.json();
-      detail = data.detail;
-      // message stays a STRING - object details ride ApiError.detail.
-      message =
-        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? data.error?.message ?? message;
-    } catch {
-      // non-JSON error body (proxy HTML, network blip)
-    }
+    const { message, detail, code } = await readErrorBody(res);
     await endSessionOn401(signOutOn401, res.status);
-    throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail);
+    throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail, code);
   }
 
   if (res.status === 204) return undefined as T;
@@ -197,18 +224,9 @@ export async function apiFetchBlob(path: string, init: RequestInit = {}): Promis
 
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
-    let message = res.statusText || 'Request failed';
-    let detail: unknown;
-    try {
-      const data = await res.json();
-      detail = data.detail;
-      message =
-        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? data.error?.message ?? message;
-    } catch {
-      // non-JSON error body
-    }
+    const { message, detail, code } = await readErrorBody(res);
     await endSessionOn401(signOutOn401, res.status);
-    throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail);
+    throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail, code);
   }
   return res.blob();
 }
@@ -230,17 +248,8 @@ export async function publicFetch<T = unknown>(
   }
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
-    let message = res.statusText || 'Request failed';
-    let detail: unknown;
-    try {
-      const data = await res.json();
-      detail = data.detail;
-      message =
-        (typeof data.detail === 'string' ? data.detail : undefined) ?? data.message ?? data.error?.message ?? message;
-    } catch {
-      // non-JSON error body
-    }
-    throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail);
+    const { message, detail, code } = await readErrorBody(res);
+    throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail, code);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
