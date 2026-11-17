@@ -32,6 +32,16 @@ THUMB_VARIANT = "thumb"
 THUMB_MAX_SIDE = 320
 THUMB_SOURCE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
 _THUMB_READ_CAP = 26 * 1024 * 1024
+# An image over this many pixels is never decoded (a 656 KB PNG can claim
+# 13000x13000 and cost gigabytes of memory); real phone photos (48 MP) fit.
+THUMB_MAX_SOURCE_PIXELS = 40_000_000
+# ``thumb_key == ""`` = "no preview": a refused or undecodable image, remembered
+# so later reads answer 404 without touching storage. NULL = not tried yet.
+NO_PREVIEW = ""
+
+
+class _ThumbRefused(Exception):
+    """The image cannot (or must not) be previewed."""
 _log = logging.getLogger(__name__)
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -221,9 +231,10 @@ class IdeaAttachmentService:
         if row is None or not row.storage_key:
             raise HTTPException(404, "Attachment not found.")
         if variant == THUMB_VARIANT:
+            if row.thumb_key == NO_PREVIEW:
+                raise HTTPException(404, "No preview.")
             key = row.thumb_key or self._make_thumb(tenant_id, row)
-            mime = "image/png" if "thumbpng" in key else "image/jpeg"
-            return key, mime, "preview"
+            return key, "image/png" if key.endswith(".png") else "image/jpeg", "preview"
         return row.storage_key, row.mime or "application/octet-stream", row.filename or "file"
 
     def _make_thumb(self, tenant_id: str, row: IdeaAttachment) -> str:
@@ -236,11 +247,18 @@ class IdeaAttachmentService:
         storage = storage_for_tenant(self.db, tenant_id)
         try:
             data = read_object(storage, row.storage_key, max_bytes=_THUMB_READ_CAP)
-            content, mime, tag = _render_thumb(data)
-        except Exception as exc:  # noqa: BLE001 - bad image
-            _log.info("thumbnail not generated for %s: %s", row.id, type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 - storage hiccup: not remembered, retry later
+            _log.info("thumbnail source unreadable for %s: %s", row.id, type(exc).__name__)
             raise HTTPException(404, "No preview.")
-        key = storage.save(f"ideation/ideas/{row.idea_id}/{row.id}.{tag}", content, mime)
+        try:
+            content, mime = _render_thumb(data)
+        except Exception as exc:  # noqa: BLE001 - corrupt / oversize image: remember it
+            _log.info("thumbnail not generated for %s: %s", row.id, type(exc).__name__)
+            row.thumb_key = NO_PREVIEW
+            self.db.commit()
+            raise HTTPException(404, "No preview.")
+        ext = "png" if mime == "image/png" else "jpg"
+        key = storage.save(f"ideation/ideas/{row.idea_id}/{row.id}.thumb.{ext}", content, mime)
         row.thumb_key = key
         self.db.commit()
         return key
@@ -275,19 +293,26 @@ class IdeaAttachmentService:
                 _log.warning("could not delete attachment blob %s", key)
 
 
-def _render_thumb(data: bytes) -> Tuple[bytes, str, str]:
-    """``(bytes, mime, key tag)`` of the preview: fits 320x320, EXIF-rotated,
-    JPEG (PNG when it has transparency). Pillow's default decompression-bomb
-    guard stays on - an oversize image raises and the caller answers 404."""
+def _render_thumb(data: bytes) -> Tuple[bytes, str]:
+    """``(bytes, mime)`` of the preview: fits 320x320, EXIF-rotated, JPEG (PNG when
+    it has transparency). The size is read from the header and an image over
+    ``THUMB_MAX_SOURCE_PIXELS`` is refused BEFORE any decode; a JPEG decodes at
+    reduced scale (``draft``); the small result is rotated, never the original.
+    Pillow's own decompression-bomb guard stays on."""
     from PIL import Image, ImageOps
 
     with Image.open(io.BytesIO(data)) as opened:
+        width, height = opened.size
+        if width * height > THUMB_MAX_SOURCE_PIXELS:
+            raise _ThumbRefused("too many pixels")
+        if opened.format == "JPEG":
+            opened.draft("RGB", (640, 640))
+        opened.thumbnail((THUMB_MAX_SIDE, THUMB_MAX_SIDE))
         img = ImageOps.exif_transpose(opened)
-        img.thumbnail((THUMB_MAX_SIDE, THUMB_MAX_SIDE))
         alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
         out = io.BytesIO()
         if alpha:
             img.convert("RGBA").save(out, "PNG")
-            return out.getvalue(), "image/png", "thumbpng"
+            return out.getvalue(), "image/png"
         img.convert("RGB").save(out, "JPEG", quality=80)
-        return out.getvalue(), "image/jpeg", "thumb"
+        return out.getvalue(), "image/jpeg"

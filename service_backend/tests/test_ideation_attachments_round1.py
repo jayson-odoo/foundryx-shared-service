@@ -152,7 +152,7 @@ def test_thumb_of_non_image_and_corrupt_image_is_404(ctx):
     bad = _up(c, h, iid, PNG, "bad.png").json()  # PNG magic, no real image
     assert c.get(bad["contentPath"], headers=h).status_code == 200  # control
     assert _thumb(c, h, bad["contentPath"]).status_code == 404
-    assert _row(c, bad["id"])[0] is None
+    assert _row(c, bad["id"])[0] == ""  # remembered as "no preview"
 
 
 def test_embed_thumb(ideation_client):
@@ -179,3 +179,78 @@ def test_board_thumb(setup):
     res = s["client"].get(up.json()["contentPath"] + "?variant=thumb", headers=h)
     assert res.status_code == 200 and res.headers["content-type"].startswith("image/jpeg")
     assert "private" in res.headers["cache-control"]
+
+
+# ── round 2: thumbnail memory guard, refused viewers, alpha PNG bytes ─────────
+def _huge_dim_png(w=13000, h=13000) -> bytes:
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0)
+    idat = zlib.compress(b"\x00" * 16)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def test_huge_dimension_image_is_refused_before_decoding(ctx, monkeypatch):
+    from PIL import Image
+
+    import app.services.storage as storage_mod
+
+    c, h, iid = ctx["c"], ctx["h"], ctx["idea_id"]
+    up = _up(c, h, iid, _huge_dim_png(), "big.png")
+    assert up.status_code == 201, up.text  # never rejected at upload
+    decoded = []
+    for name in ("load", "thumbnail"):
+        orig = getattr(Image.Image, name)
+        monkeypatch.setattr(
+            Image.Image, name, lambda self, *a, _o=orig, _n=name, **k: (decoded.append(_n), _o(self, *a, **k))[1]
+        )
+    assert _thumb(c, h, up.json()["contentPath"]).status_code == 404
+    assert decoded == []
+    assert _row(c, up.json()["id"])[0] == ""  # "no preview" sentinel
+    reads = []
+    real = storage_mod.read_object
+    monkeypatch.setattr(storage_mod, "read_object", lambda *a, **k: (reads.append(1), real(*a, **k))[1])
+    assert _thumb(c, h, up.json()["contentPath"]).status_code == 404
+    assert reads == []  # remembered: storage is not touched again
+    assert c.get(up.json()["contentPath"], headers=h).status_code == 200  # the original is untouched
+
+
+def test_alpha_thumb_bytes_are_png(ctx):
+    c, h, iid = ctx["c"], ctx["h"], ctx["idea_id"]
+    up = _up(c, h, iid, _real_png((500, 500), "RGBA")).json()
+    res = _thumb(c, h, up["contentPath"])
+    assert res.content.startswith(b"\x89PNG") and res.headers["content-type"].startswith("image/png")
+
+
+def test_refused_board_viewer_triggers_no_thumbnail_work(setup):
+    s = setup
+    owner = _crm_session(s, sub="crm-owner", ideas_manage=False)
+    iid = _idea(s, 2100, crm_user="crm-owner")
+    up = s["client"].post(
+        f"/portal/ideas/{iid}/attachments", headers=owner,
+        files={"file": ("p.png", _real_png(), "application/octet-stream")},
+    ).json()
+    dealer = _contact_session(s, _contact(s))
+    res = s["client"].get(up["contentPath"] + "?variant=thumb", headers=dealer)
+    assert res.status_code == 404
+    from modules.ideation.models import IdeaAttachment
+
+    db = s["factory"]()
+    try:
+        assert db.query(IdeaAttachment).filter(IdeaAttachment.id == up["id"]).one().thumb_key is None
+    finally:
+        db.close()
+
+
+def test_delete_item_also_removes_generated_thumbnail(ctx, media_root):
+    c, h, iid = ctx["c"], ctx["h"], ctx["idea_id"]
+    up = _up(c, h, iid, _real_png()).json()
+    assert _thumb(c, h, up["contentPath"]).status_code == 200
+    assert len([p for p in media_root.rglob("*") if p.is_file()]) == 2  # original + thumb
+    assert c.delete(f"/ideation/ideas/{iid}", headers=h).status_code == 204
+    assert [p for p in media_root.rglob("*") if p.is_file()] == []

@@ -1127,12 +1127,8 @@ class IdeaPortalService:
             if merged_child is None or files.comment_id_of(idea.tenant_id, owner_id, attachment_id) is None:
                 raise _not_found()
         source_id = owner_id or idea.id
-        try:
-            found = files.content(idea.tenant_id, source_id, attachment_id, variant)
-        except HTTPException as exc:
-            if exc.status_code == 404:
-                raise _not_found()
-            raise
+        # Refuse BEFORE any file work (a thumbnail is generated on first read, so
+        # a viewer who may not see the file must never trigger it).
         comment_id = files.comment_id_of(idea.tenant_id, source_id, attachment_id)
         if comment_id is None:
             if self._text_withheld(self._is_owned(idea.id)):
@@ -1150,6 +1146,12 @@ class IdeaPortalService:
             )
             if live is None:
                 raise _not_found()
+        try:
+            found = files.content(idea.tenant_id, source_id, attachment_id, variant)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise _not_found()
+            raise
         return found
 
     def delete_comment(self, idea_id: str, comment_id: str) -> None:
