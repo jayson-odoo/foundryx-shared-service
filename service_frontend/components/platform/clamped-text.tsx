@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
@@ -27,15 +27,15 @@ const CLAMP: Record<number, string> = {
 };
 
 export function ClampedText({ text, lines = 3, className }: ClampedTextProps) {
-  const ref = useRef<HTMLParagraphElement>(null);
+  // A callback ref, not useRef: once the text truncates the <p> remounts inside
+  // the tooltip trigger, and the observer must follow the NEW node (a detached
+  // one measures 0 and would switch the tooltip back off).
+  const [el, setEl] = useState<HTMLParagraphElement | null>(null);
   const [truncated, setTruncated] = useState(false);
 
   useEffect(() => {
-    const el = ref.current;
     if (!el) return;
-    // Switching to/from the tooltip wrapper remounts the <p>; this effect then
-    // re-attaches to the new node (`truncated` dep), and a detached old node
-    // (size 0) is ignored rather than flipping `truncated` back.
+    // A detached old node (size 0) is ignored rather than flipping `truncated` back.
     const measure = () => {
       if (!el.isConnected) return;
       setTruncated(el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
@@ -44,10 +44,10 @@ export function ClampedText({ text, lines = 3, className }: ClampedTextProps) {
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [text, lines, truncated]);
+  }, [el, text, lines]);
 
   const paragraph = (
-    <p ref={ref} className={cn(CLAMP[lines], className)}>
+    <p ref={setEl} className={cn(CLAMP[lines], className)}>
       {text}
     </p>
   );

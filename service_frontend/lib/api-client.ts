@@ -224,6 +224,19 @@ export async function publicFetch<T = unknown>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  const res = await publicRequest(path, init);
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+/** {@link publicFetch} for a binary body (a file served behind a non-session
+ * token, e.g. the feedback board's portal token): returns the Blob. */
+export async function publicFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  const res = await publicRequest(path, init);
+  return res.blob();
+}
+
+async function publicRequest(path: string, init: RequestInit): Promise<Response> {
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
@@ -242,6 +255,5 @@ export async function publicFetch<T = unknown>(
     }
     throw new ApiError(message, res.status, retryAfterSecondsOf(res), detail);
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return res;
 }

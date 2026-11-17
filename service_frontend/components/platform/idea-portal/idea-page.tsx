@@ -5,7 +5,14 @@ import Link from 'next/link';
 import { ArrowLeft, Heart, Reply, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useDatetime } from '@/hooks/use-datetime';
-import { useIdeaPortal, usePortalIdeaPage } from '@/hooks/use-idea-portal';
+import { useIdeaPortal, usePortalAttachmentFetch, usePortalIdeaPage } from '@/hooks/use-idea-portal';
+import {
+  AttachmentPicker,
+  UploadRetryNotice,
+  useAttachmentDraft,
+  useUploadRetry,
+} from '@/components/platform/attachment-picker/attachment-picker';
+import { AttachmentThumbs } from '@/components/platform/attachment-preview/attachment-thumbs';
 import { IdeaStatusTimeline } from '@/app/(public)/public/feedback/[token]/components/idea-status-timeline';
 import { colorToHex } from '@/components/platform/status-badge';
 import { SearchSelect } from '@/components/platform/search-select';
@@ -17,6 +24,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import { dateKey } from '@/lib/datetime';
+import { isCommentPostResult, type FailedUpload } from '@/lib/upload-files';
 import type { PortalActivity, PortalComment, PortalIdea, PortalVoter } from '@/types/idea-portal';
 import { PortalStatusPill } from './portal-status-pill';
 import { PortalLoading, PortalMessage } from './portal-states';
@@ -51,24 +59,32 @@ function Avatar({ name, small }: { name: string | null; small?: boolean }) {
 
 function Composer({
   onSubmit,
+  onRetry,
   placeholder,
   submitLabel,
   autoFocus,
 }: {
-  onSubmit: (body: string) => Promise<void>;
+  onSubmit: (body: string, files: File[]) => Promise<unknown>;
+  onRetry: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
   placeholder: string;
   submitLabel: string;
   autoFocus?: boolean;
 }) {
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
+  const draft = useAttachmentDraft();
+  const uploads = useUploadRetry(draft, onRetry);
   const trimmed = body.trim();
+  const canSend = Boolean(trimmed || draft.files.length > 0) && !busy;
   const send = async () => {
-    if (!trimmed || busy) return;
+    if (!canSend) return;
     setBusy(true);
     try {
-      await onSubmit(trimmed);
-      setBody('');
+      const sent = draft.files;
+      const result = await onSubmit(trimmed, sent);
+      // Only what was sent leaves the box; anything typed or added meanwhile stays.
+      setBody((current) => (current.trim() === trimmed ? '' : current));
+      uploads.track(result, sent);
     } catch {
       // the hook surfaces the error
     } finally {
@@ -76,7 +92,7 @@ function Composer({
     }
   };
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" {...draft.wrapperProps}>
       <Textarea
         rows={3}
         value={body}
@@ -86,11 +102,21 @@ function Composer({
         autoFocus={autoFocus}
         onChange={(e) => setBody(e.target.value)}
       />
-      <div className="flex justify-end">
-        <Button size="sm" disabled={!trimmed || busy} onClick={send}>
-          {submitLabel}
-        </Button>
-      </div>
+      {uploads.pending ? (
+        <UploadRetryNotice
+          failed={uploads.pending.failed}
+          busy={uploads.busy}
+          onRetry={() => void uploads.retryNow()}
+          onRemove={uploads.removeFailed}
+        />
+      ) : (
+        <div className="flex items-start justify-between gap-2">
+          <AttachmentPicker draft={draft} />
+          <Button size="sm" disabled={!canSend} onClick={send}>
+            {submitLabel}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -109,6 +135,7 @@ function CommentItem({
   small?: boolean;
 }) {
   const { formatDmyDateTime: formatDateTime } = useDatetime();
+  const fetchContent = usePortalAttachmentFetch();
   if (c.isDeleted) {
     return <p className="text-sm text-muted-foreground italic">Comment deleted</p>;
   }
@@ -121,7 +148,8 @@ function CommentItem({
           <span className="rounded bg-muted px-1.5 text-xs">{c.authorRole}</span>
           <span className="text-xs text-muted-foreground">{formatDateTime(c.createdAt)}</span>
         </div>
-        <p className="mt-1 break-words whitespace-pre-wrap">{c.body}</p>
+        {c.body && <p className="mt-1 break-words whitespace-pre-wrap">{c.body}</p>}
+        <AttachmentThumbs attachments={c.attachments ?? []} fetchContent={fetchContent} className="mt-2" />
         <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
           <button
             type="button"
@@ -160,11 +188,13 @@ function ActivityItem({
   onLike,
   onDelete,
   onReply,
+  onRetry,
 }: {
   e: PortalActivity;
   onLike: (id: string) => void;
   onDelete: (id: string) => void;
-  onReply: (parentId: string, body: string) => Promise<void>;
+  onReply: (parentId: string, body: string, files: File[]) => Promise<unknown>;
+  onRetry: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
 }) {
   const { formatDmyDateTime: formatDateTime } = useDatetime();
   const [replying, setReplying] = useState(false);
@@ -183,9 +213,12 @@ function ActivityItem({
                 autoFocus
                 placeholder="Write a reply"
                 submitLabel="Send reply"
-                onSubmit={async (body) => {
-                  await onReply(top.id, body);
-                  setReplying(false);
+                onRetry={onRetry}
+                onSubmit={async (body, files) => {
+                  const result = await onReply(top.id, body, files);
+                  // Stay open while some files still need a retry.
+                  if (!(isCommentPostResult(result) && result.failed.length > 0)) setReplying(false);
+                  return result;
                 }}
               />
             )}
@@ -279,6 +312,8 @@ function UpvoteRow({ row }: { row: Extract<FeedRow, { kind: 'upvotes' }> }) {
 }
 
 function Fields({ idea }: { idea: PortalIdea }) {
+  const fetchContent = usePortalAttachmentFetch();
+  const files = idea.attachments ?? [];
   const useCases = (idea.useCases ?? []).filter((u) => u.trim());
   const rows: { label: string; text?: string | null; list?: string[] }[] = [
     { label: 'Business problem', text: idea.problem },
@@ -287,7 +322,7 @@ function Fields({ idea }: { idea: PortalIdea }) {
     { label: 'Current workaround', text: idea.currentWorkaround },
   ];
   const shown = rows.filter((r) => (r.list ? r.list.length > 0 : Boolean(r.text && r.text.trim())));
-  if (shown.length === 0) return null;
+  if (shown.length === 0 && files.length === 0) return null;
   return (
     <Card data-testid="portal-idea-fields">
       <CardContent className="py-4">
@@ -309,6 +344,7 @@ function Fields({ idea }: { idea: PortalIdea }) {
             </div>
           ))}
         </dl>
+        <AttachmentThumbs attachments={files} fetchContent={fetchContent} className={shown.length > 0 ? 'mt-4' : undefined} />
       </CardContent>
     </Card>
   );
@@ -429,7 +465,8 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
               <Composer
                 placeholder="Leave a comment"
                 submitLabel="Comment"
-                onSubmit={(body) => page.addComment(body)}
+                onRetry={page.retryCommentUploads}
+                onSubmit={(body, files) => (files.length > 0 ? page.addComment(body, undefined, files) : page.addComment(body))}
               />
               {page.actionError && <p className="mt-2 text-sm text-destructive">{page.actionError}</p>}
             </CardContent>
@@ -456,7 +493,10 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
                     e={row.event}
                     onLike={(id) => onAction(page.likeComment(id))}
                     onDelete={(id) => onAction(page.deleteComment(id))}
-                    onReply={(parentId, body) => page.addComment(body, parentId)}
+                    onRetry={page.retryCommentUploads}
+                    onReply={(parentId, body, files) =>
+                      files.length > 0 ? page.addComment(body, parentId, files) : page.addComment(body, parentId)
+                    }
                   />
                 ),
               )}

@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from jose import JWTError, jwt
+from fastapi import HTTPException
 from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -57,11 +58,13 @@ from app.models.user import User
 from ..models import (
     Idea,
     IdeaActivity,
+    IdeaAttachment,
     IdeaComment,
     IdeaCommentLike,
     IdeaStatusEvent,
     IdeaVote,
 )
+from .attachments import IdeaAttachmentService
 from .comments import AUTHOR_CONTACT, AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
 from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
@@ -123,7 +126,10 @@ MAX_PAGE_SIZE = 100
 WITHHELD_CARD_KEYS = ("submittedAt", "productName")
 WITHHELD_DETAIL_KEYS = WITHHELD_CARD_KEYS + (
     "problem", "desiredOutcome", "useCases", "currentWorkaround", "submitterFirstName",
+    "attachments",
 )
+# Where the board serves a file (the manifest mounts the portal router here).
+PORTAL_CONTENT_PREFIX = "/portal/ideas"
 
 
 def as_use_case_list(value: Any) -> Optional[List[str]]:
@@ -836,6 +842,9 @@ class IdeaPortalService:
         for wire, attr in CORE_FIELDS:
             out[wire] = self._core_field(idea, attr)
         out["note"] = idea.portal_note
+        out["attachments"] = IdeaAttachmentService(self.db).report_level(
+            idea.tenant_id, idea.id, PORTAL_CONTENT_PREFIX
+        )
         if self._text_withheld(card["isMine"]):
             # Owner ruling (b), strict (15 Nov + crew-pass): a dealer sees the
             # full text only on their own items; on everyone else's ONLY title,
@@ -994,7 +1003,7 @@ class IdeaPortalService:
     # ---- comments ----------------------------------------------------------
 
     def _comment_rows(self, idea: Idea) -> List[Dict[str, Any]]:
-        rows = IdeaCommentService(self.db).list(
+        rows = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).list(
             idea.tenant_id, idea.id, self.p.viewer, project_names=True
         )
         ids = [r.id for r in rows]
@@ -1039,7 +1048,7 @@ class IdeaPortalService:
             throttle.enforce_idea_portal_comment(principal_key=key)
         except Throttled as exc:
             raise PortalError(429, "too_many_comments", "Too many comments. Try again later.", exc.retry_after_seconds)
-        created = IdeaCommentService(self.db).create(
+        created = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).create(
             idea.tenant_id,
             idea.id,
             body=body,
@@ -1053,6 +1062,97 @@ class IdeaPortalService:
         d = created.model_dump()
         d.update(authorRole=self.p.role, likeCount=0, likedByMe=False)
         return d
+
+    def begin_upload(self, idea_id: str, comment_id: Optional[str] = None) -> Idea:
+        """Authorise + throttle an upload BEFORE its body is read: a report file
+        needs its owner or a manager, a comment file the comment's author. Every
+        attempt counts against the caller's upload bucket (refused ones too)."""
+        from app.services.throttle import Throttled, ThrottleService
+
+        idea = self._resolve(idea_id, follow_merge=False)
+        if comment_id:
+            IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).assert_author(
+                idea.tenant_id, idea.id, comment_id, self.p.viewer
+            )
+        elif not (self.p.can_manage or self._is_owned(idea.id)):
+            raise _forbidden()
+        throttle = ThrottleService(self.db)
+        key = hashlib.sha256(f"{self.p.tenant_id}:{self.p.voter_id}".encode("utf-8")).hexdigest()
+        try:
+            throttle.enforce_idea_portal_upload(principal_key=key)
+        except Throttled as exc:
+            raise PortalError(429, "too_many_uploads", "Too many uploads. Try again later.", exc.retry_after_seconds)
+        throttle.record_idea_portal_upload(principal_key=key)
+        return idea
+
+    def store_upload(
+        self, idea: Idea, filename: str, content: bytes, comment_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Store a file authorised by :meth:`begin_upload` through the ONE
+        ``IdeaAttachmentService.upload`` (same sniff / caps / storage as staff)."""
+        return IdeaAttachmentService(self.db).upload(
+            idea.tenant_id,
+            idea.id,
+            filename,
+            content,
+            content_prefix=PORTAL_CONTENT_PREFIX,
+            comment_id=comment_id or None,
+        )
+
+    def attachment_content(
+        self, idea_id: str, attachment_id: str, variant: Optional[str] = None
+    ) -> Tuple[str, str, str]:
+        """``(storage_key, mime, filename)`` of a file the caller may read: a
+        report file only where the report text is not withheld from them, a
+        comment file only while its comment is live."""
+        idea = self._resolve(idea_id, follow_merge=True)
+        files = IdeaAttachmentService(self.db)
+        owner_id = (
+            self.db.query(IdeaAttachment.idea_id)
+            .filter(IdeaAttachment.id == attachment_id, IdeaAttachment.tenant_id == idea.tenant_id)
+            .scalar()
+        )
+        if owner_id is not None and owner_id != idea.id:
+            # A merged child's comment thread shows on its survivor; its comment
+            # files are served there too (never the child's report files).
+            merged_child = (
+                self.db.query(Idea.id)
+                .filter(
+                    Idea.id == owner_id,
+                    Idea.tenant_id == idea.tenant_id,
+                    Idea.merged_into_id == idea.id,
+                )
+                .first()
+            )
+            if merged_child is None or files.comment_id_of(idea.tenant_id, owner_id, attachment_id) is None:
+                raise _not_found()
+        source_id = owner_id or idea.id
+        # Refuse BEFORE any file work (a thumbnail is generated on first read, so
+        # a viewer who may not see the file must never trigger it).
+        comment_id = files.comment_id_of(idea.tenant_id, source_id, attachment_id)
+        if comment_id is None:
+            if self._text_withheld(self._is_owned(idea.id)):
+                raise _not_found()
+        else:
+            live = (
+                self.db.query(IdeaComment.id)
+                .filter(
+                    IdeaComment.id == comment_id,
+                    IdeaComment.idea_id == source_id,
+                    IdeaComment.tenant_id == idea.tenant_id,
+                    IdeaComment.deleted_at.is_(None),
+                )
+                .first()
+            )
+            if live is None:
+                raise _not_found()
+        try:
+            found = files.content(idea.tenant_id, source_id, attachment_id, variant)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise _not_found()
+            raise
+        return found
 
     def delete_comment(self, idea_id: str, comment_id: str) -> None:
         idea = self._resolve(idea_id, follow_merge=True)

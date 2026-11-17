@@ -7,12 +7,12 @@ status / delete (``ideation.triage.manage``). Status moves ride the core status
 engine (server-authoritative - illegal moves refused)."""
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.v1.documents import _serve_blob
 from app.database import get_db
-from app.dependencies import effective_permission_keys, require_permission
+from app.dependencies import effective_permission_keys, get_current_user, require_permission
 from app.models.user import User
 
 from ..schemas import (
@@ -244,18 +244,29 @@ def similar_ideas(
 async def upload_idea_attachment(
     idea_id: str,
     file: UploadFile = File(...),
-    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    commentId: Optional[str] = Form(default=None),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> IdeaAttachmentOut:
-    """Upload a file onto an idea (sniff-first, 25 MB cap). 404 outside the
-    tenant, 413 over the cap, 415 on an unverifiable type."""
+    """Upload a file onto an idea (sniff-first, 25 MB cap), or onto the caller's
+    own comment with ``commentId``. 404 outside the tenant, 403 on someone
+    else's comment, 413 over the cap, 415 on an unverifiable type."""
+    # A comment file needs the comment permission (what the comment box needs) and
+    # authorship; a report file needs triage.manage.
+    keys = effective_permission_keys(current_user)
+    if (COMMENT_PERMISSION if commentId else TRIAGE_PERMISSION) not in keys:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to do that.")
     service = IdeaAttachmentService(db)
     service.ensure_idea(current_user.tenant_id, idea_id)
+    if commentId:
+        IdeaCommentService(db).assert_author(
+            current_user.tenant_id, idea_id, commentId, _viewer(current_user)
+        )
     content = await file.read(ATTACHMENT_CAP_BYTES + 1)
     if len(content) > ATTACHMENT_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
     return service.upload(
-        current_user.tenant_id, idea_id, file.filename or "", content
+        current_user.tenant_id, idea_id, file.filename or "", content, comment_id=commentId or None
     )
 
 
@@ -263,12 +274,13 @@ async def upload_idea_attachment(
 def get_idea_attachment_content(
     idea_id: str,
     attachment_id: str,
+    variant: Optional[str] = Query(default=None, pattern="^thumb$"),
     current_user: User = Depends(require_permission("ideation.ideas.view")),
     db: Session = Depends(get_db),
 ):
     """Serve an uploaded attachment CSP-sandboxed + nosniff (tenant-scoped)."""
     key, mime, filename = IdeaAttachmentService(db).content(
-        current_user.tenant_id, idea_id, attachment_id
+        current_user.tenant_id, idea_id, attachment_id, variant
     )
     return _serve_blob(db, current_user.tenant_id, key, mime, filename, "inline")
 

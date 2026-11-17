@@ -23,6 +23,8 @@ vi.mock('@/hooks/use-datetime', () => ({
   useDatetime: () => ({
     formatDate: (v: string) => v.slice(0, 10),
     formatDateTime: (v: string) => v.slice(0, 10),
+    // Owner standing rule: date-times read dd/mm/yyyy, h:mm am/pm.
+    formatDmyDateTime: (v: string) => `DMY:${v.slice(0, 10)}`,
     formatTime: (v: string) => v.slice(11, 16),
   }),
 }));
@@ -225,5 +227,12 @@ describe('UseCasesInput', () => {
     rerender(<UseCasesInput value={['A', 'B']} onChange={onChange} />);
     await user.click(screen.getByRole('button', { name: 'Remove use case 1' }));
     expect(onChange).toHaveBeenLastCalledWith(['B']);
+  });
+});
+
+describe('DetailsTab - Captured date-time (owner date rule)', () => {
+  it('reads dd/mm/yyyy, h:mm am/pm through the shared formatter', () => {
+    render(<Harness idea={anIdea()} editing={false} />);
+    expect(screen.getByText('DMY:2026-07-18')).toBeInTheDocument();
   });
 });
