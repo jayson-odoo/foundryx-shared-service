@@ -40,6 +40,28 @@ def _actor(key: LeadGatewayKey) -> source_service.Actor:
     return source_service.Actor.key(key.key_id)
 
 
+@router.post("/sources/facebook", response_model=schemas.SourceItem, status_code=201)
+def connect_facebook(
+    body: schemas.ConnectFacebookRequest,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.SourceItem:
+    """Connect a Facebook Page, or reconnect it (same Page again = the same
+    source, AC-64-29). The product's own door to the ONE connect function."""
+    try:
+        row = connect_service.connect_facebook(
+            db,
+            key.tenant_id,
+            page_id=body.pageId,
+            system_user_token=body.systemUserToken,
+            forms_mode=body.formsMode,
+            actor=_actor(key),
+        )
+    except connect_service.ConnectError as exc:
+        raise _api(exc)
+    return read_service.source_item(row)
+
+
 @router.get("/sources", response_model=schemas.SourceList)
 def list_sources(key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)) -> schemas.SourceList:
     rows = connect_service.list_sources(db, key.tenant_id)

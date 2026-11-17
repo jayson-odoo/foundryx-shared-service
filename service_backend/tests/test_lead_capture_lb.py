@@ -1106,3 +1106,50 @@ def test_reconnect_without_a_known_leave_time_checks_sharing(client, lc, lgraph)
         db.close()
     res = _connect(client, headers)
     assert res.status_code == 409 and res.json()["detail"]["code"] == "PAGE_IN_USE"
+
+
+# ── product-scoped API door for connect / reconnect (owner 17 Nov 19:32) ────
+
+def test_connect_and_reconnect_over_the_gateway_key(client, lc, lgraph, caplog):
+    caplog.set_level(logging.DEBUG)
+    headers = _login(client)
+    key = _key(client, headers)
+    body = {"pageId": PAGE_ID, "systemUserToken": SYSTEM_TOKEN, "formsMode": "all"}
+    res = client.post("/api/v1/lead-capture/sources/facebook", json=body, headers=_bearer(key))
+    assert res.status_code == 201, res.text
+    sid = res.json()["id"]
+    assert res.json()["status"] == SOURCE_WAITING_FOR_TEST and lgraph.page_fields == ["messages", "leadgen"]
+    assert SYSTEM_TOKEN not in res.text and PAGE_TOKEN not in res.text
+    # broken, then reconnected through the same door: same source
+    _set(lc, sid, status=SOURCE_LIVE)
+    lgraph.dead = True
+    db = lc()
+    try:
+        with pytest.raises(Exception):
+            leadgen_service.process_leadgen(db, PAGE_ID, LEAD_ID, FORM_ID)
+    finally:
+        db.close()
+    lgraph.dead = False
+    again = client.post("/api/v1/lead-capture/sources/facebook", json=body, headers=_bearer(key))
+    assert again.status_code == 201 and again.json()["id"] == sid and again.json()["status"] == SOURCE_LIVE
+    hist = client.get(f"/api/v1/lead-capture/sources/{sid}/history", headers=_bearer(key)).json()["data"]
+    assert hist[0]["action"] == "reconnected" and hist[0]["actor"] == {"type": "key", "name": "EcoHub"}
+    assert SYSTEM_TOKEN not in caplog.text and PAGE_TOKEN not in caplog.text
+
+
+def test_gateway_connect_errors_use_the_envelope(client, lc, lgraph):
+    headers = _login(client)
+    key = _key(client, headers)
+    bad = client.post("/api/v1/lead-capture/sources/facebook",
+                      json={"pageId": "abc", "systemUserToken": SYSTEM_TOKEN}, headers=_bearer(key))
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "invalid_page_id"
+    _second_tenant(lc, False)
+    db = lc()
+    try:
+        connect_service.connect_facebook(db, TENANT_B, page_id=PAGE_ID, system_user_token=SYSTEM_TOKEN)
+    finally:
+        db.close()
+    res = client.post("/api/v1/lead-capture/sources/facebook",
+                      json={"pageId": PAGE_ID, "systemUserToken": SYSTEM_TOKEN}, headers=_bearer(key))
+    assert res.status_code == 409 and res.json()["error"]["code"] == "PAGE_IN_USE"
+    assert TENANT_B not in res.text

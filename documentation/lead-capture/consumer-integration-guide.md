@@ -43,6 +43,10 @@ Every gateway error has one shape:
 | 403 | `service_not_enabled` | Module off for the tenant, or tenant suspended |
 | 404 | `endpoint_not_found` | Webhook id not found for this tenant |
 | 404 | `source_not_found` | Source id not found for this tenant |
+| 409 | `PAGE_IN_USE` | Connect: the Page is used by another product and sharing is not allowed on both sides |
+| 422 | `invalid_page_id` | Connect: `pageId` is not a Facebook Page id (digits only) |
+| 422 | `invalid_token` | Connect: `systemUserToken` is empty |
+| 502 | `subscribe_failed` | Connect: Meta could not be reached, or refused the Page's lead subscription; try again |
 | 404 | `delivery_not_found` | Delivery id not found for this tenant |
 | 400 | `token_invalid` | Meta no longer accepts the source's Page token (or it has none): reconnect the Page |
 | 400 | `meta_refused` | Meta refused the form, form-list or test-lead call; `message` is Meta's reason, cleaned |
@@ -56,7 +60,7 @@ Every gateway error has one shape:
 | 422 | `invalid_field_map` | Field map: bad form id, target not in your field list |
 | 422 | `invalid_events` | No event, or an unknown event |
 | 422 | `invalid_form_id` | `formId` / a `formIds` entry is not an Instant Form id (digits only), or more than 200 ids |
-| 422 | `invalid_forms_mode` | `formsMode` is not `"all"` or `"pick"` |
+| 422 | `invalid_forms_mode` | `formsMode` is not `"all"` or `"pick"` (connect takes `"all"` only; choose forms afterwards with `PUT /sources/{id}/forms`) |
 | 422 | `forms_required` | `formsMode: "pick"` with no form id |
 | 422 | `invalid_cursor` | `cursor` is not one this API returned |
 | 422 | `invalid_since` | `since` is not an ISO-8601 time |
@@ -74,6 +78,7 @@ Every gateway error has one shape:
 | PUT | `/settings` | `{"allowSharedPages": bool}` | `Settings` |
 | GET | `/fields` | - | `{"data": [Field], "isDefault"}` |
 | PUT | `/fields` | `[Field]` (replaces the list; `[]` = defaults) | `{"data": [Field], "isDefault"}` |
+| POST | `/sources/facebook` | `{"pageId", "systemUserToken", "formsMode": "all"}` | `201` `Source` (connect, or reconnect: same Page again = same source) |
 | DELETE | `/sources/{id}` | - | `204` (disconnect; again = `204`, nothing changes) |
 | GET | `/sources/{id}/forms` | - | `{"formsMode", "formIds", "tosAccepted", "data": [Form]}` |
 | PUT | `/sources/{id}/forms` | `{"formsMode": "all"}` or `{"formsMode": "pick", "formIds": ["<form id>", ...]}` | `Source` |
@@ -125,7 +130,13 @@ Every gateway error has one shape:
   (`isTest: true`), but only the source whose product asked for it (`POST /sources/{id}/test-lead`, in the last
   hour) moves to `LIVE`. A test lead nobody asked for (sent from Meta's own Lead Ads Testing Tool) moves every
   waiting source on the Page.
-- Reconnect = connect the same Page again (the connect script or the wizard). It keeps the source `id`, its field
+- Connect / reconnect over the gateway: `POST /sources/facebook` with `{"pageId": "<digits>", "systemUserToken":
+  "<business system user token>", "formsMode": "all"}`. The system user token is used once to read the Page's own
+  access and is never stored or echoed. Errors: `422 invalid_page_id` / `invalid_token` / `invalid_forms_mode`,
+  `400 token_invalid` / `meta_refused` (Meta refused the Page: add it to the system user's assets),
+  `409 PAGE_IN_USE` (the Page is used by another product and sharing is not allowed on both sides),
+  `502 subscribe_failed` (Meta could not be reached or refused the lead subscription; try again).
+- Reconnect = connect the same Page again (the connect script, the wizard, or `POST /sources/facebook`). It keeps the source `id`, its field
   map, its forms choice and its leads, and only replaces the stored Page access:
   - a `WAITING_FOR_TEST` or `LIVE` source keeps its status;
   - a `NEEDS_RECONNECT` source returns to the status it had before (normally `LIVE`) and a backfill runs at once,
