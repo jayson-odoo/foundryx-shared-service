@@ -30,7 +30,7 @@ vi.mock('@/hooks/use-branding', () => ({
 }));
 
 const pageHook = vi.hoisted(() => vi.fn());
-const principal = vi.hoisted(() => ({ current: { kind: 'crm', name: 'Aiman', role: 'Staff', productId: null, canManage: false } }));
+const principal = vi.hoisted(() => ({ current: { kind: 'crm', name: 'Aiman', role: 'Staff', productId: null as string | null, canManage: false } }));
 vi.mock('@/hooks/use-idea-portal', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/use-idea-portal')>('@/hooks/use-idea-portal');
   return {

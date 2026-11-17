@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { LogOut } from 'lucide-react';
 import { BrandMark } from '@/components/platform/branding';
 import { useTenantBranding } from '@/hooks/use-branding';
@@ -10,9 +10,31 @@ import { usePublicPageBranding } from '@/app/(public)/public-branded-shell';
 import { useIdeaPortal } from '@/hooks/use-idea-portal';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { boardBrandStyle, boardBrandTitle } from '@/lib/board-brand';
+import { setPageTitleOverride } from '@/lib/page-title-override';
 
 export interface PortalShellProps {
   children: ReactNode;
+}
+
+/** Hold the browser-tab title on `title` while the board is open (the
+ * product's board name). Registers the override `BrandingProvider` honours and
+ * re-asserts it when Next streams a `<title>` in later. */
+function useBoardTitle(title: string | null): void {
+  useEffect(() => {
+    if (!title) return;
+    setPageTitleOverride(title);
+    const apply = () => {
+      if (document.title !== title) document.title = title;
+    };
+    apply();
+    const observer = new MutationObserver(apply);
+    observer.observe(document.head, { childList: true, subtree: true, characterData: true });
+    return () => {
+      observer.disconnect();
+      setPageTitleOverride(null);
+    };
+  }, [title]);
 }
 
 function initials(name: string | null): string {
@@ -34,6 +56,10 @@ export function PortalShell({ children }: PortalShellProps) {
   const shellBranding = usePublicPageBranding();
   const { branding: live, isResolved } = useTenantBranding();
   const branding = shellBranding ?? live;
+  // Lane SS-MULTI-PRODUCT-BOARD: a product's board takes that product's
+  // colour + name (product branding, not the host tenant's).
+  const brandStyle = boardBrandStyle(principal.brand);
+  useBoardTitle(boardBrandTitle(principal.brand));
 
   const onRoadmap = pathname === paths.roadmap;
   const onChangelog = pathname.startsWith(paths.changelog);
@@ -50,7 +76,7 @@ export function PortalShell({ children }: PortalShellProps) {
   const tabs = mode === 'link' ? [feedbackTab, roadmapTab, changelogTab] : [roadmapTab, feedbackTab, changelogTab];
 
   return (
-    <div className="flex min-h-full w-full grow flex-col bg-muted/20">
+    <div data-testid="portal-shell" style={brandStyle} className="flex min-h-full w-full grow flex-col bg-muted/20">
       <header className="border-b border-border bg-background">
         {mode === 'portal' && (
           <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 py-3">

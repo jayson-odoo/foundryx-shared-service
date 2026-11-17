@@ -19,11 +19,16 @@ import { BUILD_REPO_ERROR, isValidBuildRepo } from '@/lib/build-repo';
 import { SearchSelect } from '@/components/platform/search-select';
 import {
   productService,
+  type DeliveryConfigInput,
   type Product,
   type ProductKind,
 } from '@/services/productService';
 
 const SOFTWARE_KIND = 'software';
+// A product's feedback board colour (lane SS-MULTI-PRODUCT-BOARD); the
+// backend applies the same rule (422 with fieldErrors.boardColor).
+const BOARD_COLOR_RE = /^#[0-9a-f]{6}$/;
+const BOARD_COLOR_ERROR = 'Enter the colour as #rrggbb.';
 
 /** Parse a money input to a number, or null when blank/invalid. */
 function toMoney(raw: string): number | null {
@@ -80,6 +85,12 @@ export function ProductFormDialog({
   const [buildRepo, setBuildRepo] = useState('');
   const [initialBuildRepo, setInitialBuildRepo] = useState('');
   const [buildRepoError, setBuildRepoError] = useState<string | null>(null);
+  // Feedback board look (lane SS-MULTI-PRODUCT-BOARD): one colour + a name.
+  const [boardColor, setBoardColor] = useState('');
+  const [initialBoardColor, setInitialBoardColor] = useState('');
+  const [boardName, setBoardName] = useState('');
+  const [initialBoardName, setInitialBoardName] = useState('');
+  const [boardColorError, setBoardColorError] = useState<string | null>(null);
   const [deliveryLoading, setDeliveryLoading] = useState(false);
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
 
@@ -104,6 +115,10 @@ export function ProductFormDialog({
         setInitialDomainBase(cfg.productDomainBase ?? '');
         setBuildRepo(cfg.buildRepo ?? '');
         setInitialBuildRepo(cfg.buildRepo ?? '');
+        setBoardColor(cfg.boardColor ?? '');
+        setInitialBoardColor(cfg.boardColor ?? '');
+        setBoardName(cfg.boardName ?? '');
+        setInitialBoardName(cfg.boardName ?? '');
       })
       .catch((e) => {
         if (cancelled) return;
@@ -130,9 +145,15 @@ export function ProductFormDialog({
       setBuildRepoError(BUILD_REPO_ERROR);
       return;
     }
+    const color = boardColor.trim().toLowerCase();
+    if (isSoftware && color.length > 0 && !BOARD_COLOR_RE.test(color)) {
+      setBoardColorError(BOARD_COLOR_ERROR);
+      return;
+    }
     setSaving(true);
     setError(null);
     setBuildRepoError(null);
+    setBoardColorError(null);
     try {
       const payload = {
         name: name.trim(),
@@ -157,13 +178,21 @@ export function ProductFormDialog({
         const repo = buildRepo.trim();
         const domainChanged = isEdit ? trimmed !== (initialDomainBase ?? '') : trimmed.length > 0;
         const repoChanged = isEdit ? repo !== initialBuildRepo : repo.length > 0;
+        const name = boardName.trim();
+        const colorChanged = color !== initialBoardColor;
+        const nameChanged = name !== initialBoardName;
+        const body: DeliveryConfigInput = {};
         if ((domainChanged && trimmed.length > 0) || repoChanged) {
           // productDomainBase is sent only when set: a product with just a build
           // repository must not be forced to carry a domain base.
-          await productService.setDelivery(saved.id, {
-            ...(trimmed.length > 0 ? { productDomainBase: trimmed } : {}),
-            buildRepo: repo.length > 0 ? repo : null,
-          });
+          if (trimmed.length > 0) body.productDomainBase = trimmed;
+          body.buildRepo = repo.length > 0 ? repo : null;
+        }
+        // Board look: sent only when changed (omitted = untouched, null clears).
+        if (colorChanged) body.boardColor = color.length > 0 ? color : null;
+        if (nameChanged) body.boardName = name.length > 0 ? name : null;
+        if (Object.keys(body).length > 0) {
+          await productService.setDelivery(saved.id, body);
         }
       }
 
@@ -180,6 +209,11 @@ export function ProductFormDialog({
         (e instanceof ApiError && e.status === 422 && /buildRepo/i.test(e.message)
           ? e.message
           : undefined);
+      if (fieldErrors?.boardColor) {
+        setBoardColorError(fieldErrors.boardColor);
+        setSaving(false);
+        return;
+      }
       if (repoMessage) {
         setBuildRepoError(repoMessage);
         setSaving(false);
@@ -329,6 +363,50 @@ export function ProductFormDialog({
                 disabled={deliveryLoading || Boolean(deliveryError)}
               />
               {buildRepoError && <p className="text-xs text-destructive">{buildRepoError}</p>}
+              <Label htmlFor="prod-board-color" className="pt-2">
+                Board colour
+              </Label>
+              <div className="flex items-center gap-2">
+                <label
+                  className="relative size-9 shrink-0 cursor-pointer rounded-md border border-input"
+                  style={{ background: BOARD_COLOR_RE.test(boardColor.trim().toLowerCase()) ? boardColor.trim() : undefined }}
+                >
+                  <input
+                    type="color"
+                    aria-label="Pick board colour"
+                    className="absolute inset-0 size-full cursor-pointer opacity-0"
+                    value={BOARD_COLOR_RE.test(boardColor.trim().toLowerCase()) ? boardColor.trim().toLowerCase() : '#000000'}
+                    onChange={(e) => {
+                      setBoardColor(e.target.value);
+                      setBoardColorError(null);
+                    }}
+                    disabled={deliveryLoading || Boolean(deliveryError)}
+                  />
+                </label>
+                <Input
+                  id="prod-board-color"
+                  value={boardColor}
+                  onChange={(e) => {
+                    setBoardColor(e.target.value);
+                    setBoardColorError(null);
+                  }}
+                  placeholder="#3b82f6"
+                  aria-invalid={boardColorError ? true : undefined}
+                  disabled={deliveryLoading || Boolean(deliveryError)}
+                />
+              </div>
+              {boardColorError && <p className="text-xs text-destructive">{boardColorError}</p>}
+              <Label htmlFor="prod-board-name" className="pt-2">
+                Board name
+              </Label>
+              <Input
+                id="prod-board-name"
+                value={boardName}
+                onChange={(e) => setBoardName(e.target.value)}
+                maxLength={80}
+                placeholder={name.trim() || undefined}
+                disabled={deliveryLoading || Boolean(deliveryError)}
+              />
               {deliveryLoading && (
                 <p className="text-xs text-muted-foreground">Loading delivery config…</p>
               )}
