@@ -33,9 +33,10 @@ left open for the owner.
 
 ## Rules
 
-R1. Every item page (board item page, per-item status page, operator item) has a **Share** action that copies the
-    item's **share link** `/public/feedback/share/{shareToken}`. One share link per item, the same for everyone;
-    it carries no person.
+R1. The board item page (Share button) and the operator item page ("..." -> Share link) open a centred
+    "Share link" popup with the item's **share link** `/public/feedback/share/{shareToken}` and a copy button
+    (inline checkmark). One share link per item, the same for everyone; it carries no person. The per-item status
+    page has no Share (R11 is not built).
 R2. The share link opens the item **read-only for anyone**: title, status pill, details, status timeline, activity,
     comments, upvote count, follower count. Names exactly as the board already shows them (first names), never a
     phone number.
@@ -58,7 +59,9 @@ R7. A follower gets the **same WhatsApp status update** as the submitter, throug
     route (closed 24h window -> the same approved template), with their own board link. Status change, merge and
     unmerge only; comments do not notify. The feed row carries `recipient_role: "requester" | "follower"` so the
     CRM can word it differently later without an SS change.
-R8. The submitter is always followed (as today) and never gets a second copy: one message per person per change,
+R8. The submitter is always followed (as today), never has a follower row (staff adding the submitter or a
+    same-phone sibling contact is refused: "This contact raised the request and already gets its updates.") and
+    never gets a second copy: one message per person per change,
     deduped by phone across submitter, merged children's submitters and followers.
 R9. Staff can add a follower on the operator idea detail ("Add follower", shared searchable contact picker,
     tenant contacts only) and remove one (right-click the row -> Remove).

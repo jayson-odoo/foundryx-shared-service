@@ -178,6 +178,9 @@ class DeliveryConfigOut(ApiModel):
     productId: str
     productDomainBase: Optional[str] = None
     buildRepo: Optional[str] = None
+    # Feedback board look (lane SS-MULTI-PRODUCT-BOARD); null = default look.
+    boardColor: Optional[str] = None
+    boardName: Optional[str] = None
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None
 
@@ -194,6 +197,10 @@ class DeliveryConfigIn(ApiModel):
     # left untouched (see ``DeliveryService.set``).
     # Shape-checked in ``DeliveryService.set`` (422 with ``fieldErrors``).
     buildRepo: Optional[str] = None
+    # Feedback board look (lane SS-MULTI-PRODUCT-BOARD). Omitted = untouched,
+    # null clears. ``boardColor`` is ``#rrggbb`` (422 otherwise).
+    boardColor: Optional[str] = None
+    boardName: Optional[str] = None
 
 
 class VoteIn(ApiModel):
@@ -832,6 +839,13 @@ class SimilarOwnIn(ApiModel):
 # ── Idea portal (lane IDEA-PORTAL) ────────────────────────────────────────────
 
 
+class PortalBrandOut(ApiModel):
+    """A product's look on its feedback board (lane SS-MULTI-PRODUCT-BOARD)."""
+
+    name: Optional[str] = None
+    color: Optional[str] = None
+
+
 class PortalPrincipalOut(ApiModel):
     kind: Literal["staff", "crm", "contact"]
     name: Optional[str] = None
@@ -839,6 +853,8 @@ class PortalPrincipalOut(ApiModel):
     productId: Optional[str] = None
     # May hide ideas, edit changelog notes and delete anyone's comment.
     canManage: bool = False
+    # The product's board colour + name; null = shared-service default look.
+    brand: Optional[PortalBrandOut] = None
 
 
 class PortalSessionOut(ApiModel):

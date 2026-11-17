@@ -313,6 +313,9 @@ def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
             raise _unauthorized()
         _link, contact = resolved
         p.link_id = _link.id
+        # The link row decides the product (lane SS-MULTI-PRODUCT-BOARD),
+        # re-read per request like the link itself.
+        p.product_id = _link.product_id
         p.name = first_name(contact.first_name)
         p.phone = contact.phone
     else:
@@ -361,17 +364,39 @@ def share_principal(db: Session, token: str) -> Tuple[PortalPrincipal, str]:
 # ── sessions ──────────────────────────────────────────────────────────────────
 
 
-def _session_out(p: PortalPrincipal, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return {"token": mint_portal_token(p, extra), "principal": principal_out(p)}
+def _session_out(
+    db: Session, p: PortalPrincipal, extra: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    return {"token": mint_portal_token(p, extra), "principal": principal_out(p, db)}
 
 
-def principal_out(p: PortalPrincipal) -> Dict[str, Any]:
+def board_brand(db: Session, tenant_id: str, product_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The product's look on its feedback board (lane SS-MULTI-PRODUCT-BOARD):
+    ``{name, color}`` from the product's delivery settings, read with the
+    principal's OWN tenant. ``None`` (= the shared-service default look) for an
+    unscoped board or a product with neither a colour nor a name."""
+    if not product_id:
+        return None
+    from ..models import ProductDelivery
+
+    row = (
+        db.query(ProductDelivery)
+        .filter(ProductDelivery.tenant_id == tenant_id, ProductDelivery.product_id == product_id)
+        .first()
+    )
+    if row is None or not (row.board_color or row.board_name):
+        return None
+    return {"name": row.board_name, "color": row.board_color}
+
+
+def principal_out(p: PortalPrincipal, db: Optional[Session] = None) -> Dict[str, Any]:
     return {
         "kind": p.kind,
         "name": p.name,
         "role": p.role,
         "productId": p.product_id,
         "canManage": p.can_manage,
+        "brand": board_brand(db, p.tenant_id, p.product_id) if db is not None else None,
     }
 
 
@@ -392,7 +417,7 @@ def session_for_staff(db: Session, user: User, *, impersonating: bool = False) -
         name=first_name(user.name) or "Staff",
         can_manage=_can_manage_staff(user),
     )
-    return _session_out(p)
+    return _session_out(db, p)
 
 
 def session_for_embed(db: Session, embed_token: str) -> Dict[str, Any]:
@@ -419,7 +444,7 @@ def session_for_embed(db: Session, embed_token: str) -> Dict[str, Any]:
         # non-managers - moderation is never a silent default).
         can_manage=ep.ideas_manage is True,
     )
-    return _session_out(p, extra={"nm": name, "ph": ep.phone, "mg": ep.ideas_manage is True})
+    return _session_out(db, p, extra={"nm": name, "ph": ep.phone, "mg": ep.ideas_manage is True})
 
 
 def session_for_link(db: Session, token: str, *, ip: str) -> Dict[str, Any]:
@@ -447,8 +472,9 @@ def session_for_link(db: Session, token: str, *, ip: str) -> Dict[str, Any]:
         name=first_name(contact.first_name),
         phone=contact.phone,
         link_id=link.id,
+        product_id=link.product_id,
     )
-    return _session_out(p)
+    return _session_out(db, p)
 
 
 # ── status map ────────────────────────────────────────────────────────────────

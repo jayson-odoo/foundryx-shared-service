@@ -15,7 +15,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ClampedText } from '@/components/platform/clamped-text';
-import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { ResourceList, type ResourceAction, type ResourceListConfig } from '@/components/platform/resource-list';
 import { SearchSelect } from '@/components/platform/search-select';
 import { toCsv } from '@/lib/csv';
@@ -24,10 +23,9 @@ import { useContactPicker } from '@/hooks/use-contact-picker';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeaFollowers } from '@/hooks/use-idea-followers';
 import { useWorkspaceId } from '@/hooks/use-workspace-id';
-import type { ListQuery, ListResult } from '@/types/resource';
+import { matchesFilterGroup, type ClientFilterValue } from '@/lib/client-filter';
+import type { FilterFieldDef, ListQuery, ListResult } from '@/types/resource';
 import type { IdeaFollower } from '@/types/ideation';
-
-const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 /** Sort keys per column (the list is the item's whole follower set, sorted here). */
 const SORT_KEYS: Record<string, (r: IdeaFollower) => string> = {
@@ -36,6 +34,77 @@ const SORT_KEYS: Record<string, (r: IdeaFollower) => string> = {
   addedBy: (r) => (r.addedByStaff ? 'staff' : 'themselves'),
   since: (r) => r.createdAt ?? '',
 };
+
+const ADDED_BY = (r: IdeaFollower) => (r.addedByStaff ? 'Staff' : 'Themselves');
+
+/** Filter values per declared field (enum values are the raw keys). */
+function filterValue(r: IdeaFollower, field: string): ClientFilterValue {
+  if (field === 'name') return r.name;
+  if (field === 'phone') return r.phone;
+  if (field === 'addedBy') return r.addedByStaff ? 'staff' : 'self';
+  if (field === 'since') return r.createdAt;
+  return null;
+}
+
+export const FOLLOWER_FILTER_FIELDS: FilterFieldDef[] = [
+  { field: 'name', label: 'Name', type: 'text' },
+  { field: 'phone', label: 'Phone', type: 'text' },
+  {
+    field: 'addedBy',
+    label: 'Added by',
+    type: 'enum',
+    options: [
+      { label: 'Staff', value: 'staff' },
+      { label: 'Themselves', value: 'self' },
+    ],
+  },
+  { field: 'since', label: 'Following since', type: 'date' },
+];
+
+/** One page of the (small, fully loaded) follower set: search, filter, sort. */
+export function followersPage(rows: IdeaFollower[], query: ListQuery): ListResult<IdeaFollower> {
+  let data = rows;
+  if (query.search) {
+    const s = query.search.toLowerCase();
+    data = data.filter((r) => (r.name ?? '').toLowerCase().includes(s) || (r.phone ?? '').toLowerCase().includes(s));
+  }
+  data = data.filter((r) => matchesFilterGroup(r, query.filter, filterValue));
+  if (query.sort) {
+    const key = SORT_KEYS[query.sort.id];
+    if (key) {
+      const dir = query.sort.desc ? -1 : 1;
+      data = [...data].sort((a, b) => dir * key(a).localeCompare(key(b)));
+    }
+  }
+  const start = query.page * query.pageSize;
+  return { data: data.slice(start, start + query.pageSize), total: data.length, page: query.page };
+}
+
+const EXPORT_COLUMNS = [
+  { id: 'name', label: 'Name', value: (r: IdeaFollower) => r.name ?? '' },
+  { id: 'phone', label: 'Phone', value: (r: IdeaFollower) => r.phone ?? '' },
+  { id: 'addedBy', label: 'Added by', value: ADDED_BY },
+] as const;
+
+/** CSV of exactly the ticked columns (in screen order) and, when rows are
+ * ticked, only those rows. */
+export function followersCsv(
+  rows: IdeaFollower[],
+  columns: string[],
+  ids: string[] | undefined,
+  formatDate: (iso: string) => string,
+): string {
+  const all = [
+    ...EXPORT_COLUMNS,
+    { id: 'since', label: 'Following since', value: (r: IdeaFollower) => (r.createdAt ? formatDate(r.createdAt) : '') },
+  ];
+  const picked = all.filter((c) => columns.includes(c.id));
+  const data = ids && ids.length ? rows.filter((r) => ids.includes(r.contactId)) : rows;
+  return toCsv(
+    picked.map((c) => c.label),
+    data.map((r) => picked.map((c) => c.value(r))),
+  );
+}
 
 export interface IdeaFollowersTabProps {
   ideaId: string;
@@ -57,7 +126,26 @@ function AddFollowerDialog({
   const [contactId, setContactId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { options, setQuery } = useContactPicker(workspaceId, contactId ? [contactId] : []);
+  const [query, setQueryText] = useState('');
+  const picker = useContactPicker(workspaceId, contactId ? [contactId] : []);
+  // The shared picker keeps every contact it ever loaded (so a chosen label
+  // never disappears); typing must still narrow what is offered, by name or
+  // phone (crew pass 70e96f2b). The chosen contact always stays listed.
+  const options = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const digits = q.replace(/\D/g, '');
+    if (!q) return picker.options;
+    return picker.options.filter(
+      (o) =>
+        o.value === contactId ||
+        o.label.toLowerCase().includes(q) ||
+        (digits.length > 0 && o.label.replace(/\D/g, '').includes(digits)),
+    );
+  }, [picker.options, query, contactId]);
+  const setQuery = (q: string) => {
+    setQueryText(q);
+    picker.setQuery(q);
+  };
   const save = async () => {
     if (!contactId) return;
     setBusy(true);
@@ -110,9 +198,9 @@ function AddFollowerDialog({
 
 /**
  * Followers of a feedback item (lane FEEDBACK-SUBSCRIBE R9) on the shared
- * `ResourceList` (a clone of the "Merged from" tab): they get the same
- * WhatsApp status update as the submitter. Staff add one through the contact
- * picker and remove through the row / bulk actions.
+ * `ResourceList`: they get the same WhatsApp status update as the submitter.
+ * A row opens the contact; right-click a row (or tick rows) to remove; the
+ * toolbar Create adds one through the contact picker.
  */
 export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
   const { followers, error, add, remove, reload } = useIdeaFollowers(ideaId);
@@ -157,10 +245,10 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
       },
       {
         id: 'addedBy',
-        accessorFn: (r) => (r.addedByStaff ? 'Staff' : 'Themselves'),
+        accessorFn: ADDED_BY,
         meta: { headerTitle: 'Added by' },
         header: ({ column }) => <DataGridColumnHeader title="Added by" column={column} />,
-        cell: ({ row }) => <span>{row.original.addedByStaff ? 'Staff' : 'Themselves'}</span>,
+        cell: ({ row }) => <span>{ADDED_BY(row.original)}</span>,
         size: 120,
       },
       {
@@ -171,71 +259,22 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
         cell: ({ row }) => <span>{row.original.createdAt ? formatDmyDate(row.original.createdAt) : '-'}</span>,
         size: 140,
       },
-      {
-        id: 'actions',
-        meta: { reorderable: false },
-        header: () => null,
-        cell: ({ row, table }) => (
-          <div onClick={stop} className="flex justify-end">
-            <ActionMenu
-              actions={actions}
-              rows={[row.original]}
-              runtime={{ reload: table.options.meta?.reload ?? (() => {}) }}
-              surface="row"
-            />
-          </div>
-        ),
-        size: 56,
-        enableSorting: false,
-        enableHiding: false,
-        enableResizing: false,
-      },
     ];
-
-    const fetcher = async (query: ListQuery): Promise<ListResult<IdeaFollower>> => {
-      let data = rows;
-      if (query.search) {
-        const s = query.search.toLowerCase();
-        data = data.filter(
-          (r) => (r.name ?? '').toLowerCase().includes(s) || (r.phone ?? '').toLowerCase().includes(s),
-        );
-      }
-      if (query.sort) {
-        const key = SORT_KEYS[query.sort.id];
-        if (key) {
-          const dir = query.sort.desc ? -1 : 1;
-          data = [...data].sort((a, b) => dir * key(a).localeCompare(key(b)));
-        }
-      }
-      const start = query.page * query.pageSize;
-      return { data: data.slice(start, start + query.pageSize), total: data.length, page: query.page };
-    };
-
-    const exporter = async (query: ListQuery): Promise<string> => {
-      const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
-      return toCsv(
-        ['Name', 'Phone', 'Added by', 'Following since'],
-        data.map((r) => [
-          r.name ?? '',
-          r.phone ?? '',
-          r.addedByStaff ? 'Staff' : 'Themselves',
-          r.createdAt ? formatDmyDate(r.createdAt) : '',
-        ]),
-      );
-    };
 
     return {
       viewKey: 'ideation.idea.followers',
       getRowId: (row) => row.contactId,
-      // No detail page: a follower row opens nothing.
-      rowHref: () => '#',
-      fetcher,
-      exporter,
+      getEntityId: (row) => row.contactId,
+      // A row opens the follower's contact record.
+      rowHref: (row) => `/omnichannel/contacts/${encodeURIComponent(row.contactId)}`,
+      fetcher: async (query: ListQuery) => followersPage(rows, query),
+      exporter: async (_query, cols, ids) => followersCsv(rows, cols, ids, formatDmyDate),
+      exportFilename: 'followers',
       searchPlaceholder: 'Search followers…',
       searchHints: ['Name', 'Phone'],
       enableStatusViews: false,
       columns,
-      filterFields: [],
+      filterFields: FOLLOWER_FILTER_FIELDS,
       exportColumns: [
         { id: 'name', label: 'Name' },
         { id: 'phone', label: 'Phone' },
@@ -243,7 +282,7 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
         { id: 'since', label: 'Following since' },
       ],
       actions,
-      ...(canManage ? { onCreate: () => setAdding(true) } : {}),
+      ...(canManage ? { onCreate: () => setAdding(true), createVariant: 'outline' as const } : {}),
     };
   }, [followers, canManage, remove, formatDmyDate]);
 
@@ -269,7 +308,11 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
           </div>
         )}
         {/* Keyed on the rows so an add / remove refetches the embedded list. */}
-        <ResourceList key={followers.map((f) => f.contactId).join(',')} config={config} hideHeader />
+        <ResourceList
+          key={followers.map((f) => `${f.contactId}:${f.addedByStaff ? 's' : 't'}`).join(',')}
+          config={config}
+          hideHeader
+        />
         <AddFollowerDialog
           open={adding}
           onClose={() => setAdding(false)}

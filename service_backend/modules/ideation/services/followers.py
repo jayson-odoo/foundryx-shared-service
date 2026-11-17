@@ -63,6 +63,24 @@ def follow(
     )
     if contact is None:
         raise FollowError(422, "unknown_contact", "Choose a contact of this workspace.")
+    # The submitter (or a same-phone sibling contact of theirs) already gets
+    # every update and never has a row (R8; crew pass 70e96f2b).
+    from .ownership import person_contact_ids
+
+    person = person_contact_ids(db, tenant_id, contact_id)
+    submitted = (
+        db.query(Idea.id)
+        .filter(
+            Idea.tenant_id == tenant_id,
+            Idea.id.in_(_idea_and_children_ids(db, tenant_id, idea.id)),
+            Idea.submitter_contact_id.in_(person),
+        )
+        .first()
+    )
+    if submitted is not None:
+        raise FollowError(
+            422, "already_submitter", "This contact raised the request and already gets its updates."
+        )
     exists = (
         db.query(IdeaFollower.id)
         .filter(

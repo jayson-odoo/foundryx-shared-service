@@ -44,6 +44,19 @@ def _foreign_contact(s) -> str:
         db.close()
 
 
+def _product_link(s, contact_id) -> str:
+    """The contact's live board link for the setup product (one per product)."""
+    from modules.ideation.services.feedback_links import get_or_create_link
+
+    db = s["factory"]()
+    try:
+        row = get_or_create_link(db, DEFAULT_TENANT_ID, contact_id, s["product_id"])
+        db.commit()
+        return row.token
+    finally:
+        db.close()
+
+
 def _move(s, iid, key="triaged"):
     res = s["client"].post(f"/ideation/ideas/{iid}/status", headers=s["h"], json={"status": key})
     assert res.status_code == 200, res.text
@@ -187,8 +200,9 @@ def test_ac_fs_06_follower_gets_own_row_with_own_board_link(setup):
         ("+60123450001", "requester"),
         ("+60123450002", "follower"),
     ]
-    assert rows[1]["board_url"].endswith(f"/public/feedback/board/{_link(s, fan)}/FB-0511")
-    assert rows[0]["board_url"].endswith(f"/public/feedback/board/{_link(s, author)}/FB-0511")
+    # Links are per product since SS-MULTI-PRODUCT-BOARD: the item's product.
+    assert rows[1]["board_url"].endswith(f"/public/feedback/board/{_product_link(s, fan)}/FB-0511")
+    assert rows[0]["board_url"].endswith(f"/public/feedback/board/{_product_link(s, author)}/FB-0511")
     assert rows[1]["status_label"] == rows[0]["status_label"]
 
 
@@ -705,3 +719,32 @@ def test_rr1_phone_throttle_is_per_tenant():
     from modules.ideation.services.phone_verify import _phone_key
 
     assert _phone_key("t1", "60123450002") != _phone_key("t2", "60123450002")
+
+
+# ── crew pass 70e96f2b ────────────────────────────────────────────────────────
+
+
+def test_cp1_staff_cannot_add_the_submitter_as_a_follower(setup):
+    """The submitter already gets every update (R8) and never has a row: adding
+    them (or a same-phone sibling contact) is a 422 with a plain reason."""
+    s = setup
+    author = _contact(s, phone="+60123450001")
+    twin = _contact(s, first_name="Twin", phone="+60 12-345 0001")
+    iid = _idea(s, 571, submitter_contact_id=author)
+    c = s["client"]
+    for cid in (author, twin):
+        res = c.post(f"/ideation/ideas/{iid}/followers", headers=s["h"], json={"contactId": cid})
+        assert res.status_code == 422, res.text
+        assert "already" in res.text
+    assert c.get(f"/ideation/ideas/{iid}/followers", headers=s["h"]).json() == []
+
+
+def test_cp1_verified_session_is_the_items_product_link(setup, product):
+    """After #252 a contact holds one live link per product: the phone step's
+    session must be the item's product link, the same one its board link opens."""
+    s = setup
+    _product_connection(s)
+    iid, token = _shared_item(s, 572)
+    body = _prove(s, product, token, "+60123450002")
+    assert body["principal"]["productId"] == s["product_id"]
+    assert f"/board/{body['boardUrl'].split('/board/')[1].split('/')[0]}" in body["boardUrl"]

@@ -12,11 +12,10 @@ DDL; a fresh install gets the tables via ``create_all`` in ``install()``.
 Postgres-only; a no-op on the SQLite test engine. Uses Alembic's own
 connection, never commits it.
 
-Chained on 0021 (main). PR #252 adds 0022_ideation_board_product: whichever of
-the two merges second re-points its ``down_revision`` onto the other.
+Chained on 0022_ideation_board_product (PR #252, per-product board links).
 
 Revision ID: 0023_ideation_follow_share
-Revises: 0021_ideation_type_labels
+Revises: 0022_ideation_board_product
 Create Date: 2026-11-17
 """
 from alembic import op
@@ -24,7 +23,7 @@ from sqlalchemy import text
 
 # <= 32 chars (alembic_version.version_num is VARCHAR(32)).
 revision = "0023_ideation_follow_share"
-down_revision = "0021_ideation_type_labels"
+down_revision = "0022_ideation_board_product"
 branch_labels = None
 depends_on = None
 

@@ -263,6 +263,9 @@ export interface ResourceListConfig<T extends object> {
   /** Filename stem for CSV export (default 'export'). */
   exportFilename?: string;
   createLabel?: string;
+  /** Toolbar Create button style: `outline` when the page already has its own
+   * filled main button (an embedded list in a record tab). Default `primary`. */
+  createVariant?: 'primary' | 'outline';
   onCreate?: () => void;
   /** Permission key required to show the create button (UX gate). */
   createPermission?: string;

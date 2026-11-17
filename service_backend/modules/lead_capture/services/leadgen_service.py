@@ -28,7 +28,7 @@ from app.secrets import decrypt_secret, encrypt_secret
 
 from .. import mapping
 from ..meta_leads import MetaLeadClient, MetaLeadError
-from ..models import PLATFORM_FACEBOOK, SOURCE_LIVE, LcLead, LcSource
+from ..models import PLATFORM_FACEBOOK, SOURCE_LIVE, SOURCE_ROUTING_STATES, SOURCE_WAITING_FOR_TEST, LcLead, LcSource
 from . import delivery_service, field_service
 
 logger = logging.getLogger(__name__)
@@ -46,12 +46,13 @@ def _clean_id(value: Any) -> str:
 
 
 def _live_sources(db: Session, page_id: str) -> List[LcSource]:
+    """Sources that receive leads: ``LIVE`` and ``WAITING_FOR_TEST`` (AC-64-16)."""
     return (
         db.query(LcSource)
         .filter(
             LcSource.platform == PLATFORM_FACEBOOK,
             LcSource.account_ref == page_id,
-            LcSource.status == SOURCE_LIVE,
+            LcSource.status.in_(SOURCE_ROUTING_STATES),
         )
         .order_by(LcSource.created_at.asc(), LcSource.id.asc())
         .all()
@@ -221,6 +222,8 @@ def process_leadgen(
         except IntegrityError:
             continue  # a parallel run stored it first (AC-64-27)
         source.last_lead_at = now
+        if is_test and source.status == SOURCE_WAITING_FOR_TEST:
+            source.status = SOURCE_LIVE  # the source passed its test (AC-64-16)
         if lead_form and not has_map and unmapped:
             notice = dict(source.needs_mapping_json or {})
             notice[lead_form] = {"formId": lead_form, "formName": form_name, "unmappedCount": unmapped}

@@ -29,6 +29,7 @@ const TITLES: Record<ShareAction, string> = {
   follow: 'Follow this request',
   upvote: 'Upvote this request',
   comment: 'Comment on this request',
+  like: 'Like this comment',
 };
 
 /** Lane FEEDBACK-SUBSCRIBE: the phone step on a share link. Step 1 phone ->

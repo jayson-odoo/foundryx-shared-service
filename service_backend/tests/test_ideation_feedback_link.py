@@ -47,6 +47,21 @@ def _link(s, contact_id, tenant_id=DEFAULT_TENANT_ID) -> str:
         db.close()
 
 
+def _board_token(s, contact_id, tenant_id=DEFAULT_TENANT_ID) -> str:
+    """The contact's link for the setup product - the token a board URL minted
+    from one of that product's items carries (lane SS-MULTI-PRODUCT-BOARD: one
+    live link per contact per product)."""
+    from modules.ideation.services.feedback_links import get_or_create_link
+
+    db = s["factory"]()
+    try:
+        row = get_or_create_link(db, tenant_id, contact_id, s["product_id"])
+        db.commit()
+        return row.token
+    finally:
+        db.close()
+
+
 def _cancel(s, contact_id, tenant_id=DEFAULT_TENANT_ID) -> None:
     from modules.ideation.services.feedback_links import cancel_links_for_contact
 
@@ -138,7 +153,7 @@ def test_ac_fb_10_contact_principal(setup):
     cid = _contact(setup, first_name="Dealer One")
     h = _contact_session(setup, cid)
     me = setup["client"].get("/portal/ideas/me", headers=h).json()
-    assert me == {"kind": "contact", "name": "Dealer", "role": "Dealer", "productId": None, "canManage": False}
+    assert me == {"kind": "contact", "name": "Dealer", "role": "Dealer", "productId": None, "canManage": False, "brand": None}
 
 
 @pytest.mark.parametrize("token", ["x" * 40, "short", "bad token with spaces!!", ""])
@@ -368,7 +383,7 @@ def test_ac_fb_30_board_link_shape(setup):
     cid = _contact(s)
     iid = _idea(s, 301, submitter_contact_id=cid)
     url = _board_link(s, iid)
-    token = _link(s, cid)
+    token = _board_token(s, cid)
     assert url == f"{settings.frontend_url.rstrip('/')}/public/feedback/board/{token}/FB-0301"
     assert _board_link(s, _idea(s, 302)) is None
 
@@ -382,7 +397,7 @@ def test_ac_fb_30_board_link_on_crm_template_base(setup, monkeypatch):
     monkeypatch.setattr(
         feedback_links, "tenant_public_link_base", lambda db, tid: "https://crm.example.test/portal/ideas/{token}"
     )
-    assert _board_link(s, iid) == f"https://crm.example.test/feedback/board/{_link(s, cid)}/FB-0303"
+    assert _board_link(s, iid) == f"https://crm.example.test/feedback/board/{_board_token(s, cid)}/FB-0303"
 
 
 def test_ac_fb_30_board_link_plain_base(setup, monkeypatch):
@@ -392,7 +407,7 @@ def test_ac_fb_30_board_link_plain_base(setup, monkeypatch):
     cid = _contact(s)
     iid = _idea(s, 304, submitter_contact_id=cid)
     monkeypatch.setattr(feedback_links, "tenant_public_link_base", lambda db, tid: "https://ss.example.test/")
-    assert _board_link(s, iid) == f"https://ss.example.test/public/feedback/board/{_link(s, cid)}/FB-0304"
+    assert _board_link(s, iid) == f"https://ss.example.test/public/feedback/board/{_board_token(s, cid)}/FB-0304"
 
 
 def test_ac_fb_30_foreign_contact_gets_no_link(setup):
@@ -432,7 +447,7 @@ def test_ac_fb_31_status_event_carries_board_url(setup):
         payload = db.query(IdeaStatusEvent).filter(IdeaStatusEvent.idea_id == iid).one().payload_json
     finally:
         db.close()
-    assert payload["board_url"].endswith(f"/public/feedback/board/{_link(s, cid)}/FB-0311")
+    assert payload["board_url"].endswith(f"/public/feedback/board/{_board_token(s, cid)}/FB-0311")
     assert "/public/feedback/" in payload["track_url"]
 
 
@@ -528,8 +543,8 @@ def test_rr1_b1_voter_without_contact_never_gets_the_authors_link(setup):
     finally:
         db.close()
     assert voter_without_contact == f"{settings.frontend_url.rstrip('/')}/public/feedback/{'C' * 32}"
-    assert _link(s, author) not in voter_with_contact
-    assert voter_with_contact.endswith(f"/public/feedback/board/{_link(s, other_voter)}/FB-0401")
+    assert _board_token(s, author) not in voter_with_contact
+    assert voter_with_contact.endswith(f"/public/feedback/board/{_board_token(s, other_voter)}/FB-0401")
 
 
 def test_tb_01_test_idea_mints_the_reporters_board_link(setup):
@@ -541,7 +556,7 @@ def test_tb_01_test_idea_mints_the_reporters_board_link(setup):
     cid = _contact(s)
     iid = _idea(s, 402, is_test=True, submitter_contact_id=cid)
     url = _board_link(s, iid)
-    assert url == f"{settings.frontend_url.rstrip('/')}/public/feedback/board/{_link(s, cid)}/FB-0402"
+    assert url == f"{settings.frontend_url.rstrip('/')}/public/feedback/board/{_board_token(s, cid)}/FB-0402"
 
 
 def test_tb_02_test_idea_without_contact_gets_no_link(setup):
@@ -579,8 +594,8 @@ def test_tb_03_test_link_only_to_the_person_who_owns_the_opened_item(setup):
         db.close()
     assert to_voter == f"{base}/public/feedback/{'D' * 32}"
     assert child_link == f"{base}/public/feedback/{'E' * 32}"
-    assert to_twin.endswith(f"/public/feedback/board/{_link(s, twin)}/FB-0414")
-    assert own_child_link.endswith(f"/public/feedback/board/{_link(s, twin)}/FB-0416")
+    assert to_twin.endswith(f"/public/feedback/board/{_board_token(s, twin)}/FB-0414")
+    assert own_child_link.endswith(f"/public/feedback/board/{_board_token(s, twin)}/FB-0416")
     # and that link opens the survivor for the twin
     h = _contact_session(s, twin)
     d = s["client"].get("/portal/ideas/FB-0416", headers=h)
@@ -672,7 +687,7 @@ def test_tb_20_test_status_event_never_pokes_the_crm(setup, monkeypatch):
     try:
         ev = db.query(IdeaStatusEvent).filter(IdeaStatusEvent.idea_id == iid).one()
         assert ev.is_test is True and ev.payload_json["is_test"] is True
-        assert ev.payload_json["board_url"].endswith(f"/public/feedback/board/{_link(s, cid)}/FB-0413")
+        assert ev.payload_json["board_url"].endswith(f"/public/feedback/board/{_board_token(s, cid)}/FB-0413")
     finally:
         db.close()
     assert pokes == []

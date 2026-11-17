@@ -37,6 +37,14 @@ export function useIdeaFollowers(ideaId: string): UseIdeaFollowers {
   }, [ideaId, tick]);
 
   const reload = useCallback(() => setTick((t) => t + 1), []);
+
+  // A follower can change from another window (a contact following from their
+  // own board): refetch when this window regains focus (crew pass 70e96f2b).
+  useEffect(() => {
+    const onFocus = () => setTick((t) => t + 1);
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
   const add = useCallback(
     async (contactId: string) => {
       setFollowers(await ideaFollowerService.add(ideaId, contactId));

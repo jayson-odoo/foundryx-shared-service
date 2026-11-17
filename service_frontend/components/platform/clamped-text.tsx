@@ -17,7 +17,10 @@ export interface ClampedTextProps {
 }
 
 const CLAMP: Record<number, string> = {
-  1: 'line-clamp-1',
+  // One line = a sideways cut with "...": in a one-line table cell the text
+  // overflows to the right, which a vertical line-clamp never shows (crew
+  // pass 70e96f2b).
+  1: 'truncate',
   2: 'line-clamp-2',
   3: 'line-clamp-3',
   4: 'line-clamp-4',
@@ -30,7 +33,8 @@ export function ClampedText({ text, lines = 3, className }: ClampedTextProps) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const measure = () => setTruncated(el.scrollHeight > el.clientHeight + 1);
+    const measure = () =>
+      setTruncated(el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);

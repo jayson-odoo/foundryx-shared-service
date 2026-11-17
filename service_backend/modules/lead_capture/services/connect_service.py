@@ -10,7 +10,10 @@ the hosted wizard (lane 5) calls it later.
    rule: a Page live under ANOTHER tenant may join only when this tenant AND
    every tenant already live on it allow shared Pages; otherwise
    ``PAGE_IN_USE``, worded the same whatever the reason (AC-64-36). The same
-   tenant reconnecting replaces its token in place (AC-64-25).
+   tenant reconnecting replaces its token in place (AC-64-25) and keeps its
+   status. A source still ``WAITING_FOR_TEST`` counts as on the Page.
+4. A new source is saved ``WAITING_FOR_TEST``; its first test lead flips it to
+   ``LIVE`` (AC-64-16, ``leadgen_service``). It already receives leads.
 3. Subscribe ``leadgen`` through core ``subscribe_page_fields`` (reads the
    app's current fields, posts the union - never drops omnichannel's).
 
@@ -30,7 +33,7 @@ from app.integrations.meta.pages import subscribe_page_fields
 from app.secrets import encrypt_secret
 
 from ..meta_leads import MetaLeadClient, MetaLeadError
-from ..models import PLATFORM_FACEBOOK, SOURCE_LIVE, LcSettings, LcSource
+from ..models import PLATFORM_FACEBOOK, SOURCE_ROUTING_STATES, SOURCE_WAITING_FOR_TEST, LcSettings, LcSource
 
 logger = logging.getLogger(__name__)
 
@@ -79,14 +82,15 @@ def _allows_sharing(db: Session, tenant_id: str) -> bool:
 
 
 def live_sources_for_page(db: Session, platform: str, page_id: str) -> list:
-    """Every LIVE source on a Page, ALL tenants (D13). Only the ingest and the
-    sharing rule may call this - nothing tenant-facing."""
+    """Every source on a Page that receives leads (``WAITING_FOR_TEST`` or
+    ``LIVE``), ALL tenants (D13). Only the ingest and the sharing rule may call
+    this - nothing tenant-facing."""
     return (
         db.query(LcSource)
         .filter(
             LcSource.platform == platform,
             LcSource.account_ref == page_id,
-            LcSource.status == SOURCE_LIVE,
+            LcSource.status.in_(SOURCE_ROUTING_STATES),
         )
         .order_by(LcSource.created_at.asc(), LcSource.id.asc())
         .all()
@@ -153,7 +157,7 @@ def connect_facebook(
             platform=PLATFORM_FACEBOOK,
             mode="auto",
             name=page.get("pageName") or f"Facebook Page {page_id}",
-            status=SOURCE_LIVE,
+            status=SOURCE_WAITING_FOR_TEST,  # LIVE after its first test lead (AC-64-16)
             account_ref=page_id,
             account_name=page.get("pageName") or None,
             config_json={"formsMode": forms_mode},

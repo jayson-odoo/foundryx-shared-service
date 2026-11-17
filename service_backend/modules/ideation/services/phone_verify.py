@@ -329,7 +329,10 @@ class PhoneStep:
         """A contact portal session for ``contact`` (the same shape the personal
         link exchange returns) + their personal board link opening this item."""
         board_url = mint_board_link(self.db, self.idea, contact.id) if self.idea is not None else None
-        link = get_or_create_link(self.db, self.p.tenant_id, contact.id)
+        # One live link per contact PER PRODUCT (lane SS-MULTI-PRODUCT-BOARD):
+        # the session is the same per-product link ``mint_board_link`` opens.
+        product_id = self.idea.product_id if self.idea is not None else None
+        link = get_or_create_link(self.db, self.p.tenant_id, contact.id, product_id)
         self.db.commit()
         p = PortalPrincipal(
             tenant_id=self.p.tenant_id,
@@ -338,5 +341,6 @@ class PhoneStep:
             name=first_name(contact.first_name),
             phone=contact.phone,
             link_id=link.id,
+            product_id=link.product_id,
         )
-        return {**_session_out(p), "boardUrl": board_url}
+        return {**_session_out(self.db, p), "boardUrl": board_url}

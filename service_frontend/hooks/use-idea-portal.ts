@@ -514,7 +514,7 @@ export function usePortalProducts() {
 // ── share link phone step (lane FEEDBACK-SUBSCRIBE) ─────────────────────────────
 
 /** What the visitor tapped before the phone step; done for them once proven. */
-export type ShareAction = 'follow' | 'upvote' | 'comment';
+export type ShareAction = 'follow' | 'upvote' | 'comment' | 'like';
 
 export interface UseSharePhoneStep {
   step: 'phone' | 'code';

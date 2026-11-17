@@ -9,6 +9,7 @@ import { useIdeaPortal, usePortalIdeaPage, type ShareAction } from '@/hooks/use-
 import { IdeaStatusTimeline } from '@/app/(public)/public/feedback/[token]/components/idea-status-timeline';
 import { colorToHex } from '@/components/platform/status-badge';
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
@@ -417,7 +418,9 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
             />
             <div className="min-w-0">
               {idea.ideaNumber && <p className="text-sm font-medium text-muted-foreground">{formatFeedbackNumber(idea.ideaNumber)}</p>}
-              <div role="heading" aria-level={1} className="font-heading text-xl font-semibold break-words sm:text-2xl">{idea.title}</div>
+              <div role="heading" aria-level={1} className="font-heading text-xl font-semibold break-words sm:text-2xl">
+                <ClampedText text={idea.title} lines={2} />
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 {idea.statusLabel && <PortalStatusPill label={idea.statusLabel} color={idea.statusColor} />}
                 {idea.submitterFirstName && <span>Submitted by {idea.submitterFirstName}</span>}
@@ -491,7 +494,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
                   <ActivityItem
                     key={`${row.event.kind}-${row.event.comment?.id ?? row.event.at}-${i}`}
                     e={row.event}
-                    onLike={shareView ? ask('comment') : (id) => onAction(page.likeComment(id))}
+                    onLike={shareView ? ask('like') : (id) => onAction(page.likeComment(id))}
                     onDelete={(id) => onAction(page.deleteComment(id))}
                     onReply={shareView ? askAsync('comment') : (parentId, body) => page.addComment(body, parentId)}
                   />
@@ -507,7 +510,9 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
             <IdeaStatusTimeline timeline={idea.timeline} />
           </div>
           {!shareView && <Voters voters={page.voters.data ?? []} />}
-          {idea.productName && (
+          {/* A one-product board never names the product (owner 17 Nov); a share
+              link is one product's item, so it does not either. */}
+          {idea.productName && !principal.productId && !shareView && (
             <Card>
               <CardContent className="flex justify-between py-4 text-sm">
                 <span className="text-muted-foreground">Product</span>

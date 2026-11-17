@@ -30,7 +30,7 @@ vi.mock('@/hooks/use-branding', () => ({
 }));
 
 const pageHook = vi.hoisted(() => vi.fn());
-const principal = vi.hoisted(() => ({ current: { kind: 'crm', name: 'Aiman', role: 'Staff', productId: null, canManage: false } }));
+const principal = vi.hoisted(() => ({ current: { kind: 'crm', name: 'Aiman', role: 'Staff', productId: null as string | null, canManage: false } }));
 vi.mock('@/hooks/use-idea-portal', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/use-idea-portal')>('@/hooks/use-idea-portal');
   return {
@@ -165,6 +165,26 @@ describe('IdeaPage', () => {
     expect(screen.queryByText('Product')).not.toBeInTheDocument();
     expect(screen.queryByText('2026-10-02')).not.toBeInTheDocument();
     expect(screen.getByTestId('portal-activity')).toBeInTheDocument();
+  });
+
+  it('SS-MULTI-PRODUCT-BOARD (AC-MPB-6): a one-product board shows no Product row', () => {
+    mockPage();
+    principal.current = { ...principal.current, productId: 'p-sorento' };
+    try {
+      render(<IdeaPage ideaId="i10" />);
+      expect(screen.getByTestId('portal-idea-hero')).toBeInTheDocument();
+      expect(screen.queryByText('Product')).not.toBeInTheDocument();
+      expect(screen.queryByText('Sorento CRM')).not.toBeInTheDocument();
+    } finally {
+      principal.current = { ...principal.current, productId: null };
+    }
+  });
+
+  it('an all-products board still shows the Product row', () => {
+    mockPage();
+    render(<IdeaPage ideaId="i10" />);
+    expect(screen.getByText('Product')).toBeInTheDocument();
+    expect(screen.getByText('Sorento CRM')).toBeInTheDocument();
   });
 
   it('activity feed: status change, threaded reply, grouped upvotes, submitted', () => {

@@ -8,7 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { IdeaFollower } from '@/types/ideation';
-import { IdeaFollowersTab } from './idea-followers-tab';
+import { followersCsv, followersPage, IdeaFollowersTab } from './idea-followers-tab';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), prefetch: vi.fn() })),
@@ -45,7 +45,10 @@ vi.mock('@/hooks/use-contact-picker', () => ({
     query: '',
     setQuery: vi.fn(),
     loading: false,
-    options: [{ label: 'Manager B (+60123450002)', value: 'c-2' }],
+    options: [
+      { label: 'Manager B (+60123450002)', value: 'c-2' },
+      { label: 'Zed Other (+60123450099)', value: 'c-9' },
+    ],
   }),
 }));
 
@@ -82,14 +85,36 @@ describe('IdeaFollowersTab (AC-FS-10)', () => {
     expect(within(table).getByText('Themselves')).toBeInTheDocument();
   });
 
-  it('row Remove calls remove([contactId])', async () => {
+  it('rows have no action button; right-click opens Remove', async () => {
     const user = userEvent.setup();
     const h = mockHook([follower]);
     render(<IdeaFollowersTab ideaId="i-1" canManage />);
-    await screen.findByText('Manager A');
-    await user.click(screen.getByRole('button', { name: /open row actions|actions/i }));
-    await user.click(await screen.findByRole('menuitem', { name: /remove/i }));
+    const cell = await screen.findByText('Manager A');
+    expect(screen.queryByRole('button', { name: 'Actions' })).toBeNull();
+    const row = cell.closest('tr') as HTMLElement;
+    await user.pointer({ keys: '[MouseRight]', target: row });
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }));
     await waitFor(() => expect(h.remove).toHaveBeenCalledWith(['c-1']));
+  });
+
+  it('a row opens the contact record', async () => {
+    mockHook([follower]);
+    render(<IdeaFollowersTab ideaId="i-1" canManage />);
+    const cell = await screen.findByText('Manager A');
+    const link = cell.closest('a') ?? cell.closest('tr')?.querySelector('a');
+    expect(link?.getAttribute('href')).toMatch(/^\/omnichannel\/contacts\/c-1(\?|$)/);
+  });
+
+  it('Create is not a second filled button on the record page', async () => {
+    mockHook([]);
+    render(<IdeaFollowersTab ideaId="i-1" canManage />);
+    expect(await screen.findByRole('button', { name: 'Create' })).not.toHaveClass('bg-primary');
+  });
+
+  it('the toolbar has Filters', async () => {
+    mockHook([follower]);
+    render(<IdeaFollowersTab ideaId="i-1" canManage />);
+    expect(await screen.findByRole('button', { name: /filters/i })).toBeInTheDocument();
   });
 
   it('Create opens the contact picker and adds the chosen contact', async () => {
@@ -99,6 +124,9 @@ describe('IdeaFollowersTab (AC-FS-10)', () => {
     await user.click(await screen.findByRole('button', { name: 'Create' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add follower' });
     await user.click(within(dialog).getByRole('combobox', { name: 'Contact' }));
+    // Typing narrows the list to matching names / phones (crew pass 70e96f2b).
+    await user.keyboard('manager');
+    expect(screen.queryByText('Zed Other (+60123450099)')).toBeNull();
     await user.click(await screen.findByText('Manager B (+60123450002)'));
     await user.click(within(dialog).getByRole('button', { name: 'Add' }));
     await waitFor(() => expect(h.add).toHaveBeenCalledWith('c-2'));
@@ -118,5 +146,33 @@ describe('IdeaFollowersTab (AC-FS-10)', () => {
     render(<IdeaFollowersTab ideaId="i-1" canManage={false} />);
     await screen.findByText('Manager A');
     expect(screen.queryByRole('button', { name: 'Create' })).toBeNull();
+  });
+});
+
+describe('followers list data (client side, the whole set is small)', () => {
+  const rows: IdeaFollower[] = [
+    follower,
+    { ...follower, contactId: 'c-2', name: 'Aaron', phone: '+60123450002', addedByStaff: true, createdAt: '2026-11-15T04:00:00Z' },
+  ];
+  const q = { page: 0, pageSize: 25 };
+
+  it('filters Added by (multi-select) and Following since', () => {
+    const staff = followersPage(rows, {
+      ...q,
+      filter: { kind: 'group', combinator: 'and', rules: [{ kind: 'condition', field: 'addedBy', operator: 'in', value: ['staff'] }] },
+    });
+    expect(staff.data.map((r) => r.contactId)).toEqual(['c-2']);
+    const recent = followersPage(rows, {
+      ...q,
+      filter: { kind: 'group', combinator: 'and', rules: [{ kind: 'condition', field: 'since', operator: 'after', value: '2026-11-16' }] },
+    });
+    expect(recent.data.map((r) => r.contactId)).toEqual(['c-1']);
+  });
+
+  it('export has exactly the ticked columns and only the ticked rows', () => {
+    const csv = followersCsv(rows, ['name', 'addedBy'], ['c-2'], (iso) => iso.slice(0, 10));
+    const lines = csv.trim().split(/\r?\n/);
+    expect(lines[0]).toBe('"Name","Added by"');
+    expect(lines.slice(1)).toEqual(['"Aaron","Staff"']);
   });
 });
