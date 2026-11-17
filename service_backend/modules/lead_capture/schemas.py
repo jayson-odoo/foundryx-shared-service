@@ -39,6 +39,32 @@ class ConsumerFieldList(BaseModel):
     isDefault: bool = False
 
 
+class FormQuestionOption(BaseModel):
+    key: str
+    value: str
+
+
+class FormQuestion(BaseModel):
+    key: str
+    label: str
+    type: str
+    options: List[FormQuestionOption] = []
+
+
+class FormQuestionList(BaseModel):
+    formId: str
+    formName: Optional[str] = None
+    data: List[FormQuestion]
+
+
+class TestLeadRequest(BaseModel):
+    formId: str = Field(min_length=1, max_length=64)
+
+
+class TestLeadAccepted(BaseModel):
+    formId: str
+
+
 class FieldMapUpdate(BaseModel):
     formId: str = Field(min_length=1, max_length=64)
     map: Dict[str, Optional[str]]

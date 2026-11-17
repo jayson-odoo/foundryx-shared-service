@@ -12,7 +12,7 @@ from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
 from .. import schemas
-from ..services import connect_service, delivery_service, field_service, key_service, read_service
+from ..services import connect_service, delivery_service, field_service, form_service, key_service, read_service
 
 router = APIRouter()
 
@@ -128,3 +128,26 @@ def put_field_map(
     except field_service.FieldError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
     return read_service.source_item(row)
+
+
+@router.get("/sources/{source_id}/forms/{form_id}/questions", response_model=schemas.FormQuestionList)
+def form_questions(
+    source_id: str, form_id: str, user: User = Depends(_VIEW), db: Session = Depends(get_db)
+) -> schemas.FormQuestionList:
+    try:
+        return schemas.FormQuestionList(**form_service.form_questions(db, user.tenant_id, source_id, form_id))
+    except form_service.FormError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+
+
+@router.post("/sources/{source_id}/test-lead", response_model=schemas.TestLeadAccepted, status_code=202)
+def send_test_lead(
+    source_id: str,
+    body: schemas.TestLeadRequest,
+    user: User = Depends(_MANAGE),
+    db: Session = Depends(get_db),
+) -> schemas.TestLeadAccepted:
+    try:
+        return schemas.TestLeadAccepted(**form_service.send_test_lead(db, user.tenant_id, source_id, body.formId))
+    except form_service.FormError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})

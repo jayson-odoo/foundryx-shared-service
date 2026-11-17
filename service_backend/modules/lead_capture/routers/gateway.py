@@ -17,7 +17,7 @@ from app.database import get_db
 
 from .. import schemas
 from ..gateway_auth import AuditedRoute, LeadGatewayKey, get_lead_gateway_key
-from ..services import connect_service, delivery_service, field_service, read_service
+from ..services import connect_service, delivery_service, field_service, form_service, read_service
 
 router = APIRouter(route_class=AuditedRoute)
 
@@ -133,3 +133,29 @@ def put_field_map(
     except field_service.FieldError as exc:
         raise _api(exc)
     return read_service.source_item(row)
+
+
+@router.get("/sources/{source_id}/forms/{form_id}/questions", response_model=schemas.FormQuestionList)
+def form_questions(
+    source_id: str,
+    form_id: str,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.FormQuestionList:
+    try:
+        return schemas.FormQuestionList(**form_service.form_questions(db, key.tenant_id, source_id, form_id))
+    except form_service.FormError as exc:
+        raise _api(exc)
+
+
+@router.post("/sources/{source_id}/test-lead", response_model=schemas.TestLeadAccepted, status_code=202)
+def send_test_lead(
+    source_id: str,
+    body: schemas.TestLeadRequest,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.TestLeadAccepted:
+    try:
+        return schemas.TestLeadAccepted(**form_service.send_test_lead(db, key.tenant_id, source_id, body.formId))
+    except form_service.FormError as exc:
+        raise _api(exc)
