@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaFollower
+from . import history
+from .history import HistoryActor
 
 
 class FollowError(Exception):
@@ -31,6 +33,20 @@ class FollowError(Exception):
         self.status_code = status_code
         self.code = code
         self.message = message
+
+
+def contact_name(contact: Optional[Contact]) -> Optional[str]:
+    """A contact as people read it (first + last name), never its id."""
+    if contact is None:
+        return None
+    name = " ".join(p for p in (contact.first_name, getattr(contact, "last_name", None)) if p)
+    return name or contact.phone or None
+
+
+def contact_name_by_id(db: Session, tenant_id: str, contact_id: str) -> Optional[str]:
+    return contact_name(
+        db.query(Contact).filter(Contact.id == contact_id, Contact.tenant_id == tenant_id).first()
+    )
 
 
 def _idea_and_children_ids(db: Session, tenant_id: str, idea_id: str) -> List[str]:
@@ -51,9 +67,10 @@ def follow(
     contact_id: str,
     *,
     added_by_user_id: Optional[str] = None,
-) -> None:
-    """Idempotent: an existing row is kept. 422 when the contact is not in the
-    idea's tenant; 404 for a test item."""
+) -> bool:
+    """Idempotent: an existing row is kept (returns False). 422 when the
+    contact is not in the idea's tenant; 404 for a test item. True when a row
+    was added."""
     if idea.tenant_id != tenant_id or idea.is_test:
         raise FollowError(404, "not_found", "Feedback not found.")
     contact = (
@@ -91,7 +108,7 @@ def follow(
         .first()
     )
     if exists is not None:
-        return
+        return False
     try:
         with db.begin_nested():
             db.add(
@@ -103,22 +120,24 @@ def follow(
                 )
             )
             db.flush()
+        return True
     except IntegrityError:
         # A concurrent follow won ``uq_idea_follower_contact``: same outcome.
-        pass
+        return False
 
 
-def unfollow(db: Session, tenant_id: str, idea_id: str, contact_ids: Sequence[str]) -> None:
+def unfollow(db: Session, tenant_id: str, idea_id: str, contact_ids: Sequence[str]) -> int:
     """Remove the follow of every contact id of this person on the item and on
     its merged children (the survivor's page is where they unfollow it)."""
     if not contact_ids:
-        return
-    db.query(IdeaFollower).filter(
+        return 0
+    removed = db.query(IdeaFollower).filter(
         IdeaFollower.tenant_id == tenant_id,
         IdeaFollower.idea_id.in_(_idea_and_children_ids(db, tenant_id, idea_id)),
         IdeaFollower.contact_id.in_(list(contact_ids)),
     ).delete(synchronize_session=False)
     db.flush()
+    return int(removed or 0)
 
 
 def follower_count(db: Session, tenant_id: str, idea_id: str) -> int:
@@ -203,7 +222,7 @@ def list_for_staff(db: Session, tenant_id: str, idea_id: str) -> List[Dict[str, 
         if contact.id in out:
             continue
         row = rows[(idea.id, contact.id)]
-        name = " ".join(p for p in (contact.first_name, getattr(contact, "last_name", None)) if p)
+        name = contact_name(contact)
         out[contact.id] = {
             "contactId": contact.id,
             "name": name or None,
@@ -234,16 +253,26 @@ def staff_list(db: Session, tenant_id: str, idea_id: str) -> List[Dict[str, Any]
     return list_for_staff(db, tenant_id, idea_id)
 
 
-def staff_add(db: Session, tenant_id: str, idea_id: str, contact_id: str, user_id: str) -> List[Dict[str, Any]]:
+def staff_add(
+    db: Session, tenant_id: str, idea_id: str, contact_id: str, user_id: str, actor: HistoryActor
+) -> List[Dict[str, Any]]:
     """Add a follower (idempotent) and return the list. Commits."""
     idea = _idea_in_tenant(db, tenant_id, idea_id)
-    follow(db, tenant_id, idea, contact_id, added_by_user_id=user_id)
+    if follow(db, tenant_id, idea, contact_id, added_by_user_id=user_id):
+        history.record(
+            db, tenant_id, idea.id, history.ACTION_FOLLOWER_ADDED, actor,
+            to_value=contact_name_by_id(db, tenant_id, contact_id),
+        )
     db.commit()
     return list_for_staff(db, tenant_id, idea_id)
 
 
-def staff_remove(db: Session, tenant_id: str, idea_id: str, contact_id: str) -> None:
+def staff_remove(db: Session, tenant_id: str, idea_id: str, contact_id: str, actor: HistoryActor) -> None:
     """Remove a follower (idempotent). Commits."""
     _idea_in_tenant(db, tenant_id, idea_id)
-    unfollow(db, tenant_id, idea_id, [contact_id])
+    if unfollow(db, tenant_id, idea_id, [contact_id]):
+        history.record(
+            db, tenant_id, idea_id, history.ACTION_FOLLOWER_REMOVED, actor,
+            from_value=contact_name_by_id(db, tenant_id, contact_id),
+        )
     db.commit()

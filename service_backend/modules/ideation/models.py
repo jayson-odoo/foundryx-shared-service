@@ -385,6 +385,9 @@ class IdeaActivity(IdeationBase):
     from_label = Column(String, nullable=True)
     to_label = Column(String, nullable=True)
     to_color = Column(String, nullable=True)
+    # Who moved it (the History tab, lane FEEDBACK-SUBSCRIBE). Null on rows
+    # written before it was recorded: the record shows "-", never a guess.
+    actor_name = Column(String, nullable=True)
     source_event_id = Column(String, nullable=True, unique=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
@@ -875,3 +878,24 @@ class IdeaPhoneCode(IdeationBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     expires_at = Column(UTCDateTime(), nullable=False)
     used_at = Column(UTCDateTime(), nullable=True)
+
+
+class IdeaHistory(IdeationBase):
+    """A tracked action on a feedback item for its operator History tab (lane
+    FEEDBACK-SUBSCRIBE, owner standing rule: who, on behalf of, when, plain
+    action, old -> new). Status moves stay in ``idea_activity`` (the History
+    read merges them in); this table holds everything else: staff field edits,
+    follower added / removed, share link created / stopped. Values are display
+    text (names, labels), never ids."""
+
+    __tablename__ = "idea_history"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)
+    from_value = Column(Text, nullable=True)
+    to_value = Column(Text, nullable=True)
+    actor_name = Column(String, nullable=True)
+    on_behalf_of_name = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

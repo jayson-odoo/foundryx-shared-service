@@ -62,7 +62,8 @@ from ..models import (
     IdeaStatusEvent,
     IdeaVote,
 )
-from . import followers
+from . import followers, history
+from .history import HistoryActor
 from .comments import AUTHOR_CONTACT, AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
 from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
@@ -901,17 +902,31 @@ class IdeaPortalService:
             "followerCount": followers.follower_count(self.db, self.p.tenant_id, idea.id),
         }
 
+    def _history_actor(self) -> HistoryActor:
+        """The viewer as the History tab names them (a contact's full name)."""
+        if self.p.kind == KIND_CONTACT:
+            return HistoryActor(name=followers.contact_name_by_id(self.db, self.p.tenant_id, self.p.subject))
+        return HistoryActor(name=self.p.name)
+
     def follow(self, idea_id: str) -> Dict[str, Any]:
         idea = self._follow_target(idea_id)
         mine = self._my_voter_ids()
         if not followers.is_following(self.db, self.p.tenant_id, idea.id, mine):
-            followers.follow(self.db, self.p.tenant_id, idea, self.p.subject)
+            if followers.follow(self.db, self.p.tenant_id, idea, self.p.subject):
+                actor = self._history_actor()
+                history.record(
+                    self.db, self.p.tenant_id, idea.id, history.ACTION_FOLLOWER_ADDED, actor, to_value=actor.name
+                )
             self.db.commit()
         return self._follow_state(idea)
 
     def unfollow(self, idea_id: str) -> Dict[str, Any]:
         idea = self._follow_target(idea_id)
-        followers.unfollow(self.db, self.p.tenant_id, idea.id, self._my_voter_ids())
+        if followers.unfollow(self.db, self.p.tenant_id, idea.id, self._my_voter_ids()):
+            actor = self._history_actor()
+            history.record(
+                self.db, self.p.tenant_id, idea.id, history.ACTION_FOLLOWER_REMOVED, actor, from_value=actor.name
+            )
         self.db.commit()
         return self._follow_state(idea)
 
@@ -922,7 +937,7 @@ class IdeaPortalService:
         if self.p.kind == KIND_SHARE:
             raise _forbidden()
         idea = self._resolve(idea_id, follow_merge=True)
-        row = get_or_create_share_link(self.db, idea)
+        row = get_or_create_share_link(self.db, idea, self._history_actor())
         if row is None:
             raise _not_found()
         self.db.commit()
@@ -1335,6 +1350,7 @@ def record_status_activity(
     from_label: Optional[str],
     to_label: Optional[str],
     to_color: Optional[str] = None,
+    actor_name: Optional[str] = None,
 ) -> None:
     db.add(
         IdeaActivity(
@@ -1344,6 +1360,7 @@ def record_status_activity(
             from_label=from_label,
             to_label=to_label,
             to_color=to_color,
+            actor_name=actor_name,
             created_at=_now(),
         )
     )
@@ -1380,6 +1397,8 @@ def on_domain_event(db: Session, ev: Dict[str, Any]) -> None:
         from_label=from_status.label,
         to_label=extra.get("to_status_label") or (to_status.label if to_status else None),
         to_color=to_status.color if to_status else None,
+        # Who moved it, for the operator History tab (lane FEEDBACK-SUBSCRIBE).
+        actor_name=((ev.get("actor") or {}).get("name") or None),
     )
     db.commit()
 

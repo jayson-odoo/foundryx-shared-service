@@ -7,7 +7,7 @@ status / delete (``ideation.triage.manage``). Status moves ride the core status
 engine (server-authoritative - illegal moves refused)."""
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.v1.documents import _serve_blob
@@ -16,6 +16,7 @@ from app.dependencies import effective_permission_keys, require_permission
 from app.models.user import User
 
 from ..schemas import (
+    IdeaHistoryOut,
     IdeaFollowerIn,
     IdeaFollowerOut,
     ShareLinkOut,
@@ -41,6 +42,7 @@ from ..services.attachments import IdeaAttachmentService
 from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
 from ..services import followers as follower_service
+from ..services import history as history_service
 from ..services.feedback_links import cancel_feedback_link_for_idea
 from ..services.share_links import staff_share_url, staff_stop_sharing
 from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
@@ -299,6 +301,7 @@ def list_idea_business_requirements(
 def update_idea(
     idea_id: str,
     body: IdeaUpdateIn,
+    request: Request,
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
@@ -320,6 +323,7 @@ def update_idea(
         use_cases=body.useCases,
         current_workaround=body.currentWorkaround,
         idea_type=body.type,
+        history_actor=_actor(request, current_user),
     )
 
 
@@ -413,15 +417,38 @@ def _follow_http(exc: follower_service.FollowError):
     raise HTTPException(exc.status_code, exc.message)
 
 
+def _actor(request: Request, current_user: User) -> history_service.HistoryActor:
+    """Who acted, for the History tab: the real staff user; while
+    impersonating, on behalf of the impersonated one."""
+    real = getattr(request.state, "real_user", None)
+    real_name = real.name if isinstance(real, User) else None
+    return history_service.staff_actor(real_name, current_user.name)
+
+
+@router.get("/{idea_id}/history", response_model=List[IdeaHistoryOut])
+def get_idea_history(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> List[IdeaHistoryOut]:
+    """The item's History (owner standing rule: who, on behalf of, when, plain
+    action, old -> new), newest first. 404 outside the tenant."""
+    try:
+        return history_service.list_history(db, current_user.tenant_id, idea_id)
+    except history_service.HistoryNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
+
+
 @router.post("/{idea_id}/share-link", response_model=ShareLinkOut)
 def get_share_link(
     idea_id: str,
+    request: Request,
     current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
     db: Session = Depends(get_db),
 ) -> ShareLinkOut:
     """The item's read-only share link, minted on first use. 404 when the idea
     is not in the tenant or is a test item."""
-    url = staff_share_url(db, current_user.tenant_id, idea_id)
+    url = staff_share_url(db, current_user.tenant_id, idea_id, _actor(request, current_user))
     if url is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
     return ShareLinkOut(url=url)
@@ -430,12 +457,13 @@ def get_share_link(
 @router.delete("/{idea_id}/share-link", status_code=status.HTTP_204_NO_CONTENT)
 def stop_share_link(
     idea_id: str,
+    request: Request,
     current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
     db: Session = Depends(get_db),
 ) -> Response:
     """"Stop sharing": the current share link stops working; the next Share
     mints a new one."""
-    if not staff_stop_sharing(db, current_user.tenant_id, idea_id):
+    if not staff_stop_sharing(db, current_user.tenant_id, idea_id, _actor(request, current_user)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -456,6 +484,7 @@ def list_followers(
 def add_follower(
     idea_id: str,
     body: IdeaFollowerIn,
+    request: Request,
     current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
     db: Session = Depends(get_db),
 ) -> List[IdeaFollowerOut]:
@@ -463,7 +492,7 @@ def add_follower(
     contact outside the tenant."""
     try:
         return follower_service.staff_add(
-            db, current_user.tenant_id, idea_id, body.contactId, current_user.id
+            db, current_user.tenant_id, idea_id, body.contactId, current_user.id, _actor(request, current_user)
         )
     except follower_service.FollowError as exc:
         _follow_http(exc)
@@ -473,11 +502,12 @@ def add_follower(
 def remove_follower(
     idea_id: str,
     contact_id: str,
+    request: Request,
     current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
     db: Session = Depends(get_db),
 ) -> Response:
     try:
-        follower_service.staff_remove(db, current_user.tenant_id, idea_id, contact_id)
+        follower_service.staff_remove(db, current_user.tenant_id, idea_id, contact_id, _actor(request, current_user))
     except follower_service.FollowError as exc:
         _follow_http(exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

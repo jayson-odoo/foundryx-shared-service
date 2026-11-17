@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -978,6 +978,21 @@ class ShareLinkOut(ApiModel):
     """An item's read-only share link (lane FEEDBACK-SUBSCRIBE)."""
 
     url: str
+
+
+class IdeaHistoryOut(ApiModel):
+    """One row of a feedback item's History tab (display text, never ids)."""
+
+    id: str
+    at: Optional[str] = None
+    who: Optional[str] = None
+    onBehalfOf: Optional[str] = None
+    action: str
+    # ``from`` is a Python keyword: the wire key is set through the alias.
+    from_: Optional[str] = Field(default=None, alias="from")
+    to: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class IdeaFollowerIn(ApiModel):

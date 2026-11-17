@@ -4,6 +4,7 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type { IdeaFollower } from '@/types/ideation';
+import type { HistoryEntry } from '@/types/record-history';
 
 const base = (ideaId: string) => `/ideation/ideas/${encodeURIComponent(ideaId)}`;
 
@@ -22,6 +23,10 @@ export const ideaFollowerService = {
   },
   shareLink(ideaId: string): Promise<{ url: string }> {
     return apiFetch<{ url: string }>(`${base(ideaId)}/share-link`, { method: 'POST' });
+  },
+  /** The item's History tab (who, on behalf of, when, action, old -> new). */
+  history(ideaId: string): Promise<HistoryEntry[]> {
+    return apiFetch<HistoryEntry[]>(`${base(ideaId)}/history`);
   },
   stopSharing(ideaId: string): Promise<void> {
     return apiFetch<void>(`${base(ideaId)}/share-link`, { method: 'DELETE' });

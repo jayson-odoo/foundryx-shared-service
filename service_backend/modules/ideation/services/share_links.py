@@ -21,6 +21,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import Idea, IdeaShareLink
+from . import history
+from .history import HistoryActor
 from .feedback_links import LINK_TOKEN_RE, feedback_base
 
 
@@ -40,9 +42,12 @@ def _live(db: Session, tenant_id: str, idea_id: str) -> Optional[IdeaShareLink]:
     )
 
 
-def get_or_create_share_link(db: Session, idea: Idea) -> Optional[IdeaShareLink]:
-    """The item's live share link, minted on first use. ``None`` for a test
-    item (never shared). Flush only."""
+def get_or_create_share_link(
+    db: Session, idea: Idea, actor: Optional[HistoryActor] = None
+) -> Optional[IdeaShareLink]:
+    """The item's live share link, minted on first use (recorded in the item's
+    History as "Share link created" by ``actor``). ``None`` for a test item
+    (never shared). Flush only."""
     if idea.is_test:
         return None
     row = _live(db, idea.tenant_id, idea.id)
@@ -59,6 +64,8 @@ def get_or_create_share_link(db: Session, idea: Idea) -> Optional[IdeaShareLink]
             with db.begin_nested():
                 db.add(row)
                 db.flush()
+            if actor is not None:
+                history.record(db, idea.tenant_id, idea.id, history.ACTION_SHARE_CREATED, actor)
             return row
         except IntegrityError:
             existing = _live(db, idea.tenant_id, idea.id)
@@ -111,22 +118,23 @@ def resolve_share(db: Session, token: str) -> Optional[Tuple[IdeaShareLink, Idea
 # ── operator idea page (staff) ────────────────────────────────────────────────
 
 
-def staff_share_url(db: Session, tenant_id: str, idea_id: str) -> Optional[str]:
+def staff_share_url(db: Session, tenant_id: str, idea_id: str, actor: HistoryActor) -> Optional[str]:
     """The item's share link (minted on first use), ``None`` when the idea is
     not in the tenant or is a test item. Commits."""
     idea = db.query(Idea).filter(Idea.id == idea_id, Idea.tenant_id == tenant_id).first()
-    row = get_or_create_share_link(db, idea) if idea is not None else None
+    row = get_or_create_share_link(db, idea, actor) if idea is not None else None
     if row is None:
         return None
     db.commit()
     return share_url(db, row)
 
 
-def staff_stop_sharing(db: Session, tenant_id: str, idea_id: str) -> bool:
+def staff_stop_sharing(db: Session, tenant_id: str, idea_id: str, actor: HistoryActor) -> bool:
     """"Stop sharing" (R12). False when the idea is not in the tenant. Commits."""
     exists = db.query(Idea.id).filter(Idea.id == idea_id, Idea.tenant_id == tenant_id).first()
     if exists is None:
         return False
-    stop_sharing(db, tenant_id, idea_id)
+    if stop_sharing(db, tenant_id, idea_id):
+        history.record(db, tenant_id, idea_id, history.ACTION_SHARE_STOPPED, actor)
     db.commit()
     return True

@@ -8,6 +8,7 @@ import {
   Archive,
   ArchiveRestore,
   Bell,
+  History,
   Link2,
   ArrowRight,
   ClipboardList,
@@ -34,6 +35,7 @@ import { statusRegistryFor } from './status-registry';
 import { IdeaBrsTab } from './idea-brs-tab';
 import { IdeaMergedTab } from './idea-merged-tab';
 import { IdeaFollowersTab } from './idea-followers-tab';
+import { RecordHistory } from '@/components/platform/record-history';
 import { ideaFollowerService } from '@/services/idea-follower-service';
 import { ShareLinkDialog } from '@/components/platform/idea-portal/share-link-dialog';
 import { IdeaSimilarTab } from './idea-similar-tab';
@@ -110,6 +112,16 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
   const [similarMergeRows, setSimilarMergeRows] = useState<Idea[] | null>(null);
   // Lane FEEDBACK-SUBSCRIBE: the Share link popup (idea id while open).
   const [shareIdeaId, setShareIdeaId] = useState<string | null>(null);
+  const historyIdeaId = idea?.id ?? null;
+  // A save / status move replaces the idea object: refetch the History then.
+  const [historyVersion, setHistoryVersion] = useState(0);
+  useEffect(() => {
+    setHistoryVersion((v) => v + 1);
+  }, [idea]);
+  const loadHistory = useCallback(
+    () => (historyIdeaId ? ideaFollowerService.history(historyIdeaId) : Promise.resolve([])),
+    [historyIdeaId],
+  );
   const loadShareUrl = useCallback(
     async () => (shareIdeaId ? (await ideaFollowerService.shareLink(shareIdeaId)).url : ''),
     [shareIdeaId],
@@ -564,6 +576,20 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               },
             ]
           : []),
+        // History (owner standing rule: every tracked action on the record -
+        // who, on behalf of, when, plain action, old -> new).
+        ...(mode === 'operator' && !creating && idea
+          ? [
+              {
+                id: 'history',
+                label: 'History',
+                icon: History,
+                render: () => (
+                  <RecordHistory key={historyVersion} viewKey="ideation.idea.history" load={loadHistory} />
+                ),
+              },
+            ]
+          : []),
         // "Merged from" (AC-94-25) - only once this idea is a survivor with at
         // least one merged child.
         ...(!creating && idea && mergedCount > 0
@@ -622,6 +648,8 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     similarReloadToken,
     fetchRecordAt,
     buildRecordHref,
+    loadHistory,
+    historyVersion,
   ]);
 
   const mergeDialog =
