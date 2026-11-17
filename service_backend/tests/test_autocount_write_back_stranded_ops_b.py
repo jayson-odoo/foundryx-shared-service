@@ -144,6 +144,53 @@ def test_stale_in_progress_add_line_is_looked_up_without_waiting_for_the_sweep(c
     assert len(puts(h)) == 1
 
 
+def test_added_line_found_even_when_someone_else_edited_the_po_meanwhile(client, h, gw, world, monkeypatch):
+    """The lookup asks only "is OUR line there": another person's edit since (a remark, another line) must not
+    make it look not-landed, which would add the line a second time."""
+    row = _strand(h, monkeypatch, client, gw, ADD, add_body(), "b-10", after_put=True)
+    _sweep(h, row)
+    po = h.vendor.find("PO", 7001)
+    po["Remark2"] = "changed by someone in AutoCount"
+    po["Details"].append(dict(po["Details"][0], DtlKey=99001, Qty=9))  # their own new line
+    lines = len(po["Details"])
+    r = client.post(ADD, json=add_body(), headers=gw.hdr("b-10"))
+    assert r.json()["outcome"] == "done", r.text
+    assert len(h.vendor.rows("PO", 7001)) == lines and len(puts(h)) == 1
+
+
+def test_deleted_line_found_even_when_another_line_changed_meanwhile(client, h, gw, world, monkeypatch):
+    from modules.autocount.write_back.reader import DocReadError
+
+    def broken(self, *a, **kw):
+        raise DocReadError("READ_FAILED")
+
+    path = f"{PREFIX}/documents/purchase-orders/7001/lines/{world.p_free}/delete"
+    with monkeypatch.context() as patch:  # the PUT lands, its read-back fails
+        patch.setattr(PrimitiveService, "_read_back", broken)
+        first = client.post(path, json={"companyCode": "SRT"}, headers=gw.hdr("b-11"))
+    assert first.json()["outcome"] == "pending_verification", first.text
+    world.row_by_key(h.vendor.rows("PO", 7001), world.p_other)["Qty"] = 99  # someone else's edit
+    r = client.post(path, json={"companyCode": "SRT"}, headers=gw.hdr("b-11"))
+    assert r.json()["outcome"] == "done", r.text
+    assert len(puts(h)) == 1
+
+
+def test_change_landed_judges_only_this_change():
+    from modules.autocount.write_back.payloads import change_landed
+
+    before = {"DocKey": 1, "Remark1": "a", "Details": [{"DtlKey": 10, "ItemCode": "X", "Qty": 1}]}
+    after = {"DocKey": 1, "Remark1": "b", "Remark2": "other", "Details": [{"DtlKey": 10, "ItemCode": "X", "Qty": 5}]}
+    assert change_landed("PO", "edit_doc", before, after, header_changes={"Remark1": "b"}) == (True, None)
+    assert change_landed("PO", "edit_doc", before, after, header_changes={"Remark1": "c"})[0] is False
+    assert change_landed("PO", "edit_doc", before, after, line_changes=[{"DtlKey": 10, "Qty": 5}])[0] is True
+    assert change_landed("PO", "edit_doc", before, after, line_changes=[{"DtlKey": 11, "Qty": 5}])[0] is False
+    assert change_landed("PO", "delete_line", before, {"Details": []}, dtl_key=10)[0] is True
+    assert change_landed("PO", "delete_line", before, after, dtl_key=10)[0] is False
+    assert change_landed("PO", "delete_line", before, {"Details": []}, dtl_key=77)[0] is False  # never ours
+    assert change_landed("PO", "cancel_doc", before, {"Cancelled": "T"})[0] is True
+    assert change_landed("PO", "cancel_doc", before, {"Cancelled": "F"})[0] is False
+
+
 def test_young_in_progress_still_answers_in_progress(client, h, gw, monkeypatch):
     _strand(h, monkeypatch, client, gw, EDIT, edit_body(), "b-4", after_put=True)
     r = client.patch(EDIT, json=edit_body(), headers=gw.hdr("b-4"))

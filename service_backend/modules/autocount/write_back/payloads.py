@@ -944,6 +944,42 @@ def verify_cancel(kind_name: str, after: Doc) -> Verdict:
     return Verdict(MISMATCH, "CANCEL_IGNORED")
 
 
+def change_landed(
+    kind_name: str, primitive: str, before: Doc, after: Doc, *, header_changes: Mapping[str, Any] = {},
+    line_changes: Sequence[Mapping[str, Any]] = (), line: Optional[Mapping[str, Any]] = None,
+    dtl_key: Optional[int] = None,
+) -> Tuple[bool, Optional[int]]:
+    """AUTOCOUNT-STRANDED-OPS-B: did THIS write's own change reach AutoCount? ``(landed, new DtlKey)``. Unlike
+    the verifiers it never judges the rest of the document (another person may have edited it since):
+    an edit's asked values read back as asked, an added line reads back among the new rows, a deleted line is
+    gone, a cancel reads cancelled. Unknown primitive -> not landed."""
+    kind_of(kind_name)
+    if primitive == "edit_doc":
+        if any(not _same(after.get(k), v) for k, v in header_changes.items()):
+            return False, None
+        for change in line_changes:
+            row = _row_by_key(after, change.get("DtlKey"))
+            if row is None or any(not _same(row.get(k), v) for k, v in change.items()
+                                  if k != "DtlKey" and k not in UNREADABLE_ROW_KEYS):
+                return False, None
+        return True, None
+    if primitive == "add_line":
+        sent = line or {}
+        known = {r.get("DtlKey") for r in before.get("Details") or []}
+        for row in after.get("Details") or []:
+            if row.get("DtlKey") in known:
+                continue
+            relaxed = _relax_transfer(sent, row) if sent.get("FromDocDtlKey") else sent
+            if _same_line(relaxed, row) and not _link_code(kind_name, sent, row):
+                return True, row.get("DtlKey")
+        return False, None
+    if primitive == "delete_line":
+        return _row_by_key(before, dtl_key) is not None and _row_by_key(after, dtl_key) is None, None
+    if primitive == "cancel_doc":
+        return after.get("Cancelled") == "T", None
+    return False, None
+
+
 def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after: Doc) -> Verdict:
     """Exactly one new row reads back as sent and nothing else moved."""
     kind_of(kind_name)

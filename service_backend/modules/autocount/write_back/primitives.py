@@ -413,7 +413,8 @@ class PrimitiveService(WriteFrame):
 
     def _look_up(self, call: _Call, company: AcCompany, action: AcWriteAction) -> PrimitiveResult:
         """AUTOCOUNT-STRANDED-OPS-B / owner rule: an unknown outcome is checked before a retry. ONE logged GET of
-        the document, judged with the write's own check (``_verify``) against the action's stored before-image:
+        the document, judged by ``payloads.change_landed`` against the action's stored before-image (only THIS
+        change, never the rest of the document, which another person may have edited since):
         ``done`` (the change is in AutoCount: the action is settled done), ``refused`` / ``OPERATION_NOT_APPLIED``
         (it is not: the action is settled so it no longer holds the document, and the caller runs fresh) or
         ``pending_verification`` (the document could not be read: nothing is decided)."""
@@ -436,18 +437,18 @@ class PrimitiveService(WriteFrame):
                 call.kind, int(call.doc_key or 0), read_date, doc_no=before.get("DocNo"))
         except DocReadError:
             return unread
-        request = VendorRequest(action.request_method or "PUT", action.request_path or "",
-                                action.request_json if isinstance(action.request_json, dict) else None)
         try:
-            code, _message, warnings, new_key = self._verify(call, request, before, after)
+            landed, new_key = payloads.change_landed(
+                call.kind, call.primitive, before, after, header_changes=call.header_changes,
+                line_changes=call.line_changes, line=_no_note(call.line), dtl_key=call.dtl_key)
         except Exception:  # noqa: BLE001 - a check that cannot judge decides nothing
             logger.exception("autocount look-up could not judge action %s", action.id)
             return unread
-        if code is None:
+        if landed:
             action.outcome, action.error_code, action.after_json = OUTCOME_DONE, None, after
             self.db.commit()
             return PrimitiveResult(action.id, OUTCOME_DONE, None, "The change was found in AutoCount.",
-                                   warnings, after.get("DocKey"), after.get("DocNo"), new_key, after)
+                                   [], after.get("DocKey"), after.get("DocNo"), new_key, after)
         action.outcome, action.error_code = OUTCOME_REFUSED, NOT_APPLIED  # settled: no longer holds the document
         self.db.commit()
         return PrimitiveResult(action.id, OUTCOME_REFUSED, NOT_APPLIED,
