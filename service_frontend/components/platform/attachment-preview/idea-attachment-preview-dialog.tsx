@@ -88,7 +88,7 @@ export function IdeaAttachmentPreviewDialog({
     <Dialog open={!!a} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-3xl gap-3" aria-describedby={undefined}>
         <DialogHeader className="flex-row items-center justify-between pr-8">
-          <DialogTitle className="truncate">{a?.name}</DialogTitle>
+          <DialogTitle className="min-w-0 break-all">{a?.name}</DialogTitle>
           {a?.url &&
             (contentPath ? (
               // An uploaded file: the blob URL is same-origin, so a real button

@@ -78,7 +78,7 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
   // iframe has no operator session, so the "Merged into" link must resolve
   // to `/embed/feedback/<id>`, never the bare operator path.
   const { paths } = useIdeationRuntime();
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
 
   return (
     <Card>
