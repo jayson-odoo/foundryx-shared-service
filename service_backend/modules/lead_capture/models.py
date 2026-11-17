@@ -37,6 +37,9 @@ SOURCE_WAITING_FOR_TEST = "WAITING_FOR_TEST"
 SOURCE_LIVE = "LIVE"
 SOURCE_NEEDS_RECONNECT = "NEEDS_RECONNECT"
 SOURCE_DISCONNECTED = "DISCONNECTED"
+# States that receive and deliver leads (AC-64-16: a source waiting for its
+# test lead already routes; the first test lead flips it to LIVE).
+SOURCE_ROUTING_STATES = (SOURCE_WAITING_FOR_TEST, SOURCE_LIVE)
 
 PLATFORM_FACEBOOK = "facebook"
 

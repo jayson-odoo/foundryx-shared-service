@@ -290,7 +290,7 @@ def test_connect_stores_encrypted_page_token_and_subscribes_union(client, lc, gr
     res = _connect(client, headers)
     assert res.status_code == 201, res.text
     body = res.json()
-    assert body["status"] == "LIVE" and body["pageId"] == PAGE_ID and body["pageName"] == "Foundryx Test Page"
+    assert body["status"] == "WAITING_FOR_TEST" and body["pageId"] == PAGE_ID and body["pageName"] == "Foundryx Test Page"
     assert SYSTEM_TOKEN not in res.text and PAGE_TOKEN not in res.text
     # union: omnichannel's `messages` kept, `leadgen` added
     assert graph.subscribed == ["messages", "leadgen"]
