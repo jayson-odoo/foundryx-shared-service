@@ -560,3 +560,18 @@ def test_staff_leads_list_filters_sorts_and_detail(client, lc):
 def test_lists_need_the_view_permission(client, lc):
     assert client.get("/lead-capture/leads").status_code == 401
     assert client.get("/lead-capture/sources/list").status_code == 401
+
+
+# ── AC-64-66 the guide names every gateway route ────────────────────────────
+
+def test_consumer_guide_names_every_gateway_route():
+    from modules.lead_capture.routers.gateway import router
+
+    guide = (ROOT / "documentation/lead-capture/consumer-integration-guide.md").read_text()
+    missing = []
+    for route in router.routes:
+        path = route.path.replace("{source_id}", "{id}").replace("{endpoint_id}", "{id}")
+        path = path.replace("{delivery_id}", "{id}").replace("{form_id}", "{formId}").replace("{login_id}", "{loginId}")
+        if f"`{path}`" not in guide:
+            missing.append(path)
+    assert missing == []
