@@ -260,3 +260,59 @@ def test_migration_0048_backfill_rows_match_the_runtime_writer():
     rows = mod.rows_of("t", "c", "DB:1", None, None, copies)
     assert sorted((r["so_dtl_key"], r["location"], r["ambiguous"]) for r in rows) == sorted(so_rows_of(copies))
     assert {r["so_doc_no"] for r in rows} == {"SO-1"}
+
+
+# ---- review round 2 ------------------------------------------------------------------------------------------
+
+def _staged_delete_intent(h, entity, ref, job_id):
+    from modules.autocount.write_back.link_index import refresh_links
+
+    h.db.add(AcStagedRecord(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, entity_type=entity,
+                            job_id=job_id, source_ref=ref, raw_json=None, canonical_json=None,
+                            status="STAGED", op="delete"))
+    h.db.flush()
+    refresh_links(h.db, DEFAULT_TENANT_ID, h.company.id, entity, ref, deleted=True)  # as sync.py stages it
+    h.db.commit()
+
+
+def test_a_discarded_delete_intent_gives_the_so_its_index_rows_back(h):
+    """Review round 2: a sync job's delete intent empties the SO's index rows; discarding that job (the real
+    ``SyncService.discard``) brings them back."""
+    from app.models.background_job import JOB_NEEDS_REVIEW, BackgroundJob
+    from modules.autocount.services.sync_service import SyncService
+    from modules.autocount.sync import AUTOCOUNT_SYNC
+
+    so = h.seed_doc("SO", 8700, [_line("ITEM-A", 1, 5.0, "BR7")])
+    ref, key = f"{DBNAME}:8700", so["Details"][0]["DtlKey"]
+    job = BackgroundJob(tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status=JOB_NEEDS_REVIEW,
+                        payload_json={"companyId": h.company.id, "entityType": "sales_order"})
+    h.db.add(job)
+    h.db.commit()
+    _staged_delete_intent(h, "sales_order", ref, job.id)
+    assert _so_index(h, ref) == []
+    SyncService(h.db).discard(DEFAULT_TENANT_ID, job.id, actor_user_id="u1")
+    assert _so_index(h, ref) == [(key, "BR7", False)]
+
+
+def test_a_failed_newer_copy_does_not_replace_the_good_one_in_the_index(h):
+    from modules.autocount.write_back.link_index import refresh_links
+
+    spo = h.seed_doc("SPO", 8800, [_line("ITEM-A", 1, 5.0, "BR1", FromDocType="PO", FromDocNo="PO-1",
+                                         FromDocDtlKey=881)])
+    ref = f"{DBNAME}:8800"
+    bad = h.stage("SPO", dict(spo, Details=[]))  # a truncated copy whose mapping failed
+    bad.status = "FAILED"
+    bad.created_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    h.db.flush()
+    refresh_links(h.db, DEFAULT_TENANT_ID, h.company.id, "shipping_order", ref)
+    h.db.commit()
+    assert [k for k, _q in _index(h, ref)] == [881]
+
+
+def test_the_so_index_carries_the_raw_doc_key_not_the_source_ref_tail(h):
+    from modules.autocount.models import AcSoRowIndex
+
+    h.seed_doc("SO", 8900, [_line("ITEM-A", 1, 5.0, "BR1")])
+    h.db.expire_all()
+    row = h.db.query(AcSoRowIndex).filter_by(company_id=h.company.id, so_source_ref=f"{DBNAME}:8900").one()
+    assert row.so_doc_key == "8900"
