@@ -127,6 +127,9 @@ export interface Idea {
   submitterName: string;
   /** The submitter's tier (e.g. `dealer`, S1) - null/absent when not set. */
   submitterTier?: string | null;
+  /** The idea has a submitter contact, so it has a personal feedback link
+   * (lane PUBLIC-IDEAS-BOARD). */
+  hasSubmitterContact?: boolean;
   upvotes: number;
   /** Always 0 on the wire since plan 19 (upvote only); kept for compatibility. */
   downvotes: number;

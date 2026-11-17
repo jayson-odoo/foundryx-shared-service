@@ -109,7 +109,7 @@ def _ideation_target_schema() -> FormDocument:
                     "sections": [
                         {
                             "id": "sec-idea",
-                            "title": "Idea",
+                            "title": "Feedback",
                             "fields": [
                                 {
                                     "id": "f-problem",

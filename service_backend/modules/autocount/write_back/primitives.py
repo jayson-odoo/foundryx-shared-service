@@ -13,12 +13,13 @@ is open (every outcome is committed as it is reached).
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import time
 import unicodedata
 from urllib.parse import urlsplit
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
@@ -76,6 +77,7 @@ ROW_RECEIVED = "ROW_RECEIVED"
 DOC_HAS_TRANSFERS = "DOC_HAS_TRANSFERS"
 DOC_CANCELLED = "DOC_CANCELLED"
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
+ROW_NEEDS_ATTENTION = "ROW_NEEDS_ATTENTION"  # plan 65 D6: an unresolved link operation covers the row
 
 CREATE, EDIT, ADD_LINE = "create_doc", "edit_doc", "add_line"
 DELETE_LINE, DELETE_DOC, CANCEL = "delete_line", "delete_doc", "cancel_doc"
@@ -138,6 +140,18 @@ class _Call:
     stage: bool = True
     doc_no: Optional[str] = None
     merge_key: Optional[int] = None  # unlink_merge: the free row that takes the quantity
+    # SS-AUTOCOUNT-SPEEDUP: the document as the previous step of the SAME operation just read
+    # it back (no vendor call since). It stands in for the fresh GET; None = read it.
+    fresh_doc: Optional[Dict[str, Any]] = None
+    # plan 65 D4: an operation's restore of a new SO-linked row (``payloads.RESTORE_LINE_KEYS``)
+    restore: bool = False
+
+
+def _no_note(line: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Plan 66: a line from outside an operation never carries the link note."""
+    if not line or payloads.LINK_NOTE_KEY not in line:
+        return line
+    return {k: v for k, v in line.items() if k != payloads.LINK_NOTE_KEY}
 
 
 # AC-57-47: what marks the start of an internal detail. The text is cut at the FIRST one:
@@ -235,11 +249,16 @@ class PrimitiveService(WriteFrame):
         header_changes: Dict[str, Any], line_changes: Sequence[Dict[str, Any]],
         doc_date: Optional[date] = None, expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None, operation_id: Optional[str] = None, step: Optional[str] = None,
-        stage: bool = True,
+        stage: bool = True, fresh_doc: Optional[Doc] = None, restore: bool = False,
     ) -> PrimitiveResult:
+        """``fresh_doc`` (operations only): the operation's own read-back of this document,
+        taken with no vendor call since, used instead of a second identical GET. ``restore``
+        (operations only, plan 65 D4): the restore of a new SO-linked row, which may also send
+        the note; never set by the public edit door."""
         call = _Call(EDIT, kind, tenant_id, doc_key=doc_key, key_id=key_id, operation_id=operation_id,
                      step=step, doc_date=doc_date, expected_last_modified=expected_last_modified,
-                     header_changes=header_changes, line_changes=line_changes, stage=stage)
+                     header_changes=header_changes, line_changes=line_changes, stage=stage,
+                     fresh_doc=fresh_doc, restore=restore and operation_id is not None)
         return self._run(call, company_id)
 
     def add_line(
@@ -466,10 +485,13 @@ class PrimitiveService(WriteFrame):
         self._log_doc(call.doc_no)
         self._check_deadline(row)
         self.db.commit()  # no transaction open during the GET
-        try:
-            doc = reader.get_document(call.kind, call.doc_key, doc_date, doc_no=call.doc_no)
-        except DocReadError as exc:
-            raise self._refuse(row, exc.code) from None
+        if self._reusable(call):
+            doc = copy.deepcopy(call.fresh_doc)
+        else:
+            try:
+                doc = reader.get_document(call.kind, call.doc_key, doc_date, doc_no=call.doc_no)
+            except DocReadError as exc:
+                raise self._refuse(row, exc.code) from None
         self._log_doc(doc.get("DocNo"))
         if call.expected_last_modified and doc.get("LastModified") != call.expected_last_modified:
             raise self._refuse(row, DOC_STALE)
@@ -486,6 +508,15 @@ class PrimitiveService(WriteFrame):
             except WriteRefusal as exc:
                 raise self._refuse(row, exc.code, str(exc)) from None
         return doc, request, doc_date  # type: ignore[return-value]
+
+    @staticmethod
+    def _reusable(call: _Call) -> bool:
+        """The operation's own read-back may replace the fresh GET: only inside an operation
+        (which holds the document, ``uq_ac_write_operation_one_in_progress``), only for an
+        edit, and only for the very document asked for."""
+        doc = call.fresh_doc
+        return (call.operation_id is not None and call.primitive == EDIT and isinstance(doc, dict)
+                and doc.get("DocKey") == call.doc_key and isinstance(doc.get("Details"), list))
 
     def _log_doc(self, doc_no: Any, doc_key: Optional[int] = None) -> None:
         """The document the next logged calls belong to (plan 61 section 4.8)."""
@@ -520,8 +551,12 @@ class PrimitiveService(WriteFrame):
 
     @staticmethod
     def _build(call: _Call, doc: Doc) -> VendorRequest:
+        if call.operation_id is None:  # plan 66: only an operation's link step may carry the note
+            call = replace(call, line=_no_note(call.line),
+                           lines=None if call.lines is None else [_no_note(x) for x in call.lines])
         if call.primitive == EDIT:
-            return payloads.build_edit(call.kind, doc, call.header_changes, call.line_changes)
+            return payloads.build_edit(call.kind, doc, call.header_changes, call.line_changes,
+                                       restore=call.restore)
         if call.primitive == ADD_LINE:
             return payloads.build_add_line(call.kind, doc, call.line or {})
         if call.primitive == DELETE_LINE:
@@ -618,12 +653,39 @@ class PrimitiveService(WriteFrame):
             if any(self._so_linked_qty(company, r.get("DtlKey")) > 0 for r in doc.get("Details") or []):
                 raise WriteRefusal(DOC_HAS_TRANSFERS, "lines are linked by purchase order lines")
 
+    def row_needs_attention(self, company: AcCompany, doc_key: int, row: Doc,
+                            *, exclude_id: Optional[str] = None) -> bool:
+        """Plan 65 D6: the PO row (as freshly read) is covered by an unresolved (``needs_attention`` /
+        ``pending_verification``) link operation on the same PO: it is that operation's source row, or a
+        row the operation's read did not know (not in its snapshot ``knownKeys``) linked to one of its SO
+        rows. ``exclude_id``: the operation asking (its own Resume is never blocked by it)."""
+        dtl_key = row.get("DtlKey")
+        linked = int(row.get("FromSODtlKey") or 0)
+        for op in OperationRepository(self.db).pending_po_row_links(
+                company.tenant_id, company.id, doc_key, None, exclude_id=exclude_id):
+            if op.dtl_key == dtl_key:
+                return True
+            snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
+            if not linked or "knownKeys" not in snap or dtl_key in set(snap.get("knownKeys") or []):
+                continue
+            so_rows = {int(link.get("soDtlKey") or 0) for link in snap.get("links") or []}
+            new_link = snap.get("newLink") if isinstance(snap.get("newLink"), dict) else {}
+            if new_link.get("FromDocType") == "SO":
+                so_rows.add(int(new_link.get("FromDocDtlKey") or 0))
+            if linked in so_rows:
+                return True
+        return False
+
     def _guard_po_line(self, call: _Call, company: AcCompany, doc: Doc) -> None:
         """AC-61-20 / F15: a PO row an SPO points at, or with a receipt, is never sent a
-        "D" (AutoCount's own answer to a received row is unverified)."""
+        "D" (AutoCount's own answer to a received row is unverified). Plan 65 D6: a row an
+        unresolved link operation covers is never sent one either (Resume is its repair)."""
+        row = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == call.dtl_key), {})
+        if (call.kind == "PO" and call.operation_id is None and call.doc_key is not None
+                and self.row_needs_attention(company, call.doc_key, row)):
+            raise WriteRefusal(ROW_NEEDS_ATTENTION, "a link on this row needs attention; resume it first")
         if call.kind == "PO" and self._spo_ref(company.tenant_id, company.id, int(call.dtl_key or 0)):
             raise WriteRefusal("ROW_ON_SPO", "row is referenced by a shipping purchase order")
-        row = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == call.dtl_key), {})
         received = self._row_received(company, call.kind, dict(row, DocKey=doc.get("DocKey")))
         if received is not None and received > 0:  # unknown is left to AutoCount
             raise WriteRefusal(ROW_RECEIVED, "row has received quantity")

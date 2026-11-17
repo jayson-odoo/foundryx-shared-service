@@ -6,7 +6,7 @@ import { ArrowLeft, Heart, Reply, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeaPortal, usePortalIdeaPage } from '@/hooks/use-idea-portal';
-import { IdeaStatusTimeline } from '@/app/(public)/public/ideas/[token]/components/idea-status-timeline';
+import { IdeaStatusTimeline } from '@/app/(public)/public/feedback/[token]/components/idea-status-timeline';
 import { colorToHex } from '@/components/platform/status-badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,7 @@ import type { PortalActivity, PortalComment, PortalIdea, PortalVoter } from '@/t
 import { PortalStatusPill } from './portal-status-pill';
 import { PortalLoading, PortalMessage } from './portal-states';
 import { UpvoteBox } from './upvote-box';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 const ORDER_OPTIONS = [
   { value: 'desc', label: 'Newest first' },
@@ -107,7 +108,7 @@ function CommentItem({
   onReply?: () => void;
   small?: boolean;
 }) {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
   if (c.isDeleted) {
     return <p className="text-sm text-muted-foreground italic">Comment deleted</p>;
   }
@@ -165,7 +166,7 @@ function ActivityItem({
   onDelete: (id: string) => void;
   onReply: (parentId: string, body: string) => Promise<void>;
 }) {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
   const [replying, setReplying] = useState(false);
   if (e.kind === 'comment' && e.comment) {
     const top = e.comment;
@@ -208,7 +209,7 @@ function ActivityItem({
     dot = colorToHex('blue');
     text = (
       <>
-        <b>Idea submitted</b>
+        <b>Feedback submitted</b>
         {e.by ? ` by ${e.by}` : ''}
         {e.source === 'whatsapp' ? ' over WhatsApp' : ''}
       </>
@@ -260,7 +261,7 @@ export function groupFeed(events: PortalActivity[], timeZone: string): FeedRow[]
 }
 
 function UpvoteRow({ row }: { row: Extract<FeedRow, { kind: 'upvotes' }> }) {
-  const { formatDate } = useDatetime();
+  const { formatDmyDate: formatDate } = useDatetime();
   const named = row.names.slice(0, 3);
   const others = row.count - named.length;
   return (
@@ -370,36 +371,37 @@ export interface IdeaPageProps {
 /** The idea (card) page: status, upvote box, the four fields, comments,
  * activity feed (newest first), "where is it" timeline, voters. */
 export function IdeaPage({ ideaId }: IdeaPageProps) {
-  const { paths, principal } = useIdeaPortal();
-  const { formatDate, timeZone } = useDatetime();
+  const { mode, paths, principal } = useIdeaPortal();
+  const back = mode === 'link' ? { href: paths.feedback, label: 'Feedback' } : { href: paths.roadmap, label: 'Roadmap' };
+  const { formatDmyDate: formatDate, timeZone } = useDatetime();
   const page = usePortalIdeaPage(ideaId);
   const idea = page.idea.data;
 
   if (page.idea.loading && !idea) return <PortalLoading />;
-  if (page.idea.notFound) return <PortalMessage text="This idea isn’t available." />;
-  if (!idea) return <PortalMessage text="This idea could not be loaded." />;
+  if (page.idea.notFound) return <PortalMessage text="This feedback isn’t available." />;
+  if (!idea) return <PortalMessage text="This feedback could not be loaded." />;
 
   const onAction = (p: Promise<void>) => p.catch(() => toast.error(page.actionError ?? 'Something went wrong.'));
 
   return (
     <>
-      <Link href={paths.roadmap} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+      <Link href={back.href} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="size-4" aria-hidden />
-        Roadmap
+        {back.label}
       </Link>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
         <div className="flex min-w-0 flex-col gap-5">
           <div className="flex gap-4" data-testid="portal-idea-hero">
             <UpvoteBox size="lg" count={idea.upvotes} voted={idea.myVote} onVote={() => onAction(page.vote())} />
             <div className="min-w-0">
-              {idea.ideaNumber && <p className="text-sm font-medium text-muted-foreground">{idea.ideaNumber}</p>}
+              {idea.ideaNumber && <p className="text-sm font-medium text-muted-foreground">{formatFeedbackNumber(idea.ideaNumber)}</p>}
               <div role="heading" aria-level={1} className="font-heading text-xl font-semibold break-words sm:text-2xl">{idea.title}</div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 {idea.statusLabel && <PortalStatusPill label={idea.statusLabel} color={idea.statusColor} />}
                 {idea.submitterFirstName && <span>Submitted by {idea.submitterFirstName}</span>}
                 {idea.submittedAt && <span>{formatDate(idea.submittedAt)}</span>}
                 {idea.isMine && (
-                  <span className="rounded-full border border-primary px-2 py-0.5 text-xs text-primary">Your idea</span>
+                  <span className="rounded-full border border-primary px-2 py-0.5 text-xs text-primary">Yours</span>
                 )}
               </div>
             </div>
@@ -468,7 +470,8 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
             <IdeaStatusTimeline timeline={idea.timeline} />
           </div>
           <Voters voters={page.voters.data ?? []} />
-          {idea.productName && (
+          {/* A one-product board never names the product (owner 17 Nov). */}
+          {idea.productName && !principal.productId && (
             <Card>
               <CardContent className="flex justify-between py-4 text-sm">
                 <span className="text-muted-foreground">Product</span>

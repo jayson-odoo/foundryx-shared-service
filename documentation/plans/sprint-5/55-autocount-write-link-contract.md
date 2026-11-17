@@ -17,6 +17,25 @@ free PO row instead of adding a new one when it can (section 4.2); the retry rul
 changed: a key whose first call provably changed nothing is released for a resend (section 4.0). Existing
 bodies and statuses are unchanged.
 
+2026-11-15 (plan 64, `64-autocount-po-link-at-so-location-acceptance-criteria.md`): `po-links` answers a new
+top-level `detail` object on `done`: the PO row the link landed on, as read back, so `detail.Location` is where
+AutoCount holds the linked row (the SO row's location once the move landed). `ROW_RECEIVED` now carries a plain
+`message`. Additive: no other field, status or route changes (section 4.5).
+
+2026-11-16 (plan 65, `65-autocount-link-restore.md`): the new linked row is now restored to the SO row's values,
+including the SO ROW delivery date, a discount (only a percentage) and a note (sections 4.1, 4.1a). For the batch
+link, a whole-row link and a relink, a restore that does not land ends `needs_attention` with `RESTORE_NOT_LANDED`
+and is resumable (section 4.0a); the single part-row link keeps `done` + `LOCATION_NOT_MOVED`. New refusals
+`ROW_NEEDS_ATTENTION` and skip `FOC_ON_ROW`; the AutoCount Remark mirror is not a mismatch (section 5).
+
+2026-11-17 (plan 66): `po-links/unlink` takes an optional `poolLocation`; with it the freed quantity returns to
+the pool (merged into a free pool row of the same item and unit, else the row is moved there) and the answer
+carries `detail` (section 4.2). Without it nothing changes.
+
+2026-11-17 (plan 65 part B): unlink and relink refuse `FOC_ON_ROW` for a row with a free quantity; Resume clears a
+stale `in_progress` run on the same PO first (section 4.0a). A resend under the key of any `recovered`
+operation runs fresh (the key is released), not only `OPERATION_NOT_APPLIED`.
+
 ## 1. What it is
 
 Four routes on the existing public gateway (`/api/v1/autocount/*`) that change the link between a
@@ -83,10 +102,10 @@ resend does:
 | Stored outcome of the first call | A resend with the same key |
 |---|---|
 | `refused` (any code), or `vendor_error` with `errorCode` `VENDOR_REFUSED` (AutoCount itself said no) | Nothing reached AutoCount, so the key is released: the resend runs fresh, with the same or a corrected body |
-| `recovered` with `errorCode` `OPERATION_NOT_APPLIED` (a resume found the write never landed) | The key is released, like the first row: the resend runs fresh |
+| `recovered`, any `errorCode` (the PO is back as it was: a resume found the write never landed, or a failed write was undone; plan 65 B3) | The key is released, like the first row: the resend runs fresh |
 | `pending_verification` and the same body | Reconciles: the server re-reads the document. If the first call landed, it is finished and answered (`done`); if it provably never landed, the key is released and the resend runs fresh. Never a second write |
 | `done` | Locked: the stored answer is replayed (same `operationId`), nothing is written again |
-| `mismatch`, any other `recovered`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
+| `mismatch`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
 | any stored outcome, but a DIFFERENT body or route | `409 IDEMPOTENCY_CONFLICT` (`outcome` `refused`) unless the stored outcome released the key (first two rows) |
 | first call still running | `409 OPERATION_IN_PROGRESS` |
 
@@ -94,6 +113,20 @@ A call that ended `pending_verification` is still never blind-resent with a NEW 
 
 `POST /write-operations/{id}/resume` only exists for the link, unlink, relink and batch operations. On a document
 primitive (a create) it answers `409 OPERATION_NOT_RESUMABLE` and changes nothing; resend the create with the same key instead.
+
+### 4.0a Resume of a link that ended `RESTORE_NOT_LANDED` or `needs_attention` (plan 65)
+
+`POST /write-operations/{id}/resume` on a batch link, `link_row` or `relink_row` operation never re-sends the
+link write. For a batch link it re-checks the stored link write and reads the current PO: the kept row at its
+expected quantity (or gone when the links took all of it) and one new row per link, nothing else linked to those
+SO rows; if the stored link write still reads back as a mismatch, or the PO is not in that shape, it stays
+`needs_attention` and nothing is sent. For a `link_row` or `relink_row` whose link write landed it reads the
+current PO and the SO row (an operation stored before plan 65 re-reads the SO). It then sends ONE restore write on
+the new rows only and verifies it; the operation ends `done`. The single part-row link (split) is not resumable.
+Before it claims the operation, Resume clears a stale run on the same PO: an operation left `in_progress` for longer
+than the busy window (600 s, a request that died mid-way) becomes `pending_verification`, so it no longer holds the
+PO; a Resume of that stale operation itself is then answered like any `pending_verification` one. An operation
+`in_progress` inside the window is still respected (`DOC_BUSY` / `OPERATION_IN_PROGRESS`). (Plan 65 part B.)
 
 Creating a document (`POST /documents/{kind}`) follows the same table with one difference, because a failed
 create may still have saved the document. A create AutoCount refused before saving (credit limit, unknown item,
@@ -127,10 +160,19 @@ once. More than one match: `needs_attention` (`CREATE_AMBIGUOUS`), locked, nothi
 `DtlKey`) carries the linked `qty` (two writes, section 5). A `qty` equal to the PO row qty (a whole
 row) is never linked in place (AutoCount does not change the link of an existing row): one PUT deletes
 the row and adds a new linked row with the same values (a new `DtlKey`, listed in `replacedLines` when
-the operation layer answers), then a second write puts the new row at the SO row's location and back on
-its unit price and delivery date (AutoCount forces HQ, sets the unit price to 0 and clears the date on a
-new linked row; db3 10-11 Nov, plan 61 F5). The location comes
-from the SO row; the caller does not send one.
+the operation layer answers), then a second write restores the new row (AutoCount forces HQ, sets the unit
+price to 0 and clears the delivery date and the discount on a new linked row; db3 10-16 Nov, plans 61 and 65).
+The restore values are the same for every link (whole row, split, batch, relink): location = the SO row's
+location; unit price = the old PO row's; delivery date = the SO ROW's delivery date (none when the SO row has
+none, never the PO row's); discount only when it is a percentage, else blank; and a further-description
+note `**<customer>/<ref> S/O: <number> DD: <dd/mm/yyyy>` (customer and ref from the SO, `/<ref>` left out when
+the ref is blank, `<number>` the SO number without its leading `SO`, ` DD: ...` left out when the SO row has
+no date). The note is written as AutoCount RTF and cannot be read back through the AutoCount API, so it is
+not part of the read-back check. The caller sends none of these values.
+
+A whole-row link of a PO row that carries a free quantity (FOC) is refused `FOC_ON_ROW`: AutoCount's API
+cannot move the free quantity to the new row (a batch line that would take the whole of such a row is
+skipped with that code, section 4.1a). Link a smaller quantity instead.
 
 ### 4.1a `POST /api/v1/autocount/po-links/batch`
 
@@ -157,7 +199,8 @@ whole request and nothing is written: `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_H
 `DOC_CANCELLED` (the PO), `ROW_NOT_FOUND` (the PO row), `DOC_STALE`, `DOC_BUSY`, `VENDOR_UNSUPPORTED`. Every other
 check is made line by line, in request order, and a line that fails is skipped: it is not sent, the other lines are
 linked. The reasons are `ROW_NOT_FOUND` (the SO row), `ITEM_MISMATCH`, `UOM_MISMATCH`, `DOC_CANCELLED` (its sales
-order), `QTY_ABOVE_OUTSTANDING`, `QTY_INVALID`, and `QTY_ABOVE_FREE` (the running total of the lines linked so
+order), `QTY_ABOVE_OUTSTANDING`, `QTY_INVALID`, `FOC_ON_ROW` (the line would take the whole of a PO row that has a free quantity, which
+AutoCount's API cannot move), and `QTY_ABOVE_FREE` (the running total of the lines linked so
 far plus this one would pass the PO row quantity; a later, smaller line that still fits is linked). The answer
 names every skipped line in `skipped`: `[{ "soDocKey": 11988, "soDtlKey": 11989, "code": "QTY_ABOVE_OUTSTANDING" }]`,
 `[]` when none. `skipped` is on every answer of this route that reads the body (done, refused, vendor_error, pending, the replay and the request-shape 422s, which carry `links: []`, `skipped: []`, `freeLine: null`). Errors raised before the body is read (401, 403, `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_INVALID`) are the gateway's flat error and carry none of the three. A reconcile that settles as needs_attention or recovered answers `skipped: []`. When every line is
@@ -169,11 +212,18 @@ the lines skipped before the write, and the key is released.
 **Two writes.** The first write is ONE edit of the PO: the PO row is kept with the quantity
 that is left (or removed when the links take all of it) and one new linked row is added per linked line. AutoCount
 accepts or rejects that edit as a whole, so either every valid line is linked or none is. Each new row arrives at
-the default location (HQ), unit price 0 and no delivery date; a second write, only if a read-back shows
-that, puts all the new rows at their SO row's location and back on the PO row's unit price and delivery
-date, in one edit. If that second write does not land, the answer is still `done` and `warnings` carries
-`LOCATION_NOT_MOVED` (and `ROW_VALUES_NOT_KEPT` when unit price or delivery date were involved); the links
-stand. Use `po-links/relocate` for a row left at the default location.
+the default location (HQ), unit price 0, no delivery date and no discount; a second write (always sent: the
+note cannot be read back) restores all the new rows in one edit with the values of section 4.1 (the SO row's
+location, the old PO row's unit price, the SO ROW's delivery date, a percentage discount, the note). If that
+second write does not land (AutoCount error, read-back differs, or the time budget ran out), the answer is
+`needs_attention` with `errorCode` `RESTORE_NOT_LANDED`: the links stand and the operation is resumable
+(section 4.0a). It is no longer `done` with a warning. The same holds for a whole-row link and a relink. The
+single part-row link on `po-links` (split) keeps `done` with `LOCATION_NOT_MOVED` / `ROW_VALUES_NOT_KEPT`
+(section 5). Use `po-links/relocate` for a row left at the default location.
+
+AutoCount's API rewrites the PO's Remark2, Remark3 and Remark4 to the value of Remark1 on every write (db3,
+16 Nov). The gateway accepts that: no warning is raised and a Remark2..4 that reads back equal to Remark1 is
+not a mismatch. Any other change to the PO is still `READBACK_MISMATCH`.
 
 Answer (HTTP 200, `outcome` `done`):
 
@@ -203,7 +253,9 @@ the same body (section 4.0).
 
 `poDocKey`, `poDtlKey` integer, required; `expectedLastModified` optional as above. One PUT deletes the
 linked row and adds a normal row with the same item, qty, unit price, UOM, location and delivery date
-(a new `DtlKey`, in `replacedLines`): AutoCount never clears a link in place.
+(a new `DtlKey`, in `replacedLines`): AutoCount never clears a link in place. A row that an unresolved
+(`needs_attention` or `pending_verification`) link operation covers is refused `ROW_NEEDS_ATTENTION`, nothing
+written; resume that operation instead (section 4.0a). Other rows of the PO stay writable.
 
 **Merge into a free row (plan 62).** When the PO has another row that is free (not linked, nothing received,
 no SPO row pointing at it, not transferred from another document) and equals the unlinked row in item,
@@ -213,6 +265,33 @@ No location move follows. The answer then has `replacedLines` `[{"oldDtlKey": <t
 "newDtlKey": <the free row that took the quantity>}]`: `newDtlKey` is the EXISTING free row's `DtlKey`, not a
 new one. With no matching free row, or a free row with a known received quantity above zero, the behaviour above
 applies unchanged (a new row). A received quantity AutoCount does not expose (unknown) does not stop the merge. No request field and no new answer field: read `replacedLines`.
+
+**Return to the pool (plan 66, optional `poolLocation`).** Send `"poolLocation": "BRW"` (string, the exact
+AutoCount Location code of the pool the line's project location draws stock from; the CRM's
+`warehouses.pool_warehouse_id`). Absent, `null` or blank = everything above, unchanged (no `detail` in the
+answer either). Not a string, or longer than 64 characters = `422 INVALID_REQUEST`, nothing sent. The code is matched exactly: `BRW` never
+matches `BRW-BB`. It is part of the idempotency body (a resend under the same key with another pool is
+`IDEMPOTENCY_CONFLICT`). With it:
+- **Merge into a pool row:** the first free row at `poolLocation` with the same item and unit of measure (unit
+  price and delivery date are NOT compared; owner 17 Nov) takes the freed quantity in ONE PUT. That row keeps its
+  own unit price and delivery date; only its quantity goes up, so the PO total changes by freed qty x (pool row
+  price - unlinked row price), and a discount on the unlinked row is not carried over (owner ruling, 17 Nov). Not linked, nothing received, no SPO row pointing
+  at it, not covered by an unresolved link operation, as above. The same-location merge above does not apply.
+- **No such pool row:** the new unlinked row (the replace above) is moved to `poolLocation` (same quantity, unit
+  price and delivery date as the unlinked row). A move that does not land is still `done`, with
+  `LOCATION_NOT_MOVED` in `warnings` (show "Unlinked, but the Location could not be changed to <pool>").
+- **Partly received row:** the received part stays where it is; the new row with the rest goes to `poolLocation`.
+- The answer carries `detail`: the PO row (vendor field names) that now holds the freed quantity, i.e. the pool
+  row merged into or the moved row; its `DtlKey` is `replacedLines[0].newDtlKey`. Partly received: `replacedLines`
+  is `[]` (the received row stays) and `detail` is the only place the new row's key appears.
+  `detail` is `null` on any outcome other than `done`. Show "Unlinked. Qty returned to <detail.Location>.".
+- A Resume (`/write-operations/{id}/resume`) answer carries no `detail`; read `document` there.
+- `po-links/relink` ignores it (a relink frees nothing). "Change to another PO" = unlink (with `poolLocation`),
+  then link.
+
+```json
+{ "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12017, "poolLocation": "BRW" }
+```
 
 ### 4.3 `POST /api/v1/autocount/spo-links/unlink`
 
@@ -252,8 +331,28 @@ rules in 57 contract sections 2a.1 and 8. Absent or invalid = stored empty, neve
 |---|---|---|
 | `actionId` | string or null | The id of the audit record for this call; quote it to support. Null only when the company could not be resolved to a write action |
 | `outcome` | string | One of section 5 |
-| `errorCode` | string or null | Null on a clean `done`; `LOCATION_NOT_MOVED` on a `done` whose location move did not land (section 5); else a code from section 5 |
+| `errorCode` | string or null | Null on a clean `done`; `LOCATION_NOT_MOVED` on a `done` of a single part-row link whose location move did not land (section 5); `RESTORE_NOT_LANDED` on `needs_attention`; else a code from section 5 |
 | `document` | object or null | On `done` only: the whole document as AutoCount reads back after the write (PO, or SPO), in the vendor's field names (`DocKey`, `DocNo`, `LastModified`, `Details[]` with `DtlKey`, `ItemCode`, `Location`, `UOM`, `Qty`, `FromSODtlKey`, `FromDocDtlKey`, ...). Null otherwise |
+
+| `detail` | object or null | `po-links` only (plan 64): on `done`, the PO row the link landed on, as read back, in the vendor's field names (`DtlKey`, `Location`, `Qty`, `FromSODtlKey`, ...). Whole row: the new row named in `replacedLines`; split, or a partly received row cut to its received quantity: the new linked row. `detail.Location` is where AutoCount holds the row: the SO row's location when the restore landed; on a split link with `LOCATION_NOT_MOVED` in `warnings` it is the location the row really sits at. Null on every other outcome, including `needs_attention` `RESTORE_NOT_LANDED`. No other route carries the key |
+
+`po-links` `done` (whole row, PO row at BR1, SO row at BRW-AM):
+
+```json
+{ "actionId": null, "outcome": "done", "errorCode": null, "operationId": "5b0c...", "message": "",
+  "warnings": [], "docKey": 12008, "docNo": "202602-S0007",
+  "replacedLines": [{ "oldDtlKey": 12009, "newDtlKey": 12031 }],
+  "detail": { "DtlKey": 12031, "ItemCode": "SRTKS7090", "Qty": 1.0, "Location": "BRW-AM", "FromSODtlKey": 11990, "...": "..." },
+  "document": { "...": "the PO as read back" } }
+```
+
+`po-links` refused, goods received on the row (nothing sent, the key is released):
+
+```json
+409 { "actionId": null, "outcome": "refused", "errorCode": "ROW_RECEIVED", "operationId": "7a1d...",
+      "message": "Goods have already been received on this purchase order line at BR1, so the change was not made. Handle the received goods in AutoCount, then try again.",
+      "warnings": [], "docKey": 12008, "docNo": null, "replacedLines": [], "detail": null, "document": null }
+```
 
 The same JSON is returned for every outcome, with only the HTTP status differing. Responses are
 `Cache-Control: no-store`.
@@ -262,7 +361,8 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 
 | outcome | HTTP | errorCode | Meaning |
 |---|---|---|---|
-| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged |
+| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged. `LOCATION_NOT_MOVED` only on the single part-row link |
+| `needs_attention` | 502 | `RESTORE_NOT_LANDED` | Batch link, whole-row link or relink: the links stand but the restore of the new rows (location, unit price, delivery date, discount, note) did not land. Resumable (section 4.0a) |
 | `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` | The write may or may not have happened; the server could not confirm it |
 | `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
@@ -294,20 +394,24 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `UOM_MISMATCH` | Different units of measure | Do not offer this pair |
 | `QTY_INVALID` | `qty` is zero or negative, above 1,000,000,000, or has more than 8 decimal places (checked before AutoCount is read) | Fix the input |
 | `QTY_ABOVE_FREE` | `qty` is above the PO row qty | Lower `qty` |
-| `ROW_RECEIVED` | The PO row has goods received against it | Handle it in AutoCount |
+| `ROW_RECEIVED` | The PO row has goods received against it (the whole row, or any receipt when the partial-receipt split is off). A PARTLY received row is not refused: it is cut to the received quantity at its own location and the open remainder is linked and moved (owner ruling Q2). `message` is a plain reason to show as is (plan 64; on every route that can refuse `ROW_RECEIVED`) | Show `message` and "Try again" |
 | `IDEMPOTENCY_CONFLICT` | The `Idempotency-Key` was used for a different body or route and its first call did not release it | Use a new key for a new change |
 | `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
+| `ROW_NEEDS_ATTENTION` | Unlink, relink or delete line on a PO row that an unresolved link operation covers (its source row, or a new row linked to one of its SO rows); nothing written | Resume that operation (`POST /write-operations/{id}/resume`); hide the action on this code |
+| `FOC_ON_ROW` | A write that would remove a PO row that has a free quantity (AutoCount's API cannot write it on another row): a link taking the whole row (`po-links`: refused; `po-links/batch`: the line is skipped and named in `skipped`), and an unlink or relink of such a row (`po-links/unlink`, `po-links/relink`: refused). Nothing written | Link a smaller quantity, or handle the row in AutoCount |
 | `ALL_LINKS_SKIPPED` | `po-links/batch`: every line failed its own check, so nothing was linked; `skipped` names each line and its code | Fix the lines and resend (same key is fine) |
 
-**Split link is two writes.** Linking a quantity below the PO row edits the row down and adds a new
-linked row. AutoCount stores that new row at its default location (HQ) with unit price 0 and no
-delivery date, whatever the first write sent (db3, 4 and 6 Nov). The server then sends a second write
-on the new row only: the SO row's location plus the PO row's unit price and delivery date, and reads
-the document back. The call answers `done` once the link and those values are verified. If only the
+**Split link is two writes.** (A single part-row link on `po-links`; the batch, whole-row link and relink end
+`needs_attention` `RESTORE_NOT_LANDED` instead, section 4.1a.) Linking a quantity below the PO row edits the
+row down and adds a new linked row. AutoCount stores that new row at its default location (HQ) with unit
+price 0, no delivery date and no discount, whatever the first write sent (db3, 4 to 16 Nov). The server
+then sends a second write on the new row only, with the restore values of section 4.1 (the SO row's
+location, the old PO row's unit price, the SO ROW's delivery date, a percentage discount, the note), and
+reads the document back. The call answers `done` once the link and those values are verified. If only the
 location did not land, it still answers `done` (200) with `errorCode` `LOCATION_NOT_MOVED`: the link
 stands, the row sits at the default location, and the CRM should offer "Move location" (the relocate
-route above). If the unit price or delivery date did not land or could not be verified (second write
+route above). If the unit price, delivery date or discount did not land or could not be verified (second write
 failed, skipped at the deadline, ignored, or written but not read back before the deadline), it answers `mismatch` (502) with `errorCode` `ROW_VALUES_NOT_KEPT`: the link
 stands but the new row is mispriced; show "needs review" and fix the row in AutoCount. The second
 write is never retried.

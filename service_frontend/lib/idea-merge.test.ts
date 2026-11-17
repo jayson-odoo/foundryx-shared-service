@@ -74,7 +74,7 @@ describe('idea-merge (plan 20, AC-20-16)', () => {
 
   it('combine mirrors the server rule', () => {
     expect(combineMergeValue(row('problem'), [a, b])).toBe(
-      'Dealers cannot track the status after they place an order.\n\n--- from IDEA-0004 ---\nNo self-service order view',
+      'Dealers cannot track the status after they place an order.\n\n--- from FB-0004 ---\nNo self-service order view',
     );
     expect(combineMergeValue(row('useCases'), [b, c])).toEqual(['Check shipping', 'Reorder']);
     expect(combineMergeValue(row('desiredOutcome'), [a, b])).toBe('Self-service status');

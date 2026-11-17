@@ -109,6 +109,10 @@ class IdeaOut(ApiModel):
     submitterName: str
     # The submitter's tier (e.g. ``dealer``, S1 AC-1115) - null when not set.
     submitterTier: Optional[str] = None
+    # Lane PUBLIC-IDEAS-BOARD: the idea has a submitter contact, so a personal
+    # feedback link exists for it (drives the staff "Cancel feedback link"
+    # action; the contact id itself is never on the wire).
+    hasSubmitterContact: bool = False
     upvotes: int
     downvotes: int = 0
     myVote: Optional[Literal["up"]] = None
@@ -174,6 +178,9 @@ class DeliveryConfigOut(ApiModel):
     productId: str
     productDomainBase: Optional[str] = None
     buildRepo: Optional[str] = None
+    # Feedback board look (lane SS-MULTI-PRODUCT-BOARD); null = default look.
+    boardColor: Optional[str] = None
+    boardName: Optional[str] = None
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None
 
@@ -190,6 +197,10 @@ class DeliveryConfigIn(ApiModel):
     # left untouched (see ``DeliveryService.set``).
     # Shape-checked in ``DeliveryService.set`` (422 with ``fieldErrors``).
     buildRepo: Optional[str] = None
+    # Feedback board look (lane SS-MULTI-PRODUCT-BOARD). Omitted = untouched,
+    # null clears. ``boardColor`` is ``#rrggbb`` (422 otherwise).
+    boardColor: Optional[str] = None
+    boardName: Optional[str] = None
 
 
 class VoteIn(ApiModel):
@@ -798,6 +809,11 @@ class OneShotIdeaIn(ApiModel):
     # feature idea, ``issue`` = a problem with the system / complaint; more types
     # = new catalog rows). Omitted = ``idea``. Unknown = 422 ``unknown_type``.
     type: Optional[str] = None
+    # SS-FEEDBACK-BOARD-LINK: the host states the reply goes to the SUBMITTER
+    # themself (never an operator filing for someone else). Only then does the
+    # response carry ``board_url`` - the submitter's personal board link, a
+    # bearer credential. Omitted/false = today's response, unchanged.
+    reply_to_submitter: bool = False
 
 
 class SimilarOwnIn(ApiModel):
@@ -813,18 +829,32 @@ class SimilarOwnIn(ApiModel):
     # Optional type lane: only the sender's own ideas of this type match.
     # Omitted = every type (unchanged behaviour).
     type: Optional[str] = None
+    # SS-FEEDBACK-BOARD-LINK: the host states the reply goes to the SUBMITTER
+    # themself (never an operator filing for someone else). Only then does the
+    # response carry ``board_url`` - the submitter's personal board link, a
+    # bearer credential. Omitted/false = today's response, unchanged.
+    reply_to_submitter: bool = False
 
 
 # ── Idea portal (lane IDEA-PORTAL) ────────────────────────────────────────────
 
 
+class PortalBrandOut(ApiModel):
+    """A product's look on its feedback board (lane SS-MULTI-PRODUCT-BOARD)."""
+
+    name: Optional[str] = None
+    color: Optional[str] = None
+
+
 class PortalPrincipalOut(ApiModel):
-    kind: Literal["staff", "crm"]
+    kind: Literal["staff", "crm", "contact"]
     name: Optional[str] = None
     role: str
     productId: Optional[str] = None
     # May hide ideas, edit changelog notes and delete anyone's comment.
     canManage: bool = False
+    # The product's board colour + name; null = shared-service default look.
+    brand: Optional[PortalBrandOut] = None
 
 
 class PortalSessionOut(ApiModel):
@@ -834,6 +864,13 @@ class PortalSessionOut(ApiModel):
 
 class PortalEmbedSessionIn(ApiModel):
     token: str = Field(min_length=1, max_length=4096)
+
+
+class PortalLinkSessionIn(ApiModel):
+    """A personal feedback link (lane PUBLIC-IDEAS-BOARD). No min length: a
+    blank or malformed token gets the same uniform 401 as an unknown one."""
+
+    token: str = Field(default="", max_length=128)
 
 
 class PortalCardOut(ApiModel):

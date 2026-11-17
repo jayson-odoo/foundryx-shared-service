@@ -9,7 +9,7 @@ import { PublicBrandedShell, usePublicPageBranding } from './public-branded-shel
  * page design) - it must NOT also get the shell's `AuthFooter` (Terms/Plans/
  * Contact Us stub links, `href="#"`) the way a plain public form page does.
  * Mirrors the existing `isChromelessPanelPath` carve-out for
- * `/public/webchat/`, widened to also cover `/public/ideas/`.
+ * `/public/webchat/`, widened to also cover `/public/feedback/`.
  */
 
 const usePathname = vi.hoisted(() => vi.fn());
@@ -40,8 +40,8 @@ beforeEach(() => {
 });
 
 describe('PublicBrandedShell - the public idea page owns its own chrome', () => {
-  it('renders no AuthFooter on /public/ideas/:token', () => {
-    usePathname.mockReturnValue('/public/ideas/tok_abc123def456');
+  it('renders no AuthFooter on /public/feedback/:token', () => {
+    usePathname.mockReturnValue('/public/feedback/tok_abc123def456');
     render(
       <PublicBrandedShell>
         <div>idea body</div>
@@ -85,7 +85,7 @@ const UNBRANDED_FIXTURE: PublicBranding = {
 
 describe('PublicBrandedShell - S2 chromeless children read the SSR-resolved branding', () => {
   it('serves the SSR initialBranding to a chromeless child before the client fetch resolves (no flash)', () => {
-    usePathname.mockReturnValue('/public/ideas/tok_abc123def456');
+    usePathname.mockReturnValue('/public/feedback/tok_abc123def456');
     // The client-side store has not resolved yet - `useTenantBranding()`
     // alone would give a chromeless child the Foundryx default here.
     useTenantBranding.mockReturnValue({ branding: UNBRANDED_FIXTURE, isResolved: false });
@@ -100,7 +100,7 @@ describe('PublicBrandedShell - S2 chromeless children read the SSR-resolved bran
   });
 
   it('serves the live branding to a chromeless child once the client fetch resolves', () => {
-    usePathname.mockReturnValue('/public/ideas/tok_abc123def456');
+    usePathname.mockReturnValue('/public/feedback/tok_abc123def456');
     useTenantBranding.mockReturnValue({
       branding: { ...UNBRANDED_FIXTURE, isBranded: true, tenantName: 'Beta Co' },
       isResolved: true,
@@ -114,7 +114,7 @@ describe('PublicBrandedShell - S2 chromeless children read the SSR-resolved bran
   });
 
   it('a chromeless child sees UNBRANDED when neither SSR nor the client resolved anything branded', () => {
-    usePathname.mockReturnValue('/public/ideas/tok_abc123def456');
+    usePathname.mockReturnValue('/public/feedback/tok_abc123def456');
     useTenantBranding.mockReturnValue({ branding: UNBRANDED_FIXTURE, isResolved: false });
     render(
       <PublicBrandedShell initialBranding={null}>

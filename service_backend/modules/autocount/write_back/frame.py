@@ -9,15 +9,15 @@ service share one implementation.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from modules.autocount.canonical.documents import ENTITY_SHIPPING_ORDER
 from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.provider import PROVIDER_KEY
 from modules.autocount.repositories import ConnectionRepository
@@ -30,6 +30,8 @@ from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
 from modules.autocount.write_back.repository import (
     EntitySourceRepository,
+    SoRowIndexRepository,
+    SpoPoLinkRepository,
     StagedDocRepository,
     WriteActionRepository,
 )
@@ -78,6 +80,8 @@ class WriteActionResult:
     replaced_lines: List[Tuple[int, int]] = field(default_factory=list)
     doc_key: Optional[int] = None
     doc_no: Optional[str] = None
+    # plan 64: ``po-links`` only - the PO row the link landed on, as read back (None unless done)
+    detail: Optional[Doc] = None
 
 
 class _Stop(Exception):
@@ -143,6 +147,7 @@ class WriteFrame:
         self._sink_factory = sink_factory
         self._deadline = 0.0
         self._put_sent = False
+        self._staged_memo: Optional[Dict[Any, Any]] = None  # C.d: see ``staged_memo``
 
     def use_trace(
         self, request_id: Optional[str], person: "Tuple[Optional[str], Optional[str]]" = (None, None)
@@ -292,13 +297,25 @@ class WriteFrame:
         if row.get("TransferedQty") is not None:
             return _dec(row.get("TransferedQty"))
         entity = ENTITY_BY_KIND[kind]
-        if EntitySourceRepository(self.db).source_impl(company.tenant_id, company.id, entity) != "sql_db":
+        memo = self._staged_memo  # C.d: one source / staged read per document per operation, not per row
+        source_key = ("source", entity)
+        if memo is None or source_key not in memo:
+            impl = EntitySourceRepository(self.db).source_impl(company.tenant_id, company.id, entity)
+            if memo is not None:
+                memo[source_key] = impl
+        else:
+            impl = memo[source_key]
+        if impl != "sql_db":
             return None
-        doc_key = row.get("DocKey")
-        staged = self.staged.newest(
-            company.tenant_id, company.id, entity, f"{company.database_name}:{doc_key}"
-        )
-        wanted = f"{company.database_name}:{doc_key}:{row.get('DtlKey')}"
+        ref = f"{company.database_name}:{row.get('DocKey')}"
+        doc_key_memo = ("staged", entity, ref)
+        if memo is not None and doc_key_memo in memo:
+            staged = memo[doc_key_memo]
+        else:
+            staged = self.staged.newest(company.tenant_id, company.id, entity, ref)
+            if memo is not None:
+                memo[doc_key_memo] = staged
+        wanted = f"{ref}:{row.get('DtlKey')}"
         field_name = "qty_delivered" if kind == "SO" else "qty_received"
         for line in ((staged.canonical_json or {}).get("lines") or []) if staged else []:
             if isinstance(line, dict) and line.get("source_ref") == wanted:
@@ -307,14 +324,34 @@ class WriteFrame:
         return None
 
     def _spo_ref(self, tenant_id: str, company_id: str, po_dtl_key: int) -> Optional[str]:
-        """DocNo of a staged, non-cancelled SPO with a row pointing at the PO row."""
-        for staged in self.staged.for_entity(tenant_id, company_id, ENTITY_SHIPPING_ORDER):
-            raw = staged.raw_json or {}
-            if raw.get("Cancelled") == "T":
-                continue
-            if any(r.get("FromDocDtlKey") == po_dtl_key for r in _lines(raw)):
-                return str(raw.get("DocNo") or staged.doc_no or staged.source_ref)
-        return None
+        """DocNo of a staged, non-cancelled SPO with a row pointing at the PO row: ONE indexed query on
+        ``ac_spo_po_link`` (the newest copy of each SPO), never a load of every staged SPO (C.d)."""
+        return SpoPoLinkRepository(self.db).spo_doc_no(tenant_id, company_id, po_dtl_key)
+
+    def _so_row(self, tenant_id: str, company_id: str, so_dtl_key: int) -> Optional[Tuple[str, Optional[str], bool]]:
+        """The SO row ``so_dtl_key`` from the NEWEST staged SO holding it: ``(so_doc_no, location, ambiguous)``,
+        None when no staged SO holds it. ONE indexed query on ``ac_so_row_index``, never a load of every staged
+        SO (C.d). ``ambiguous``: equally new copies disagree on its location (``SO_LOCATION_AMBIGUOUS``)."""
+        rows = SoRowIndexRepository(self.db).rows_for(tenant_id, company_id, so_dtl_key)
+        if not rows:
+            return None
+        floor = datetime.min.replace(tzinfo=timezone.utc)
+        newest_at = max(r.staged_at or floor for r in rows)
+        newest = sorted((r for r in rows if (r.staged_at or floor) == newest_at), key=lambda r: r.so_source_ref)
+        locations = {r.location for r in newest}
+        ambiguous = any(r.ambiguous for r in newest) or len(locations) > 1
+        return str(newest[0].so_doc_no or ""), None if ambiguous else newest[0].location, ambiguous
+
+    @contextlib.contextmanager
+    def staged_memo(self) -> Iterator[None]:
+        """Within the block, ``_row_received`` reads each document's source config and newest staged copy
+        once (an operation's guards check the target row AND every merge candidate on the same PO)."""
+        outer = self._staged_memo
+        self._staged_memo = {} if outer is None else outer
+        try:
+            yield
+        finally:
+            self._staged_memo = outer
 
     def _stage(
         self, company: AcCompany, kind: str, doc: Doc, replaced: Optional[Dict[int, int]] = None

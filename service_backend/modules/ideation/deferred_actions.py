@@ -65,6 +65,29 @@ IDEAS_DELETE = DeferredActionDef(
 )
 
 
+def _ideas_cancel_feedback_link(
+    db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str
+) -> None:
+    from .services.feedback_links import cancel_feedback_link_for_idea
+
+    cancel_feedback_link_for_idea(db, tenant_id, entity_id)
+
+
+# Lane PUBLIC-IDEAS-BOARD (owner QD a): cancel the submitter contact's personal
+# feedback link. Destructive window: the old link dies for good (the next
+# message to that contact carries a fresh one).
+IDEAS_CANCEL_FEEDBACK_LINK = DeferredActionDef(
+    key="ideation_ideas.cancel_feedback_link",
+    module="ideation",
+    entity_type="ideation_idea",
+    permission=MANAGE,
+    window="destructive",
+    label="Cancel feedback link",
+    execute=_ideas_cancel_feedback_link,
+    exists=_idea_exists,
+)
+
+
 # ---- business requirements ------------------------------------------------
 
 
@@ -228,6 +251,7 @@ _ALL = (
     BUILD_KEY_REVOKE,
     IDEAS_ARCHIVE,
     IDEAS_DELETE,
+    IDEAS_CANCEL_FEEDBACK_LINK,
     BR_DELETE,
     BR_IDEA_UNLINK,
     EMBED_CONNECTIONS_DELETE,

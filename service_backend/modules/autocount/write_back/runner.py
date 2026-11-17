@@ -23,8 +23,9 @@ import argparse
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -45,8 +46,9 @@ from modules.autocount.write_back import auth
 from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteNotAllowed
+from modules.autocount.write_back import payloads
 from modules.autocount.write_back.payloads import header_of, so_header_of
-from modules.autocount.write_back.operations import OperationResult, OperationService
+from modules.autocount.write_back.operations import OperationResult, OperationService, _Done
 from modules.autocount.write_back.primitives import PrimitiveResult, PrimitiveService, vendor_message
 from modules.autocount.write_back.pull_docs import (
     MODE_DOC_DATE,
@@ -866,6 +868,11 @@ class _Tap:
     def __init__(self) -> None:
         self.http = 0
         self.writes: List[Dict[str, object]] = []
+        self._lock = threading.Lock()  # a link's target read runs on a side thread (SS-AUTOCOUNT-SPEEDUP)
+
+    def count(self) -> None:
+        with self._lock:
+            self.http += 1
 
 
 class _TapClient:
@@ -879,7 +886,7 @@ class _TapClient:
         auth.attach_headers(self._inner, headers)
 
     def _send(self, method: str, path: str, body: object):
-        self._tap.http += 1
+        self._tap.count()
         entry: Dict[str, object] = {"method": method, "path": path, "requestBody": body}
         self._tap.writes.append(entry)
         try:
@@ -901,7 +908,7 @@ class _TapClient:
 
     def delete_query(self, path: str, params: Dict[str, str]):
         """Plan 61 cancel: DELETE with the query string, no body."""
-        self._tap.http += 1
+        self._tap.count()
         entry: Dict[str, object] = {"method": "DELETE", "path": path, "requestBody": None,
                                     "requestQuery": dict(params)}
         self._tap.writes.append(entry)
@@ -925,19 +932,19 @@ class _TapReader:
         auth.attach_headers(self._inner, headers)
 
     def get_document(self, *args, **kwargs):
-        self._tap.http += 1
+        self._tap.count()
         return self._inner.get_document(*args, **kwargs)
 
     def find_by_doc_no(self, *args, **kwargs):
-        self._tap.http += 1
+        self._tap.count()
         return self._inner.find_by_doc_no(*args, **kwargs)
 
     def get_by_doc_no(self, *args, **kwargs):
-        self._tap.http += 1
+        self._tap.count()
         return self._inner.get_by_doc_no(*args, **kwargs)
 
     def list_day(self, *args, **kwargs):
-        self._tap.http += 1
+        self._tap.count()
         return self._inner.list_day(*args, **kwargs)
 
 
@@ -1711,6 +1718,350 @@ def run_batch_suite(
 
 
 
+# ── plan 65: Link PO restore + Resume repair (R00..R03, db3 repro) ───────────
+
+_R_CASES = (
+    ("R00", "Create the test SO (sub-location row, delivery date, header Ref)", "r00"),
+    ("R01", "Create the test PO (description, four different remarks, discount, FOC, price, date)", "r01"),
+    ("R01B", "Setup: one logged edit PUT sets Description, Remark2..4 (Remark1 unchanged) and the source row FOCQty", "r01b"),
+    ("R02", "Link 1 of the PO source row to the SO row through OperationService (P1, P2)", "r02"),
+    ("R03", "One edit PUT on the new linked row with FurtherDescription (P3)", "r03"),
+    ("R05", "P2: can a second edit PUT set Discount and FOCQty on the R02 linked row", "r05"),
+    ("R04", "Half-filled state for P4: link row B qty 1, then stop before the restore (op needs_attention)", "r04"),
+)
+_R_SO_LOCATION = "BRW-AM"
+_R_SO_DAYS, _R_PO_DAYS = 30, 10
+_R_PRICE = 2.5
+_R_NOTE = "**FXT TEST S/O: 0000 DD: 01/01/2027"
+_R_REMARKS = {f"Remark{i}": f"FXT R{i}" for i in range(1, 5)}
+
+
+def day_of(value: object) -> str:
+    return str(value or "")[:10]
+
+
+class _HaltBeforeRestore(OperationService):
+    """Repro helper only: the real batch link, stopped where the incident stopped (the link PUT landed and
+    verified, the restore never ran, the operation ``needs_attention``). Everything else is product code."""
+
+    def _batch_done(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        raise _Done("needs_attention", "COLLATERAL_CHANGE", "forced stop before the restore (repro)")
+
+
+class _RestoreRun(_BatchRun):
+    """The plan 65 repro: one incident-shaped link through the real ``OperationService`` on current code."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.so_no = f"{_doc_prefix(self.tag)}-SO"
+        self.facts: Dict[str, object] = {}
+        self.op_id: Optional[str] = None
+        self.source_key = 0
+        self.new_key = 0
+        self.so_row_key = 0
+        self.so_date = ""
+        self.po_date = ""
+        client_factory, reader_factory, sink_factory = args[7], args[8], args[9]
+        self.halted = _HaltBeforeRestore(
+            self.db, client_factory=lambda url: _FaultClient(_TapClient(client_factory(url), self.tap), self),
+            reader_factory=lambda url: _TapReader(reader_factory(url), self.tap), sink_factory=sink_factory,
+            actor=cl.ACTOR_RUNNER)
+
+    def _day_plus(self, days: int) -> str:
+        return f"{(self.today + timedelta(days=days)).isoformat()}T00:00:00"
+
+    def _new_row_of(self, doc: Dict[str, object]) -> Optional[Dict[str, object]]:
+        known = {self.source_key, *(self.keys.get(n) for n in ("B", "C"))}
+        return next((r for r in self._rows(doc) if r.get("FromSODtlKey") == self.so_row_key
+                     and r.get("DtlKey") not in known), None)
+
+    @staticmethod
+    def _six(row: Optional[Dict[str, object]]) -> Dict[str, object]:
+        keys = ("Location", "UnitPrice", "DeliveryDate", "Discount", "FOCQty", "FromSODtlKey", "DtlKey", "Qty")
+        return {k: (row or {}).get(k) for k in keys}
+
+    def r00(self, case: CaseResult) -> None:
+        case.expected = "SO created: one row at BRW-AM, DeliveryDate today+30, header Ref set"
+        start = len(self.tap.writes)
+        self.so_date = self._day_plus(_R_SO_DAYS)
+        res = self.prims.create_doc(
+            **self._args("SO"),
+            header=self._header(DebtorCode=self.debtor, DocNo=self.so_no, Ref="FXT REF"),
+            lines=[self._row(5, _R_SO_LOCATION, DeliveryDate=self.so_date)])
+        self._record(case, start)
+        if res.outcome != "done":
+            case.observed = f"SO {res.outcome} {res.error_code or ''} {res.message or ''}".strip()
+            return
+        self.so["SO"] = res
+        self.so_row_key = int(self._rows(res.document or {})[0]["DtlKey"])  # type: ignore[call-overload]
+        got = self._rows(res.document or {})[0]
+        self.facts["so"] = {"docNo": res.doc_no, "ref": (res.document or {}).get("Ref"), **self._six(got)}
+        case.status = PASS
+        case.observed = f"created {res.doc_no}; row {self.so_row_key} at {got.get('Location')}"
+
+    def r01(self, case: CaseResult) -> None:
+        case.expected = ("PO created: Description + Remark1..4 all different, three rows at HQ, source row qty 5, "
+                         "price 2.5, discount 5%, FOCQty 1, DeliveryDate today+10")
+        if "SO" not in self.so:
+            case.status, case.observed = SKIPPED, "R00 did not pass"
+            return
+        start = len(self.tap.writes)
+        self.po_date = self._day_plus(_R_PO_DAYS)
+        source = self._row(5, "HQ", UnitPrice=_R_PRICE, Discount="5%", FOCQty=1, DeliveryDate=self.po_date)
+        others = [self._row(3, "HQ", UnitPrice=_R_PRICE, DeliveryDate=self.po_date) for _ in range(2)]
+        res = self.prims.create_doc(
+            **self._args("PO"),
+            header=self._header(CreditorCode=self.creditor, DocNo=self.po_no, Description="FXT DESC", **_R_REMARKS),
+            lines=[source, *others])
+        self._record(case, start)
+        if res.outcome != "done":
+            case.observed = f"PO {res.outcome} {res.error_code or ''} {res.message or ''}".strip()
+            return
+        self.po = res
+        rows = self._rows(res.document or {})
+        self.source_key = int(rows[0]["DtlKey"])  # type: ignore[call-overload]
+        self.keys = {"A": self.source_key, "B": int(rows[1]["DtlKey"]), "C": int(rows[2]["DtlKey"])}  # type: ignore[call-overload]
+        doc = res.document or {}
+        self.facts["po"] = {
+            "docNo": res.doc_no, "description": doc.get("Description"),
+            "remarks": {k: doc.get(k) for k in _R_REMARKS}, "sourceRow": self._six(rows[0]), "rows": len(rows),
+        }
+        case.status = PASS
+        case.observed = f"created {res.doc_no}; remarks read back {[doc.get(k) for k in _R_REMARKS]}"
+
+    def _logged_put(self, case: CaseResult, doc: Dict[str, object], request):
+        """One PUT through the logged, tapped write client (the same wrapper every operation call uses)."""
+        log = self.prims.new_call_log(
+            self.company, kind="PO", doc_key=int(self.po.doc_key or 0), doc_no=doc.get("DocNo"),  # type: ignore[union-attr]
+            operation_id=self.op_id)
+        client = self.prims._client_for(self.base_url, log)
+        start = len(self.tap.writes)
+        response = client.put(request.path, request.body)
+        self._record(case, start)
+        return response
+
+    def r01b(self, case: CaseResult) -> None:
+        case.expected = ("db3 create keeps Remark1 only (Remark2..4 mirror it, Description defaults, FOCQty 0): one edit PUT "
+                         "with Remark1 unchanged sets Remark2..4 different, a description and the source row FOCQty 1")
+        if self.po is None:
+            case.status, case.observed = SKIPPED, "R01 did not pass"
+            return
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        changes = {"Description": "FXT DESC", **_R_REMARKS}
+        request = payloads.build_edit("PO", doc, changes, [{"DtlKey": self.source_key}])
+        request.body["Details"][0]["FOCQty"] = 1  # type: ignore[index]
+        response = self._logged_put(case, doc, request)
+        after = self._read("PO", int(self.po.doc_key or 0))
+        src = self._po_row(after, self.source_key)
+        self.facts["r01b"] = {
+            "putStatus": response.status_code,
+            "answer": _scrub(response.stored) if response.ok else vendor_message(response.stored, self.base_url),
+            "descriptionNow": after.get("Description"), "remarksNow": {k: after.get(k) for k in _R_REMARKS},
+            "sourceRow": self._six(src),
+        }
+        case.observed = (f"PUT {response.status_code}; description {after.get('Description')!r}; remarks "
+                         f"{[after.get(k) for k in _R_REMARKS]}; source FOCQty {(src or {}).get('FOCQty')}")
+        case.status = PASS if response.ok else FAIL
+
+    def r02(self, case: CaseResult) -> None:
+        case.expected = ("plan 65 fixed rule: op done, no drift, the new row at the SO row's location with the old row's "
+                         "price, the SO ROW's delivery date, the % discount, FOCQty 0, the link kept, the kept row cut by 1")
+        if self.po is None or "SO" not in self.so:
+            case.status, case.observed = SKIPPED, "R00/R01 did not pass"
+            return
+        from modules.autocount.models import AcWriteAction
+
+        link = {"so_doc_key": int(self.so["SO"].doc_key or 0), "so_dtl_key": self.so_row_key, "qty": 1}
+        params = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.source_key, "links": [link],
+                  "doc_date": self.today}
+        res = self._timed(case, "restore repro: link_batch qty 1", 1,
+                          lambda: self._run_op("link_batch", "r02", params))
+        self.op_id = res.operation_id
+        self.db.rollback()
+        row = self.ops.ops.get(self.tenant_id, self.company.id, res.operation_id) if res.operation_id else None
+        steps = list(getattr(row, "steps_json", None) or [])
+        link_step = next((s for s in steps if s.get("step") == "link"), None)
+        action = self.db.get(AcWriteAction, link_step["actionId"]) if link_step and link_step.get("actionId") else None
+        drift: List[str] = []
+        drift_values: Dict[str, object] = {}
+        if action is not None and action.before_json and action.after_json:
+            before, after = action.before_json, action.after_json
+            drift = payloads._drifted(before, after, (), [self.source_key], "PO")
+            for name in drift:  # values: own test text only (remarks / description); other fields by key only
+                if name in _R_REMARKS or name == "Description":
+                    drift_values[name] = {"before": before.get(name), "after": after.get(name)}
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        new_row = self._new_row_of(doc)
+        self.new_key = int((new_row or {}).get("DtlKey") or 0)  # type: ignore[call-overload]
+        self.facts["r02"] = {
+            "operationId": res.operation_id, "status": res.outcome, "errorCode": res.error_code,
+            "warnings": res.warnings, "steps": steps, "linkStepOutcome": getattr(action, "outcome", None),
+            "driftFields": drift, "driftValues": drift_values,
+            "newRowSix": self._six(new_row),
+            "remarksReadBack": {k: doc.get(k) for k in _R_REMARKS}, "descriptionReadBack": doc.get("Description"),
+            "keptRow": self._six(self._po_row(doc, self.source_key)),
+        }
+        case.observed = (f"{res.outcome} {res.error_code or ''}; drift {drift}; steps "
+                         f"{[(s.get('step'), s.get('outcome'), s.get('code')) for s in steps]}; op {res.operation_id}")
+        six = self._six(new_row)
+        kept = self._po_row(doc, self.source_key)
+        restored = (
+            res.outcome == "done" and not drift and new_row is not None
+            and six["Location"] == _R_SO_LOCATION and _num(six["UnitPrice"]) == Decimal(str(_R_PRICE))
+            and day_of(six["DeliveryDate"]) == day_of(self.so_date) and six["Discount"] == "5%"
+            and _num(six["FOCQty"]) == 0 and six["FromSODtlKey"] == self.so_row_key
+            and kept is not None and _num(kept.get("Qty")) == Decimal(4)
+        )
+        # plan 65 fixed rule: the SO ROW's date (not the PO row's), the % discount back, the link kept, kept row cut by 1
+        self.facts["r02"]["restoredAsPlan65"] = restored
+        case.status = PASS if restored else FAIL
+
+    def r03(self, case: CaseResult) -> None:
+        case.expected = ("P3: one logged edit PUT on the new linked row only, with FurtherDescription (RTF); "
+                         "200, row and link kept; Remark1..4 re-read")
+        r02 = self.facts.get("r02") or {}
+        if not r02 or not self.new_key:
+            case.status, case.observed = SKIPPED, "R02 left no new row"
+            return
+        # P3 is a probe of the edit door, so it also runs on a row the move already restored (noted in facts)
+        doc = self._read("PO", int(self.po.doc_key or 0))  # type: ignore[union-attr]
+        new_row = self._po_row(doc, self.new_key)
+        if new_row is None:
+            case.observed = "new row not found"
+            return
+        request = payloads.build_edit("PO", doc, {}, [{"DtlKey": self.new_key}])  # the row as read, normal row
+        details = request.body["Details"]  # type: ignore[index]
+        assert len(details) == 1 and details[0]["DtlKey"] == self.new_key
+        details[0]["FurtherDescription"] = payloads.autocount_rtf(_R_NOTE)
+        response = self._logged_put(case, doc, request)
+        after = self._read("PO", int(self.po.doc_key or 0))  # type: ignore[union-attr]
+        again = self._po_row(after, self.new_key)
+        self.facts["r03"] = {
+            "r02Status": r02.get("status"),
+            "putStatus": response.status_code, "putOk": response.ok,
+            "answer": _scrub(response.stored) if response.ok else vendor_message(response.stored, self.base_url),
+            "rowStillThere": again is not None, "newRowSix": self._six(again),
+            "fromSODtlKeyKept": bool(again) and again.get("FromSODtlKey") == self.so_row_key,
+            "furtherDescriptionKeyInRead": bool(again) and "FurtherDescription" in again,
+            "rowCountBefore": len(self._rows(doc)), "rowCountAfter": len(self._rows(after)),
+            "remarksNow": {k: after.get(k) for k in _R_REMARKS},
+        }
+        case.observed = (f"PUT {response.status_code}; row kept {again is not None}; link kept "
+                         f"{self.facts['r03']['fromSODtlKeyKept']}; remarks now "  # type: ignore[index]
+                         f"{[after.get(k) for k in _R_REMARKS]}")
+        case.status = PASS if response.ok and again is not None else FAIL
+
+    def r05(self, case: CaseResult) -> None:
+        case.expected = "P2: one edit PUT on the R02 linked row with Discount 5% and FOCQty 1; read back shows which stick"
+        if not self.new_key or self.po is None:
+            case.status, case.observed = SKIPPED, "R02 left no new row"
+            return
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        request = payloads.build_edit("PO", doc, {}, [{"DtlKey": self.new_key, "Discount": "5%"}])
+        request.body["Details"][0]["FOCQty"] = 1  # type: ignore[index]
+        response = self._logged_put(case, doc, request)
+        after = self._read("PO", int(self.po.doc_key or 0))
+        row = self._po_row(after, self.new_key)
+        self.facts["r05"] = {"putStatus": response.status_code, "newRowSix": self._six(row),
+                             "rowCountBefore": len(self._rows(doc)), "rowCountAfter": len(self._rows(after))}
+        case.observed = f"PUT {response.status_code}; row {self._six(row)}"
+        case.status = PASS if response.ok else FAIL
+
+    def r04(self, case: CaseResult) -> None:
+        case.expected = ("the half-filled state of the incident: row B qty 1 linked (PUT landed, verified), the restore "
+                         "never ran, operation needs_attention; the new row shows AutoCount's reset values")
+        if self.po is None or "SO" not in self.so:
+            case.status, case.observed = SKIPPED, "R00/R01 did not pass"
+            return
+        link = {"so_doc_key": int(self.so["SO"].doc_key or 0), "so_dtl_key": self.so_row_key, "qty": 1}
+        params = {"doc_key": int(self.po.doc_key or 0), "dtl_key": self.keys["B"], "links": [link], "doc_date": self.today}
+        start = len(self.tap.writes)
+        res = self.halted.run(tenant_id=self.tenant_id, company_id=self.company.id, key_id=None,
+                              idempotency_key=f"{self.tag}-r04", op="link_batch", params=params)
+        self._record(case, start)
+        self.db.rollback()
+        row = self.ops.ops.get(self.tenant_id, self.company.id, res.operation_id) if res.operation_id else None
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        known = {self.source_key, self.keys["B"], self.keys["C"], self.new_key}
+        new_row = next((r for r in self._rows(doc) if r.get("FromSODtlKey") == self.so_row_key
+                        and r.get("DtlKey") not in known), None)
+        self.facts["r04"] = {
+            "operationId": res.operation_id, "status": res.outcome, "errorCode": res.error_code,
+            "steps": list(getattr(row, "steps_json", None) or []), "newRowSix": self._six(new_row),
+            "keptRowB": self._six(self._po_row(doc, self.keys["B"])),
+        }
+        case.observed = (f"{res.outcome} {res.error_code or ''}; op {res.operation_id}; new row "
+                         f"{self._six(new_row)}")
+        case.status = PASS if res.outcome == "needs_attention" and new_row is not None else FAIL
+
+
+def _restore_run(db: Session, tenant_id: str, company_id: str, creditor_code: str, debtor_code: str,
+                 run_tag: str, client_factory, reader_factory, sink_factory) -> "_RestoreRun":
+    """The plan 65 guards, all BEFORE any request (AC-65-22): the write connection is the db3 test book."""
+    from modules.autocount.write_back.pull_docs import WriteDisabled
+
+    company = CompanyRepository(db).get(tenant_id, company_id)
+    if company is None:
+        raise WriteDisabled()
+    base_url = write_base_url(db, company)
+    _require_test_book(base_url)
+    write_auth_headers(db, company)
+    guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))
+    return _RestoreRun(db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
+                       client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory)
+
+
+def run_restore_suite(
+    db: Session, *, tenant_id: str, company_id: str, creditor_code: str, run_tag: str,
+    debtor_code: str = DEFAULT_DEBTOR,
+    client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
+    reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
+    sink_factory: Optional[Callable[..., object]] = None,
+) -> SuiteResult:
+    """Run R00..R03 (plan 65 probes P1-P3) through the real ``OperationService``: the db3 repro of the
+    incident, red on ddb53cbe. Own documents only (``FXT-<tag>-SO`` / ``-PO``)."""
+    run = _restore_run(db, tenant_id, company_id, creditor_code, debtor_code, run_tag,
+                       client_factory, reader_factory, sink_factory)
+    suite = SuiteResult(run_tag=run_tag)
+    for case_id, title, method in _R_CASES:
+        case = CaseResult(case_id, title)
+        run.case_id = case_id
+        try:
+            getattr(run, method)(case)
+        except Exception as exc:  # noqa: BLE001 - one case never stops the suite
+            logger.exception("write-back runner case %s failed", case_id)
+            case.status = FAIL
+            case.observed = f"{case.observed} {type(exc).__name__}: {exc}".strip()
+        db.rollback()
+        suite.cases.append(case)
+    suite.evidence = run.evidence
+    suite.summary = "## Facts\n\n```json\n" + json.dumps(run.facts, indent=1, default=str) + "\n```"
+    return suite
+
+
+def resume_restore_op(
+    db: Session, *, tenant_id: str, company_id: str, operation_id: str, run_tag: str,
+    creditor_code: str = "", debtor_code: str = DEFAULT_DEBTOR,
+    client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
+    reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
+    sink_factory: Optional[Callable[..., object]] = None,
+) -> Dict[str, object]:
+    """``--resume-op``: only ``OperationService.resume`` on one operation (P4 after the fix); same guards."""
+    run = _restore_run(db, tenant_id, company_id, creditor_code, debtor_code, run_tag,
+                       client_factory, reader_factory, sink_factory)
+    start = len(run.tap.writes)
+    res = run.ops.resume(tenant_id=tenant_id, company_id=company_id, operation_id=operation_id)
+    db.rollback()
+    row = run.ops.ops.get(tenant_id, company_id, operation_id)
+    steps = list(getattr(row, "steps_json", None) or [])
+    return {
+        "operationId": operation_id, "status": res.outcome, "errorCode": res.error_code, "warnings": res.warnings,
+        "steps": steps, "message": res.message,
+        "writes": [{"method": w["method"], "path": w["path"], "status": w.get("responseStatus")}
+                   for w in run.tap.writes[start:]],
+    }
+
+
 def write_evidence(result: SuiteResult, path: str) -> None:
     """The exact, unscrubbed evidence (private): one entry per vendor write."""
     with open(path, "w", encoding="utf-8") as handle:
@@ -1725,11 +2076,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--run-tag", required=True)
     parser.add_argument("--debtor", default=DEFAULT_DEBTOR)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--suite", choices=("db3", "qtso", "batch"), default="db3")
+    parser.add_argument("--suite", choices=("db3", "qtso", "batch", "restore"), default="db3")
+    parser.add_argument("--resume-op", help="restore: only resume this operation id (plan 65 P4), then print the outcome")
     parser.add_argument("--evidence", help="qtso: path of the exact (private) evidence JSON")
     parser.add_argument("--header-extra", help="qtso: JSON file of header fields (names, addresses) to send")
     args = parser.parse_args(argv)
-    if args.suite in ("db3", "batch") and not args.creditor:
+    if args.suite in ("db3", "batch", "restore") and not args.creditor and not args.resume_op:
         parser.error("--creditor is required for the db3 suite")
 
     from app.database import SessionLocal
@@ -1741,6 +2093,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("error: unknown tenant")
             return 2
         try:
+            if args.resume_op:
+                outcome = resume_restore_op(
+                    db, tenant_id=tenant.id, company_id=args.company_id, operation_id=args.resume_op,
+                    run_tag=args.run_tag, creditor_code=args.creditor or "", debtor_code=args.debtor,
+                )
+                with open(args.out, "w", encoding="utf-8") as handle:
+                    json.dump(outcome, handle, indent=1, default=str)
+                print(json.dumps(outcome, default=str))
+                return 0
             if args.suite == "qtso":
                 extra: Dict[str, object] = {}
                 if args.header_extra:
@@ -1749,6 +2110,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 result = run_qtso_suite(
                     db, tenant_id=tenant.id, company_id=args.company_id, debtor_code=args.debtor,
                     run_tag=args.run_tag, header_extra=extra,
+                )
+            elif args.suite == "restore":
+                result = run_restore_suite(
+                    db, tenant_id=tenant.id, company_id=args.company_id, creditor_code=args.creditor,
+                    debtor_code=args.debtor, run_tag=args.run_tag,
                 )
             elif args.suite == "batch":
                 result = run_batch_suite(
@@ -1770,6 +2136,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_evidence(result, args.evidence)
     for case in result.cases:
         print(f"{case.case_id} {case.status}")
+        if args.suite == "restore":
+            print(f"  {case.observed}")
+    if args.suite == "restore":
+        print(result.summary)
     return 0 if all(c.status != FAIL for c in result.cases) else 1
 
 

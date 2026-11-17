@@ -17,24 +17,27 @@ re-creates the line only when it is still absent.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import html
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, ContextManager, Dict, Iterator, List, Optional, Tuple, Union
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from modules.autocount.alerts import _safe_subject, alert_recipients
-from modules.autocount.canonical.documents import ENTITY_SALES_ORDER, ENTITY_SHIPPING_ORDER
 from modules.autocount.models import AcCompany, AcWriteOperation
 from modules.autocount.repositories import CompanyRepository
-from modules.autocount.write_back import capabilities, frame, guard, payloads
+from modules.autocount.write_back import call_log as cl, capabilities, frame, guard, payloads
 from modules.autocount.write_back.guard import WriteConnectionError
 from modules.autocount.write_back.constants import EDIT_PO_PATH
 from modules.autocount.write_back.frame import (
@@ -51,15 +54,19 @@ from modules.autocount.write_back.frame import (
     WRITE_DISABLED,
     WriteActionResult,
     _dec,
-    _lines,
 )
 from modules.autocount.write_back.doc_kinds import KINDS, WIRE_SLUGS
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
-from modules.autocount.write_back.link_lock import SoRowBusy, so_row_locks
+from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
-from modules.autocount.write_back.primitives import VENDOR_REFUSED, PrimitiveResult, PrimitiveService
+from modules.autocount.write_back.primitives import (
+    ROW_NEEDS_ATTENTION,
+    VENDOR_REFUSED,
+    PrimitiveResult,
+    PrimitiveService,
+)
 from modules.autocount.write_back.reader import DocReadError
-from modules.autocount.write_back.repository import OperationRepository
+from modules.autocount.write_back.repository import OperationRepository, SpoPoLinkRepository
 from modules.autocount.write_back.service import WriteBackService
 
 logger = logging.getLogger("foundryx.autocount")
@@ -88,6 +95,8 @@ NOT_APPLIED = "OPERATION_NOT_APPLIED"
 SPLIT_LINK = "split_link"
 LINK_BATCH = "link_batch"  # plan 62: one PO row to N SO rows in one PUT
 ALL_LINKS_SKIPPED = "ALL_LINKS_SKIPPED"
+RESTORE_NOT_LANDED = "RESTORE_NOT_LANDED"  # plan 65 D3: the batch's restore PUT did not land (resumable)
+FOC_ON_ROW = "FOC_ON_ROW"  # plan 65 D2a: the line would take the whole of a row carrying FOC (hapi cannot move it)
 MAX_BATCH_LINKS = 20
 TEMPLATE_KEY = "autocount_write_needs_attention"
 
@@ -154,6 +163,7 @@ class OperationResult:
     doc_key: Optional[int] = None
     doc_no: Optional[str] = None
     batch: Optional[Dict[str, Any]] = None  # link_batch only: {"links": [...], "freeLine": {...} | None}
+    detail: Optional[Doc] = None  # plan 64: link_row / split_link - the PO row the link landed on
 
 
 @dataclass
@@ -195,14 +205,43 @@ def _doc_no(document: Optional[Doc], snapshot: Optional[Doc]) -> Optional[str]:
     return str(number) if number else None
 
 
+def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
+    """Plan 66: the pool location an unlinked PO row returns to (the caller's ``pool_location``, an
+    exact Location code). Other operations, or none given, keep today's behaviour."""
+    if defn.kind != "PO" or defn.mode != "unlink":
+        return None
+    value = params.get("pool_location")
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
+
+
+def _row_in(document: Optional[Doc], dtl_key: int) -> Optional[Doc]:
+    """Plan 64: row ``dtl_key`` of the read-back ``document`` (the ``detail`` answer)."""
+    return next((r for r in (document or {}).get("Details") or [] if r.get("DtlKey") == dtl_key), None)
+
+
+def received_message(kind: str, row: Doc) -> str:
+    """Plan 64: the plain reason for ``ROW_RECEIVED`` (the CRM shows it as is)."""
+    where = f" at {row['Location']}" if row.get("Location") else ""
+    noun = "shipping purchase order" if kind == "SPO" else "purchase order"
+    return (f"Goods have already been received on this {noun} line{where}, so the change was not made. "
+            "Handle the received goods in AutoCount, then try again.")
 
 
 def _link_of(kind: str, row: Doc) -> int:
     """The link key a row reads back with: PO rows carry ``FromSODtlKey``, SPO
     rows ``FromDocDtlKey``."""
     return int((row.get("FromSODtlKey") if kind == "PO" else row.get("FromDocDtlKey")) or 0)
+
+
+class _Abandoned(Exception):
+    """The run's own row left ``in_progress`` before its snapshot was stored (expired past the busy window,
+    then settled not-applied): nothing was written, and nothing may be written now."""
 
 
 class _AmbiguousCreate(Exception):
@@ -226,6 +265,17 @@ def _create_info(kind: str, params: Dict[str, Any], started: datetime) -> Dict[s
         "party": header.get("debtorCode") or header.get("creditorCode"), "lines": lines,
         "start": started.isoformat(),
     }
+
+
+def sweep_stranded_operations(db: Session) -> int:
+    """API-start crash sweep: every ``in_progress`` operation older than the busy window was left by a
+    process that died (gunicorn timeout, OOM kill, deploy) -> ``pending_verification`` (its document is free
+    again). A never-applied row operation is then settled ``recovered`` by its next resend / resume
+    (BL-SS-368). Returns how many."""
+    window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+    swept = OperationRepository(db).sweep_stale_in_progress(window)
+    db.commit()
+    return swept
 
 
 class OperationService:
@@ -255,6 +305,10 @@ class OperationService:
         self._base_url = ""
         self._row: Optional[AcWriteOperation] = None
         self._op_deadline = 0.0
+        self._pool_location: Optional[str] = None  # plan 66: the unlink's pool location (the caller's)
+        # (kind, doc_key) -> (date, document | the read's exception): a side read made beside another
+        # GET, consumed by the next ``_read`` of that document (SS-AUTOCOUNT-SPEEDUP).
+        self._prefetched: Dict[Tuple[str, int], Tuple[date, Any]] = {}
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -264,7 +318,7 @@ class OperationService:
         """The caller's request id and acting person for every step (plan 61 section 4.8, plan 63)."""
         self.prims.use_trace(request_id, person)
 
-    def _reader(self, company: AcCompany, base_url: str, kind: str, doc_key: int, doc_no: Optional[str]) -> Any:
+    def _reader(self, company: AcCompany, base_url: str, kind: str, doc_key: Optional[int], doc_no: Optional[str]) -> Any:
         """A reader whose GETs are logged under this operation (plan 61 section 4.8)."""
         row = self._row
         log = self.prims.new_call_log(
@@ -292,6 +346,13 @@ class OperationService:
             json.dumps({"op": op, "params": params}, sort_keys=True, default=str).encode()
         ).hexdigest()
         existing = self.ops.by_key(tenant_id, company.id, key_id, idempotency_key)
+        if existing is not None and existing.status == IN_PROGRESS:
+            # a same-key resend of a crashed run (its worker killed before ``_guarded``'s finally): past the busy
+            # window it is reconciled like any stale op, then settled below, never OPERATION_IN_PROGRESS for ever
+            window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+            if self.ops.expire_stale_operation(tenant_id, company.id, existing.id, window):
+                self.db.commit()
+                self.db.refresh(existing)
         if existing is not None:
             settled = self._settle_existing(existing, tenant_id, company, op, request_hash)
             if settled is not None:
@@ -320,6 +381,7 @@ class OperationService:
             return OperationResult(None, REFUSED, DOC_BUSY)  # not stored: the key stays usable
         self._steps, self._warnings = [], []
         self._mail_allowed = True
+        self._pool_location = None  # set per run by ``_execute_unlocked`` (plan 66)
         self._row = row
         self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
         return self._guarded(row, company, lambda: self._execute(row, company, op, spec, params))
@@ -328,30 +390,47 @@ class OperationService:
         row = self.ops.get(tenant_id, company_id, operation_id)
         if row is None:
             raise LookupError("operation not found")
+        if row.doc_key is not None:
+            # plan 65 B2: a request that died mid-way never holds the document (or itself) for ever: the same
+            # expiry as ``run`` (AC-57-43), updated_at kept; a young in_progress op is still respected
+            window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+            if self.ops.expire_stale_in_progress(tenant_id, row.company_id, row.doc_type, row.doc_key, window):
+                self.db.commit()
+                self.db.refresh(row)
         if row.status == IN_PROGRESS:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
         if row.op != SPLIT_LINK and row.op != LINK_BATCH and row.op not in OPS:
             return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
+        if self._never_applied(row):
+            return self._settle_not_applied(row)
         if row.status not in (NEEDS_ATTENTION, PENDING) or not row.snapshot_json or row.op == SPLIT_LINK:
             return self._from_row(row)
         company = CompanyRepository(self.db).get(tenant_id, company_id)
         if company is None:
             return OperationResult(row.id, REFUSED, WRITE_DISABLED)
         was = row.status
+        # a resume re-reads and may PUT the PO: it holds the per-PO-document lock from before the claim to the
+        # end; not won = DOC_BUSY with the row untouched (still resumable)
+        locks = ExitStack()
         try:
-            claimed = self.ops.claim(tenant_id, company_id, row.id, (NEEDS_ATTENTION, PENDING))
-            self.db.commit()
-        except IntegrityError:  # another operation holds the document
-            self.db.rollback()
+            locks.enter_context(link_locks(self.db, company.id, po_doc_keys=[row.doc_key] if row.doc_type == "PO" else []))
+        except SoRowBusy:
             return OperationResult(row.id, REFUSED, DOC_BUSY)
-        if not claimed:  # a concurrent resume won the conditional update
-            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
-        self.db.refresh(row)
-        self._mail_allowed = was != NEEDS_ATTENTION  # a failed resume never mails again
-        self._row = row
-        self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
-        self._steps, self._warnings = list(row.steps_json or []), []
-        return self._guarded(row, company, lambda: self._resume(row, company, was), restore=was)
+        with locks:
+            try:
+                claimed = self.ops.claim(tenant_id, company_id, row.id, (NEEDS_ATTENTION, PENDING))
+                self.db.commit()
+            except IntegrityError:  # another operation holds the document
+                self.db.rollback()
+                return OperationResult(row.id, REFUSED, DOC_BUSY)
+            if not claimed:  # a concurrent resume won the conditional update
+                return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
+            self.db.refresh(row)
+            self._mail_allowed = was != NEEDS_ATTENTION  # a failed resume never mails again
+            self._row = row
+            self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
+            self._steps, self._warnings = list(row.steps_json or []), []
+            return self._guarded(row, company, lambda: self._resume(row, company, was), restore=was)
 
     # ── frame ────────────────────────────────────────────────────────────────
 
@@ -366,11 +445,17 @@ class OperationService:
                 self.db.commit()
                 return OperationResult(None, REFUSED, DOC_BUSY)
             return self._finish(row, done.status, done.code, message=done.message, batch=done.batch)
+        except _Abandoned:  # the row is no longer ours: answer from it as stored, never overwrite it
+            self.db.rollback()
+            logger.warning("autocount operation %s lost its row before the snapshot: stopped, nothing sent", row.id)
+            fresh = self.ops.get(row.tenant_id, row.company_id, row.id)
+            return self._from_row(fresh) if fresh is not None else OperationResult(None, REFUSED, NOT_APPLIED)
         except Exception:  # noqa: BLE001 - the in_progress lock must never be stranded
             logger.exception("autocount operation failed (%s)", row.id)
             self.db.rollback()
             return self._finish(row, restore or PENDING, INTERNAL_ERROR)
         finally:
+            self._prefetched = {}  # an unused side read never outlives its run
             self.db.rollback()
 
     @staticmethod
@@ -399,9 +484,11 @@ class OperationService:
     @staticmethod
     def _nothing_landed(status: Optional[str], code: Optional[str]) -> bool:
         """Plan 62 D6: the stored outcome proves nothing reached AutoCount: a refusal, or AutoCount's
-        own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed."""
+        own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed.
+        Plan 65 B3 (owner: only a confirmed success locks): every ``recovered`` answer, whatever its code,
+        left the PO as it was; the next press runs fresh (re-read and re-guarded, so it cannot write twice)."""
         return (status == REFUSED or (status == VENDOR_ERROR and code == VENDOR_REFUSED)
-                or (status == RECOVERED and code == NOT_APPLIED))  # resume proved the write never landed
+                or status == RECOVERED)
 
     def _release_key(self, row: AcWriteOperation) -> None:
         """Free the idempotency key of a confirmed not-landed operation: the row is kept for history
@@ -418,7 +505,7 @@ class OperationService:
             self._release_key(row)
             return None
         if (row.status == PENDING and row.op == op and row.request_hash == request_hash
-                and row.snapshot_json):
+                and (row.snapshot_json or self._never_applied(row))):
             res = self.resume(tenant_id=tenant_id, company_id=company.id, operation_id=row.id)
             if res.error_code == NOT_APPLIED and res.outcome in (RECOVERED, REFUSED):
                 fresh = self.ops.get(tenant_id, company.id, row.id)
@@ -427,6 +514,32 @@ class OperationService:
                     return None
             return res
         return self._replay(row, op, request_hash)
+
+    def _never_applied(self, row: AcWriteOperation) -> bool:
+        """BL-SS-368: a pending row operation that never stored its snapshot never wrote: every row
+        operation commits its snapshot BEFORE its first AutoCount write (``_execute_unlocked``,
+        ``_batch_locked``, ``_split_link``). Belt and braces: no step and no write action recorded."""
+        return (row.status == PENDING and not row.snapshot_json and not row.steps_json
+                and (row.op in OPS or row.op in (SPLIT_LINK, LINK_BATCH))
+                and not self.ops.has_actions(row.tenant_id, row.id))
+
+    def _settle_not_applied(self, row: AcWriteOperation) -> OperationResult:
+        """End a never-applied pending operation ``recovered`` / ``OPERATION_NOT_APPLIED`` (conditional, so
+        a concurrent settle or resume wins once); the next same-key press then runs fresh."""
+        message = "Nothing was changed in AutoCount. Please try again."
+        result = OperationResult(row.id, RECOVERED, NOT_APPLIED, message, doc_key=row.doc_key)
+        stored = _json_safe({
+            "outcome": RECOVERED, "errorCode": NOT_APPLIED, "message": message, "warnings": [],
+            "replacedLines": [], "document": None, "batch": None, "detail": None,
+        })
+        settled = self.ops.settle_not_applied(row.tenant_id, row.company_id, row.id, NOT_APPLIED, stored)
+        self.db.commit()
+        self.db.refresh(row)
+        if not settled:
+            return self._from_row(row) if row.status != IN_PROGRESS else OperationResult(
+                row.id, REFUSED, OPERATION_IN_PROGRESS)
+        logger.warning("autocount operation %s ended before its snapshot: settled as not applied", row.id)
+        return result
 
     def _replay(self, row: AcWriteOperation, op: str, request_hash: str) -> OperationResult:
         if row.op != op or row.request_hash != request_hash:
@@ -443,21 +556,23 @@ class OperationService:
             stored.get("message") or "", list(stored.get("warnings") or []),
             [(int(o), int(n)) for o, n in stored.get("replacedLines") or []], stored.get("document"),
             row.doc_key, _doc_no(stored.get("document"), row.snapshot_json), stored.get("batch"),
+            stored.get("detail"),
         )
 
     def _finish(self, row: AcWriteOperation, status: str, code: Optional[str] = None, *, message: str = "",
                 replaced: Optional[List[Tuple[int, int]]] = None,
-                document: Optional[Doc] = None, batch: Optional[Dict[str, Any]] = None) -> OperationResult:
+                document: Optional[Doc] = None, batch: Optional[Dict[str, Any]] = None,
+                detail: Optional[Doc] = None) -> OperationResult:
         result = OperationResult(
             row.id, status, code, message, list(self._warnings), list(replaced or []), document,
-            row.doc_key, _doc_no(document, row.snapshot_json), batch,
+            row.doc_key, _doc_no(document, row.snapshot_json), batch, detail if status == DONE else None,
         )
         row.status, row.error_code = status, code
         row.steps_json = _json_safe(self._steps)
         row.result_json = _json_safe({
             "outcome": status, "errorCode": code, "message": message, "warnings": result.warnings,
             "replacedLines": [list(p) for p in result.replaced_lines], "document": document,
-            "batch": batch,
+            "batch": batch, "detail": result.detail,
         })
         self.db.commit()
         return result
@@ -470,6 +585,17 @@ class OperationService:
             self._row.steps_json = _json_safe(self._steps)
             self.db.commit()
 
+    def _store_snapshot(self, row: AcWriteOperation, snapshot: Doc) -> None:
+        """A fresh run's first snapshot, the line before its first AutoCount write: stored only while the row is
+        still ``in_progress`` (BL-SS-368 settles a pending row with no snapshot as not applied, so a run that lost
+        its row in between must stop here, unwritten)."""
+        stored = _json_safe(snapshot)
+        kept = self.ops.store_snapshot(row.tenant_id, row.company_id, row.id, stored)
+        self.db.commit()
+        if not kept:
+            raise _Abandoned()
+        self.db.refresh(row)
+
     def _check_deadline(self) -> None:
         """No further step past the operation-wide deadline (below the busy window,
         read through ``time`` so a patched clock works): pending_verification, resumable."""
@@ -480,15 +606,18 @@ class OperationService:
 
     def _execute(self, row: AcWriteOperation, company: AcCompany, op: str, spec: _Spec,
                  params: Dict[str, Any]) -> OperationResult:
-        """Link-type operations run under a per-SO-row lock (``link_lock``): the over-link guard and the
-        write that follows must not interleave with another caller's on the same SO row."""
-        if op in (SPLIT_LINK, "link_row", "relink_row") and spec.target_dtl_key:
-            try:
-                with so_row_locks(self.db, company.id, [spec.target_dtl_key]):
-                    return self._execute_unlocked(row, company, op, spec, params)
-            except SoRowBusy:
-                raise _Done(REFUSED, DOC_BUSY) from None
-        return self._execute_unlocked(row, company, op, spec, params)
+        """Every row operation that writes a PO (the document primitives keep the action / operation indexes)
+        runs under the per-PO-document lock, and a link-type operation
+        also under its per-SO-row lock (``link_lock``, PO first): the read, the over-link guard and the write
+        that follows must not interleave with another caller's on the same PO or the same SO row. A lock not
+        won is ``DOC_BUSY`` (never stored under the key)."""
+        po_keys = [spec.doc_key] if row.doc_type == "PO" else []
+        so_keys = [spec.target_dtl_key] if op in (SPLIT_LINK, "link_row", "relink_row") and spec.target_dtl_key else []
+        try:
+            with link_locks(self.db, company.id, po_doc_keys=po_keys, so_dtl_keys=so_keys):
+                return self._execute_unlocked(row, company, op, spec, params)
+        except SoRowBusy:  # this lock, or a nested one (the batch's SO rows), was not won: nothing sent
+            raise _Done(REFUSED, DOC_BUSY) from None
 
     def _execute_unlocked(self, row: AcWriteOperation, company: AcCompany, op: str, spec: _Spec,
                           params: Dict[str, Any]) -> OperationResult:
@@ -498,6 +627,7 @@ class OperationService:
                 self.prims._log_refused_connection(company, refusal[0], doc_key=spec.doc_key)
             raise _Done(REFUSED, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
+        self._prefetched = {}
         self._check_test_company(company)
         if op == LINK_BATCH:
             return self._batch_link(row, company, spec, params)
@@ -508,14 +638,20 @@ class OperationService:
         defn = OPS[op]
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
+        self._pool_location = _pool_of(defn, params)
         self._check_not_busy(company, spec.doc_key, defn.kind)
-        doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date)
+        doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date,
+                                   beside=self._target_beside(company, defn, spec))
         if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
             raise _Done(REFUSED, DOC_STALE)
-        plan = self._guards(company, defn, spec, doc)
+        if defn.kind == "PO" and defn.mode in ("unlink", "relink"):
+            self._check_row_resolved(company, spec, doc)
+        if defn.kind == "PO" and defn.mode in ("link", "relink"):
+            self._log_remark_overwrite(doc)
+        with self.prims.staged_memo():  # C.d: one staged read per document for the row AND every merge candidate
+            plan = self._guards(company, defn, spec, doc)
         snapshot = self._snapshot(company, defn, spec, doc, doc_date, plan)
-        row.snapshot_json = snapshot
-        self.db.commit()
+        self._store_snapshot(row, snapshot)
         return self._steps_run(row, company, op, defn, spec, snapshot)
 
     def _is_part_of_row(self, company: AcCompany, base_url: str, spec: _Spec, params: Dict[str, Any]) -> bool:
@@ -544,29 +680,101 @@ class OperationService:
             raise _Done(restore or REFUSED, exc.code) from None
 
     def _check_not_busy(self, company: AcCompany, doc_key: int, kind: str) -> None:
-        """Standalone actions and young pending operations hold the document; an
-        operation's own actions do not (the operation row carries its age, AC-57-43)."""
+        """Standalone actions, young pending operations and other ``in_progress`` operations hold the
+        document; an operation's own actions and its own row do not (the row carries its age, AC-57-43)."""
         window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
         if self.prims.actions.expire_stale_in_flight(company.tenant_id, company.id, doc_key, window):
             self.db.commit()
         if self.prims.actions.has_open(
             company.tenant_id, company.id, doc_key, window, standalone_only=True
-        ) or self.ops.has_recent_pending(company.tenant_id, company.id, kind, doc_key, window):
+        ) or self.ops.has_recent_pending(company.tenant_id, company.id, kind, doc_key, window) or self.ops.has_in_progress(
+            company.tenant_id, company.id, kind, doc_key, window, exclude_id=self._row.id if self._row else None,
+        ):
             raise _Done(REFUSED, DOC_BUSY)
 
+    def _check_row_resolved(self, company: AcCompany, spec: _Spec, doc: Doc) -> None:
+        """Plan 65 D6: an unlink / relink of a PO row an unresolved link operation covers is refused
+        ``ROW_NEEDS_ATTENTION`` before anything is sent (Resume is the repair). Same rule as the
+        ``delete_line`` primitive (``PrimitiveService.row_needs_attention``); other rows stay writable."""
+        row = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == spec.dtl_key), None)
+        if row is not None and self.prims.row_needs_attention(
+                company, spec.doc_key, row, exclude_id=self._row.id if self._row else None):
+            raise _Done(REFUSED, ROW_NEEDS_ATTENTION)
+
+    def _log_remark_overwrite(self, doc: Doc) -> None:
+        """Plan 65 D1b (owner ruling 16 Nov: no warning to users): AutoCount writes Remark1 over
+        Remark2..4 on every PUT; a link on a PO whose remarks differ leaves one server-side line
+        (operation id only, never the text; the old texts stay in the step's stored before-read)."""
+        first = doc.get("Remark1")
+        if any(not payloads._same(doc.get(k), first) for k in ("Remark2", "Remark3", "Remark4")):
+            logger.info("autocount link on a PO whose Remark2..4 differ from Remark1 (operation %s)",
+                        self._row.id if self._row else None)
+
     def _read(self, company: AcCompany, kind: str, doc_key: int,
-              doc_date: Optional[date]) -> Tuple[date, Doc]:
-        """AC-57-20 date, then one fresh GET with no transaction open."""
+              doc_date: Optional[date], *, beside: Optional[ContextManager[None]] = None) -> Tuple[date, Doc]:
+        """AC-57-20 date, then one fresh GET with no transaction open. ``beside`` runs around the GET
+        only (the independent target read, ``_target_beside``); a read it already made is used here."""
+        held = self._prefetched.pop((kind, doc_key), None)
+        if held is not None:
+            found, outcome = held
+            if isinstance(outcome, DocReadError):
+                raise _Done(REFUSED, outcome.code) from None
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return found, outcome
         found, code = self.prims.find_date(company, kind, doc_key, _as_date(doc_date))
         if found is None:
             raise _Done(REFUSED, code)
         doc_no = self.prims.find_doc_no(company, kind, doc_key)
         reader = self._reader(company, self._base_url, kind, doc_key, doc_no)  # before the commit (row ids)
         self.db.commit()
-        try:
-            return found, reader.get_document(kind, doc_key, found, doc_no=doc_no)
-        except DocReadError as exc:
-            raise _Done(REFUSED, exc.code) from None
+        with beside or contextlib.nullcontext():
+            try:
+                return found, reader.get_document(kind, doc_key, found, doc_no=doc_no)
+            except DocReadError as exc:
+                raise _Done(REFUSED, exc.code) from None
+
+    @contextlib.contextmanager
+    def _target_beside(self, company: AcCompany, defn: _OpDef, spec: _Spec) -> Iterator[None]:
+        """SS-AUTOCOUNT-SPEEDUP: the target document's first read (SO for a PO link, PO for an SPO
+        link) does not depend on the document's own, so it runs on a second thread during it. Nothing
+        else moves: the target is still checked in ``_guard_target`` after the document's own guards
+        (same refusal order and codes), every call is still logged (``BufferedCallLog``, written here on
+        this thread), and the live re-read before the write is untouched. No date for the target = no
+        side read (``_guard_target`` refuses it as before)."""
+        key = spec.target_doc_key
+        if not defn.target or key is None:
+            yield
+            return
+        found, _code = self.prims.find_date(company, defn.target, key, _as_date(spec.target_doc_date))
+        if found is None:
+            yield
+            return
+        doc_no = self.prims.find_doc_no(company, defn.target, key)
+        row = self._row
+        log = cl.BufferedCallLog(self.prims.new_call_log(
+            company, kind=defn.target, doc_key=key, doc_no=doc_no, key_id=row.key_id if row else None,
+            operation_id=row.id if row else None,
+        ))
+        reader = self.prims._reader_for(self._base_url, log)  # type: ignore[arg-type]
+        self.db.commit()  # no transaction open during the GETs
+        context = contextvars.copy_context()  # request id / logging / tracing context follow the read
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="ac-side-read") as pool:
+            future = pool.submit(context.run, reader.get_document, defn.target, key, found, doc_no=doc_no)
+            failed = True
+            try:
+                yield
+                failed = False
+            finally:
+                # Waited for even when the document's own read failed: its calls are then logged
+                # here, on this thread, like every other call (the log's session never crosses threads).
+                try:
+                    outcome: Any = future.result()
+                except BaseException as exc:  # noqa: BLE001 - handed to the target's own _read
+                    outcome = exc
+                log.flush()
+                if not failed:  # a refused run never leaves a read behind for a later one
+                    self._prefetched[(defn.target, key)] = (found, outcome)
 
     # ── guards (AC-57-32, 33): every refusal before any write ────────────────
 
@@ -587,6 +795,10 @@ class OperationService:
         mode, received = self._receipt(company, defn, doc, row)
         qty = _dec(row.get("Qty"))
         link_qty = qty - received if mode == "partial" else qty
+        if defn.kind == "PO" and mode == "delete" and payloads.foc_on_row(row, link_qty):
+            # plan 65 D2a / AC-65-28 / B1: a link, unlink (merge or replace) or relink that removes a row carrying
+            # FOC would lose it (hapi cannot write FOCQty): the batch's skip rule, refused before any PUT
+            raise _Done(REFUSED, FOC_ON_ROW)
         target: Optional[Doc] = None
         if defn.target and spec.target_doc_key is not None:
             target = self._guard_target(company, defn, spec, doc, row, link_qty)
@@ -601,20 +813,33 @@ class OperationService:
         """Plan 62 D7: the DtlKey of the FIRST free row (row order) the unlinked quantity can join:
         same item, unit, location, price and delivery date, not linked, no SPO row pointing at it,
         no known receipt above zero. An UNKNOWN receipt (the vendor hides it) allows the merge, like the
-        linked row's own receipt check. None = no merge (today's new free row)."""
+        linked row's own receipt check. None = no merge (today's new free row).
+
+        Plan 66 (owner 17 Nov): with a pool location the free row must sit AT the pool location (exact
+        code) and match on item and unit ONLY. Unit price and delivery date are not matched (the date is
+        the SO's, meaningless once unlinked; owner: "unit price also can ignore"): the pool row keeps its
+        own price and date, only its Qty goes up."""
         if defn.kind != "PO" or defn.mode != "unlink":
             return None
+        pool = self._pool_location
+        same = ("ItemCode", "UOM") if pool else ("ItemCode", "UOM", "Location")
+        values: Tuple[str, ...] = () if pool else ("UnitPrice", "DeliveryDate")
         for cand in doc.get("Details") or []:
             if cand.get("DtlKey") == row.get("DtlKey") or _link_of("PO", cand):
                 continue
             if cand.get("FromDocType") not in ("", None):
                 continue
-            if any(cand.get(k) != row.get(k) for k in ("ItemCode", "UOM", "Location")):
+            if pool and cand.get("Location") != pool:
                 continue
-            if not all(payloads.same_row_value(k, row.get(k), cand.get(k)) for k in ("UnitPrice", "DeliveryDate")):
+            if any(cand.get(k) != row.get(k) for k in same):
+                continue
+            if not all(payloads.same_row_value(k, row.get(k), cand.get(k)) for k in values):
                 continue
             if self._spo_ref(company, int(cand["DtlKey"])):
                 continue
+            if self.prims.row_needs_attention(company, int(doc.get("DocKey") or 0), cand,
+                                              exclude_id=self._row.id if self._row else None):
+                continue  # plan 65 R1: growing a row an unresolved link covers breaks its Resume
             if self._receipt_reader is not None:
                 received = self._receipt_reader("PO", doc, cand)
             else:
@@ -637,7 +862,7 @@ class OperationService:
         if received <= 0:
             return "delete", received
         if received >= _dec(row.get("Qty")) or not capabilities.PARTIAL_RECEIPT_SPLIT:
-            raise _Done(REFUSED, ROW_RECEIVED)
+            raise _Done(REFUSED, ROW_RECEIVED, received_message(defn.kind, row))
         return "partial", received
 
     def _guard_target(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc,
@@ -669,17 +894,14 @@ class OperationService:
         """Qty of one PO row already taken by SPO rows: the fresh SPO (minus the row
         being moved) plus every other staged, non-cancelled SPO."""
         own_ref = f"{company.database_name}:{fresh_spo.get('DocKey')}"
-        sources: List[List[Doc]] = [
-            [r for r in fresh_spo.get("Details") or [] if r.get("DtlKey") != own_dtl]
-        ]
-        for staged in self.prims.staged.for_entity(company.tenant_id, company.id, ENTITY_SHIPPING_ORDER):
-            raw = staged.raw_json or {}
-            if raw.get("Cancelled") != "T" and staged.source_ref != own_ref:
-                sources.append(_lines(raw))
-        return sum(
-            (_dec(r.get("Qty")) for lines in sources for r in lines if r.get("FromDocDtlKey") == po_dtl_key),
+        own = sum(
+            (_dec(r.get("Qty")) for r in fresh_spo.get("Details") or []
+             if r.get("DtlKey") != own_dtl and r.get("FromDocDtlKey") == po_dtl_key),
             Decimal(0),
         )
+        # C.d: every OTHER SPO from the indexed newest copies (one query), never a load of every staged SPO
+        return own + SpoPoLinkRepository(self.db).linked_qty(
+            company.tenant_id, company.id, po_dtl_key, except_ref=own_ref)
 
     # ── snapshot ─────────────────────────────────────────────────────────────
 
@@ -691,11 +913,16 @@ class OperationService:
         if target is not None:
             new_link = {"FromDocType": defn.target, "FromDocNo": target.get("DocNo"),
                         "FromDocDtlKey": spec.target_dtl_key}
-        move_to = row.get("Location")  # unlink / SPO: the line stays where it was
+        move_to = row.get("Location")  # unlink / SPO: the line stays where it was ...
+        if defn.mode == "unlink" and self._pool_location:
+            move_to = self._pool_location  # ... plan 66: an unlinked PO row goes back to the pool
+        so_link: Optional[Doc] = None
         if target is not None and defn.target == "SO":
             trow = next((r for r in target.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), {})
             move_to = trow.get("Location") or move_to  # owner ruling: a linked PO row sits at its SO row
+            so_link = self._so_link_values(target, trow)
         return _json_safe({
+            "soLink": so_link,
             "moveTo": move_to, "kind": defn.kind, "mode": plan["mode"], "docKey": spec.doc_key, "docNo": doc.get("DocNo"),
             "docDate": doc_date.isoformat(), "lastModified": doc.get("LastModified"),
             "knownKeys": [r.get("DtlKey") for r in doc.get("Details") or []],
@@ -703,6 +930,12 @@ class OperationService:
             "newLink": new_link, "oldLink": self._old_link(company, defn, row), "mergeInto": plan.get("merge"), "mergeBeforeQty": plan.get("mergeQty"),
             "location": row.get("Location"), "companyName": company.company_name or company.name,
         })
+
+    @staticmethod
+    def _so_link_values(so: Doc, so_row: Doc) -> Doc:
+        """Plan 65 D2 / D4: what the restore of a row newly linked to ``so_row`` needs from the SO, kept
+        in the snapshot at link time so Resume needs no guess: the SO row's day and the note text."""
+        return payloads.so_link_values(so, so_row)
 
     def _old_link(self, company: AcCompany, defn: _OpDef, row: Doc) -> Doc:
         """The link fields the row has now, to restore it (a PO row linked to an SO
@@ -713,11 +946,9 @@ class OperationService:
         if defn.kind == "SPO":
             return {"FromDocType": "PO", "FromDocNo": row.get("FromDocNo") or "", "FromDocDtlKey": key}
         number = row.get("FromDocNo") or ""
-        if not number:
-            for staged in self.prims.staged.for_entity(company.tenant_id, company.id, ENTITY_SALES_ORDER):
-                if any(r.get("DtlKey") == key for r in _lines(staged.raw_json)):
-                    number = str((staged.raw_json or {}).get("DocNo") or staged.doc_no or "")
-                    break
+        if not number:  # C.d: one indexed query, never a load of every staged SO
+            found = self.prims._so_row(company.tenant_id, company.id, key)
+            number = found[0] if found else ""
         return {"FromDocType": "SO", "FromDocNo": number, "FromDocDtlKey": key}
 
     # ── steps (AC-57-30, 31, 33, 34, 35, 39) ─────────────────────────────────
@@ -725,6 +956,11 @@ class OperationService:
     def _line_of(self, snap: Doc, link: Doc, qty: Optional[Decimal] = None) -> Doc:
         line = {k: v for k, v in snap["row"].items() if k != "DtlKey"}
         line.update(link)
+        # plan 66: the note goes on the NEW linked row in the PUT that creates it. ``soLink`` describes the
+        # new link only, so the recover row (``oldLink``, e.g. a relink's previous SO row) never takes it.
+        note = (snap.get("soLink") or {}).get("note") if link is snap["newLink"] else None
+        if note and link.get("FromDocType") == "SO":
+            line[payloads.LINK_NOTE_KEY] = note
         if qty is not None:
             line["Qty"] = float(qty)
         return line
@@ -764,9 +1000,11 @@ class OperationService:
         if add.outcome != OUTCOME_DONE or add.new_dtl_key is None:
             return self._recover(row, company, snap, add.error_code or INTERNAL_ERROR, True)
         new_key = int(add.new_dtl_key)
-        document = self._move(row, company, snap, new_key, add.document, snap.get("moveTo") or snap["location"])
+        document, landed = self._link_move(row, company, snap, new_key, add.document, snap.get("soLink"))
         self.prims._stage(company, snap["kind"], document, None)
-        return self._finish(row, DONE, None, replaced=[], document=document)
+        if not landed:
+            return self._needs_attention(row, company, snap, RESTORE_NOT_LANDED, document=document)
+        return self._finish(row, DONE, None, replaced=[], document=document, detail=_row_in(document, new_key))
 
     def _merge_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int,
                    free_key: int) -> OperationResult:
@@ -784,7 +1022,8 @@ class OperationService:
             self._abort_unless_done(res)
             raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
         self.prims._stage(company, snap["kind"], res.document, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document,
+                            detail=_row_in(res.document, free_key))
 
     def _replace_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int) -> OperationResult:
         """Plan 61: ONE PUT [row "D", new row with the new link or none], then the move.
@@ -804,9 +1043,13 @@ class OperationService:
             self._abort_unless_done(res)
             raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
         new_key = int(res.new_dtl_key)
-        document = self._move(row, company, snap, new_key, res.document, snap.get("moveTo") or snap["location"])
+        document, landed = self._link_move(row, company, snap, new_key, res.document, snap.get("soLink"))
         self.prims._stage(company, snap["kind"], document, {new_key: old_key})
-        return self._finish(row, DONE, None, replaced=[(old_key, new_key)], document=document)
+        if not landed:
+            return self._needs_attention(row, company, snap, RESTORE_NOT_LANDED, replaced=[(old_key, new_key)],
+                                         document=document)
+        return self._finish(row, DONE, None, replaced=[(old_key, new_key)], document=document,
+                            detail=_row_in(document, new_key))
 
     def _abort_unless_done(self, res: PrimitiveResult) -> None:
         """A first step that did not land cleanly: nothing to recover."""
@@ -825,37 +1068,63 @@ class OperationService:
         """Put the new row back where and as the old row was when the read-back differs:
         ``location`` and the old row's unit price and delivery date (AutoCount resets all
         three on a new SO-linked row, F5; the split link's rule, ``payloads.transfer_restore``).
+        A row newly linked to an SO row goes through ``_link_move`` instead (plan 65 D2, R2).
         One edit PUT, never retried; a failed move is a warning, never a failure (the link
         stays): ``LOCATION_NOT_MOVED``, plus ``ROW_VALUES_NOT_KEPT`` when price / date did
         not go back."""
-        return self._move_rows(row, company, snap, [(new_key, location)], document, deadline=deadline)
+        return self._move_rows(row, company, snap, [(new_key, location, None)], document, deadline=deadline)
+
+    def _link_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, new_key: int,
+                   document: Optional[Doc], so_link: Optional[Doc], *, deadline: bool = True) -> Tuple[Doc, bool]:
+        """The move of a row op's new row, ``(document, landed)``. A row newly linked to an SO row
+        (``so_link``) is restored by the batch's rule and a restore that did not land is not landed (plan 65
+        R2: the op is resumable, never done with warnings); any other new row keeps ``_move``'s warnings."""
+        location = snap.get("moveTo") or snap["location"]
+        if so_link is None:
+            return self._move(row, company, snap, new_key, document, location, deadline=deadline), True
+        document, failed = self._restore_rows(row, company, snap, [(new_key, location, so_link)], document,
+                                              deadline=deadline)
+        return document, not failed
 
     def _move_rows(self, row: AcWriteOperation, company: AcCompany, snap: Doc,
-                   moves: List[Tuple[int, Optional[str]]], document: Optional[Doc], *, deadline: bool = True) -> Doc:
+                   moves: List[Tuple[int, Optional[str], Optional[Doc]]], document: Optional[Doc], *,
+                   deadline: bool = True) -> Doc:
         """``_move`` for N new rows (plan 62 D4): every row whose read-back drifted goes back in
         ONE edit PUT; a failed PUT is the same warnings, never a failure."""
+        document, failed = self._restore_rows(row, company, snap, moves, document, deadline=deadline)
+        if failed:
+            self._move_warnings({k: None for k in failed})
+        return document
+
+    def _restore_rows(self, row: AcWriteOperation, company: AcCompany, snap: Doc,
+                      moves: List[Tuple[int, Optional[str], Optional[Doc]]], document: Optional[Doc], *,
+                      deadline: bool = True) -> Tuple[Doc, Optional[set]]:
+        """The restore PUT of ``_move_rows``: ``(document, None)`` when it landed (or nothing drifted),
+        else ``(the last read, the fields that did not go back)``. Each move is ``(new row, location,
+        so_link)``; the values are ``payloads.transfer_restore`` (one rule)."""
         document = document or {}
         changes_by_key: Dict[int, Dict[str, Any]] = {}
-        for new_key, location in moves:
+        for new_key, location, so_link in moves:
             landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
-            changes = payloads.transfer_row_drift(payloads.transfer_restore(snap["row"], location), landed)
+            changes = payloads.transfer_row_drift(payloads.transfer_restore(snap["row"], location, so_link), landed)
             if changes:
                 changes_by_key[new_key] = changes
         if not changes_by_key:
-            return document
+            return document, None
         fields = {k for changes in changes_by_key.values() for k in changes}
         if deadline and time.monotonic() > self._op_deadline:  # move due, deadline past: skip it
-            self._move_warnings({k: None for k in fields})
-            return document
+            return document, fields
+        # ``document`` is the last read of this document (the step's read-back or resume's read), with
+        # no vendor call since: the move is built on it, not on a second identical GET (SS-AUTOCOUNT-SPEEDUP).
         moved = self.prims.edit_doc(
             **self._call(row, company, snap, "move"), header_changes={},
             line_changes=[{"DtlKey": key, **changes} for key, changes in changes_by_key.items()],
+            fresh_doc=document, restore=True,
         )
         self._step("move", moved)
         if moved.outcome == OUTCOME_DONE and moved.document:
-            return moved.document
-        self._move_warnings({k: None for k in fields})
-        return document
+            return moved.document, None
+        return document, fields
 
     def _move_warnings(self, changes: Dict[str, Any]) -> None:
         codes = [LOCATION_NOT_MOVED] + ([ROW_VALUES_NOT_KEPT] if set(changes) - {"Location"} else [])
@@ -936,8 +1205,10 @@ class OperationService:
             return None
 
     def _needs_attention(self, row: AcWriteOperation, company: AcCompany, snap: Doc, code: str,
-                         notify: bool = True) -> OperationResult:
-        result = self._finish(row, NEEDS_ATTENTION, code)
+                         notify: bool = True, *, batch: Optional[Dict[str, Any]] = None,
+                         replaced: Optional[List[Tuple[int, int]]] = None,
+                         document: Optional[Doc] = None) -> OperationResult:
+        result = self._finish(row, NEEDS_ATTENTION, code, batch=batch, replaced=replaced, document=document)
         if notify and self._mail_allowed:
             self._notify(company, row, snap)
         return result
@@ -984,11 +1255,18 @@ class OperationService:
 
         intended = matching(snap["newLink"], want_qty)
         if intended is not None:
-            document = self._resume_move(row, company, snap, int(intended["DtlKey"]), doc, snap.get("moveTo") or snap["location"])
             new_key = int(intended["DtlKey"])
+            replaced = [] if partial else [(old_key, new_key)]
+            so_link = self._row_so_link(row, company, snap)
+            if so_link is False:  # an older snapshot whose SO cannot be read: no PUT
+                return self._needs_attention(row, company, snap, RESTORE_NOT_LANDED, replaced=replaced, document=doc)
+            document, landed = self._link_move(row, company, snap, new_key, doc, so_link or None, deadline=False)
             self.prims._stage(company, snap["kind"], document, None if partial else {new_key: old_key})
-            return self._finish(row, DONE, None, replaced=[] if partial else [(old_key, new_key)],
-                                document=document)
+            if not landed:
+                return self._needs_attention(row, company, snap, RESTORE_NOT_LANDED, replaced=replaced,
+                                             document=document)
+            return self._finish(row, DONE, None, replaced=replaced, document=document,
+                                detail=_row_in(document, new_key))
         if partial:
             if _dec(original.get("Qty")) == qty if original else True:
                 return self._finish(row, REFUSED, NOT_APPLIED, document=doc)
@@ -1018,11 +1296,28 @@ class OperationService:
         if not landed:
             return self._needs_attention(row, company, snap, "RESUMED")
         self.prims._stage(company, snap["kind"], doc, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc,
+                            detail=_row_in(doc, free_key))
 
     def _resume_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, key: int, doc: Doc,
                      location: Optional[str]) -> Doc:
         return self._move(row, company, snap, key, doc, location, deadline=False)
+
+    def _row_so_link(self, row: AcWriteOperation, company: AcCompany, snap: Doc) -> "Union[Doc, None, bool]":
+        """The SO values a row op's restore needs (plan 65 R3): the snapshot's, or for a snapshot stored
+        before plan 65 the SO re-read through the logged reader (``_so_reread``, the batch's helper) and kept
+        in the snapshot. None = the new row is not linked to an SO row; False = the SO could not be read."""
+        if "soLink" in snap:
+            return snap["soLink"]
+        link = snap.get("newLink") or {}
+        if link.get("FromDocType") != "SO":
+            return None
+        values = self._so_reread(company, link.get("FromDocNo"), None, int(link.get("FromDocDtlKey") or 0), {})
+        if values is None:
+            return False
+        row.snapshot_json = _json_safe(dict(snap, soLink=values))
+        self.db.commit()
+        return values
 
     # ── link batch (plan 62 D1-D5): one PO row to N SO rows in ONE PUT ───────
 
@@ -1088,8 +1383,9 @@ class OperationService:
             raise _Done(REFUSED, "ROW_ALREADY_LINKED")
         mode, _received = self._receipt(company, defn, doc, old)
         if mode == "partial":
-            raise _Done(REFUSED, ROW_RECEIVED)
-        free = _dec(old.get("Qty"))
+            raise _Done(REFUSED, ROW_RECEIVED, received_message("PO", old))
+        # the PO row's qty that pending link operations on it may already have taken (outcome unknown) is not free
+        free = _dec(old.get("Qty")) - self._po_row_pending_qty(company, spec, doc)
         # Owner rule (plan 62, 12 Nov): a bad line never fails the batch. Each line is checked on its own,
         # in request order; a failing line is skipped and named, the rest are linked.
         sources: Dict[int, Doc] = {}
@@ -1108,6 +1404,8 @@ class OperationService:
                 {k: v for k, v in old.items() if k != "DtlKey"},
                 FromDocType="SO", FromDocNo=link["so_no"], FromDocDtlKey=link["so_dtl_key"],
                 Location=link["location"], Qty=float(link["qty"]), FOCQty=0,
+                Discount=payloads.link_discount(old.get("Discount")),  # D2a: an amount stays on the kept row
+                **{payloads.LINK_NOTE_KEY: link["so_link"]["note"]},  # plan 66: the note in the link PUT
             ))
         if not applied:  # nothing to link: refused, nothing sent, the key is released
             return self._finish(row, REFUSED, ALL_LINKS_SKIPPED, message="every link was skipped",
@@ -1118,11 +1416,13 @@ class OperationService:
             "knownKeys": [r.get("DtlKey") for r in doc.get("Details") or []], "row": old,
             "received": None, "location": old.get("Location"), "companyName": company.company_name or company.name,
             "links": [{"soDocKey": link["so_doc_key"], "soDtlKey": link["so_dtl_key"], "qty": str(link["qty"]),
-                       "soNo": link["so_no"], "location": link["location"]} for link in applied],
+                       "soNo": link["so_no"], "location": link["location"],
+                       "soDeliveryDate": link["so_link"]["soDeliveryDate"], "note": link["so_link"]["note"]}
+                      for link in applied],
             "skipped": skipped,
         })
-        row.snapshot_json = snapshot
-        self.db.commit()
+        self._store_snapshot(row, snapshot)
+        self._log_remark_overwrite(doc)
         none_linked = {"links": [], "skipped": skipped, "freeLine": None}
         try:
             self._check_deadline()
@@ -1147,6 +1447,38 @@ class OperationService:
                                   f"{company.database_name}:{spec.doc_key}", res.document)
         self.db.commit()  # the next guard sees these links before the lock is released
         return snapshot, res.document
+
+    def _po_row_pending_qty(self, company: AcCompany, spec: _Spec, doc: Doc) -> Decimal:
+        """Qty of the PO row that unresolved link operations on it (``pending_verification`` or
+        ``needs_attention``: they may have landed) would cover and that the fresh read does not show yet (a
+        landed link is already in the fresh rows: never counted twice, and one fresh row answers for one link
+        only). A whole-row link that has not landed covers the whole row (less any received qty)."""
+        total = Decimal(0)
+        rows = doc.get("Details") or []
+        pool = list(rows)
+        for op in self.ops.pending_po_row_links(company.tenant_id, company.id, spec.doc_key, spec.dtl_key,
+                                                exclude_id=self._row.id if self._row else None):
+            snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
+            if snap.get("mode") in ("batch", "split"):  # a part-row link_row runs as a split: its snapshot says
+                known = set(snap.get("knownKeys") or [])
+                for link in snap.get("links") or []:
+                    want, qty = int(link.get("soDtlKey") or 0), _dec(link.get("qty"))
+                    match = next((r for r in pool if r.get("DtlKey") not in known and _link_of("PO", r) == want
+                                  and _dec(r.get("Qty")) == qty), None)
+                    if match is None:
+                        total += qty
+                    else:
+                        pool.remove(match)
+                continue
+            if op.status != PENDING or not any(r.get("DtlKey") == op.dtl_key for r in rows):
+                # the row was replaced (the whole-row link landed), or a person is resolving an operation whose
+                # row still stands (its replace never landed): nothing of the row is reserved
+                continue
+            qty = _dec((snap.get("row") or {}).get("Qty"))
+            if snap.get("received") is not None:
+                qty -= _dec(snap["received"])
+            total += qty
+        return total
 
     def _line_skip(self, company: AcCompany, doc: Doc, old: Doc, link: Dict[str, Any], sources: Dict[int, Doc],
                    free: Decimal, running: Decimal) -> Optional[str]:
@@ -1174,17 +1506,23 @@ class OperationService:
             return "QTY_ABOVE_OUTSTANDING"
         if running + link["qty"] > free:
             return "QTY_ABOVE_FREE"
+        if payloads.foc_on_row(old, running + link["qty"]):
+            return FOC_ON_ROW  # the row would go with its FOC, which hapi cannot put on a new row (D2a)
         link["so_no"], link["location"] = so.get("DocNo"), so_row.get("Location")
+        link["so_link"] = self._so_link_values(so, so_row)
         return None
 
     def _batch_done(self, row: AcWriteOperation, company: AcCompany, snap: Doc, document: Doc,
                     *, deadline: bool = True) -> OperationResult:
         """PUT 1 landed (or was found landed): match each link to its new row, run the ONE restore
-        PUT when a read-back drifted, stage, answer with the new DtlKeys (plan 62 D4, D5)."""
+        PUT when a read-back drifted, stage, answer with the new DtlKeys (plan 62 D4, D5). A restore
+        that did not land (vendor error, read-back mismatch, deadline) leaves the operation
+        ``needs_attention`` / ``RESTORE_NOT_LANDED`` with the landed links in its answer; Resume
+        re-runs only the restore (plan 65 D3)."""
         known = set(snap["knownKeys"])
         fresh = [r for r in document.get("Details") or [] if r.get("DtlKey") not in known]
         answer: List[Dict[str, Any]] = []
-        moves: List[Tuple[int, Optional[str]]] = []
+        moves: List[Tuple[int, Optional[str], Optional[Doc]]] = []
         for link in snap["links"]:
             match = next((r for r in fresh if _link_of("PO", r) == int(link["soDtlKey"])
                           and _dec(r.get("Qty")) == _dec(link["qty"])), None)
@@ -1193,20 +1531,24 @@ class OperationService:
             fresh.remove(match)
             answer.append({"soDocKey": link["soDocKey"], "soDtlKey": link["soDtlKey"], "qty": link["qty"],
                            "poDtlKey": int(match["DtlKey"])})
-            moves.append((int(match["DtlKey"]), link.get("location")))
-        document = self._move_rows(row, company, snap, moves, document, deadline=deadline)
+            moves.append((int(match["DtlKey"]), link.get("location"),
+                          {"soDeliveryDate": link.get("soDeliveryDate"), "note": link.get("note")}))
+        document, failed = self._restore_rows(row, company, snap, moves, document, deadline=deadline)
         self.prims._stage(company, snap["kind"], document, None)
         old_key = int(snap["row"]["DtlKey"])
         kept = next((r for r in document.get("Details") or [] if r.get("DtlKey") == old_key), None)
         batch = {"links": answer, "skipped": list(snap.get("skipped") or []),
                  "freeLine": None if kept is None else {"poDtlKey": old_key, "qty": str(_dec(kept.get("Qty")))}}
+        if failed:
+            return self._needs_attention(row, company, snap, RESTORE_NOT_LANDED, batch=batch)
         return self._finish(row, DONE, None, document=document, batch=batch)
 
     def _resume_batch(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc) -> OperationResult:
         """A pending batch. Everything landed (every expected (FromSODtlKey, qty) new row is on the PO)
-        -> finish it. Nothing landed (no new row carries any batch SO row, and the old row reads back at
-        its snapshot quantity) -> ``NOT_APPLIED``, the caller runs it fresh. Anything in between needs a
-        person: no PUT is sent."""
+        -> repair it (plan 65 D5): re-judge the stored link PUT, check the fresh PO's shape, then the ONE
+        restore PUT (never the link PUT again). Nothing landed (no new row carries any batch SO row, and
+        the old row reads back at its snapshot quantity) -> ``NOT_APPLIED``, the caller runs it fresh.
+        Anything in between needs a person: no PUT is sent."""
         known = set(snap["knownKeys"])
         fresh = [r for r in doc.get("Details") or [] if r.get("DtlKey") not in known]
         batch_keys = {int(link["soDtlKey"]) for link in snap["links"]}
@@ -1220,6 +1562,12 @@ class OperationService:
                 break
             pool.remove(match)
         if landed:
+            code = self._link_step_verdict(row, company, snap, doc) or self._batch_shape(snap, doc)
+            if code:
+                return self._needs_attention(row, company, snap, code)
+            snap = self._batch_so_values(row, company, snap)
+            if snap is None:
+                return self._needs_attention(row, company, row.snapshot_json or {}, "RESUMED")
             return self._batch_done(row, company, snap, doc, deadline=False)
         old_key = int(snap["row"]["DtlKey"])
         old = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == old_key), None)
@@ -1227,6 +1575,97 @@ class OperationService:
         if not any_batch_row and old is not None and _dec(old.get("Qty")) == _dec(snap["row"].get("Qty")):
             return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
         return self._needs_attention(row, company, snap, "RESUMED")
+
+    def _batch_lines(self, snap: Doc) -> List[Doc]:
+        """The new rows the link PUT asked for, as ``verify_link_batch`` compares them."""
+        base = snap["row"]
+        return [{"FromDocDtlKey": int(link["soDtlKey"]), "Qty": link["qty"], "ItemCode": base.get("ItemCode"),
+                 "UOM": base.get("UOM")} for link in snap["links"]]
+
+    def _link_step_verdict(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc) -> Optional[str]:
+        """Plan 65 D5 (1), pure: the stored link PUT re-judged with today's verify (D1 tolerance): its
+        before-read against its read-back, or against the fresh read when it has none (a timeout). None
+        = it verifies; else the code (real collateral drift stays with a person)."""
+        action = self.prims.actions.operation_step(company.tenant_id, company.id, row.id, "link")
+        before = action.before_json if action is not None else None
+        if not isinstance(before, dict):
+            return "RESUMED"
+        after = action.after_json if isinstance(action.after_json, dict) else doc
+        verdict = payloads.verify_link_batch("PO", before, int(snap["row"]["DtlKey"]), self._batch_lines(snap), after)
+        if verdict.outcome == payloads.DONE:
+            return None
+        return verdict.code or INTERNAL_ERROR
+
+    @staticmethod
+    def _batch_shape(snap: Doc, doc: Doc) -> Optional[str]:
+        """Plan 65 D5 (2): the fresh PO as the batch left it: the kept row at its snapshot qty less the
+        linked qty (or gone when all was taken), exactly one new row per link (FromSODtlKey + qty), and
+        no other new row linked to a batch SO row. None = it is; else the code."""
+        old_key = int(snap["row"]["DtlKey"])
+        rest = _dec(snap["row"].get("Qty")) - sum((_dec(link["qty"]) for link in snap["links"]), Decimal(0))
+        kept = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == old_key), None)
+        if rest == 0 and kept is not None:
+            return "LINE_NOT_DELETED"
+        if rest != 0 and (kept is None or _dec(kept.get("Qty")) != rest):
+            return "ROW_MISMATCH"
+        known = set(snap["knownKeys"])
+        batch_keys = {int(link["soDtlKey"]) for link in snap["links"]}
+        pool = [r for r in doc.get("Details") or [] if r.get("DtlKey") not in known and _link_of("PO", r) in batch_keys]
+        for link in snap["links"]:
+            match = next((r for r in pool if _link_of("PO", r) == int(link["soDtlKey"])
+                          and _dec(r.get("Qty")) == _dec(link["qty"])), None)
+            if match is None:
+                return "LINK_MISMATCH"
+            pool.remove(match)
+        return "ROWS_UNEXPECTED" if pool else None
+
+    def _so_reread(self, company: AcCompany, so_no: Optional[str], so_doc_key: Optional[int], so_dtl_key: int,
+                   sources: Dict[Any, Doc]) -> Optional[Doc]:
+        """Plan 65 D5 / R3: the SO values of one SO row for a snapshot stored without them, from a fresh read
+        through the logged reader (bydocno by its number, else by its key and staged date; ``sources`` caches
+        one read per SO). None = it cannot be read or the row is gone."""
+        cache_key = so_no or so_doc_key
+        so = sources.get(cache_key)
+        if so is None:
+            if so_no:
+                reader = self._reader(company, self._base_url, "SO", so_doc_key, so_no)
+                self.db.commit()
+                try:
+                    so = reader.get_by_doc_no("SO", str(so_no))
+                except DocReadError:
+                    return None
+            elif so_doc_key is not None:
+                try:
+                    _d, so = self._read(company, "SO", so_doc_key, None)
+                except _Done:
+                    return None
+            else:
+                return None
+            sources[cache_key] = so
+        so_row = next((r for r in so.get("Details") or [] if r.get("DtlKey") == so_dtl_key), None)
+        return None if so_row is None else self._so_link_values(so, so_row)
+
+    def _batch_so_values(self, row: AcWriteOperation, company: AcCompany, snap: Doc) -> Optional[Doc]:
+        """Plan 65 D5 (3): the snapshot with every link's SO row date and note. An older snapshot that has
+        none re-reads its SO (the logged reader, once per SO) and keeps the values; None = an SO could
+        not be read (no PUT)."""
+        if all("note" in link for link in snap["links"]):
+            return snap
+        sources: Dict[Any, Doc] = {}
+        links: List[Doc] = []
+        for link in snap["links"]:
+            link = dict(link)
+            if "note" not in link:
+                values = self._so_reread(company, link.get("soNo"), int(link["soDocKey"]), int(link["soDtlKey"]),
+                                         sources)
+                if values is None:
+                    return None
+                link.update(values)
+            links.append(link)
+        fresh = _json_safe(dict(snap, links=links))
+        row.snapshot_json = fresh
+        self.db.commit()
+        return fresh
 
     # ── split link (plan 55 wrapped, AC-57-40) ───────────────────────────────
 
@@ -1241,8 +1680,7 @@ class OperationService:
         legacy.so_lock_held = True  # _execute holds the SO row lock around this call
         qty = Decimal(str(params["qty"]))
         # the over-link guard of other callers counts this link while its outcome is unknown (pending_link_qty)
-        row.snapshot_json = {"mode": "split", "links": [{"soDtlKey": spec.target_dtl_key, "qty": str(qty)}]}
-        self.db.commit()
+        self._store_snapshot(row, {"mode": "split", "links": [{"soDtlKey": spec.target_dtl_key, "qty": str(qty)}]})
         found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))
         if found is None and missing == frame.DOC_KIND_MISMATCH or found is None and missing:
             raise _Done(REFUSED, missing)
@@ -1260,7 +1698,8 @@ class OperationService:
                             "actionId": result.action_id})
         status = result.outcome if result.outcome in (DONE, REFUSED, PENDING, VENDOR_ERROR) else (
             PENDING if result.outcome == OUTCOME_MISMATCH else result.outcome)
-        return self._finish(row, status, result.error_code, message=result.message, document=result.document)
+        return self._finish(row, status, result.error_code, message=result.message, document=result.document,
+                            detail=result.detail)
 
     # ── gateway helpers (plan 57 S6) ─────────────────────────────────────────
 

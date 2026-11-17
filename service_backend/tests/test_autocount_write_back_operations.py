@@ -206,7 +206,7 @@ def test_ac_57_30_link_row_moves_the_new_row_to_the_so_rows_location(h, w_far):
     assert old_key == w.p_free and new_key != old_key
     assert [r["DtlKey"] for r in move.body["Details"]] == [new_key]
     assert move.body["Details"][0]["Location"] == "BRW-AM"
-    assert move.body["Details"][0]["DeliveryDate"] == "2026-12-01T00:00:00"  # F5: the vendor cleared it
+    assert move.body["Details"][0]["DeliveryDate"] == "2026-11-04T00:00:00"  # F5 cleared it; plan 65 D2: the SO row's
     stored = w.row_by_key(w.po_rows(), new_key)
     assert stored["FromSODtlKey"] == w.so_a and stored["Location"] == "BRW-AM"
     assert res.document and w.row_by_key(res.document["Details"], new_key)["Location"] == "BRW-AM"
@@ -225,11 +225,11 @@ def test_ac_57_30_link_row_to_an_so_row_at_hq_skips_the_move(h, w):
     assert w.row_by_key(w.po_rows(), w.p_free) is None
 
 
-def test_ac_57_30_link_row_location_move_failure_is_done_with_warning(h, w_far):
+def test_ac_57_30_link_row_location_move_failure_is_needs_attention_restore_not_landed(h, w_far):
     w = w_far
     h.vendor.fail_next("PUT", "EditPurchaseOrderbydockey", 500, "no move", after=1)
     res = h.run("link_row", w.params["link_row"])
-    assert res.outcome == "done" and "LOCATION_NOT_MOVED" in res.warnings
+    assert (res.outcome, res.error_code) == ("needs_attention", "RESTORE_NOT_LANDED")  # plan 65 R2: resumable, never done with warnings
     (old_key, new_key), = res.replaced_lines
     assert w.row_by_key(w.po_rows(), new_key)["Location"] == "HQ"
     assert h.steps() == [PUT_PO, PUT_PO]

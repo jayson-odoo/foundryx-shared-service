@@ -15,7 +15,7 @@ import logging
 from contextlib import ExitStack
 import time
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -71,7 +71,7 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
-from modules.autocount.write_back.link_lock import SoRowBusy, so_row_locks
+from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
 from modules.autocount.write_back.primitives import vendor_message
@@ -148,6 +148,25 @@ def _whole_row(plan: "_Plan", doc: Doc) -> bool:
     return po_row is not None and plan.qty is not None and _dec(po_row.get("Qty")) == plan.qty
 
 
+def linked_detail(document: Optional[Doc], po_dtl_key: int, replaced: List[Tuple[int, int]]) -> Optional[Doc]:
+    """Plan 64: the PO row a whole-row link landed on, from ``replaced`` (old -> new), as
+    read back in ``document``. Used when the flow did not name the row itself (a replay
+    of an operation stored before plan 64). None when it cannot be named exactly."""
+    rows = [r for r in (document or {}).get("Details") or [] if isinstance(r, dict)]
+    for old, new in replaced:
+        if old == po_dtl_key:
+            return next((r for r in rows if r.get("DtlKey") == new), None)
+    return None
+
+
+def row_of(document: Optional[Doc], dtl_key: Optional[int]) -> Optional[Doc]:
+    """The row ``dtl_key`` of ``document`` as read back, or None."""
+    if dtl_key is None:
+        return None
+    return next((r for r in (document or {}).get("Details") or [] if isinstance(r, dict)
+                 and r.get("DtlKey") == dtl_key), None)
+
+
 def _expected_link(row: Doc, is_spo: bool) -> int:
     """The link key the row must read back with: on a PO row AutoCount moves an
     SO link into ``FromSODtlKey``; an SPO row keeps ``FromDocDtlKey``."""
@@ -165,10 +184,13 @@ _HEADER_FREE_TOTALS = frozenset({
 
 def _header_unchanged(before: Doc, after: Doc, body: Doc) -> bool:
     """Every header field read before the write (and every one we sent) reads
-    back unchanged, except the audit stamps and the vendor-computed totals."""
+    back unchanged, except the audit stamps, the vendor-computed totals and the
+    vendor's Remark1 mirror (plan 65 D1, the one helper every PO verify uses)."""
     keys = {k for k in list(before) + list(body) if k != "Details"}
     for key in keys:
         if key.startswith(_HEADER_FREE_PREFIXES) or key in _HEADER_FREE_TOTALS:
+            continue
+        if payloads._remark_mirror(key, after, "PO"):  # the plan 55 flows verify PO / SPO documents
             continue
         expected = body[key] if key in body else before.get(key)
         if not _same(expected, after.get(key)):
@@ -289,7 +311,37 @@ class WriteBackService(WriteFrame):
     ) -> WriteActionResult:
         """Part of a row: the plan 55 split link (idempotent when a key is given).
         The whole row: the ``link_row`` operation (delete + add, plan 57). The gateway
-        passes ``operations`` (the plan 57 service); without it the plan 55 flow runs."""
+        passes ``operations`` (the plan 57 service); without it the plan 55 flow runs.
+        Plan 64: a ``done`` answer carries ``detail``, the PO row the link landed on."""
+        result = self._link(
+            tenant_id=tenant_id, company_id=company_id, po_doc_key=po_doc_key, po_dtl_key=po_dtl_key,
+            so_doc_key=so_doc_key, so_dtl_key=so_dtl_key, qty=qty, expected_last_modified=expected_last_modified,
+            key_id=key_id, idempotency_key=idempotency_key, operations=operations, so_doc_date=so_doc_date,
+            doc_date=doc_date,
+        )
+        if result.outcome != OUTCOME_DONE:
+            result.detail = None
+        elif result.detail is None:
+            result.detail = linked_detail(result.document, po_dtl_key, result.replaced_lines)
+        return result
+
+    def _link(
+        self,
+        *,
+        tenant_id: str,
+        company_id: str,
+        po_doc_key: int,
+        po_dtl_key: int,
+        so_doc_key: int,
+        so_dtl_key: int,
+        qty: Decimal,
+        expected_last_modified: Optional[str],
+        key_id: Optional[str],
+        idempotency_key: Optional[str],
+        operations: Optional["OperationService"],
+        so_doc_date: Optional[date],
+        doc_date: Optional[date],
+    ) -> WriteActionResult:
         if operations is not None:
             op = self._link_operation(operations, tenant_id, company_id, key_id, idempotency_key,
                                       po_doc_key, po_dtl_key, qty, doc_date)
@@ -372,6 +424,7 @@ class WriteBackService(WriteFrame):
             None, result.outcome, result.error_code, result.message, result.document,
             operation_id=result.operation_id, warnings=result.warnings,
             replaced_lines=result.replaced_lines, doc_key=result.doc_key, doc_no=result.doc_no,
+            detail=result.detail,
         )
 
     def unlink(
@@ -386,17 +439,19 @@ class WriteBackService(WriteFrame):
         idempotency_key: Optional[str] = None,
         operations: Optional["OperationService"] = None,
         doc_date: Optional[date] = None,
+        pool_location: Optional[str] = None,
     ) -> WriteActionResult:
         """With ``operations`` (the gateway): the ``unlink_row`` operation runs. Without
         it the plan 55 flow. Both send ONE replace PUT (plan 61 F4): AutoCount never
         edits a link in place."""
-        if operations is None:
+        if operations is None:  # plan 55 path (live runner only): no pool return; the gateway always has operations
             plan = _Plan(ACTION_UNLINK, _PO, po_doc_key, po_dtl_key)
             return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
         return self._operation(
             operations, "unlink_row", tenant_id, company_id, key_id, idempotency_key,
             {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "doc_date": doc_date,
-             "expected_last_modified": expected_last_modified},
+             "expected_last_modified": expected_last_modified,
+             **({"pool_location": pool_location} if pool_location else {})},  # absent = today's hash
         )
 
     def spo_unlink(
@@ -461,6 +516,7 @@ class WriteBackService(WriteFrame):
             self._check_test_company(row, company)
             self._check_capability(plan, row)
             self._check_not_busy(row, tenant_id, company.id, plan.doc_key)
+            self._check_no_operation(row, tenant_id, company.id, plan)
             row.outcome = OUTCOME_IN_FLIGHT
             try:
                 self.db.commit()
@@ -472,7 +528,15 @@ class WriteBackService(WriteFrame):
             return stop.result
         row_id = row.id
         self._lock_stack = ExitStack()
+        po_lock = ExitStack()  # held to the end of the flow (the SO row lock is released after PUT 1)
         try:
+            if plan.kind[0] == "PO":
+                # the per-PO-document lock first (link_lock: PO, then SO rows); inside an operation that already
+                # holds it, the held lock connection is reused
+                try:
+                    po_lock.enter_context(link_locks(self.db, company.id, po_doc_keys=[plan.doc_key]))
+                except SoRowBusy:
+                    return self._finish(row, OUTCOME_REFUSED, DOC_BUSY)
             if plan.action == ACTION_LINK and plan.so_dtl_key and not self.so_lock_held:
                 # the over-link guard and PUT 1 run under the per-SO-row lock (link_lock), released once PUT 1
                 # is verified and the index follows it; an operation that already holds it (split_link)
@@ -492,7 +556,17 @@ class WriteBackService(WriteFrame):
             return self._finish(row, outcome, INTERNAL_ERROR)
         finally:
             self._lock_stack.close()
+            po_lock.close()
             self.db.rollback()
+
+    def _check_no_operation(self, row: AcWriteAction, tenant_id: str, company_id: str, plan: _Plan) -> None:
+        """An ``in_progress`` operation on the document (other than the one running this flow) holds it: its
+        steps are not always ``in_flight`` actions, so the action busy check alone does not see it."""
+        window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+        if OperationRepository(self.db).has_in_progress(
+            tenant_id, company_id, plan.kind[0], plan.doc_key, window, exclude_id=self._operation_id,
+        ):
+            raise self._refuse(row, DOC_BUSY)
 
     def _check_capability(self, plan: _Plan, row: AcWriteAction) -> None:
         """Unlink and SPO unlink are refused outright while the vendor does not
@@ -620,8 +694,10 @@ class WriteBackService(WriteFrame):
                 return payloads.build_unlink_row(doc, plan.dtl_key, spo_ref=spo_ref)
             assert so_doc is not None and plan.so_dtl_key is not None and plan.qty is not None
             linked = self._so_linked_qty(company, doc, plan.so_dtl_key)
+            so_row = next((r for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key), None)
             return payloads.build_link(
                 doc, plan.dtl_key, so_doc, plan.so_dtl_key, plan.qty, so_linked_qty=linked, spo_ref=spo_ref,
+                note=payloads.so_link_note(so_doc, so_row) if so_row is not None else None,  # plan 66
             )
         except WriteRefusal as exc:
             raise self._refuse(row, exc.code, str(exc)) from None
@@ -634,18 +710,13 @@ class WriteBackService(WriteFrame):
         so_key = (po_row or {}).get("FromSODtlKey")
         if not so_key:
             return ""
-        found = []
-        for staged in self.staged.for_entity(company.tenant_id, company.id, ENTITY_SALES_ORDER):
-            for line in _lines(staged.raw_json):
-                if line.get("DtlKey") == so_key:
-                    found.append((staged.created_at, str(line.get("Location") or "")))
-        if not found:
+        found = self._so_row(company.tenant_id, company.id, int(so_key))  # C.d: one indexed query
+        if found is None:
             return ""
-        newest = max(created for created, _loc in found)
-        locations = {loc for created, loc in found if created == newest}
-        if len(locations) > 1:
+        _doc_no, location, ambiguous = found
+        if ambiguous:
             raise WriteRefusal(SO_LOCATION_AMBIGUOUS, "staged sales order copies disagree")
-        return locations.pop()
+        return location or ""
 
     def _so_linked_qty(self, company: AcCompany, fresh_po: Doc, so_dtl_key: int) -> Decimal:
         """Qty of the SO row already covered by PO rows: the fresh edited PO plus the
@@ -743,11 +814,11 @@ class WriteBackService(WriteFrame):
         SO-transferred row to HQ, price 0 and an empty date (B4). Never retried.
         Only the location not landing is ``done`` with ``LOCATION_NOT_MOVED`` (the
         link stands); a price / date not landing is ``mismatch``
-        ``ROW_VALUES_NOT_KEPT``, never a quiet ``done`` on a zero-priced row."""
-        target = next(
-            (r.get("Location") for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key),
-            None,
-        )
+        ``ROW_VALUES_NOT_KEPT``, never a quiet ``done`` on a zero-priced row. The values are
+        the batch's rule (plan 65 D2 / D4: the SO row's date, a percentage discount, the note)."""
+        so_row = next((r for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key), None)
+        target = so_row.get("Location") if so_row is not None else None
+        so_link = payloads.so_link_values(so_doc, so_row) if so_row is not None else None
         before_keys = {r.get("DtlKey") for r in before.get("Details") or []}
         new_row = next(
             (
@@ -757,14 +828,18 @@ class WriteBackService(WriteFrame):
             None,
         )
         sent_new = next((r for r in body1.get("Details") or [] if not r.get("DtlKey")), {})
-        wanted = payloads.transfer_restore(sent_new, target)
+        wanted = payloads.transfer_restore(sent_new, target, so_link)
         restore = payloads.transfer_row_drift(wanted, new_row) if new_row is not None else {}
         if not restore:
             result = self._finish(row, OUTCOME_DONE, document=after1)
+            result.detail = new_row
             self._stage(company, plan.kind[0], after1)
             return result
         new_key = int(new_row["DtlKey"])  # type: ignore[index]
         values = {k: v for k, v in restore.items() if k != "Location"}
+        # the note is never read back (plan 65 P3): sent, never judged
+        readable = {k: v for k, v in restore.items() if k not in payloads.UNREADABLE_ROW_KEYS}
+        readable_values = {k: v for k, v in values.items() if k not in payloads.UNREADABLE_ROW_KEYS}
         body2 = payloads.build_restore_transfer_row(after1, new_key, restore)
         first_status = row.response_status
         row.request_json = [body1, body2]
@@ -801,13 +876,14 @@ class WriteBackService(WriteFrame):
                     if verify_relocate(after1, after2, new_key, restore.get("Location"), body2, values):
                         code = None
         landed = next((r for r in final.get("Details") or [] if r.get("DtlKey") == new_key), {})
-        if values and (not verified or payloads.transfer_row_drift(values, landed)):
+        if readable_values and (not verified or payloads.transfer_row_drift(readable_values, landed)):
             self.db.commit()
             return self._finish(row, OUTCOME_MISMATCH, ROW_VALUES_NOT_KEPT, document=final)
-        if verified and code is not None and not payloads.transfer_row_drift(restore, landed):
+        if verified and code is not None and not payloads.transfer_row_drift(readable, landed):
             self.db.commit()  # restored, but something else moved
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
         result = self._finish(row, OUTCOME_DONE, code, document=final)
+        result.detail = row_of(final, new_key)
         self._stage(company, plan.kind[0], final)
         return result
 

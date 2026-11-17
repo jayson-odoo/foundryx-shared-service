@@ -102,6 +102,12 @@ celery_app.conf.beat_schedule = {
     # self-reschedule was lost to a crash (omnichannel Slice 4). Defined in this
     # worker (the sole beat host); guarded so a missing module is a no-op.
     "retry-due-webhooks": {"task": "webhooks.retry_due", "schedule": 60.0},
+    # Lead Capture consumer deliveries (plan 64 AC-64-63) - re-drives PENDING
+    # rows whose retry time passed (a lost self-reschedule). Module-absence safe.
+    "lead-capture-deliveries-due": {"task": "lead_capture.deliveries_due", "schedule": 60.0},
+    # Lead Capture backfill (plan 64 AC-64-28) - re-reads every routing
+    # source's forms for leads the webhook missed. Module-absence safe.
+    "lead-capture-backfill-due": {"task": "lead_capture.backfill_due", "schedule": 900.0},
     # Resume workflow runs parked by an omnichannel Ask-a-question / Wait step
     # whose deadline passed (plan sprint-4/31 S4, D-A5-10/F8). Module-owned
     # work, defined + scheduled HERE (the sole beat host) and guarded exactly
@@ -324,6 +330,126 @@ def retry_due_webhooks_task() -> dict:
         return {"redriven": run_due_deliveries(db)}
     except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("webhook retry tick failed")
+        db.rollback()
+        return {"redriven": 0}
+    finally:
+        db.close()
+
+
+# ── Lead Capture (plan 64 L3/L4) - module-owned work on the deployed workflow
+# worker (no extra process). Each task opens its own session; a missing module
+# is a no-op. Only ids ever cross the queue (leads are personal data).
+LEADGEN_RETRY_COUNTDOWNS = [60, 300, 900, 1800, 3600, 7200]
+
+
+@celery_app.task(bind=True, name="lead_capture.process_leadgen", max_retries=len(LEADGEN_RETRY_COUNTDOWNS))
+def lead_capture_process_leadgen(self, page_id: str, leadgen_id: str, form_id: str = "", created_time=None) -> dict:
+    """The ingress already answered Meta 200, so Meta will not resend: a failed
+    Graph read is retried HERE (1 min .. 2 h) until the lead is stored.
+    Idempotent on (source, leadgen id), so a retry never doubles a lead."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.services.leadgen_service import process_leadgen
+    except ImportError:
+        return {"leads": 0}
+    db = SessionLocal()
+    try:
+        return {"leads": len(process_leadgen(db, page_id, leadgen_id, form_id, created_time))}
+    except Exception as exc:  # noqa: BLE001 - logged with ids only
+        db.rollback()
+        retries = self.request.retries or 0
+        if not settings.celery_task_always_eager and retries < len(LEADGEN_RETRY_COUNTDOWNS):
+            logger.warning("lead_capture leadgen processing failed (%s), retry %s", type(exc).__name__, retries + 1)
+            raise self.retry(countdown=LEADGEN_RETRY_COUNTDOWNS[retries])
+        logger.exception("lead_capture leadgen processing failed for good")
+        return {"leads": 0, "error": "processing failed"}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="lead_capture.deliver")
+def lead_capture_deliver(delivery_id: str) -> str:
+    """One delivery attempt; a retry reschedules itself (the due tick is the
+    backstop after a crash). Eager dev runs one attempt inline."""
+    from datetime import datetime, timezone
+
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.models import LcDelivery
+        from modules.lead_capture.services.delivery_service import dispatch
+    except ImportError:
+        return "skip"
+    db = SessionLocal()
+    try:
+        outcome = dispatch(db, delivery_id)
+        if outcome == "retry" and not settings.celery_task_always_eager:
+            row = db.query(LcDelivery).filter(LcDelivery.id == delivery_id).first()
+            if row is not None and row.next_at is not None:
+                delay = (row.next_at - datetime.now(timezone.utc)).total_seconds()
+                lead_capture_deliver.apply_async((delivery_id,), countdown=max(1, int(delay)))
+        return outcome
+    except Exception:  # noqa: BLE001
+        logger.exception("lead_capture delivery %s failed", delivery_id)
+        db.rollback()
+        return "error"
+    finally:
+        db.close()
+
+
+@celery_app.task(name="lead_capture.backfill_source")
+def lead_capture_backfill_source(source_id: str) -> dict:
+    """One backfill run for one source ("Run now", or right after a reconnect)."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.services.backfill_service import backfill_source
+    except ImportError:
+        return {"leads": 0}
+    db = SessionLocal()
+    try:
+        return {"leads": backfill_source(db, source_id)}
+    except Exception:  # noqa: BLE001 - ids only in the log
+        logger.exception("lead_capture backfill failed for source %s", source_id)
+        db.rollback()
+        return {"leads": 0, "error": "backfill failed"}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="lead_capture.backfill_due")
+def lead_capture_backfill_due() -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.services.backfill_service import run_due
+    except ImportError:
+        return {"sources": 0}
+    db = SessionLocal()
+    try:
+        return {"sources": run_due(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("lead_capture backfill tick failed")
+        db.rollback()
+        return {"sources": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="lead_capture.deliveries_due")
+def lead_capture_deliveries_due() -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.lead_capture.services.delivery_service import run_due
+    except ImportError:
+        return {"redriven": 0}
+    db = SessionLocal()
+    try:
+        return {"redriven": run_due(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("lead_capture delivery tick failed")
         db.rollback()
         return {"redriven": 0}
     finally:

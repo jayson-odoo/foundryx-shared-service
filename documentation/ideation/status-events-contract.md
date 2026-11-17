@@ -84,6 +84,40 @@ a real one (so the test lane can verify the pipeline), but the feed excludes
 CRM's OWN contract (Appendix A) adds a second guard: never send a real
 WhatsApp message when `is_test` is true, even if it somehow saw the row.
 
+### 2a. Instant poke (owner ruling 15 Nov, CRM #2433 option c)
+
+Right after the commit that writes one or more events, the shared service
+POSTs to the tenant's CRM so it pulls the feed NOW instead of on its 15-minute
+safety check (which stays: a missed poke is fine).
+
+- Target: the tenant's OWN active `sorento` consumer connection (Settings >
+  Integrations: base URL + API key, the same one the AutoCount sink uses). No
+  connection, an inactive one, or one in ERROR = no poke. Never another
+  tenant's or the platform's.
+- `POST {baseUrl}{POKE_PATH}` with header `X-API-Key: <the connection key>`,
+  JSON body `{"event_ids": ["<event_id>", ...], "latest_seq": <max seq>}`: one
+  poke per commit per tenant, listing every event id written in it.
+  **Path and body are provisional until the CRM lane FEEDBACK-STATUS-WA
+  publishes its endpoint** (`modules/ideation/services/crm_poke.py`
+  `POKE_PATH` / `_body`).
+- Sent `POKE_DELAY_SECONDS` (6 s) after the commit, i.e. just past the feed's
+  5 s settle window (section 2): a pull the CRM makes on receipt already sees
+  the new rows.
+- Fire and forget: background thread, 3 s timeout per connect/read phase, at
+  most ONE retry (transport error or 5xx only; a 4xx is never retried). The
+  status change never waits on or fails because of it. Test-idea events never
+  poke. The key is never logged.
+- One poke per ROOT commit per tenant: savepoints inside the transaction (item
+  number / link mints) neither send nor drop it.
+- The key presented is the tenant's Sorento integration key (the AutoCount ESB
+  integration on the CRM side), so the CRM attributes pokes to that
+  integration and should scope the endpoint accordingly.
+- The CRM should treat the poke as "pull the feed now" (cursor-based, so a
+  duplicate or out-of-order poke is harmless).
+- Known limit: the connection lookup is one read inside the status change's
+  transaction; on Postgres a failure of that read (e.g. a statement timeout)
+  would abort the transaction. Accepted as very unlikely (one indexed row).
+
 ## 3. Payload (exact keys - `test_event_payload_exact_keys`)
 
 Snake_case (the server-to-server intake convention), one object per feed
@@ -103,6 +137,7 @@ item:
   "status_label": "Discussed",
   "from_status_label": "New",
   "track_url": "https://<frontend>/public/ideas/<token>",
+  "board_url": "https://<board base>/<link token>/IDEA-0042",
   "requester_phone": "+60123456789",
   "merged_into": null,
   "separated_from": null,
@@ -119,6 +154,7 @@ item:
 | `separated_from` | `null`, or `{"idea_number", "title"}` of the FORMER survivor - set only on an `unmerged` event. |
 | `requester_phone` | The recipient's own resolved contact phone (tenant-scoped lookup - never a cross-tenant stored id). |
 | `is_test` | Copied from the recipient idea, independent of the idea that triggered the fan-out. |
+| `board_url` | Lane PUBLIC-IDEAS-BOARD (additive, nullable). The **recipient's own** personal feedback board link, opening the recipient's idea: `{board base}/{link token}/{idea_number}`. Board base = `{origin of public_link_base_url}/feedback/board` when that tenant setting is a `{token}` template (the Sorento CRM public page), else `{public_link_base_url or frontend_url}/public/feedback/board`. `null` when the recipient has no same-tenant contact or the idea is a test idea. **A bearer credential** (no login; valid until staff cancel it): send it only to `requester_phone`, never log it. `track_url` is unchanged. Contract: `feedback-link-contract.md`. |
 | `idea_type` | The recipient idea's type key (`idea` \| `issue`, from the `idea_types` table; SS-IDEA-TYPE) so the host can word an issue update differently. Additive. |
 
 ## 4. Merge and unmerge semantics (owner Q3, 28 Sep 2026)

@@ -12,7 +12,10 @@ response body beyond a bounded row count, and never persists anything.
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional
+import http.cookiejar
+import os
+import threading
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -71,16 +74,76 @@ def _dev_local_exempt(host: str) -> bool:
     return settings.environment == "development" and _is_dev_local_host(host)
 
 
-def autocount_guarded_client(timeout: float) -> httpx.Client:
+def autocount_guarded_client(timeout: float, *, limits: Optional[httpx.Limits] = None) -> httpx.Client:
     """A fresh client for an AutoCount base URL: redirects are not followed and
     the connection goes only to an address that passed the guard, with the same
     development carve-out for local hosts as the pre-flight."""
     return httpx.Client(
-        transport=GuardedTransport(subject="baseUrl", exempt_host=_dev_local_exempt),
+        transport=GuardedTransport(subject="baseUrl", exempt_host=_dev_local_exempt, limits=limits),
         timeout=timeout,
         follow_redirects=False,
     )
 
+
+
+# SS-AUTOCOUNT-SPEEDUP: the write-back reader and writer share ONE guarded client per
+# process, so the calls of one link reuse a kept-alive connection instead of paying a
+# new TLS handshake each. The guard still runs on every NEW connection (at connect,
+# GuardedTransport); a kept-alive connection only ever goes to an address that passed
+# it (keep-alive 5 s, url_guard._default_limits). Each request carries its caller's own
+# timeout (``build_request(timeout=...)``), so the pool's default is only a fallback.
+SHARED_CLIENT_TIMEOUT_SECONDS = 90.0
+# No cap on open connections: a per-call client never queued behind another call, and a
+# write that waited for a free slot would fail as a timeout (an unknown outcome) though
+# nothing was sent. Only the idle kept-alive connections are bounded.
+SHARED_CLIENT_LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=20, keepalive_expiry=5.0)
+_shared_lock = threading.Lock()
+_shared: Optional[Tuple[int, httpx.Client]] = None
+
+
+class _NoCookies(http.cookiejar.DefaultCookiePolicy):
+    """The shared client keeps no cookie: a per-call client never sent one, and a kept cookie
+    would ride from one company / tenant to the next on the same wrapper host."""
+
+    def set_ok(self, cookie: Any, request: Any) -> bool:
+        return False
+
+    def return_ok(self, cookie: Any, request: Any) -> bool:
+        return False
+
+
+def shared_autocount_client() -> httpx.Client:
+    """The process-wide guarded client (built on first use; a forked worker or a
+    closed client gets a new one). Callers never close it. Never call
+    ``abort_connections`` on its transport: that would stop every later call."""
+    global _shared
+    pid = os.getpid()
+    with _shared_lock:
+        if _shared is None or _shared[0] != pid or _shared[1].is_closed:
+            client = autocount_guarded_client(SHARED_CLIENT_TIMEOUT_SECONDS, limits=SHARED_CLIENT_LIMITS)
+            client.cookies = http.cookiejar.CookieJar(policy=_NoCookies())  # the jar itself, not a copy
+            _shared = (pid, client)
+        return _shared[1]
+
+
+def reset_shared_autocount_client() -> None:
+    """Close and forget the shared client (tests; a new one is built on next use)."""
+    global _shared
+    with _shared_lock:
+        if _shared is not None and _shared[0] == os.getpid():
+            _shared[1].close()
+        _shared = None
+
+
+def _after_fork_in_child() -> None:
+    """A forked child starts with a free lock and no client (the parent's lock may have been held)."""
+    global _shared_lock, _shared
+    _shared_lock = threading.Lock()
+    _shared = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 
 def assert_autocount_base_url_deliverable(base_url: str) -> None:
     """AC-10-58 M2 - the outbound-egress guard: every AutoCount open-REST

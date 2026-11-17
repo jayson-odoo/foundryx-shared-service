@@ -168,7 +168,12 @@ def test_ac_55_31_po_row_resolves_so_line_ref_through_staged_so(h):
 
 
 def test_ac_55_31_unstaged_so_keeps_numbers_drops_ref_no_exception(h):
+    from modules.autocount.write_back.link_index import refresh_links
+
+    gone = h.db.query(AcStagedRecord).filter(AcStagedRecord.entity_type == "sales_order").all()
     h.db.query(AcStagedRecord).filter(AcStagedRecord.entity_type == "sales_order").delete()
+    for rec in gone:  # the removal stands in for a staging delete: the SO-row index follows it
+        refresh_links(h.db, rec.tenant_id, rec.company_id, "sales_order", rec.source_ref, deleted=True)
     h.db.commit()
     _entity, rec = _map(h, _load("po_202602_S0007.json"))
     line = _line(rec, 12011)

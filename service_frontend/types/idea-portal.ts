@@ -3,15 +3,25 @@
  * `service_backend/modules/ideation/schemas.py` `Portal*` models.
  */
 
-export type PortalKind = 'staff' | 'crm';
+/** `contact` = a dealer on a personal feedback link (lane PUBLIC-IDEAS-BOARD). */
+export type PortalKind = 'staff' | 'crm' | 'contact';
+
+/** A product's look on its feedback board (lane SS-MULTI-PRODUCT-BOARD). */
+export interface PortalBrand {
+  name: string | null;
+  color: string | null;
+}
 
 export interface PortalPrincipal {
   kind: PortalKind;
   name: string | null;
   role: string;
+  /** Set when the board is scoped to one product: only that product shows. */
   productId: string | null;
   /** May hide ideas, edit changelog notes and delete anyone's comment. */
   canManage: boolean;
+  /** The product's board colour + name; null/absent = the default look. */
+  brand?: PortalBrand | null;
 }
 
 export interface PortalSession {
@@ -30,8 +40,9 @@ export interface PortalCard {
   column: string | null;
   statusLabel: string | null;
   statusColor: string | null;
-  productName: string | null;
-  submittedAt: string | null;
+  /** Omitted (not null) on another dealer's item for a contact viewer (owner ruling (b)). */
+  productName?: string | null;
+  submittedAt?: string | null;
 }
 
 export interface PortalColumn {
@@ -67,12 +78,14 @@ export interface PortalTimelineStep {
 }
 
 export interface PortalIdea extends PortalCard {
-  problem: string | null;
-  desiredOutcome: string | null;
+  /** The free text + submitter keys are omitted on another dealer's item for a
+   * contact viewer (owner ruling (b)); present for everyone else. */
+  problem?: string | null;
+  desiredOutcome?: string | null;
   /** One entry per use case. */
-  useCases: string[] | null;
-  currentWorkaround: string | null;
-  submitterFirstName: string | null;
+  useCases?: string[] | null;
+  currentWorkaround?: string | null;
+  submitterFirstName?: string | null;
   timeline: PortalTimelineStep[];
   portalHidden: boolean | null;
   note: string | null;

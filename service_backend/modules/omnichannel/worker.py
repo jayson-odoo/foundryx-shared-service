@@ -42,6 +42,17 @@ celery_app.conf.update(
 )
 
 
+def _boot_module_hooks() -> None:
+    from app.module_loader import boot_module_hooks
+
+    boot_module_hooks()
+
+
+from app.lazy_registry import lazy_once  # noqa: E402
+
+_ensure_module_hooks = lazy_once(_boot_module_hooks)
+
+
 @celery_app.task(
     name="omnichannel.process_inbound_webhook",
     autoretry_for=(Exception,),
@@ -54,6 +65,12 @@ def process_inbound_webhook(channel_id: str, payload: dict) -> dict:
     # Import inside the task so the Celery worker process loads the app stack
     # (and its DB engine) lazily, not at module import.
     from app.database import SessionLocal
+
+    # Plan 64 D5: other Services claim Meta webhook changes (Lead Capture's
+    # Page `leadgen`) in their boot hooks. This worker process never runs
+    # `load_modules`, so without this the core registry is empty here and the
+    # ingress would drop those changes in production (eager dev hid it).
+    _ensure_module_hooks()
     from modules.omnichannel.services.inbound_service import InboundService
 
     db = SessionLocal()

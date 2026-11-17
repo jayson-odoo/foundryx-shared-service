@@ -41,6 +41,8 @@ from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaStatusEvent
 from .numbering import mint_idea_identity
+from .crm_poke import queue_crm_poke
+from .feedback_links import mint_board_link
 from .sinks import mint_idea_link
 from .statuses import IDEA_ENTITY
 
@@ -110,6 +112,10 @@ def _write_event(
     DB-computed value back so ``occurred_at`` reflects it exactly."""
     mint_idea_identity(db, recipient)
     track_url = mint_idea_link(db, recipient)
+    # Lane PUBLIC-IDEAS-BOARD: the requester's personal feedback board link,
+    # opening this idea (``None`` when the idea has no same-tenant contact).
+    # ``track_url`` stays the per-idea status page, unchanged.
+    board_url = mint_board_link(db, recipient)
 
     row = IdeaStatusEvent(
         id=str(uuid.uuid4()),
@@ -136,12 +142,18 @@ def _write_event(
         "status_label": status_label,
         "from_status_label": from_status_label,
         "track_url": track_url,
+        "board_url": board_url,
         "requester_phone": requester_phone,
         "merged_into": merged_into,
         "separated_from": separated_from,
         "is_test": bool(recipient.is_test),
     }
     db.flush()
+    # Owner ruling 15 Nov (CRM #2433, c): poke the tenant's CRM right after
+    # this commit so the dealer's WhatsApp update goes out now (fire and
+    # forget; the CRM's 15-minute safety check covers a miss). Test ideas never.
+    if not recipient.is_test:
+        queue_crm_poke(db, tenant_id, row.id, row.seq)
 
 
 # ── 1. the CRUD event-bus subscriber (status_changed) ───────────────────────

@@ -82,7 +82,7 @@ def test_null_setting_keeps_shared_service_link(db):
     """NULL = today's shared-service status page, unchanged."""
     from modules.ideation.services.sinks import mint_idea_link
 
-    assert mint_idea_link(db, _idea()) == f"{_ss_base()}/public/ideas/{TOKEN}"
+    assert mint_idea_link(db, _idea()) == f"{_ss_base()}/public/feedback/{TOKEN}"
 
 
 def test_no_status_token_is_none_even_with_tenant_base(db):
@@ -123,7 +123,7 @@ def test_tenant_base_is_tenant_scoped(db):
     from modules.ideation.services.sinks import mint_idea_link
 
     _set_link_base(db, "https://crm.other.my/portal/ideas/{token}", tenant_id="other-tenant")
-    assert mint_idea_link(db, _idea()) == f"{_ss_base()}/public/ideas/{TOKEN}"
+    assert mint_idea_link(db, _idea()) == f"{_ss_base()}/public/feedback/{TOKEN}"
 
 
 # ── settings API (/settings/general) ─────────────────────────────────────────

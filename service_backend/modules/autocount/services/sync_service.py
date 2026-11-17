@@ -1438,6 +1438,14 @@ class SyncService:
 
         pending = self.staged.list_pending_for_job(tenant_id, company_id, job_id)
         self.staged.mark(pending, status=STAGED_DISCARDED)
+        # lane AUTOCOUNT-STRANDED-OPS C.d: a discarded delete intent must give the document its write-back index
+        # rows back (staging the intent emptied them); rebuild every indexed document the job touched
+        from modules.autocount.write_back.link_index import INDEXED_ENTITIES, refresh_links
+
+        self.db.flush()
+        for entity_type, ref in sorted({(r.entity_type, r.source_ref) for r in pending
+                                        if r.entity_type in INDEXED_ENTITIES}):
+            refresh_links(self.db, tenant_id, company_id, entity_type, ref)
 
         summary = dict(job.result_json or {})
         summary.update(

@@ -203,7 +203,11 @@ def test_h3b_reader_maps_url_guard_failure_to_read_failed(monkeypatch):
     def boom(*a, **k):
         raise UrlGuardError("blocked")
 
-    monkeypatch.setattr("modules.autocount.write_back.reader.autocount_guarded_client", boom)
+    # SS-AUTOCOUNT-SPEEDUP: the reader / writer build the pooled client through http_client
+    from modules.autocount import http_client
+
+    http_client.reset_shared_autocount_client()
+    monkeypatch.setattr(http_client, "autocount_guarded_client", boom)
     reader = AutoCountDocReader(DB3)
     with pytest.raises(DocReadError) as exc:
         reader.get_document("PO", 12008, datetime(2026, 2, 1).date())
@@ -224,7 +228,11 @@ def test_h3b_write_client_maps_url_guard_failure_to_write_connect(monkeypatch):
     def boom(*a, **k):
         raise UrlGuardError("blocked")
 
-    monkeypatch.setattr("modules.autocount.write_back.client.autocount_guarded_client", boom)
+    # SS-AUTOCOUNT-SPEEDUP: the reader / writer build the pooled client through http_client
+    from modules.autocount import http_client
+
+    http_client.reset_shared_autocount_client()
+    monkeypatch.setattr(http_client, "autocount_guarded_client", boom)
     client = AutoCountWriteClient(DB3)
     with pytest.raises(WriteTransportError) as exc:
         client.put("/EditPurchaseOrderbydockey", {"DocKey": 1})
@@ -764,6 +772,16 @@ def _staged_so(h):
     ).one()
 
 
+def _reindex_so(h):
+    """A raw edit of the staged SO stands in for a staging write: refresh the SO-row index as that write does."""
+    from modules.autocount.write_back.link_index import refresh_links
+
+    ref = h.db.query(AcStagedRecord.source_ref).filter(
+        AcStagedRecord.company_id == h.company.id, AcStagedRecord.entity_type == "sales_order").first()[0]
+    refresh_links(h.db, DEFAULT_TENANT_ID, h.company.id, "sales_order", ref)
+    h.db.commit()
+
+
 def _stranded(h) -> int:
     h.ac.put2_mode = "ignore"
     assert h.link_split().error_code == "LOCATION_NOT_MOVED"
@@ -803,6 +821,7 @@ def test_relocate_lookup_uses_the_newest_staged_so_record(vh, live_books_open):
     newest.created_at = now
     _add_old_so(h, "BRW-OLD", now - timedelta(days=1))
     h.db.commit()
+    _reindex_so(h)
     res = h.service().relocate(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=dtl
     )
@@ -819,6 +838,7 @@ def test_relocate_lookup_refuses_two_equally_new_conflicting_records(vh, live_bo
     first.created_at = same
     _add_old_so(h, "BRW-TWO", same)
     h.db.commit()
+    _reindex_so(h)
     res = h.service().relocate(
         tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, po_doc_key=12008, po_dtl_key=dtl
     )
@@ -1002,8 +1022,8 @@ def test_split_response_status_records_both_statuses(vh):
     assert row.response_status == [200, 200]
 
 
-def test_single_write_link_response_status_stays_one_status(vh):
+def test_split_link_response_status_records_the_link_and_the_note_put(vh):
     h = vh
     h.ac.force_hq = False
     res = h.link_split()
-    assert h.action(res).response_status in (200, [200])
+    assert h.action(res).response_status == [200, 200]  # plan 65 D4: the note's restore write always follows

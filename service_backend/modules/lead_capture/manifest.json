@@ -1,0 +1,19 @@
+{
+  "module_name": "lead_capture",
+  "version": "0.1.1",
+  "author": "Foundryx",
+  "title": "Lead Capture",
+  "description": "Capture leads from Facebook and Instagram lead forms and deliver them to your CRM.",
+  "icon": "magnet",
+  "required_core_version": ">=1.0.0",
+  "schema": "app_lead_capture",
+  "alembic_version_table": "alembic_version_lead_capture",
+  "requires": [],
+  "optional": [{"name": "omnichannel"}],
+  "provides": [],
+  "routers": [
+    {"name": "staff", "prefix": "/lead-capture"},
+    {"name": "gateway", "prefix": "/api/v1/lead-capture", "public": true}
+  ],
+  "permissions_csv": "permissions/permissions.csv"
+}

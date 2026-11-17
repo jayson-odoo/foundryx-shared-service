@@ -248,11 +248,13 @@ def test_cap_whole_row_link_on_is_one_replace_put_then_the_move(h):
 # ---- 2. split link as two writes ----------------------------------------------------
 
 def test_split_put1_is_the_split_body_then_put2_moves_the_new_row(h):
-    from modules.autocount.write_back.payloads import build_link
+    from modules.autocount.write_back.payloads import build_link, so_link_note
 
-    expected1 = build_link(
+    so = h.ac.docs["salesorderbydocdate"][0]
+    so_row = next(r for r in so["Details"] if r["DtlKey"] == 11989)
+    expected1 = build_link(  # plan 66: the new linked row carries the S/O note in PUT 1 too
         copy.deepcopy(h.ac.docs["purchaseorderbydocdate"][0]), 12017,
-        h.ac.docs["salesorderbydocdate"][0], 11989, Decimal(10),
+        so, 11989, Decimal(10), note=so_link_note(so, so_row),
     )
     res = _split(h)
     assert res.outcome == "done" and res.error_code is None
@@ -280,13 +282,14 @@ def test_split_action_row_records_both_bodies_and_responses(h):
     assert row.outcome == "done" and row.error_code is None
 
 
-def test_split_vendor_keeping_location_means_no_put2(h):
+def test_split_vendor_keeping_location_means_put2_sends_only_the_note(h):
     h.ac.force_hq = False
     res = _split(h)
     assert res.outcome == "done" and res.error_code is None
-    assert len(h.ac.put_calls) == 1
+    assert len(h.ac.put_calls) == 2  # plan 65 D4: PUT 2 carries only the note
     body0 = h.ac.put_bodies[0]
-    assert h.action(res).request_json in (body0, [body0])
+    assert h.action(res).request_json == [body0, h.ac.put_bodies[1]]
+    assert "FurtherDescription" in h.ac.put_bodies[1]["Details"][0]
     assert h.ac.linked_row(11989)["Location"] == "BRW-AM"
 
 
@@ -358,6 +361,10 @@ def test_relocate_location_comes_from_the_staged_so_row(h):
         if r["DtlKey"] == 11989:
             r["Location"] = "BRW-ZZ"
     so.raw_json = raw
+    h.db.commit()
+    from modules.autocount.write_back.link_index import refresh_links  # the raw edit stands in for a staging write
+
+    refresh_links(h.db, so.tenant_id, so.company_id, "sales_order", so.source_ref)
     h.db.commit()
     _relocate(h, dtl)
     assert h.ac.put_bodies[0]["Details"][0]["Location"] == "BRW-ZZ"
@@ -517,6 +524,7 @@ def test_deadline_with_a_verified_readback_in_hand_is_not_discarded(h, monkeypat
     monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
     _slow_readback_after_first_put(h)
     res = h.link_split()
-    assert res.outcome == "done" and res.error_code is None
+    # plan 65 D4: the note's restore is due and the deadline skips it: done, the link stands, with the code
+    assert res.outcome == "done" and res.error_code == "LOCATION_NOT_MOVED"
     assert len(h.ac.put_calls) == 1
     assert h.staged_po().raw_json == _expected_staged(h)

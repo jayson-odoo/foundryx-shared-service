@@ -225,9 +225,9 @@ def _assert_in_scope(db: Session, principal: EmbedTokenPrincipal, idea_id: str) 
         .first()
     )
     if idea is None:
-        raise ApiError(404, "not_found", "Idea not found.")
+        raise ApiError(404, "not_found", "Feedback not found.")
     if principal.product_id and idea.product_id != principal.product_id:
-        raise ApiError(404, "not_found", "Idea not found.")
+        raise ApiError(404, "not_found", "Feedback not found.")
 
 
 def _viewer(principal: EmbedTokenPrincipal) -> SubmitterIdentity:
@@ -263,7 +263,7 @@ def _assert_can_manage(
     ids = list(dict.fromkeys(i for i in idea_ids if i))
     mine = owned_ids(db, principal.tenant_id, ids, _viewer(principal))
     if any(i not in mine for i in ids):
-        raise ApiError(403, "not_owner", "You can only change ideas you submitted.")
+        raise ApiError(403, "not_owner", "You can only change feedback you submitted.")
 
 
 @router.get("/ideas", response_model=List[IdeaOut])
@@ -428,7 +428,7 @@ def embed_promote_ideas(
         or not user.tenant.signin_allowed
         or PROMOTE_PERMISSION not in effective_permission_keys(user)
     ):
-        raise ApiError(403, "forbidden", "You do not have permission to promote ideas.")
+        raise ApiError(403, "forbidden", "You do not have permission to promote feedback.")
     for idea_id in dict.fromkeys(body.ideaIds):
         _assert_in_scope(db, principal, idea_id)
     product_id = principal.product_id or IdeaReadService(db).single_product_id(

@@ -88,7 +88,9 @@ class SubmitterIdentity:
         return self.crm is None and not self.digits
 
 
-def _contact_ids_for(db: Session, tenant_id: str, ident: SubmitterIdentity) -> List[str]:
+def contact_ids_for(db: Session, tenant_id: str, ident: SubmitterIdentity) -> List[str]:
+    """The same-tenant contact ids the identity's PHONE resolves to (empty
+    without a phone; never by name or CRM id)."""
     if not ident.digits:
         return []
     return [c.id for c in find_contacts_by_phone(db, tenant_id, ident.phone)]
@@ -100,7 +102,7 @@ def owned_filter(db: Session, q: Query, tenant_id: str, ident: SubmitterIdentity
     clauses = []
     if ident.crm:
         clauses.append(Idea.submitter_crm_user_id == ident.crm)
-    contact_ids = _contact_ids_for(db, tenant_id, ident)
+    contact_ids = contact_ids_for(db, tenant_id, ident)
     if contact_ids:
         clauses.append(Idea.submitter_contact_id.in_(contact_ids))
     if not clauses:
@@ -128,3 +130,17 @@ def merged_child_ids(db: Session, tenant_id: str, idea_id: str) -> List[str]:
             Idea.tenant_id == tenant_id, Idea.merged_into_id == idea_id
         )
     ]
+
+
+def person_contact_ids(db: Session, tenant_id: str, contact_id: str) -> List[str]:
+    """Every same-tenant contact id that is the SAME person as ``contact_id``:
+    itself plus each contact with the same exact phone digits (never by name).
+    Sorted, so ``[0]`` is the one canonical id a new vote is stored under
+    (lane PUBLIC-IDEAS-BOARD: one vote per person, board and WhatsApp alike)."""
+    contact = (
+        db.query(Contact).filter(Contact.id == contact_id, Contact.tenant_id == tenant_id).first()
+    )
+    ids = {contact_id}
+    if contact is not None:
+        ids |= {c.id for c in find_contacts_by_phone(db, tenant_id, contact.phone)}
+    return sorted(ids)
