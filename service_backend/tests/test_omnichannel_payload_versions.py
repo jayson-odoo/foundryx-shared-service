@@ -92,6 +92,9 @@ def test_every_registered_shape_is_versioned_and_has_its_keys():
     from modules.omnichannel import schemas
 
     for shape, keys in pv.GATED_KEYS.items():
+        if shape in pv.HAND_BUILT:
+            assert not hasattr(schemas, shape), shape
+            continue
         cls = getattr(schemas, shape)
         assert issubclass(cls, VersionedPayload), shape
         for key in keys:
@@ -103,18 +106,43 @@ def test_header_1_is_byte_identical_to_no_header(client, session_factory, posted
     assert_matches_snapshots(run_scenario(client, session_factory, posted, {HEADER: "1"}))
 
 
-def test_header_2_adds_only_the_v2_key_and_keeps_rio_and_webhooks_identical(client, session_factory, posted):
+def _all_v2_keys():
+    return {key for keys in pv.GATED_KEYS.values() for key in keys}
+
+
+def _without_v2_keys(text):
+    """A JSON body with every version 2 key removed, kept as ordered key/value
+    pairs so key order is still compared."""
+    gated = _all_v2_keys()
+    return json.loads(text, object_pairs_hook=lambda pairs: [(k, v) for k, v in pairs if k not in gated])
+
+
+# The versioned API responses of the snapshot scenario: version 2 adds keys to
+# these and to nothing else.
+V2_CHANGED_API = {
+    "api.webhooks.create", "api.webhooks.list", "api.webhooks.update",
+    "api.webhooks.disable", "api.webhooks.enable",
+    "api.contacts.list", "api.contacts.get", "api.contacts.update", "api.contacts.messages",
+}
+
+
+def test_header_2_adds_only_v2_keys_and_keeps_rio_and_webhooks_identical(client, session_factory, posted):
     out = run_scenario(client, session_factory, posted, {HEADER: "2"})
     expected = {p.stem: p.read_bytes().decode("utf-8") for p in SNAPSHOT_DIR.glob("*.json")}
     assert sorted(out) == sorted(expected)
+    changed = set()
     for name, want in expected.items():
-        if name.startswith("api.webhooks."):
-            # The one V2-only key in S0, appended as the item's last key.
-            want = want.replace('"updatedAt":"<ts>"}', '"updatedAt":"<ts>","payloadVersion":1}')
-            assert '"payloadVersion":1' in want, name
-        # Everything else, including every ?format=rio shape and every webhook
-        # body (the endpoint is version 1), is byte-identical at version 2.
-        assert out[name] == want, name
+        if out[name] != want:
+            changed.add(name)
+            # Same keys, same order, same values once the version 2 keys are removed.
+            assert _without_v2_keys(out[name]) == _without_v2_keys(want), name
+    # Every ?format=rio shape and every webhook body (the endpoint is version 1)
+    # is byte-identical at version 2.
+    assert changed == V2_CHANGED_API, sorted(changed ^ V2_CHANGED_API)
+    assert '"payloadVersion":1' in out["api.webhooks.list"]
+    for name in ("api.contacts.list", "api.contacts.get", "api.contacts.update"):
+        assert '"windowOpen":' in out[name] and '"windows":[' in out[name], name
+    assert '"window":{' in out["api.contacts.messages"]
 
 
 @pytest.mark.parametrize("value", ["3", "0", "-1", "abc", "v2", "1.0", "2 2", " ", "99999"])
@@ -281,8 +309,9 @@ def test_inbound_message_builds_each_endpoints_body_at_its_version(client, sessi
         _verify(calls[url], secret)
 
 
-def test_v2_endpoint_gets_todays_body_when_no_key_is_gated_in_it(client, session_factory, posted):
-    """S0 gates no key inside webhook bodies, so both endpoints get the same bytes."""
+def test_v2_endpoint_body_is_the_v1_body_plus_v2_keys(client, session_factory, posted):
+    """Both endpoints get one body each; the version 2 body is the version 1
+    body plus the version 2 keys (the window state on the contact object)."""
     hdr, channel_id = _key(client, session_factory)
     secrets = _two_endpoints(client, hdr, ("message.inbound", "contact.updated"))
     _process(session_factory, channel_id, _wa_payload(wamid="wamid.v-in-2", from_="60123450003"))
@@ -292,7 +321,11 @@ def test_v2_endpoint_gets_todays_body_when_no_key_is_gated_in_it(client, session
         by_url.setdefault(c["url"], []).append(c)
     assert len(by_url[HOOK_V1]) == len(by_url[HOOK_V2]) >= 1
     for a, b in zip(by_url[HOOK_V1], by_url[HOOK_V2]):
-        assert a["content"] == b["content"]
+        assert _without_v2_keys(a["content"]) == _without_v2_keys(b["content"])
+        contact_v1 = json.loads(a["content"])["data"]["contact"]
+        contact_v2 = json.loads(b["content"])["data"]["contact"]
+        assert "windows" not in contact_v1 and "windowOpen" not in contact_v1
+        assert contact_v2["windowOpen"] is True and contact_v2["windowReason"] == "OPEN"
         _verify(a, secrets[HOOK_V1])
         _verify(b, secrets[HOOK_V2])
     db = session_factory()
@@ -398,3 +431,260 @@ def test_migration_is_online_safe_on_postgres():
     assert "ADD COLUMN IF NOT EXISTS payload_version INTEGER" in text
     assert "DEFAULT" not in text.upper().split("DEF UPGRADE")[1].split("DEF DOWNGRADE")[0]
     assert "UPDATE " not in text.upper()
+
+
+# ── Track A S1: window state on ThreadItem (version 2 only) ──────────────────
+def _hours(n):
+    from datetime import datetime, timedelta, timezone
+
+    return datetime.now(timezone.utc) + timedelta(hours=n)
+
+
+def _set_identity_window(session_factory, channel_id, window_hours, human_agent_hours=None):
+    from modules.omnichannel.models import ContactChannelIdentity
+
+    db = session_factory()
+    try:
+        identity = db.query(ContactChannelIdentity).filter(ContactChannelIdentity.channel_id == channel_id).one()
+        identity.window_expires_at = _hours(window_hours)
+        identity.human_agent_expires_at = _hours(human_agent_hours) if human_agent_hours is not None else None
+        db.commit()
+    finally:
+        db.close()
+
+
+def _contact(client, hdr, version="2"):
+    data = client.get(f"{BASE}/contacts", headers={**hdr, HEADER: version}).json()["data"]
+    assert len(data) == 1, data
+    return data[0]
+
+
+def test_two_numbers_inbound_on_a_leaves_b_closed(client, session_factory):
+    ws = _default_workspace_id(session_factory)
+    hdr, number_b = _key(client, session_factory)
+    number_a = _seed_channel(session_factory, ws, phone_number_id="pn-number-a")
+    # The customer once wrote to B (window long gone), then writes to A now.
+    _process(session_factory, number_b, _wa_payload(wamid="wamid.two-b", from_="60123450021"))
+    _set_identity_window(session_factory, number_b, -30)
+    _process(session_factory, number_a, _wa_payload(wamid="wamid.two-a", from_="60123450021"))
+
+    contact = _contact(client, hdr)
+    assert contact["channelId"] == number_a
+    assert (contact["windowOpen"], contact["allowedSendTypes"], contact["windowReason"]) == (True, ["ANY"], "OPEN")
+    windows = {w["channelId"]: w for w in contact["windows"]}
+    assert set(windows) == {number_a, number_b}
+    assert windows[number_a]["windowOpen"] is True and windows[number_a]["allowedSendTypes"] == ["ANY"]
+    assert windows[number_b]["windowOpen"] is False and windows[number_b]["allowedSendTypes"] == ["TEMPLATE"]
+    assert windows[number_b]["channelType"] == "WHATSAPP"
+    assert windows[number_b]["windowExpiresAt"].endswith("Z")
+    # The contact-wide WhatsApp field is unchanged: it still reads open.
+    assert contact["cswExpiresAt"] is not None
+
+    # Version 1 (no header and header 1): none of the new keys.
+    for version in (None, "1"):
+        headers = hdr if version is None else {**hdr, HEADER: version}
+        plain = client.get(f"{BASE}/contacts", headers=headers).json()["data"][0]
+        for key in ("windowOpen", "allowedSendTypes", "windowReason", "windows"):
+            assert key not in plain
+        one = client.get(f"{BASE}/contacts/{contact['id']}", headers=headers).json()
+        assert "windows" not in one
+        history = client.get(f"{BASE}/contacts/{contact['id']}/messages", headers=headers).json()
+        assert "window" not in history
+
+    # Version 2 on the single read, the history and the dashboard (always version 1).
+    one = client.get(f"{BASE}/contacts/{contact['id']}", headers={**hdr, HEADER: "2"}).json()
+    assert one["windows"] == contact["windows"]
+    history = client.get(f"{BASE}/contacts/{contact['id']}/messages", headers={**hdr, HEADER: "2"}).json()
+    assert history["window"] == windows[number_a]
+    rio = client.get(f"{BASE}/contacts/{contact['id']}?format=rio", headers={**hdr, HEADER: "2"}).json()
+    assert "windows" not in rio and "windowOpen" not in json.dumps(rio)
+    staff = client.get(f"/omnichannel/contacts/{contact['id']}", headers={**_auth(client), HEADER: "2"})
+    assert staff.status_code == 200, staff.text
+    assert staff.json()["id"] == contact["id"] and "windowOpen" not in staff.text and "windows" not in staff.text
+
+
+def test_messenger_human_agent_window_is_nothing_sendable_for_an_api_key(client, session_factory):
+    from tests.test_omnichannel_channels_messenger import _fb_channel, _messenger_payload
+
+    ws = _default_workspace_id(session_factory)
+    hdr = {"Authorization": f"Bearer {_mint(client, ws).json()['fullKey']}"}
+    fb_id = _fb_channel(session_factory, external_account_id="pg-s1")
+    _process(session_factory, fb_id, _messenger_payload(page_id="pg-s1", psid="psid-s1", mid="m.s1"))
+
+    contact = _contact(client, hdr)
+    assert (contact["windowOpen"], contact["allowedSendTypes"], contact["windowReason"]) == (True, ["ANY"], "OPEN")
+
+    _set_identity_window(session_factory, fb_id, -1, human_agent_hours=100)
+    contact = _contact(client, hdr)
+    assert contact["channelType"] == "FACEBOOK"
+    assert (contact["windowOpen"], contact["allowedSendTypes"], contact["windowReason"]) == (
+        False, [], "HUMAN_AGENT_ONLY"
+    )
+    assert contact["windows"][0]["humanAgentExpiresAt"] is not None
+    assert contact["cswExpiresAt"] is None  # WhatsApp-only field, unchanged
+
+    _set_identity_window(session_factory, fb_id, -200, human_agent_hours=-1)
+    contact = _contact(client, hdr)
+    assert (contact["windowOpen"], contact["allowedSendTypes"], contact["windowReason"]) == (False, [], "CLOSED")
+
+
+def test_window_state_rules():
+    from types import SimpleNamespace
+
+    from modules.omnichannel.services.messaging_policy import window_state
+
+    def ident(window, human=None):
+        return SimpleNamespace(
+            window_expires_at=_hours(window) if window is not None else None,
+            human_agent_expires_at=_hours(human) if human is not None else None,
+        )
+
+    def triple(state):
+        return state.window_open, list(state.allowed_send_types), state.reason
+
+    # Web chat has no window at all.
+    assert triple(window_state(None, "WEBCHAT", actor_is_human=False)) == (True, ["ANY"], "NO_WINDOW")
+    assert triple(window_state(ident(None), "WEBCHAT", actor_is_human=False)) == (True, ["ANY"], "NO_WINDOW")
+    # WhatsApp: per identity; no identity on that number = closed.
+    assert triple(window_state(ident(5), "WHATSAPP", actor_is_human=False)) == (True, ["ANY"], "OPEN")
+    assert triple(window_state(ident(-5), "WHATSAPP", actor_is_human=False)) == (False, ["TEMPLATE"], "CLOSED")
+    assert triple(window_state(None, "WHATSAPP", actor_is_human=False)) == (False, ["TEMPLATE"], "CLOSED")
+    # Instagram 7-day: a human may reply, automation may not.
+    assert triple(window_state(ident(-1, 50), "INSTAGRAM", actor_is_human=True)) == (False, ["ANY"], "HUMAN_AGENT_ONLY")
+    assert triple(window_state(ident(-1, 50), "INSTAGRAM", actor_is_human=False)) == (False, [], "HUMAN_AGENT_ONLY")
+    assert triple(window_state(ident(-200, -1), "INSTAGRAM", actor_is_human=True)) == (False, [], "CLOSED")
+
+
+def test_web_chat_thread_reads_no_window(client, session_factory):
+    from modules.omnichannel.models import Channel, Contact, ContactChannelIdentity
+    from modules.omnichannel.services import statuses
+    from modules.omnichannel.services.conversation_service import ConversationService
+
+    ws = _default_workspace_id(session_factory)
+    db = session_factory()
+    try:
+        ch = Channel(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, channel_type="WEBCHAT", name="Site", is_active=True)
+        c = Contact(
+            tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, first_name="Visitor", priority="MEDIUM",
+            status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "THREAD", "OPEN"),
+        )
+        db.add_all([ch, c])
+        db.flush()
+        db.add(ContactChannelIdentity(
+            tenant_id=DEFAULT_TENANT_ID, contact_id=c.id, channel_id=ch.id, external_user_id="visitor-1",
+        ))
+        db.commit()
+        item = ConversationService(db).thread_item(c)
+        assert [w.model_dump() for w in item.windows] == [{
+            "channelId": ch.id, "channelType": "WEBCHAT", "windowOpen": True,
+            "windowExpiresAt": None, "humanAgentExpiresAt": None, "allowedSendTypes": ["ANY"],
+        }]
+    finally:
+        db.close()
+
+
+def test_v2_webhook_contact_carries_window_state_and_v1_does_not(client, session_factory, posted):
+    hdr, channel_id = _key(client, session_factory)
+    _two_endpoints(client, hdr, ("message.inbound",))
+    _process(session_factory, channel_id, _wa_payload(wamid="wamid.s1-hook", from_="60123450031"))
+    calls = {c["url"]: json.loads(c["content"]) for c in posted.drain(session_factory)}
+    v1, v2 = calls[HOOK_V1]["data"]["contact"], calls[HOOK_V2]["data"]["contact"]
+    assert "windows" not in v1 and "allowedSendTypes" not in v1
+    assert v2["windows"][0]["channelId"] == channel_id
+    assert v2["windows"][0]["allowedSendTypes"] == ["ANY"]
+    assert v2["windowExpiresAt"] == v1["windowExpiresAt"]
+
+
+# ── Track A S2: details on the public window refusals (version 2 only) ───────
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+
+def _closed_wa(client, session_factory, phone):
+    from tests.test_omnichannel_api_gateway import _seed_open_contact
+
+    hdr, channel_id = _key(client, session_factory)
+    _seed_open_contact(session_factory, _default_workspace_id(session_factory), phone=phone, open_window=False)
+    return hdr, channel_id
+
+
+def test_whatsapp_refusal_details_only_for_version_2(client, session_factory):
+    from modules.omnichannel.services.messaging_policy import CSW_CLOSED_MESSAGE
+
+    hdr, channel_id = _closed_wa(client, session_factory, "+60123450041")
+    body = {"to": "+60123450041", "type": "text", "text": {"body": "hi"}}
+    for headers in (hdr, {**hdr, HEADER: "1"}):
+        res = client.post(f"{BASE}/messages", json=body, headers=headers)
+        assert res.status_code == 409
+        # Today's exact body for a version 1 caller.
+        assert res.content == json.dumps(
+            {"error": {"code": "csw_window_closed", "message": CSW_CLOSED_MESSAGE}},
+            separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")
+    res = client.post(f"{BASE}/messages", json=body, headers={**hdr, HEADER: "2"})
+    assert res.status_code == 409
+    err = res.json()["error"]
+    assert (err["code"], err["message"]) == ("csw_window_closed", CSW_CLOSED_MESSAGE)
+    assert list(err) == ["code", "message", "details"]
+    assert err["details"] == {
+        "channelId": channel_id, "windowExpiresAt": None,
+        "allowedSendTypes": ["TEMPLATE"], "reason": "csw_window_closed",
+    }
+
+
+def test_media_refusals_carry_details_for_version_2(client, session_factory):
+    hdr, channel_id = _closed_wa(client, session_factory, "+60123450042")
+    v2 = {**hdr, HEADER: "2"}
+    # JSON media by URL: refused before any fetch.
+    body = {"to": "+60123450042", "type": "image", "media": {"url": "https://media.example.com/a.png"}}
+    plain = client.post(f"{BASE}/messages", json=body, headers=hdr)
+    assert plain.status_code == 409 and "details" not in plain.json()["error"]
+    res = client.post(f"{BASE}/messages", json=body, headers=v2)
+    assert res.status_code == 409 and res.json()["error"]["code"] == plain.json()["error"]["code"]
+    assert res.json()["error"]["message"] == plain.json()["error"]["message"]
+    assert res.json()["error"]["details"]["channelId"] == channel_id
+    # Multipart.
+    payload = json.dumps({"to": "+60123450042", "type": "image"})
+    files = {"file": ("a.png", PNG, "image/png")}
+    plain = client.post(f"{BASE}/messages", headers=hdr, data={"payload": payload}, files=files)
+    assert plain.status_code == 409 and "details" not in plain.json()["error"], plain.text
+    res = client.post(f"{BASE}/messages", headers=v2, data={"payload": payload}, files=files)
+    assert res.status_code == 409
+    assert res.json()["error"]["details"]["allowedSendTypes"] == ["TEMPLATE"]
+
+
+def test_messenger_automation_refusal_reason_for_version_2(client, session_factory):
+    from tests.test_omnichannel_channels_messenger import _fb_channel, _messenger_payload
+
+    ws = _default_workspace_id(session_factory)
+    hdr = {"Authorization": f"Bearer {_mint(client, ws).json()['fullKey']}"}
+    fb_id = _fb_channel(session_factory, external_account_id="pg-s2")
+    _process(session_factory, fb_id, _messenger_payload(page_id="pg-s2", psid="psid-s2", mid="m.s2"))
+    _set_identity_window(session_factory, fb_id, -1, human_agent_hours=100)
+    body = {"to": "psid:psid-s2", "channelId": fb_id, "type": "text", "text": {"body": "hi"}}
+    plain = client.post(f"{BASE}/messages", json=body, headers=hdr)
+    assert plain.status_code == 409
+    assert plain.json() == {"error": {"code": "messaging_window_closed", "message": plain.json()["error"]["message"]}}
+    res = client.post(f"{BASE}/messages", json=body, headers={**hdr, HEADER: "2"})
+    assert res.status_code == 409
+    err = res.json()["error"]
+    assert (err["code"], err["message"]) == ("messaging_window_closed", plain.json()["error"]["message"])
+    assert err["details"]["reason"] == "automation_outside_window"
+    assert err["details"]["allowedSendTypes"] == []
+    assert err["details"]["channelId"] == fb_id and err["details"]["windowExpiresAt"].endswith("Z")
+
+
+def test_other_refusals_and_the_dashboard_are_untouched_at_version_2(client, session_factory):
+    from tests.test_omnichannel_api_gateway import _seed_open_contact
+
+    hdr, _ = _key(client, session_factory)
+    v2 = {**hdr, HEADER: "2"}
+    bad = client.post(f"{BASE}/messages", json={"to": "+60123450043", "type": "text", "text": {"body": " "}}, headers=v2)
+    assert bad.status_code == 422 and "details" not in bad.json()["error"]
+    cid = _seed_open_contact(session_factory, _default_workspace_id(session_factory), phone="+60123450044", open_window=False)
+    staff = client.post(
+        f"/omnichannel/contacts/{cid}/messages",
+        json={"messageType": "TEXT", "body": "hi"},
+        headers={**_auth(client), HEADER: "2"},
+    )
+    assert staff.status_code == 422 and list(staff.json()) == ["detail"], staff.text
+    assert isinstance(staff.json()["detail"], str)

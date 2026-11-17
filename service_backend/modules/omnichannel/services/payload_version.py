@@ -35,7 +35,16 @@ VERSIONS = (V1, V2)
 # THE registry: shape (class name) -> {wire key: first version that shows it}.
 GATED_KEYS: Dict[str, Dict[str, int]] = {
     "WebhookEndpointItem": {"payloadVersion": V2},
+    # Track A S1: messaging window state.
+    "ThreadItem": {"windowOpen": V2, "allowedSendTypes": V2, "windowReason": V2, "windows": V2},
+    "PublicMessageListResponse": {"window": V2},
+    # Track A S2: hand-built `details` on the public window refusals (409).
+    "WindowRefusal": {"details": V2},
 }
+
+# Registry names above that are not Pydantic shapes: hand-built dicts read with
+# ``visible`` / ``strip``.
+HAND_BUILT = frozenset({"WindowRefusal"})
 
 _current: ContextVar[int] = ContextVar("omnichannel_payload_version", default=V1)
 
