@@ -135,6 +135,9 @@ single use, a new request cancels the old one; table `idea_phone_codes`).
 - Frontend: `components/platform/idea-portal/{follow-share-bar,share-phone-dialog}.tsx`, share mode in `idea-page.tsx`,
   `ShareItemRoot` + route `/public/feedback/share/[token]`, operator `feedback/components/idea-followers-tab.tsx` +
   form actions Copy share link / Stop sharing.
+- Hand tests on a copy: `scripts/fake_feedback_product.py` (stand-in product, prints the code) +
+  `scripts/crew_feedback_standin.py seed|restore` (points the tenant's consumer connection at it, refuses
+  production and non-local databases); steps in `laneboard/scripts/253.md`.
 - Share view shows what another dealer's item already shows on the board (title, status, timeline, activity,
   comments, counts); the free-text fields stay withheld (owner ruling (b), same as the board).
 

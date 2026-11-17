@@ -181,6 +181,22 @@ describe('IdeaFollowersTab (AC-FS-10)', () => {
     expect(screen.getByText('Manager B (+60123450002)')).toBeInTheDocument();
   });
 
+  it('after a refused pick, reopening the Contact dropdown offers the full list (crew pass 4025e5e9)', async () => {
+    const user = userEvent.setup();
+    const h = mockHook([]);
+    h.add.mockRejectedValueOnce(new Error('This contact raised the request and already gets its updates.'));
+    render(<IdeaFollowersTab ideaId="i-1" canManage />);
+    await user.click(await screen.findByRole('button', { name: 'Create' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add follower' });
+    await user.click(within(dialog).getByRole('combobox', { name: 'Contact' }));
+    await user.keyboard('manager');
+    await user.click(await screen.findByText('Manager B (+60123450002)'));
+    await user.click(within(dialog).getByRole('button', { name: 'Add' }));
+    await within(dialog).findByRole('alert');
+    await user.click(within(dialog).getByRole('combobox', { name: 'Contact' }));
+    expect(await screen.findByText('Zed Other (+60123450099)')).toBeInTheDocument();
+  });
+
   it('without manage permission there is no Create and no Remove', async () => {
     mockHook([follower]);
     render(<IdeaFollowersTab ideaId="i-1" canManage={false} />);

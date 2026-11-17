@@ -162,6 +162,11 @@ export function ResourceList<T extends object>({
   // remounts the menu so a second right-click reopens it.
   const [rowMenu, setRowMenu] = useState<{ row: T; x: number; y: number; n: number } | null>(null);
   const hasRowActions = config.actions.some((a) => a.surfaces.row);
+  const pageCommitted = config.onDeferredCommitted;
+  const onDeferredCommitted = useMemo(
+    () => (pageCommitted ? (_a: unknown, ids: string[]) => pageCommitted(ids) : undefined),
+    [pageCommitted],
+  );
 
   // Opt-in (config.urlState): mirror the live query into the address bar's
   // `ctx` so reload / a shared link restores the exact view.
@@ -638,6 +643,7 @@ export function ResourceList<T extends object>({
                     rows={selectedRows}
                     runtime={runtime}
                     getEntityId={config.getEntityId}
+                    onDeferredCommitted={config.onDeferredCommitted}
                   />
                   {canExport && (
                     <Button
@@ -793,6 +799,7 @@ export function ResourceList<T extends object>({
                             getEntityId={config.getEntityId}
                             runtime={runtime}
                             surface="row"
+                            onDeferredCommitted={onDeferredCommitted}
                           />
                         </div>
                         <div className="p-5 pt-10">
@@ -847,6 +854,7 @@ export function ResourceList<T extends object>({
           getEntityId={config.getEntityId}
           runtime={runtime}
           surface="row"
+          onDeferredCommitted={onDeferredCommitted}
           align="start"
           trigger={
             <span
