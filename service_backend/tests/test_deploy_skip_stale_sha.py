@@ -197,26 +197,41 @@ CI_JOBS = (
 )
 
 
-def _job_runs_on(job: dict, event: str) -> bool:
-    """Evaluate the job-level `if:` for one event. The deploy/notify `if`
-    expressions only combine `always()` and `github.event_name == '<x>'`
-    terms with && / ||, so substituting both is exact for them."""
+def _job_runs_on(
+    job: dict, event: str, skip_tests: bool = False, needs: dict | None = None
+) -> bool:
+    """Evaluate the job-level `if:` for one event. The workflow's `if`
+    expressions only combine `always()` / `!cancelled()`, `github.event_name`
+    ==/!= comparisons, the `inputs.skip_tests` dispatch input and
+    `needs.<job>.result == 'success'` terms with !, && and ||, so substituting
+    each is exact for them. `needs` maps job -> result (default: success);
+    `skip_tests` is only ever set on a workflow_dispatch (other events carry
+    no inputs, which GitHub reads as false)."""
     cond = job.get("if")
     if cond is None:
         return True
+    needs = needs or {}
+    skip = skip_tests and event == "workflow_dispatch"
     expr = cond.replace("always()", "T").replace("success()", "T")
+    expr = expr.replace("cancelled()", "F")
     expr = re.sub(
-        r"github\.event_name\s*==\s*'([a-z_]+)'",
-        lambda m: "T" if m.group(1) == event else "F",
+        r"github\.event_name\s*(==|!=)\s*'([a-z_]+)'",
+        lambda m: "T" if (m.group(2) == event) == (m.group(1) == "==") else "F",
         expr,
     )
-    tokens = re.findall(r"&&|\|\||[TF()]|\S", expr)
-    assert set(tokens) <= {"T", "F", "&&", "||", "(", ")"}, f"unexpected expression: {cond}"
+    expr = re.sub(r"inputs\.skip_tests", "T" if skip else "F", expr)
+    expr = re.sub(
+        r"needs\.([a-z-]+)\.result\s*==\s*'([a-z]+)'",
+        lambda m: "T" if needs.get(m.group(1), "success") == m.group(2) else "F",
+        expr,
+    )
+    tokens = re.findall(r"&&|\|\||[TF()!]|\S", expr)
+    assert set(tokens) <= {"T", "F", "&&", "||", "(", ")", "!"}, f"unexpected expression: {cond}"
     return _parse_or(tokens, 0)[0]
 
 
 # Hand-written recursive-descent evaluator (house line: never eval).
-# or := and ('||' and)* ; and := atom ('&&' atom)* ; atom := T | F | '(' or ')'
+# or := and ('||' and)* ; and := atom ('&&' atom)* ; atom := '!' atom | T | F | '(' or ')'
 def _parse_or(tok, i):
     val, i = _parse_and(tok, i)
     while i < len(tok) and tok[i] == "||":
@@ -234,6 +249,9 @@ def _parse_and(tok, i):
 
 
 def _parse_atom(tok, i):
+    if tok[i] == "!":
+        val, i = _parse_atom(tok, i + 1)
+        return not val, i
     if tok[i] == "(":
         val, i = _parse_or(tok, i + 1)
         assert tok[i] == ")", "unbalanced parentheses"
