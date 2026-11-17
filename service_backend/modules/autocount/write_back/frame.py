@@ -141,6 +141,7 @@ class WriteFrame:
         self._owner_operation_id: Optional[str] = None
         # the action whose unknown outcome the next primitive call looks up instead of writing (``look_up``)
         self._lookup_action: Optional[Any] = None
+        self._trust_absent = False
         self._call_log: Optional[cl.CallLog] = None
         self._refused_base_url: Optional[str] = None
         self._write_headers: Dict[str, str] = {}

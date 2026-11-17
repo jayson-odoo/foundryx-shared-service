@@ -78,6 +78,7 @@ ROW_RECEIVED = "ROW_RECEIVED"
 NOT_APPLIED = "OPERATION_NOT_APPLIED"  # = operations.NOT_APPLIED (operations imports this module)
 LOOKUP_FAILED = "LOOKUP_FAILED"
 LOOKUP_FAILED_MESSAGE = "AutoCount could not be reached to check this change. Please try again shortly."
+NOT_YET_CONFIRMED_MESSAGE = "AutoCount has not confirmed this change yet. Please try again in a couple of minutes."
 DOC_HAS_TRANSFERS = "DOC_HAS_TRANSFERS"
 DOC_CANCELLED = "DOC_CANCELLED"
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
@@ -393,14 +394,15 @@ class PrimitiveService(WriteFrame):
             self.db.rollback()
 
     @contextmanager
-    def looking_up(self, action: AcWriteAction, operation_id: Optional[str]) -> Iterator[None]:
+    def looking_up(self, action: AcWriteAction, operation_id: Optional[str], *, trust_absent: bool) -> Iterator[None]:
         """Inside: the next primitive call looks ``action``'s unknown outcome up (``_look_up``) instead of
-        writing; its GET is logged under ``operation_id``."""
-        self._lookup_action, self._owner_operation_id = action, operation_id
+        writing; its GET is logged under ``operation_id``. ``trust_absent``: the write is old enough that a
+        change not found is not coming (else the answer stays pending: a timed-out PUT may still land)."""
+        self._lookup_action, self._owner_operation_id, self._trust_absent = action, operation_id, trust_absent
         try:
             yield
         finally:
-            self._lookup_action, self._owner_operation_id = None, None
+            self._lookup_action, self._owner_operation_id, self._trust_absent = None, None, False
 
     @contextmanager
     def under_operation(self, operation_id: Optional[str]) -> Iterator[None]:
@@ -447,8 +449,13 @@ class PrimitiveService(WriteFrame):
         if landed:
             action.outcome, action.error_code, action.after_json = OUTCOME_DONE, None, after
             self.db.commit()
+            if call.kind != "QT" and call.stage:
+                self._stage(company, call.kind, after)  # as the write's own done path does
             return PrimitiveResult(action.id, OUTCOME_DONE, None, "The change was found in AutoCount.",
                                    [], after.get("DocKey"), after.get("DocNo"), new_key, after)
+        if not self._trust_absent:
+            return PrimitiveResult(action.id, OUTCOME_PENDING, LOOKUP_FAILED, NOT_YET_CONFIRMED_MESSAGE,
+                                   doc_key=call.doc_key)
         action.outcome, action.error_code = OUTCOME_REFUSED, NOT_APPLIED  # settled: no longer holds the document
         self.db.commit()
         return PrimitiveResult(action.id, OUTCOME_REFUSED, NOT_APPLIED,

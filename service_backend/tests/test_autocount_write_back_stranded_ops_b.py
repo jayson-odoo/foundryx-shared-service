@@ -94,7 +94,7 @@ def _sweep(h, row):
     for action in h.db.query(AcWriteAction).filter(AcWriteAction.company_id == h.company.id):
         action.created_at = old
     h.db.commit()
-    assert sweep_stranded_operations(h.db) >= 1
+    sweep_stranded_operations(h.db)
     h.db.expire_all()
     assert op_row(h, row.idempotency_key).status == "pending_verification"
 
@@ -200,14 +200,72 @@ def test_young_in_progress_still_answers_in_progress(client, h, gw, monkeypatch)
 
 # ---- R1: a timed-out write (stored pending) is looked up too ------------------------------------
 
-def test_timed_out_add_line_that_never_landed_is_added_once_on_the_same_key(client, h, gw):
+def _age_actions(h, seconds):
+    old = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    for action in h.db.query(AcWriteAction).filter(AcWriteAction.company_id == h.company.id):
+        action.created_at = old
+    h.db.commit()
+
+
+def test_timed_out_add_line_is_not_resent_until_autocount_had_time_to_finish(client, h, gw):
+    """A timed-out PUT may still land: "not found" right away is not trusted (no second write); once the write
+    is older than the vendor timeout plus margin, not found releases the key and the line is added once."""
     lines = len(h.vendor.rows("PO", 7001))
     h.vendor.timeout_next("PUT", "EditPurchaseOrderbydockey")
     first = client.post(ADD, json=add_body(), headers=gw.hdr("b-5"))
     assert first.json()["outcome"] == "pending_verification", first.text
+    early = client.post(ADD, json=add_body(), headers=gw.hdr("b-5"))
+    assert early.json()["outcome"] == "pending_verification", early.text
+    assert "not confirmed" in early.json()["message"]
+    assert len(puts(h)) == 1 and len(h.vendor.rows("PO", 7001)) == lines
+    _age_actions(h, 200)
     r = client.post(ADD, json=add_body(), headers=gw.hdr("b-5"))
     assert r.json()["outcome"] == "done", r.text
-    assert len(h.vendor.rows("PO", 7001)) == lines + 1
+    assert len(h.vendor.rows("PO", 7001)) == lines + 1 and len(puts(h)) == 2
+
+
+def test_a_write_that_confirmed_done_before_the_crash_locks_without_a_read(client, h, gw, monkeypatch):
+    client.patch(EDIT, json=edit_body(), headers=gw.hdr("b-12"))
+    row = op_row(h, "b-12")
+    row.status, row.error_code, row.result_json = "in_progress", None, None  # died after the action stored done
+    h.db.commit()
+    _sweep(h, row)
+    h.vendor.find("PO", 7001)["Remark1"] = "someone else since"  # a re-read would say "not there"
+    gets = len(h.vendor.gets())
+    r = client.patch(EDIT, json=edit_body(), headers=gw.hdr("b-12"))
+    assert r.json()["outcome"] == "done", r.text
+    assert len(h.vendor.gets()) == gets and len(puts(h)) == 1  # no read, no second write
+
+
+def _legacy(h, row):
+    """A row written before this lane: no ownership marker, its action carries no operation."""
+    row.snapshot_json = None
+    for action in h.db.query(AcWriteAction).filter(AcWriteAction.operation_id == row.id):
+        action.operation_id = None
+    h.db.commit()
+
+
+def test_legacy_row_is_looked_up_through_its_matching_action(client, h, gw, monkeypatch):
+    row = _strand(h, monkeypatch, client, gw, EDIT, edit_body(), "b-13", after_put=True)
+    _legacy(h, row)
+    _sweep(h, row)
+    r = client.patch(EDIT, json=edit_body(), headers=gw.hdr("b-13"))
+    assert r.json()["outcome"] == "done", r.text
+    assert len(puts(h)) == 1
+
+
+def test_legacy_row_with_no_matching_action_keeps_its_pending_answer(client, h, gw, monkeypatch):
+    row = _strand(h, monkeypatch, client, gw, EDIT, edit_body(), "b-14", after_put=False)
+    _legacy(h, row)
+    h.db.query(AcWriteAction).filter(AcWriteAction.company_id == h.company.id).delete()
+    h.db.commit()
+    _sweep(h, row)
+    r = client.patch(EDIT, json=edit_body(), headers=gw.hdr("b-14"))
+    body = r.json()
+    assert body["outcome"] == "pending_verification", r.text
+    assert "Check the document in AutoCount" in body["message"]
+    assert len(puts(h)) == 1  # only the first, timed-out one
+    assert op_row(h, "b-14").id == row.id  # key not released
 
 
 def test_delete_line_whose_read_back_failed_is_done_on_lookup_without_a_second_put(client, h, gw, world):

@@ -89,6 +89,13 @@ OPERATION_IN_PROGRESS = "OPERATION_IN_PROGRESS"
 IN_PROGRESS_MESSAGE = "This change is still being saved in AutoCount. Please check again in a moment."
 # AUTOCOUNT-STRANDED-OPS-B: the single-document writes whose unknown outcome a same-key resend looks up
 LOOKUP_PRIMITIVES = ("edit_doc", "add_line", "delete_line", "cancel_doc")
+OWNED_ACTIONS = "actionsCarryOperation"  # snapshot_json marker: this row's actions carry its id
+# "not in AutoCount" is trusted only once the write is older than the vendor's write timeout (90 s) plus margin:
+# a timed-out PUT may still land, and a fresh run before then could write twice
+LOOKUP_SETTLE_SECONDS = 150
+LEGACY_MATCH_SLACK_SECONDS = 5  # app clock vs database clock, for rows written before actions carried them
+NOT_CHECKABLE_MESSAGE = ("This change could not be checked automatically. Check the document in AutoCount, "
+                         "then try again.")
 UNKNOWN_OPERATION = "UNKNOWN_OPERATION"
 OPERATION_NOT_RESUMABLE = "OPERATION_NOT_RESUMABLE"
 INVALID_PARAMS = "INVALID_PARAMS"
@@ -1760,10 +1767,11 @@ class OperationService:
             if self.ops.expire_stale_in_progress(tenant_id, company_id, kind, doc_key, window):
                 self.db.commit()
         info = _create_info(kind, params, datetime.now(timezone.utc)) if name == "create_doc" else None
+        marker = {OWNED_ACTIONS: True} if frame is not None and info is None else None
         row = AcWriteOperation(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id, idempotency_key=idempotency_key,
             request_hash=request_hash, op=label, doc_type=kind, doc_key=doc_key, status=IN_PROGRESS,
-            snapshot_json=info,
+            snapshot_json=info or marker,
         )
         try:
             self.ops.add(row)
@@ -1824,24 +1832,39 @@ class OperationService:
             self.db.refresh(existing)
         if existing.status != PENDING:
             return replay(existing)
+        owned = bool((existing.snapshot_json or {}).get(OWNED_ACTIONS))
         started = existing.created_at
         found = self.prims.actions.of_single_operation(
             tenant_id, company_id, existing.id, key_id=existing.key_id, doc_type=existing.doc_type or "",
-            doc_key=existing.doc_key, action=name.split(":")[0],
-            since=started - timedelta(seconds=1), until=started + timedelta(seconds=BUSY_WINDOW_SECONDS),
+            doc_key=existing.doc_key, action=name.split(":")[0], owned=owned,
+            since=started - timedelta(seconds=LEGACY_MATCH_SLACK_SECONDS),
+            until=started + timedelta(seconds=BUSY_WINDOW_SECONDS),
         )
-        if len(found) > 1:  # rows written before actions carried their operation: cannot tell which
-            return self._store_primitive_answer(existing, PrimitiveResult(
-                None, OUTCOME_PENDING, LOOKUP_FAILED, LOOKUP_FAILED_MESSAGE, doc_key=existing.doc_key))
+        if len(found) > 1 or (not found and not owned):
+            # a row written before actions carried their operation: no single action proves either way
+            return self._unconfirmed(existing, replay, NOT_CHECKABLE_MESSAGE)
         action = found[0] if found else None
+        if action is not None and action.outcome in (OUTCOME_DONE, OUTCOME_MISMATCH):
+            # the write itself confirmed it (the worker died before the operation stored it): only that locks
+            return self._store_primitive_answer(existing, PrimitiveResult(
+                action.id, action.outcome, action.error_code, "",
+                doc_key=existing.doc_key, document=action.after_json if isinstance(action.after_json, dict) else None,
+                doc_no=(action.after_json or {}).get("DocNo") if isinstance(action.after_json, dict) else None))
         never_sent = action is None or action.outcome == OUTCOME_REFUSED or (
             action.outcome == OUTCOME_VENDOR_ERROR and action.error_code == VENDOR_REFUSED)
         if not never_sent:
-            with frame.looking_up(action, existing.id):
-                res = call()
-            if res.outcome != OUTCOME_REFUSED:  # done (locked) or still unknown (unreadable)
-                answer = self._store_primitive_answer(existing, res)
-                return answer
+            assert action is not None
+            settled = (datetime.now(timezone.utc) - action.created_at).total_seconds() >= LOOKUP_SETTLE_SECONDS
+            try:
+                with frame.looking_up(action, existing.id, trust_absent=settled):
+                    res = call()
+            except Exception:  # noqa: BLE001 - a lookup that breaks decides nothing
+                logger.exception("autocount look-up of operation %s failed", existing.id)
+                return self._unconfirmed(existing, replay, LOOKUP_FAILED_MESSAGE)
+            if res.outcome != OUTCOME_REFUSED:  # done (locked) or still unknown
+                if res.outcome == OUTCOME_DONE:
+                    return self._store_primitive_answer(existing, res)
+                return self._unconfirmed(existing, replay, res.message or LOOKUP_FAILED_MESSAGE)
         logger.warning("autocount primitive %s did not change AutoCount: key released for a fresh run", existing.id)
         existing.status, existing.error_code = RECOVERED, NOT_APPLIED
         existing.result_json = _json_safe(primitive_answer(PrimitiveResult(
@@ -1850,6 +1873,18 @@ class OperationService:
         self.db.commit()
         self._release_key(existing)
         return None
+
+    @staticmethod
+    def _unconfirmed(existing: AcWriteOperation, replay: Callable[[AcWriteOperation], Dict[str, Any]],
+                     message: str) -> Dict[str, Any]:
+        """The pending answer when the lookup decided nothing: the stored row stays as it was (the next resend
+        looks again), and the caller gets a plain reason, never "in progress" for ever."""
+        answer = dict(existing.result_json) if existing.result_json else primitive_answer(
+            PrimitiveResult(None, OUTCOME_PENDING, LOOKUP_FAILED), existing.doc_key)
+        answer.update(outcome=OUTCOME_PENDING, message=message)
+        if not answer.get("errorCode"):
+            answer["errorCode"] = LOOKUP_FAILED
+        return answer
 
     def _store_primitive_answer(self, row: AcWriteOperation, res: PrimitiveResult) -> Dict[str, Any]:
         answer = primitive_answer(res, row.doc_key)
