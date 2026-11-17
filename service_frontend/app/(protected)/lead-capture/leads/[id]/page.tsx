@@ -50,6 +50,17 @@ function humanize(key: string): string {
   return words ? words[0].toUpperCase() + words.slice(1) : '-';
 }
 
+/** Attribution as names only (no raw platform ids): the Page and form show
+ * by name in the Lead card; campaign / ad set / ad show by their names. */
+function attributionRows(attribution: Record<string, string | boolean | null>): [string, string | boolean][] {
+  const out: [string, string | boolean][] = [];
+  for (const [key, value] of Object.entries(attribution)) {
+    if (value === null || value === '' || key.endsWith('Id')) continue;
+    out.push([key, value]);
+  }
+  return out;
+}
+
 function attributionValue(value: string | boolean | null): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   return value || '-';
@@ -146,12 +157,10 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                   </CardHeader>
                   <CardContent>
                     <dl className="divide-y divide-border">
-                      {Object.entries(detail.lead.attribution).filter(([, v]) => v !== null && v !== '').length === 0 ? (
+                      {attributionRows(detail.lead.attribution).length === 0 ? (
                         <Row label="Ad" value="-" />
                       ) : null}
-                      {Object.entries(detail.lead.attribution)
-                        .filter(([, v]) => v !== null && v !== '')
-                        .map(([key, value]) => (
+                      {attributionRows(detail.lead.attribution).map(([key, value]) => (
                           <Row key={key} label={ATTRIBUTION_LABELS[key] ?? humanize(key)} value={attributionValue(value)} />
                         ))}
                     </dl>
