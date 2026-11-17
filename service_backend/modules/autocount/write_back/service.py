@@ -444,7 +444,7 @@ class WriteBackService(WriteFrame):
         """With ``operations`` (the gateway): the ``unlink_row`` operation runs. Without
         it the plan 55 flow. Both send ONE replace PUT (plan 61 F4): AutoCount never
         edits a link in place."""
-        if operations is None:
+        if operations is None:  # plan 55 path (live runner only): no pool return; the gateway always has operations
             plan = _Plan(ACTION_UNLINK, _PO, po_doc_key, po_dtl_key)
             return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
         return self._operation(

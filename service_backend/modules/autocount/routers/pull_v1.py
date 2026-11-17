@@ -568,6 +568,17 @@ def _optional_text(raw: WriteBody, name: str) -> Optional[str]:
     return value[:MAX_ECHO_LEN]
 
 
+def _pool_location(raw: WriteBody) -> Optional[str]:
+    """Plan 66: ``poolLocation`` on ``po-links/unlink``, an exact Location code; blank = none. Never cut
+    short (a cut code would be matched "exactly"): too long is 422 like any malformed field."""
+    value = raw.get("poolLocation")
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > MAX_ECHO_LEN:
+        raise PullGatewayError(422, "INVALID_REQUEST", f"poolLocation must be text of at most {MAX_ECHO_LEN} characters.")
+    return value.strip() or None
+
+
 def _write_route(
     request: Request,
     db: Session,
@@ -660,7 +671,7 @@ def unlink_po_row(
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
             doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
-            pool_location=(_optional_text(raw, "poolLocation") or "").strip() or None,  # plan 66
+            pool_location=_pool_location(raw),  # plan 66
         )
 
     # plan 66: with ``poolLocation`` the answer carries ``detail`` = the free PO row the qty went back to (the

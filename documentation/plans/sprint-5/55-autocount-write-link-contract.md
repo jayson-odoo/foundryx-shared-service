@@ -269,20 +269,23 @@ applies unchanged (a new row). A received quantity AutoCount does not expose (un
 **Return to the pool (plan 66, optional `poolLocation`).** Send `"poolLocation": "BRW"` (string, the exact
 AutoCount Location code of the pool the line's project location draws stock from; the CRM's
 `warehouses.pool_warehouse_id`). Absent, `null` or blank = everything above, unchanged (no `detail` in the
-answer either). Not a string = `422 INVALID_REQUEST`, nothing sent. The code is matched exactly: `BRW` never
+answer either). Not a string, or longer than 64 characters = `422 INVALID_REQUEST`, nothing sent. The code is matched exactly: `BRW` never
 matches `BRW-BB`. It is part of the idempotency body (a resend under the same key with another pool is
 `IDEMPOTENCY_CONFLICT`). With it:
 - **Merge into a pool row:** the first free row at `poolLocation` with the same item and unit of measure (unit
   price and delivery date are NOT compared; owner 17 Nov) takes the freed quantity in ONE PUT. That row keeps its
-  own unit price and delivery date; only its quantity goes up. Not linked, nothing received, no SPO row pointing
+  own unit price and delivery date; only its quantity goes up, so the PO total changes by freed qty x (pool row
+  price - unlinked row price), and a discount on the unlinked row is not carried over (owner ruling, 17 Nov). Not linked, nothing received, no SPO row pointing
   at it, not covered by an unresolved link operation, as above. The same-location merge above does not apply.
 - **No such pool row:** the new unlinked row (the replace above) is moved to `poolLocation` (same quantity, unit
   price and delivery date as the unlinked row). A move that does not land is still `done`, with
   `LOCATION_NOT_MOVED` in `warnings` (show "Unlinked, but the Location could not be changed to <pool>").
 - **Partly received row:** the received part stays where it is; the new row with the rest goes to `poolLocation`.
 - The answer carries `detail`: the PO row (vendor field names) that now holds the freed quantity, i.e. the pool
-  row merged into or the moved row; its `DtlKey` is `replacedLines[0].newDtlKey` (partly received: the new row).
+  row merged into or the moved row; its `DtlKey` is `replacedLines[0].newDtlKey`. Partly received: `replacedLines`
+  is `[]` (the received row stays) and `detail` is the only place the new row's key appears.
   `detail` is `null` on any outcome other than `done`. Show "Unlinked. Qty returned to <detail.Location>.".
+- A Resume (`/write-operations/{id}/resume`) answer carries no `detail`; read `document` there.
 - `po-links/relink` ignores it (a relink frees nothing). "Change to another PO" = unlink (with `poolLocation`),
   then link.
 

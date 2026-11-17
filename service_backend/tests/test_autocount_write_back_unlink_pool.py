@@ -287,3 +287,79 @@ def test_a_failed_move_to_the_pool_is_a_warning_not_a_failure(h, world):
     assert row(h, world.p_linked) is None
     assert all(not (r.get("FromSODtlKey") or r.get("FromDocDtlKey")) for r in h.vendor.rows("PO", 7001)
                if r["DtlKey"] not in {world.p_spo})
+
+
+# ============================== resume / recover / idempotency (review should-fix) =============
+
+def _resume(h, res):
+    from app.models import DEFAULT_TENANT_ID
+
+    return h.ops().resume(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=res.operation_id)
+
+
+def test_resume_of_a_pending_replace_moves_the_new_row_to_the_pool(h, world):
+    row(h, world.p_other)["Location"] = "BR1"
+    h.vendor.apply_then_500_next("PUT", "EditPurchaseOrderbydockey")  # the replace landed, answered 500
+    res = unlink(h, world, "p-resume")
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    out = _resume(h, res)
+    assert out.outcome == "done", (out.outcome, out.error_code, out.message)
+    new_key = out.replaced_lines[0][1]
+    assert row(h, new_key)["Location"] == POOL
+    assert out.detail and out.detail["DtlKey"] == new_key and out.detail["Location"] == POOL
+
+
+def test_recovery_puts_the_old_linked_row_back_where_it_was_not_at_the_pool(h, world):
+    from tests.test_autocount_write_back_operations import drop_new_row_once
+
+    row(h, world.p_other)["Location"] = "BR1"
+    drop_new_row_once(h)  # the "D" lands, the new free row does not: recover re-adds the linked row
+    res = unlink(h, world, "p-recover")
+    assert res.outcome == "recovered", (res.outcome, res.error_code, res.message)
+    back = [r for r in h.vendor.rows("PO", 7001) if r.get("FromSODtlKey") == world.so_a]
+    assert len(back) == 1 and back[0]["Location"] == "BR1"
+    assert all(r["Location"] != POOL for r in h.vendor.rows("PO", 7001))
+
+
+def test_resume_of_a_pending_merge_answers_the_pool_row(h, world):
+    h.vendor.apply_then_500_next("PUT", "EditPurchaseOrderbydockey")  # the merge landed, answered 500
+    res = unlink(h, world, "p-merge-resume")
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    out = _resume(h, res)
+    assert out.outcome == "done", (out.outcome, out.error_code)
+    assert out.replaced_lines == [(world.p_linked, world.p_other)]
+    assert out.detail and out.detail["DtlKey"] == world.p_other and out.detail["Location"] == POOL
+
+
+def test_no_pool_unlink_params_and_hash_are_todays():
+    """An operation stored before plan 66 must still match a same-key resend without a pool (hash unchanged)."""
+    import hashlib
+    import json
+
+    from modules.autocount.write_back.service import WriteBackService
+
+    seen = {}
+
+    class Ops:
+        def run(self, **kw):
+            seen.update(kw)
+            raise RuntimeError("stop")
+
+    with pytest.raises(RuntimeError):
+        WriteBackService.__new__(WriteBackService).unlink(tenant_id="t", company_id="c", po_doc_key=1, po_dtl_key=2,
+                                operations=Ops(), idempotency_key="k")
+    assert seen["params"] == {"doc_key": 1, "dtl_key": 2, "doc_date": None, "expected_last_modified": None}
+    want = hashlib.sha256(json.dumps({"op": "unlink_row", "params": {
+        "doc_key": 1, "dtl_key": 2, "doc_date": None, "expected_last_modified": None}},
+        sort_keys=True, default=str).encode()).hexdigest()
+    got = hashlib.sha256(json.dumps({"op": seen["op"], "params": seen["params"]},
+                                    sort_keys=True, default=str).encode()).hexdigest()
+    assert got == want
+
+
+def test_route_rejects_an_over_long_pool_location(client, h, gw, world):
+    r = client.post(UNLINK, headers=gw.hdr("p-route-long"),
+                    json={"companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked,
+                          "poolLocation": "B" * 65})
+    assert r.status_code == 422, r.text
+    assert puts(h) == []

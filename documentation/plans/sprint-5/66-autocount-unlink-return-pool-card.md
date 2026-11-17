@@ -34,7 +34,9 @@ With `poolLocation`:
 2. Else today's replace PUT, then the move PUT sends `Location = poolLocation` (price/date restore as today). A failed
    move = `done` + `LOCATION_NOT_MOVED`.
 3. Partly received: cut keeps the received qty in place; the new row with the rest is moved to `poolLocation`.
-Without `poolLocation`: plan 62 D7 unchanged, answer body unchanged (no `detail`).
+Without `poolLocation`: plan 62 D7 unchanged, answer body unchanged (no `detail`), idempotency hash unchanged.
+Side effect of "ignore unit price" (for the owner): a merge into a pool row at another price changes the PO total by
+freed qty x (pool price - unlinked price), and a discount on the unlinked row is not carried over.
 Relink ignores it. Retry rules unchanged (refusal releases the key; unknown outcome -> Resume reads the PO first;
 Resume of a pending replace moves to the snapshot's pool `moveTo`).
 
@@ -48,5 +50,8 @@ Resume of a pending replace moves to the snapshot's pool `moveTo`).
 | 5 | L1 ITEM-A 10 HQ linked, 3 received | L1 | L1 cut to 3 HQ; new L3 ITEM-A 7 BRW free |
 
 ## Tests
-`service_backend/tests/test_autocount_write_back_unlink_pool.py` (24). Kill tests: price back in the match, pool
-location not required, no move to pool, UOM dropped, `detail` always on, param ignored - each caught.
+`service_backend/tests/test_autocount_write_back_unlink_pool.py` (29, incl. resume / recover / merge-resume / hash pin).
+Kill tests: price back in the match, pool location not required, no move to pool, UOM dropped, `detail` always on,
+param ignored, pool key always in the hash - each caught. Live db3 check: not run from the cloud sandbox (no db3
+access); recommended before the CRM turns it on (does AutoCount keep the pool row's own price/date on the merge PUT,
+and accept the Location change to the pool code).
