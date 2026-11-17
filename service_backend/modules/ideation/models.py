@@ -422,6 +422,9 @@ class IdeaAttachment(IdeationBase):
     storage_key = Column(String, nullable=True)
     mime = Column(String, nullable=True)
     size_bytes = Column(Integer, nullable=True)
+    # Set when the file was attached to a comment (lane FEEDBACK-ATTACH-IMAGE);
+    # NULL = a report-level file (every row that existed before the column).
+    comment_id = Column(String, ForeignKey("idea_comments.id"), nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     __table_args__ = (

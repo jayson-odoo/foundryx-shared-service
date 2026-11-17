@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..models import Idea, IdeaComment
-from ..schemas import IdeaCommentOut, IdeaSourceOut
+from ..schemas import IdeaAttachmentOut, IdeaCommentOut, IdeaSourceOut
 
 AUTHOR_USER = "user"
 AUTHOR_EMBED = "embed"
@@ -48,8 +48,10 @@ def public_author_id(idea_id: str) -> str:
 
 
 class IdeaCommentService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, content_prefix: str = "/ideation/ideas"):
         self.db = db
+        # Where the caller's surface serves a comment file (staff / embed / board).
+        self.content_prefix = content_prefix
 
     # ---- scoping -----------------------------------------------------------
 
@@ -92,7 +94,14 @@ class IdeaCommentService:
             and row.author_id == viewer.id
         )
 
-    def _out(self, row: IdeaComment, viewer: CommentViewer, *, placeholder: bool = False) -> IdeaCommentOut:
+    def _out(
+        self,
+        row: IdeaComment,
+        viewer: CommentViewer,
+        *,
+        placeholder: bool = False,
+        attachments: Optional[List[IdeaAttachmentOut]] = None,
+    ) -> IdeaCommentOut:
         if placeholder or row.deleted_at is not None:
             return IdeaCommentOut(
                 id=row.id,
@@ -122,6 +131,7 @@ class IdeaCommentService:
             canDelete=mine or viewer.can_moderate,
             createdAt=row.created_at,
             editedAt=row.edited_at,
+            attachments=attachments or [],
         )
 
     # ---- reads -------------------------------------------------------------
@@ -193,10 +203,15 @@ class IdeaCommentService:
         parents_with_live_replies: Set[str] = {
             r.parent_id for r in rows if r.deleted_at is None and r.parent_id
         }
+        from .attachments import IdeaAttachmentService
+
+        files = IdeaAttachmentService(self.db).by_comment(
+            tenant_id, [r.id for r in rows if r.deleted_at is None], self.content_prefix
+        )
         out: List[IdeaCommentOut] = []
         for r in rows:
             if r.deleted_at is None:
-                out.append(self._out(r, viewer))
+                out.append(self._out(r, viewer, attachments=files.get(r.id)))
             elif r.parent_id is None and r.id in parents_with_live_replies:
                 out.append(self._out(r, viewer, placeholder=True))
         return out
@@ -314,7 +329,10 @@ class IdeaCommentService:
         row.edited_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(row)
-        return self._out(row, viewer)
+        from .attachments import IdeaAttachmentService
+
+        files = IdeaAttachmentService(self.db).by_comment(tenant_id, [row.id], self.content_prefix)
+        return self._out(row, viewer, attachments=files.get(row.id))
 
     def delete(
         self, tenant_id: str, idea_id: str, comment_id: str, *, viewer: CommentViewer,
@@ -330,6 +348,18 @@ class IdeaCommentService:
             raise HTTPException(403, "You cannot delete this comment.")
         row.deleted_at = datetime.now(timezone.utc)
         self.db.commit()
+
+    def assert_author(
+        self, tenant_id: str, idea_id: str, comment_id: str, viewer: CommentViewer
+    ) -> None:
+        """Gate for attaching a file to a comment: the comment must be live and on
+        this idea (404) and the viewer its author (403) - a moderator can delete
+        a comment but not add to someone else's."""
+        row = self._comment_or_404(tenant_id, idea_id, comment_id)
+        if row.deleted_at is not None:
+            raise HTTPException(404, "Comment not found.")
+        if not self._is_mine(row, viewer):
+            raise HTTPException(403, "Only the author can attach files to a comment.")
 
     def purge_for_idea(self, tenant_id: str, idea_id: str) -> None:
         """Hard-remove every comment of an idea (idea delete, AC-19-09). Replies

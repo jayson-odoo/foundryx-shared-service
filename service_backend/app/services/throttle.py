@@ -39,6 +39,7 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_IDEA_FEEDBACK_LINK,
     THROTTLE_SCOPE_IDEA_PORTAL_COMMENT,
     THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT,
+    THROTTLE_SCOPE_IDEA_PORTAL_UPLOAD,
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_LEAD_GATEWAY,
     THROTTLE_SCOPE_LEAD_GATEWAY_KEY,
@@ -147,6 +148,12 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
     if scope == THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT:
         return (
             settings.throttle_idea_portal_submit_max,
+            timedelta(minutes=settings.throttle_idea_portal_comment_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_IDEA_PORTAL_UPLOAD:
+        return (
+            settings.throttle_idea_portal_upload_max,
             timedelta(minutes=settings.throttle_idea_portal_comment_window_minutes),
             None,
         )
@@ -569,6 +576,14 @@ class ThrottleService:
 
     def record_idea_feedback_link(self, *, ip: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_IDEA_FEEDBACK_LINK, ip)
+
+    def enforce_idea_portal_upload(self, *, principal_key: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_IDEA_PORTAL_UPLOAD, principal_key)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_idea_portal_upload(self, *, principal_key: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_PORTAL_UPLOAD, principal_key)
 
     def enforce_idea_portal_submit(self, *, principal_key: str) -> None:
         retry = self.store.check(THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT, principal_key)

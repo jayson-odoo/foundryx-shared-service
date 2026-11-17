@@ -169,6 +169,8 @@ class IdeaReadService:
             .filter(
                 IdeaAttachment.idea_id.in_(idea_ids),
                 IdeaAttachment.tenant_id.in_({i.tenant_id for i in ideas}),
+                # Comment files ride their comment, never the report.
+                IdeaAttachment.comment_id.is_(None),
             )
             .order_by(IdeaAttachment.created_at.asc(), IdeaAttachment.id.asc())
             .all()

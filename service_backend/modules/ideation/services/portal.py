@@ -62,6 +62,7 @@ from ..models import (
     IdeaStatusEvent,
     IdeaVote,
 )
+from .attachments import IdeaAttachmentService
 from .comments import AUTHOR_CONTACT, AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
 from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
@@ -123,7 +124,10 @@ MAX_PAGE_SIZE = 100
 WITHHELD_CARD_KEYS = ("submittedAt", "productName")
 WITHHELD_DETAIL_KEYS = WITHHELD_CARD_KEYS + (
     "problem", "desiredOutcome", "useCases", "currentWorkaround", "submitterFirstName",
+    "attachments",
 )
+# Where the board serves a file (the manifest mounts the portal router here).
+PORTAL_CONTENT_PREFIX = "/portal/ideas"
 
 
 def as_use_case_list(value: Any) -> Optional[List[str]]:
@@ -836,6 +840,9 @@ class IdeaPortalService:
         for wire, attr in CORE_FIELDS:
             out[wire] = self._core_field(idea, attr)
         out["note"] = idea.portal_note
+        out["attachments"] = IdeaAttachmentService(self.db).report_level(
+            idea.tenant_id, idea.id, PORTAL_CONTENT_PREFIX
+        )
         if self._text_withheld(card["isMine"]):
             # Owner ruling (b), strict (15 Nov + crew-pass): a dealer sees the
             # full text only on their own items; on everyone else's ONLY title,
@@ -994,7 +1001,7 @@ class IdeaPortalService:
     # ---- comments ----------------------------------------------------------
 
     def _comment_rows(self, idea: Idea) -> List[Dict[str, Any]]:
-        rows = IdeaCommentService(self.db).list(
+        rows = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).list(
             idea.tenant_id, idea.id, self.p.viewer, project_names=True
         )
         ids = [r.id for r in rows]
@@ -1039,7 +1046,7 @@ class IdeaPortalService:
             throttle.enforce_idea_portal_comment(principal_key=key)
         except Throttled as exc:
             raise PortalError(429, "too_many_comments", "Too many comments. Try again later.", exc.retry_after_seconds)
-        created = IdeaCommentService(self.db).create(
+        created = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).create(
             idea.tenant_id,
             idea.id,
             body=body,
@@ -1053,6 +1060,62 @@ class IdeaPortalService:
         d = created.model_dump()
         d.update(authorRole=self.p.role, likeCount=0, likedByMe=False)
         return d
+
+    def upload_attachment(
+        self, idea_id: str, filename: str, content: bytes, comment_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Attach a file to a report (its owner or a manager) or to the caller's
+        own comment. Same sniff / caps / storage as the staff upload."""
+        from app.services.throttle import Throttled, ThrottleService
+
+        idea = self._resolve(idea_id, follow_merge=False)
+        comments = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX)
+        if comment_id:
+            comments.assert_author(idea.tenant_id, idea.id, comment_id, self.p.viewer)
+        elif not (self.p.can_manage or self._is_owned(idea.id)):
+            raise _forbidden()
+        throttle = ThrottleService(self.db)
+        key = hashlib.sha256(f"{self.p.tenant_id}:{self.p.voter_id}".encode("utf-8")).hexdigest()
+        try:
+            throttle.enforce_idea_portal_upload(principal_key=key)
+        except Throttled as exc:
+            raise PortalError(429, "too_many_uploads", "Too many uploads. Try again later.", exc.retry_after_seconds)
+        created = IdeaAttachmentService(self.db).upload(
+            idea.tenant_id,
+            idea.id,
+            filename,
+            content,
+            content_prefix=PORTAL_CONTENT_PREFIX,
+            comment_id=comment_id or None,
+        )
+        throttle.record_idea_portal_upload(principal_key=key)
+        return created
+
+    def attachment_content(self, idea_id: str, attachment_id: str) -> Tuple[str, str, str]:
+        """``(storage_key, mime, filename)`` of a file the caller may read: a
+        report file only where the report text is not withheld from them, a
+        comment file only while its comment is live."""
+        idea = self._resolve(idea_id, follow_merge=True)
+        files = IdeaAttachmentService(self.db)
+        found = files.content(idea.tenant_id, idea.id, attachment_id)
+        comment_id = files.comment_id_of(idea.tenant_id, idea.id, attachment_id)
+        if comment_id is None:
+            if self._text_withheld(self._is_owned(idea.id)):
+                raise _not_found()
+        else:
+            live = (
+                self.db.query(IdeaComment.id)
+                .filter(
+                    IdeaComment.id == comment_id,
+                    IdeaComment.idea_id == idea.id,
+                    IdeaComment.tenant_id == idea.tenant_id,
+                    IdeaComment.deleted_at.is_(None),
+                )
+                .first()
+            )
+            if live is None:
+                raise _not_found()
+        return found
 
     def delete_comment(self, idea_id: str, comment_id: str) -> None:
         idea = self._resolve(idea_id, follow_merge=True)
