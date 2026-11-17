@@ -175,6 +175,18 @@ def queue_event(db: Session, tenant_id: str, event: str, data: Dict[str, Any], l
     """One PENDING delivery per active endpoint subscribed to ``event``. Flushes,
     never commits. Returns the new delivery ids."""
     endpoints = [e for e in list_endpoints(db, tenant_id) if event in (e.events_json or [])]
+    return _queue_to(db, tenant_id, endpoints, event, data, lead_id)
+
+
+def _queue_to(
+    db: Session,
+    tenant_id: str,
+    endpoints: List[LcWebhookEndpoint],
+    event: str,
+    data: Dict[str, Any],
+    lead_id: Optional[str],
+) -> List[str]:
+    """One PENDING delivery per given endpoint. Flushes, never commits."""
     if not endpoints:
         return []
     body = json.dumps(envelope(event, data), separators=(",", ":"), ensure_ascii=False)
@@ -194,6 +206,65 @@ def queue_event(db: Session, tenant_id: str, event: str, data: Dict[str, Any], l
         db.flush()
         ids.append(row.id)
     return ids
+
+
+# Fake values per field TYPE for a test push (never real personal data).
+_TEST_VALUES = {
+    "name": "Test Lead",
+    "phone": "+60000000000",
+    "email": "test.lead@example.com",
+    "notes": "Test push from Lead Capture.",
+    "text": "Test",
+}
+
+
+def get_endpoint(db: Session, tenant_id: str, endpoint_id: str) -> LcWebhookEndpoint:
+    """An ACTIVE endpoint of this tenant, else ``endpoint_not_found``."""
+    row = (
+        db.query(LcWebhookEndpoint)
+        .filter(LcWebhookEndpoint.id == endpoint_id, LcWebhookEndpoint.tenant_id == tenant_id)
+        .first()
+    )
+    if row is None or not row.active:
+        raise DeliveryError(404, "endpoint_not_found", "Endpoint not found.")
+    return row
+
+
+def send_test_push(db: Session, tenant_id: str, endpoint_id: str) -> LcDelivery:
+    """Queue ONE signed delivery of a sample lead (``isTest: true``) to this
+    endpoint only, through the same queue + dispatch as a real lead (AC-64-57).
+    The event is ``lead.created`` when subscribed, else the endpoint's first."""
+    from ..mapping import lead_body
+    from .field_service import targets
+
+    endpoint = get_endpoint(db, tenant_id, endpoint_id)
+    events = list(endpoint.events_json or [])
+    event = EVENT_LEAD_CREATED if EVENT_LEAD_CREATED in events or not events else events[0]
+    now = datetime.now(timezone.utc)
+    fields = {key: _TEST_VALUES.get(typ, "Test") for key, typ in targets(db, tenant_id)}
+    data = lead_body(
+        lead_id=f"test_{uuid.uuid4().hex[:12]}",
+        source_id="test",
+        source_name="Test push",
+        platform="test",
+        platform_lead_id="test",
+        page_id=None,
+        form_id=None,
+        form_name=None,
+        received_at=now,
+        platform_created_at=now,
+        is_test=True,
+        duplicate_of=None,
+        fields=fields,
+        answers=[],
+        attribution={},
+    )
+    [delivery_id] = _queue_to(db, tenant_id, [endpoint], event, data, None)
+    db.commit()
+    enqueue([delivery_id])
+    row = db.query(LcDelivery).filter(LcDelivery.id == delivery_id, LcDelivery.tenant_id == tenant_id).first()
+    db.refresh(row)
+    return row
 
 
 def enqueue(delivery_ids: List[str]) -> None:

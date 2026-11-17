@@ -89,6 +89,41 @@ def revoke_key(key_id: str, user: User = Depends(_KEYS), db: Session = Depends(g
     return Response(status_code=204)
 
 
+@router.get("/webhooks", response_model=schemas.WebhookList)
+def list_webhooks(user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.WebhookList:
+    rows = delivery_service.list_endpoints(db, user.tenant_id)
+    return schemas.WebhookList(data=[read_service.webhook_item(r) for r in rows])
+
+
+@router.post("/webhooks", response_model=schemas.WebhookCreated, status_code=201)
+def create_webhook(
+    body: schemas.WebhookCreate, user: User = Depends(_MANAGE), db: Session = Depends(get_db)
+) -> schemas.WebhookCreated:
+    try:
+        row, secret = delivery_service.create_endpoint(db, user.tenant_id, body.url, body.events)
+    except delivery_service.DeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+    return schemas.WebhookCreated(**read_service.webhook_item(row).model_dump(), secret=secret)
+
+
+@router.delete("/webhooks/{endpoint_id}", status_code=204)
+def delete_webhook(endpoint_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> Response:
+    try:
+        delivery_service.delete_endpoint(db, user.tenant_id, endpoint_id)
+    except delivery_service.DeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+    return Response(status_code=204)
+
+
+@router.post("/webhooks/{endpoint_id}/test", response_model=schemas.DeliveryItem, status_code=202)
+def test_webhook(endpoint_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.DeliveryItem:
+    try:
+        row = delivery_service.send_test_push(db, user.tenant_id, endpoint_id)
+    except delivery_service.DeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+    return read_service.delivery_item(row)
+
+
 @router.post("/deliveries/{delivery_id}/redeliver", response_model=schemas.DeliveryItem)
 def redeliver(delivery_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.DeliveryItem:
     try:
