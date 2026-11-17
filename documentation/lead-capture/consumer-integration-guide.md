@@ -18,8 +18,10 @@ Every gateway call carries a Lead Capture key:
 Authorization: Bearer fxl_live_<secret>
 ```
 
-- A Shared Service admin creates the key (Lead Capture > Keys, or `POST /lead-capture/keys` while signed in). The
-  full key is shown once; afterwards only `fxl_live_****` + its last 4 characters is shown.
+- A Shared Service admin creates the first key (Lead Capture > Keys, or `POST /lead-capture/keys` while signed in).
+  After that, a key holder can list, create and revoke the product's keys itself (`/keys`, section 3), so the
+  product can show a Keys screen in its own app. The full key is shown once; afterwards only `fxl_live_****` + its
+  last 4 characters is shown.
 - The key decides the tenant. Nothing in a request body or query chooses it.
 - A missing, malformed, unknown or revoked key answers `401 invalid_api_key`. Too many `401`s from one IP answer
   `429 rate_limited` with `Retry-After`. Each key has a request budget (600 calls per 5 minutes by default); over it
@@ -43,12 +45,14 @@ Every gateway error has one shape:
 | 404 | `endpoint_not_found` | Webhook id not found for this tenant |
 | 404 | `source_not_found` | Source id not found for this tenant |
 | 404 | `delivery_not_found` | Delivery id not found for this tenant |
+| 404 | `key_not_found` | Key id not found for this tenant |
 | 400 | `token_invalid` | Meta no longer accepts the source's Page token (or it has none): reconnect the Page |
 | 400 | `meta_refused` | Meta refused the form or test-lead call; `message` is Meta's reason, cleaned |
 | 409 | `endpoint_limit` | Already 5 webhook endpoints |
 | 409 | `source_not_connected` | Test lead for a source that is not receiving leads (`NEEDS_RECONNECT`, `DISCONNECTED`, `DRAFT`): reconnect first |
 | 409 | `test_lead_exists` | Meta still holds the form's previous test lead after clearing it; delete it in Meta's Lead Ads Testing Tool, then retry |
 | 409 | `lead_purged` | Redeliver of a lead whose personal data was deleted |
+| 409 | `key_in_use` | Revoke of the key the request itself uses: revoke it with another key |
 | 422 | `invalid_request` | Body or query fails validation (e.g. `limit=500`, no `url`); `details` lists the fields |
 | 422 | `invalid_url` | Callback URL is not public `https://` |
 | 422 | `invalid_fields` | Field list: bad key, repeated key, unknown type, more than 50 |
@@ -75,6 +79,10 @@ Every gateway error has one shape:
 | GET | `/webhooks` | - | `{"data": [Webhook]}` |
 | POST | `/webhooks` | `{"url", "events"}` | `201` `Webhook` + `secret` (shown once) |
 | DELETE | `/webhooks/{id}` | - | `204` |
+| POST | `/webhooks/{id}/test` | - | `202` `Delivery` (one signed sample lead, `isTest: true`, to that endpoint only) |
+| GET | `/keys` | - | `{"data": [Key]}` (newest first, revoked keys included) |
+| POST | `/keys` | `{"name"}` | `201` `Key` + `key` (the full key, shown once) |
+| DELETE | `/keys/{id}` | - | `204` (revoked at once; `409 key_in_use` for the calling key) |
 | GET | `/leads` | `since`, `cursor`, `source`, `limit` (1-100, default 50) | `{"data": [Lead], "nextCursor", "hasMore"}` |
 | POST | `/deliveries/{id}/redeliver` | - | `Delivery` |
 
@@ -180,6 +188,27 @@ with the key id.
 `POST /webhooks` also returns `"secret": "whsec_..."` once. Keep it: it signs every delivery. `url` must be public
 `https://`; it is checked again before every delivery attempt. At most 5 endpoints. Events: `lead.created` (release
 1); `lead.updated` and `source.updated` are accepted now and start being sent in a later release.
+
+### Test push
+
+`POST /webhooks/{id}/test` queues ONE delivery of a sample lead to that endpoint only, signed like any real
+delivery and sent through the same retry ladder. The event is `lead.created` when the endpoint subscribes to it,
+otherwise its first event. The body is the section 4 lead shape with `"isTest": true`, `sourceId: "test"`,
+`platform: "test"` and `fields` holding every key of your field list with a sample value per type (name
+`Test Lead`, phone `+60000000000`, email `test.lead@example.com`, notes and text sample text). Answers the
+`Delivery` (`404 endpoint_not_found` for an unknown or removed endpoint). Use it to check the receiver and its
+signature check before real leads arrive.
+
+### Key
+
+```json
+{"id": "5c2b...", "name": "CRM sync", "keyMasked": "fxl_live_****Jk4Q", "createdAt": "2026-11-17T02:00:00Z",
+ "lastUsedAt": "2026-11-17T07:40:00Z", "revokedAt": null}
+```
+
+`POST /keys` also returns `"key": "fxl_live_..."` once. A revoked key stays listed with `revokedAt` set and answers
+`401 invalid_api_key` from then on. To rotate: create the new key, switch your backend to it, then revoke the old
+key with the new one (a key cannot revoke itself). Every key call is audited with the calling key id.
 
 ### Delivery
 

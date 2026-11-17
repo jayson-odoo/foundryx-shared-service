@@ -61,3 +61,11 @@ revoke/remove through the core grace-window engine.
 - `delivery_service.send_test_push` + `get_endpoint`; `queue_event` now shares `_queue_to` with it.
 - `modules/lead_capture/deferred_actions.py`: `lead_capture_keys.revoke`, `lead_capture_receivers.remove`.
 - No new table, permission or gateway change (consumer guide untouched).
+
+## Round 2 (owner 17 Nov 19:32: "we are providing the API and middleware, these UI also need to be built at ecohub")
+- Every action on these screens is also on the key-holder gateway, through the same service function (one
+  function, two doors): added `GET/POST /api/v1/lead-capture/keys`, `DELETE /api/v1/lead-capture/keys/{id}`
+  (`409 key_in_use` for the calling key) and `POST /api/v1/lead-capture/webhooks/{id}/test`. Receivers, fields,
+  sources, form questions and field maps already had gateway routes.
+- A parity test fails when a staff route has no gateway counterpart (only Page connect stays staff-only, lane L-C).
+- Consumer guide updated (routes, errors, Test push, Key). EcoHub how-to: `docs/lead-capture/ecohub-quickstart-screens.md`.
