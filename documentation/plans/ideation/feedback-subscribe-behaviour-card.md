@@ -7,7 +7,10 @@ Owner 17 Nov ~12:37 (design, answers card Q1): "generate a general share link, t
 or comment or do anything, we prompt something to ask for their phone number, verify if it is linked to the
 contacts from CRM then if yes okay they can continue".
 
-Status: card v2 (owner design applied). 3 open questions below. Red tests for the parts no answer changes are next.
+Status: BUILT (PR #253). Owner answers 17 Nov ~12:40: Q1 (a) WhatsApp code reusing the CRM's existing template,
+Q2 (a), Q3 (a). Crew contract (final): SS makes + checks the code; the product only looks the phone up and delivers
+the code (see "CRM side"). R11 (status-page comment phone step) is NOT built: it removes an existing public feature,
+left open for the owner.
 
 ## What the code does today (read, not guessed)
 
@@ -40,10 +43,10 @@ R3. **Any action** on the share view (Follow, Comment, Upvote) first asks for th
     SS asks **the item's product** whether that phone is one of its contacts (Sorento: a CRM contact with that
     phone). Match -> the visitor is proven (Q1) and **continues as that contact**, on the same item, with their
     own personal board link from then on (own vote, own name, own "Yours"). No match -> Q2.
-R4. "Ask the product" is generic, never Sorento code: each product's own connection answers
-    `phone -> contact (name, product contact id) | none`. Sorento answers from its CRM contacts (CRM-side endpoint
-    needed, see "CRM side"). A product with no lookup configured answers from the SS contacts of that tenant
-    (same-phone rule as `find_contacts_by_phone`).
+R4. "Ask the product" is generic, never Sorento code: the tenant's consumer connection tagged with the item's
+    product (`config.productId`), else the tenant's one untagged consumer connection, answers
+    `phone -> contact | 404`. A connection tagged for ANOTHER product is never used. No connection = "We could not
+    check your number right now. Try again." (never a pass).
 R5. **Phone normalisation** (same spirit as the CRM "dash/space = same code" rule): spaces, dashes, brackets and a
     leading "+" are ignored; a number typed with a leading "0" is read with the tenant's country code
     (Malaysia: "012-345 6789" = "+60 12 345 6789"). One shared function, used by the lookup and the
@@ -112,10 +115,25 @@ Q3. **Does the submitter's personal link change?** (a) no: it stays private and 
 
 ## CRM side (needed, Sorento only as the first answering product)
 
-- A contact lookup endpoint on the CRM's external API (same `X-API-Key` connection as the status poke):
-  `phone -> {contactId, name} | 404`, normalised per R5.
-- If Q1 (a): send the code over WhatsApp with an authentication template (same send route as status updates).
+Same `X-API-Key` consumer connection as the status poke. SS owns the code (6 digits, hashed, 10 min, 5 tries,
+single use, a new request cancels the old one; table `idea_phone_codes`).
+- `POST /api/v1/external/ideation/contacts/lookup` `{phone, phoneDigits}` -> `200 {contactId, name, phone}` | `404`.
+- `POST /api/v1/external/ideation/phone/send-code` `{phone, phoneDigits, code}` -> sends `code` through the existing
+  `portal_otp` template (only param `otp_code`) -> `202` | `429` | other = SS voids the code.
+- A `/feedback/share/[token]` page framing SS `/public/feedback/share/{token}` (share links follow the board's host rule).
 - Optional: word follower updates using `recipient_role` (R7).
+
+## Built (map)
+
+- Backend: `services/followers.py`, `services/share_links.py`, `services/phone_verify.py`, fan-out in
+  `services/status_events.py` (`_recipients`), portal share principal + follow/share in `services/portal.py`,
+  routes in `routers/portal.py` + `routers/ideas.py`, migration `0023_ideation_follow_share`, throttle scope
+  `idea_follow_phone`, phone normalisation `modules/omnichannel/phone.py international_digits`.
+- Frontend: `components/platform/idea-portal/{follow-share-bar,share-phone-dialog}.tsx`, share mode in `idea-page.tsx`,
+  `ShareItemRoot` + route `/public/feedback/share/[token]`, operator `feedback/components/idea-followers-tab.tsx` +
+  form actions Copy share link / Stop sharing.
+- Share view shows what another dealer's item already shows on the board (title, status, timeline, activity,
+  comments, counts); the free-text fields stay withheld (owner ruling (b), same as the board).
 
 ## Acceptance criteria (draft; ids final once Q1-Q3 are answered)
 
