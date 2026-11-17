@@ -9,6 +9,7 @@
 import { useState, type ReactElement } from 'react';
 import { ChevronDown, ChevronRight, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { BrandMark } from '@/components/platform/branding';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -104,16 +105,7 @@ export default function LeadCaptureConnectPage() {
             <div className="flex flex-col gap-4">
               <h1 className="font-heading text-lg font-semibold text-foreground">Connect a lead source</h1>
               <div className="flex flex-col gap-2">
-                <div
-                  className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
-                  role="progressbar"
-                  aria-label="Setup progress"
-                  aria-valuenow={progressPercent(state)}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                >
-                  <div className="h-full bg-primary transition-all" style={{ width: `${progressPercent(state)}%` }} />
-                </div>
+                <Progress value={progressPercent(state)} aria-label="Setup progress" className="h-1.5" />
                 <ol className="flex justify-between gap-1 text-xs">
                   {WIZARD_STEPS.map((s) => (
                     <li
