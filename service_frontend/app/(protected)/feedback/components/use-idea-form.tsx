@@ -7,6 +7,8 @@ import { useForm, type UseFormReturn } from 'react-hook-form';
 import {
   Archive,
   ArchiveRestore,
+  Bell,
+  Link2,
   ArrowRight,
   ClipboardList,
   FileText,
@@ -31,6 +33,8 @@ import { DetailsTab, AttachmentsTab } from './idea-form-fields';
 import { statusRegistryFor } from './status-registry';
 import { IdeaBrsTab } from './idea-brs-tab';
 import { IdeaMergedTab } from './idea-merged-tab';
+import { IdeaFollowersTab } from './idea-followers-tab';
+import { ideaFollowerService } from '@/services/idea-follower-service';
 import { IdeaSimilarTab } from './idea-similar-tab';
 import { MergeIdeasDialog } from '../merge-ideas-dialog';
 import { VoteCell } from './vote-cell';
@@ -281,6 +285,33 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
                   isVisible: (rows: Idea[]) => rows.every((r) => r.hasSubmitterContact === true),
                   deferred: { actionKey: 'ideation_ideas.cancel_feedback_link', entityType: 'ideation_idea' },
                 } satisfies ResourceAction<Idea>,
+                {
+                  // Lane FEEDBACK-SUBSCRIBE: the item's read-only share link
+                  // (anyone reads it; following / commenting asks for a phone).
+                  id: 'copy-share-link',
+                  label: 'Copy share link',
+                  icon: Link2,
+                  permission: 'ideation.triage.manage',
+                  surfaces: { row: false, form: true, bulk: false },
+                  isVisible: (rows: Idea[]) => rows.every((r) => !r.isTest),
+                  run: async (rows: Idea[]) => {
+                    const { url } = await ideaFollowerService.shareLink(rows[0].id);
+                    await navigator.clipboard.writeText(url);
+                    toast.success('Link copied');
+                  },
+                } satisfies ResourceAction<Idea>,
+                {
+                  id: 'stop-sharing',
+                  label: 'Stop sharing',
+                  icon: Link2Off,
+                  permission: 'ideation.triage.manage',
+                  surfaces: { row: false, form: true, bulk: false },
+                  isVisible: (rows: Idea[]) => rows.every((r) => !r.isTest),
+                  run: async (rows: Idea[]) => {
+                    await ideaFollowerService.stopSharing(rows[0].id);
+                    toast.success('The share link no longer works.');
+                  },
+                } satisfies ResourceAction<Idea>,
               ]
             : []),
           {
@@ -514,6 +545,17 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
                     onMerge={(rows) => setSimilarMergeRows(rows)}
                   />
                 ),
+              },
+            ]
+          : []),
+        // Followers (lane FEEDBACK-SUBSCRIBE R9) - operator surface, live items.
+        ...(mode === 'operator' && !creating && idea && !idea.isTest
+          ? [
+              {
+                id: 'followers',
+                label: 'Followers',
+                icon: Bell,
+                render: () => <IdeaFollowersTab ideaId={idea.id} canManage={can('ideation.triage.manage')} />,
               },
             ]
           : []),

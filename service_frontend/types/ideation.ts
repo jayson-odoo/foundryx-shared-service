@@ -283,3 +283,12 @@ export interface SimilarIdeas {
   available: boolean;
   ideas: Idea[];
 }
+
+/** A follower of a feedback item on the operator page (lane FEEDBACK-SUBSCRIBE). */
+export interface IdeaFollower {
+  contactId: string;
+  name: string | null;
+  phone: string | null;
+  addedByStaff: boolean;
+  createdAt: string | null;
+}
