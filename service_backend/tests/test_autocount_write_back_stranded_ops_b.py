@@ -214,11 +214,12 @@ def test_timed_out_add_line_is_not_resent_until_autocount_had_time_to_finish(cli
     h.vendor.timeout_next("PUT", "EditPurchaseOrderbydockey")
     first = client.post(ADD, json=add_body(), headers=gw.hdr("b-5"))
     assert first.json()["outcome"] == "pending_verification", first.text
+    _age_actions(h, 300)  # past the vendor timeout, but the PUT could have gone out late (action deadline)
     early = client.post(ADD, json=add_body(), headers=gw.hdr("b-5"))
     assert early.json()["outcome"] == "pending_verification", early.text
     assert "not confirmed" in early.json()["message"]
     assert len(puts(h)) == 1 and len(h.vendor.rows("PO", 7001)) == lines
-    _age_actions(h, 200)
+    _age_actions(h, 500)
     r = client.post(ADD, json=add_body(), headers=gw.hdr("b-5"))
     assert r.json()["outcome"] == "done", r.text
     assert len(h.vendor.rows("PO", 7001)) == lines + 1 and len(puts(h)) == 2

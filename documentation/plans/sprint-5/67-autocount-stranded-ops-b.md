@@ -51,8 +51,9 @@ stored answer. No SS change is needed for this; the CRM slice (item D) owns it.
 
 ## Edge cases
 
-- A timed-out PUT may still land in AutoCount after the timeout. "Not found" is trusted only once the write is
-  older than the vendor's write timeout plus margin (150 s); before that the answer stays
+- A timed-out PUT may still land in AutoCount after the timeout. "Not found" is trusted only once the latest
+  possible PUT has had time to finish (action deadline 270 s + vendor write timeout 90 s + 60 s margin = 420 s,
+  still under the 600 s busy window); before that the answer stays
   `pending_verification` ("AutoCount has not confirmed this change yet...") and nothing is sent again.
 - A write whose own action already confirmed `done` (the worker died before the operation stored it) locks
   as `done` without a re-read: only a confirmed success locks, and that one is confirmed.

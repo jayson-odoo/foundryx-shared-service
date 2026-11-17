@@ -90,12 +90,15 @@ IN_PROGRESS_MESSAGE = "This change is still being saved in AutoCount. Please che
 # AUTOCOUNT-STRANDED-OPS-B: the single-document writes whose unknown outcome a same-key resend looks up
 LOOKUP_PRIMITIVES = ("edit_doc", "add_line", "delete_line", "cancel_doc")
 OWNED_ACTIONS = "actionsCarryOperation"  # snapshot_json marker: this row's actions carry its id
-# "not in AutoCount" is trusted only once the write is older than the vendor's write timeout (90 s) plus margin:
-# a timed-out PUT may still land, and a fresh run before then could write twice
-LOOKUP_SETTLE_SECONDS = 150
+# "not in AutoCount" is trusted only once the latest possible PUT has had time to finish: the action row is made
+# before the reads that precede the PUT, the PUT may go out up to the action deadline later, then run up to the
+# vendor's write timeout. A fresh run before then could write twice. Stays under the busy window, so a row the
+# crash sweep flipped is always settled.
+VENDOR_WRITE_TIMEOUT_SECONDS = 90  # = AutoCountWriteClient's default timeout
+LOOKUP_SETTLE_SECONDS = int(frame.ACTION_DEADLINE_SECONDS) + VENDOR_WRITE_TIMEOUT_SECONDS + 60
 LEGACY_MATCH_SLACK_SECONDS = 5  # app clock vs database clock, for rows written before actions carried them
-NOT_CHECKABLE_MESSAGE = ("This change could not be checked automatically. Check the document in AutoCount, "
-                         "then try again.")
+NOT_CHECKABLE_MESSAGE = ("This change could not be checked automatically. Check the document in AutoCount "
+                         "before changing it again.")
 UNKNOWN_OPERATION = "UNKNOWN_OPERATION"
 OPERATION_NOT_RESUMABLE = "OPERATION_NOT_RESUMABLE"
 INVALID_PARAMS = "INVALID_PARAMS"
@@ -1860,6 +1863,7 @@ class OperationService:
                     res = call()
             except Exception:  # noqa: BLE001 - a lookup that breaks decides nothing
                 logger.exception("autocount look-up of operation %s failed", existing.id)
+                self.db.rollback()
                 return self._unconfirmed(existing, replay, LOOKUP_FAILED_MESSAGE)
             if res.outcome != OUTCOME_REFUSED:  # done (locked) or still unknown
                 if res.outcome == OUTCOME_DONE:
