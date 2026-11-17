@@ -121,6 +121,32 @@ describe('LinkPortalRoot', () => {
     expect(title.closest('a')).toHaveAttribute('href', `/public/feedback/board/${TOKEN}/IDEA-0005`);
   });
 
+  it('SS-MULTI-PRODUCT-BOARD (AC-MPB-7): a product link takes the product colour + name', async () => {
+    svc.linkSession.mockResolvedValue({
+      token: 'portal-jwt',
+      principal: { ...contact, productId: 'p-sorento', brand: { name: 'Sorento CRM', color: '#3b82f6' } },
+    });
+    render(
+      <LinkPortalRoot linkToken={TOKEN}>
+        <FeedbackView />
+      </LinkPortalRoot>,
+    );
+    const shell = await screen.findByTestId('portal-shell');
+    expect(shell.style.getPropertyValue('--primary')).toBe('#3b82f6');
+    await waitFor(() => expect(document.title).toBe('Sorento CRM feedback'));
+  });
+
+  it('a link without product branding keeps the default colours', async () => {
+    svc.linkSession.mockResolvedValue({ token: 'portal-jwt', principal: { ...contact, brand: null } });
+    render(
+      <LinkPortalRoot linkToken={TOKEN}>
+        <FeedbackView />
+      </LinkPortalRoot>,
+    );
+    const shell = await screen.findByTestId('portal-shell');
+    expect(shell.style.getPropertyValue('--primary')).toBe('');
+  });
+
   it('a bad or cancelled link shows the not-valid message', async () => {
     svc.linkSession.mockRejectedValue(new Error('401'));
     render(
