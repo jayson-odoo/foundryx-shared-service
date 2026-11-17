@@ -6,6 +6,7 @@
  * Only messages from this app's own origin are read.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { buildListNav } from '@/lib/list-context';
 import { toast } from '@/lib/toast';
 import { leadCaptureSourcesService } from '@/services/lead-capture-sources-service';
 
@@ -82,4 +83,21 @@ export function useLeadDetail(id: string): UseLeadDetail {
   }, []);
 
   return { detail, error, loading, redelivering, redeliver, reload: () => setVersion((v) => v + 1) };
+}
+
+/** Prev/next on a lead page: re-runs the carried list query (and the
+ * source filter the list was opened with) one row at a time. */
+export function useLeadRecordNav(sourceId: string | null, hrefFor: (id: string, sourceId: string | null) => string) {
+  const fetchAt = useCallback(
+    async (query: import('@/types/resource').ListQuery, index: number) => {
+      const res = await leadCaptureSourcesService.listLeads({ ...query, page: index, pageSize: 1 }, sourceId);
+      return { recordId: res.data[0]?.id ?? null, total: res.total };
+    },
+    [sourceId],
+  );
+  const buildHref = useCallback(
+    (recordId: string, ctx: string, index: number) => buildListNav(hrefFor(recordId, sourceId), { ctx, i: index }),
+    [hrefFor, sourceId],
+  );
+  return { fetchAt, buildHref };
 }

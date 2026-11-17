@@ -21,8 +21,6 @@ from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.database import get_db
-from app.models.tenant import Tenant
-from app.services.branding_service import BrandingService
 from app.services.throttle import Throttled, ThrottleService, client_ip
 
 from .. import schemas
@@ -87,21 +85,13 @@ def redeem(body: schemas.ConnectSessionRedeem, request: Request, db: Session = D
         raise _api(exc)
 
 
-def _branding(db: Session, tenant_id: str) -> schemas.WizardBranding:
-    """The tenant's own name and logo (AC-64-11: never the platform's)."""
-    tenant = db.get(Tenant, tenant_id)
-    data = BrandingService(db).get(tenant_id)
-    name = (data.get("appName") or "").strip() or (tenant.name if tenant else "") or "Connect a lead source"
-    return schemas.WizardBranding(name=name, logoUrl=data.get("logoUrl"))
-
-
 @router.get("/wizard/context", response_model=schemas.WizardContext)
 def context(principal: WizardPrincipal = Depends(get_wizard), db: Session = Depends(get_db)) -> schemas.WizardContext:
     source = None
     if principal.session.source_id:
         source = read_service.source_item(_source(db, principal, principal.session.source_id))
     return schemas.WizardContext(
-        branding=_branding(db, principal.tenant_id),
+        branding=schemas.WizardBranding(**sessions.wizard_branding(db, principal.tenant_id)),
         channels=[schemas.Channel(**c) for c in sessions.channels()],
         login=schemas.LoginConfig(**sessions.login_config()),
         returnOrigin=principal.session.return_origin,
@@ -215,6 +205,16 @@ def put_field_map(
     except field_service.FieldError as exc:
         raise _api(exc)
     return read_service.source_item(row)
+
+
+@router.get("/wizard/sources/{source_id}/test-lead", response_model=schemas.WizardTestLead)
+def last_test_lead(
+    source_id: str, principal: WizardPrincipal = Depends(get_wizard), db: Session = Depends(get_db)
+) -> schemas.WizardTestLead:
+    try:
+        return schemas.WizardTestLead(**sessions.last_test_lead(db, principal, source_id))
+    except sessions.SessionError as exc:
+        raise _api(exc)
 
 
 @router.post("/wizard/sources/{source_id}/test-lead", response_model=schemas.TestLeadAccepted, status_code=202)

@@ -216,8 +216,8 @@ export function FieldsStep({ wizard }: StepProps) {
   const forms = usableForms(wizard);
   const [map, setMap] = useState<Record<string, string | null>>({});
   const saved = useMemo(
-    () => (wizard.mapFormId ? (wizard.context?.source?.fieldMap?.[wizard.mapFormId] ?? {}) : {}),
-    [wizard.context, wizard.mapFormId],
+    () => (wizard.mapFormId ? (wizard.source?.fieldMap?.[wizard.mapFormId] ?? {}) : {}),
+    [wizard.source, wizard.mapFormId],
   );
 
   useEffect(() => {

@@ -534,5 +534,5 @@ The hosted page calls `/public/lead-capture/*` with its scoped token; you never 
 `POST /wizard/facebook/login`, `GET /wizard/facebook/pages`, `POST /wizard/facebook/connect {"pageId"}`,
 `GET /wizard/sources/{id}`, `GET|PUT /wizard/sources/{id}/forms`, `GET /wizard/fields`,
 `GET /wizard/sources/{id}/forms/{formId}/questions`, `PUT /wizard/sources/{id}/field-map`,
-`POST /wizard/sources/{id}/test-lead`, `POST /wizard/finish`.
+`POST /wizard/sources/{id}/test-lead`, `GET /wizard/sources/{id}/test-lead` (newest test lead: the Test step passes on a NEW one), `POST /wizard/finish`.
 

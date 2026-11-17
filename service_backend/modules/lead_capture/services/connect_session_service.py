@@ -533,3 +533,30 @@ def finish(db: Session, principal: WizardPrincipal) -> Dict[str, Any]:
         "testLeadFormName": test_lead.form_name if test_lead else None,
         "waitingForRealLead": real_lead is None,
     }
+
+
+def wizard_branding(db: Session, tenant_id: str) -> Dict[str, Optional[str]]:
+    """The tenant's own name and logo for the hosted wizard (AC-64-11: never
+    the platform's)."""
+    from app.services.branding_service import BrandingService
+
+    tenant = db.get(Tenant, tenant_id)
+    data = BrandingService(db).get(tenant_id)
+    name = (data.get("appName") or "").strip() or (tenant.name if tenant else "") or "Connect a lead source"
+    return {"name": name, "logoUrl": data.get("logoUrl")}
+
+
+def last_test_lead(db: Session, principal: WizardPrincipal, source_id: str) -> Dict[str, Optional[Any]]:
+    """The newest test lead stored for this session's source: the wizard's
+    Test step passes when a NEW one arrives after it asked (a reconnected
+    source is LIVE already, so its status proves nothing)."""
+    from ..models import LcLead
+
+    source = principal.require_source(db, source_id)
+    row = (
+        db.query(LcLead.id, LcLead.received_at)
+        .filter(LcLead.tenant_id == principal.tenant_id, LcLead.source_id == source.id, LcLead.is_test.is_(True))
+        .order_by(LcLead.received_at.desc(), LcLead.id.desc())
+        .first()
+    )
+    return {"leadId": row.id if row else None, "receivedAt": row.received_at if row else None}

@@ -15,6 +15,7 @@ import type {
   WizardQuestionList,
   WizardSessionGrant,
   WizardSource,
+  WizardTestLead,
 } from '@/types/lead-capture-wizard';
 
 const BASE = '/public/lead-capture';
@@ -42,6 +43,8 @@ export interface LeadCaptureWizardService {
   questions(token: string, sourceId: string, formId: string): Promise<WizardQuestionList>;
   saveFieldMap(token: string, sourceId: string, formId: string, map: Record<string, string | null>): Promise<WizardSource>;
   sendTestLead(token: string, sourceId: string, formId: string): Promise<void>;
+  /** The newest test lead stored for the source (ids + time only). */
+  lastTestLead(token: string, sourceId: string): Promise<WizardTestLead>;
   finish(token: string): Promise<WizardDone>;
 }
 
@@ -86,5 +89,7 @@ export const leadCaptureWizardService: LeadCaptureWizardService = {
       auth(token, json('POST', { formId })),
     );
   },
+  lastTestLead: (token, sourceId) =>
+    publicFetch<WizardTestLead>(`${BASE}/wizard/sources/${encodeURIComponent(sourceId)}/test-lead`, auth(token)),
   finish: (token) => publicFetch<WizardDone>(`${BASE}/wizard/finish`, auth(token, json('POST', {}))),
 };

@@ -94,6 +94,11 @@ export interface WizardConsumerField {
   type: string;
 }
 
+export interface WizardTestLead {
+  leadId: string | null;
+  receivedAt: string | null;
+}
+
 export interface WizardDone {
   source: WizardSource;
   connectedBy: string | null;

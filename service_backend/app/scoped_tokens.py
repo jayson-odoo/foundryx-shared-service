@@ -9,7 +9,10 @@ session) that carries a ``typ`` claim. ``typ`` is the discriminator:
 - ``decode_scoped_token(token, typ)`` accepts a token only when its ``typ``
   is exactly the one asked for, so one Service's token never opens another
   Service's routes (omnichannel ``embed`` vs Lead Capture
-  ``lead_capture_embed``).
+  ``lead_capture_embed``). Known exception: ideation also mints
+  ``typ="embed"`` (its own helper); omnichannel's claim checks
+  (``_embed_claims``: workspace, agent, connection) keep it out today. A new
+  Service picks its own ``typ``.
 
 Users: omnichannel embed sessions (``typ="embed"``, plan 11H) and the Lead
 Capture hosted wizard (``typ="lead_capture_embed"``).

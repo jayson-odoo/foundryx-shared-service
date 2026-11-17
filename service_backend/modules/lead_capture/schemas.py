@@ -300,6 +300,11 @@ class WizardConnect(BaseModel):
     pageId: str = Field(min_length=1, max_length=64)
 
 
+class WizardTestLead(ApiModel):
+    leadId: Optional[str] = None
+    receivedAt: Optional[datetime] = None
+
+
 class WizardDone(ApiModel):
     source: SourceItem
     connectedBy: Optional[str] = None

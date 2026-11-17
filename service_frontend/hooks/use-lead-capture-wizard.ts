@@ -80,6 +80,8 @@ export interface UseLeadCaptureWizard {
   testFormId: string | null;
   testWaiting: boolean;
   done: WizardDone | null;
+  /** The source as the server last answered (saved field maps). */
+  source: WizardSource | null;
   chooseChannel: (key: string) => void;
   signIn: () => Promise<void>;
   pickPage: (pageId: string) => void;
@@ -119,6 +121,11 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
   const [done, setDone] = useState<WizardDone | null>(null);
   const opened = useRef(false);
   const pollTimer = useRef<number | null>(null);
+  /** False once the wizard closed, unmounted or its session ended: a poll
+   * in flight checks it after every await and stops. */
+  const polling = useRef(false);
+  /** The source as the server last answered (its saved field maps). */
+  const [source, setSource] = useState<WizardSource | null>(null);
 
   // ── open the session once ────────────────────────────────────────────────
   useEffect(() => {
@@ -146,6 +153,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
         setToken(grant.token);
         setContext(ctx);
         if (ctx.source) {
+          setSource(ctx.source);
           // Reopened for an existing source (Reconnect / Map fields).
           setState((s) => ({ ...s, channel: ctx.source?.platform ?? 'facebook' }));
         }
@@ -160,6 +168,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
 
   useEffect(
     () => () => {
+      polling.current = false;
       if (pollTimer.current) window.clearTimeout(pollTimer.current);
     },
     [],
@@ -175,6 +184,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
       } catch (error) {
         const p = problemOf(error);
         if (p.screen === 'expired') {
+          polling.current = false;
           writeStored(null);
           setPhase('expired');
         }
@@ -249,9 +259,10 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     () =>
       run('connect', async (t) => {
         if (!state.pageId) return;
-        const source: WizardSource = await svc.connect(t, state.pageId);
-        setState((s) => ({ ...s, sourceId: source.id }));
-        await loadForms(t, source.id);
+        const connected: WizardSource = await svc.connect(t, state.pageId);
+        setSource(connected);
+        setState((s) => ({ ...s, sourceId: connected.id }));
+        await loadForms(t, connected.id);
       }),
     [loadForms, run, state.pageId],
   );
@@ -272,8 +283,10 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     (formId: string) =>
       run('questions', async (t) => {
         if (!state.sourceId) return;
+        // Form and questions change together, only once the questions arrived.
+        const list = await svc.questions(t, state.sourceId, formId);
+        setQuestions(list);
         setMapFormId(formId);
-        setQuestions(await svc.questions(t, state.sourceId, formId));
       }),
     [run, state.sourceId],
   );
@@ -282,15 +295,15 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     () =>
       run('forms', async (t) => {
         if (!state.sourceId || !state.formsMode) return;
-        await svc.saveForms(t, state.sourceId, state.formsMode, state.formIds);
+        setSource(await svc.saveForms(t, state.sourceId, state.formsMode, state.formIds));
         const [consumer] = await Promise.all([svc.fields(t)]);
         setFields(consumer);
         const usable = state.formsMode === 'pick' ? state.formIds : (forms?.data.map((f) => f.id) ?? []);
         const first = usable[0] ?? null;
         setTestFormId(first);
         if (first) {
-          setMapFormId(first);
           setQuestions(await svc.questions(t, state.sourceId, first));
+          setMapFormId(first);
         }
         setState((s) => ({ ...s, formsSaved: true }));
       }),
@@ -304,48 +317,53 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
           setState((s) => ({ ...s, fieldsSaved: true }));
           return;
         }
-        await svc.saveFieldMap(t, state.sourceId, mapFormId, map);
+        setSource(await svc.saveFieldMap(t, state.sourceId, mapFormId, map));
         setState((s) => ({ ...s, fieldsSaved: true }));
       }),
     [mapFormId, run, state.sourceId],
   );
 
-  const poll = useCallback(
-    (t: string, sourceId: string, left: number) => {
-      pollTimer.current = window.setTimeout(async () => {
-        try {
-          const source = await svc.source(t, sourceId);
-          if (source.status === 'LIVE') {
-            setTestWaiting(false);
-            setState((s) => ({ ...s, testPassed: true }));
-            return;
-          }
-        } catch {
-          /* keep waiting */
-        }
-        if (left <= 1) {
+  /** Wait for a test lead NEWER than `baseline` (a reconnected source is
+   * LIVE already, so its status proves nothing). */
+  const poll = useCallback((t: string, sourceId: string, baseline: string | null, left: number) => {
+    pollTimer.current = window.setTimeout(async () => {
+      if (!polling.current) return;
+      try {
+        const latest = await svc.lastTestLead(t, sourceId);
+        if (!polling.current) return;
+        if (latest.leadId && latest.leadId !== baseline) {
+          polling.current = false;
           setTestWaiting(false);
-          setProblem({ screen: 'generic', message: 'The test lead has not arrived yet. Send it again.' });
+          setState((s) => ({ ...s, testPassed: true }));
           return;
         }
-        poll(t, sourceId, left - 1);
-      }, POLL_MS);
-    },
-    [],
-  );
+      } catch {
+        if (!polling.current) return;
+      }
+      if (left <= 1) {
+        polling.current = false;
+        setTestWaiting(false);
+        setProblem({ screen: 'generic', message: 'The test lead has not arrived yet. Send it again.' });
+        return;
+      }
+      poll(t, sourceId, baseline, left - 1);
+    }, POLL_MS);
+  }, []);
 
   const sendTestLead = useCallback(
     () =>
       run('test', async (t) => {
         if (!state.sourceId || !testFormId) return;
+        const baseline = (await svc.lastTestLead(t, state.sourceId)).leadId;
         await svc.sendTestLead(t, state.sourceId, testFormId);
-        const source = await svc.source(t, state.sourceId);
-        if (source.status === 'LIVE') {
+        const latest = await svc.lastTestLead(t, state.sourceId);
+        if (latest.leadId && latest.leadId !== baseline) {
           setState((s) => ({ ...s, testPassed: true }));
           return;
         }
+        polling.current = true;
         setTestWaiting(true);
-        poll(t, state.sourceId, POLL_LIMIT);
+        poll(t, state.sourceId, baseline, POLL_LIMIT);
       }),
     [poll, run, state.sourceId, testFormId],
   );
@@ -363,6 +381,8 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
   );
 
   const close = useCallback(() => {
+    polling.current = false;
+    if (pollTimer.current) window.clearTimeout(pollTimer.current);
     const sourceId = done?.source.id ?? state.sourceId ?? undefined;
     const message = done
       ? ({ type: 'lead-capture:done', sourceId: done.source.id } as const)
@@ -386,6 +406,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
       testFormId,
       testWaiting,
       done,
+      source,
       chooseChannel,
       signIn,
       pickPage,
@@ -402,7 +423,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
       dismissProblem: () => setProblem(null),
     }),
     [
-      phase, context, state, busy, problem, forms, fields, questions, mapFormId, testFormId, testWaiting, done,
+      phase, context, state, busy, problem, forms, fields, questions, mapFormId, testFormId, testWaiting, done, source,
       chooseChannel, signIn, pickPage, connectPage, setFormsChoice, saveForms, reloadForms, chooseMapForm,
       saveFieldMap, sendTestLead, finish, close,
     ],

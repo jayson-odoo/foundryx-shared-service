@@ -628,3 +628,20 @@ def test_staff_post_back_only_to_own_tenant_subdomain(client, lc, monkeypatch):
     assert own.status_code == 201, own.text
     other = client.post("/lead-capture/connect-sessions", json={"returnOrigin": "http://someone-else.localhost:3001"}, headers=admin)
     assert other.status_code == 422
+
+
+def test_last_test_lead_read_is_scoped_and_moves_on_a_new_test_lead(client, lc):
+    admin = _login(client)
+    key, _ = _key_with_origins(client, admin)
+    wiz = _wizard(client, key)
+    base = "/public/lead-capture/wizard"
+    client.post(f"{base}/facebook/login", json={"code": "dev"}, headers=wiz)
+    sid = client.post(f"{base}/facebook/connect", json={"pageId": DEV_PAGE}, headers=wiz).json()["id"]
+    before = client.get(f"{base}/sources/{sid}/test-lead", headers=wiz)
+    assert before.status_code == 200 and before.json() == {"leadId": None, "receivedAt": None}
+    form_id = client.get(f"{base}/sources/{sid}/forms", headers=wiz).json()["data"][0]["id"]
+    client.post(f"{base}/sources/{sid}/test-lead", json={"formId": form_id}, headers=wiz)
+    after = client.get(f"{base}/sources/{sid}/test-lead", headers=wiz).json()
+    assert after["leadId"] and after["receivedAt"]
+    other = _wizard(client, key)
+    assert client.get(f"{base}/sources/{sid}/test-lead", headers=other).status_code == 404
