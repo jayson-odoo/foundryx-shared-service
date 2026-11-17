@@ -5,7 +5,7 @@ Pure SQLAlchemy, every query tenant-scoped.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 
@@ -269,7 +269,8 @@ class OperationRepository:
                 AcWriteOperation.id == operation_id,
                 AcWriteOperation.status == "in_progress",
             )
-            .update({"snapshot_json": snapshot, "updated_at": func.now()}, synchronize_session=False)
+            # wall clock, not func.now() (Postgres: the transaction START, which can predate the guard reads)
+            .update({"snapshot_json": snapshot, "updated_at": datetime.now(timezone.utc)}, synchronize_session=False)
         ) == 1
 
     def sweep_stale_in_progress(self, before: datetime) -> int:
@@ -388,21 +389,20 @@ class StagedDocRepository:
         self.db = db
 
     def newest(
-        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
+        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str, *, skip_failed: bool = False
     ) -> Optional[AcStagedRecord]:
-        """The newest non-delete staged row of one document."""
-        return (
-            self.db.query(AcStagedRecord)
-            .filter(
-                AcStagedRecord.tenant_id == tenant_id,
-                AcStagedRecord.company_id == company_id,
-                AcStagedRecord.entity_type == entity_type,
-                AcStagedRecord.source_ref == source_ref,
-                AcStagedRecord.op != "delete",
-            )
-            .order_by(AcStagedRecord.created_at.desc(), AcStagedRecord.id)
-            .first()
+        """The newest non-delete staged row of one document. ``skip_failed``: leave out copies whose mapping
+        FAILED (their raw may be truncated; the SPO / SO indexes read the newest GOOD copy, C.d review)."""
+        query = self.db.query(AcStagedRecord).filter(
+            AcStagedRecord.tenant_id == tenant_id,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.entity_type == entity_type,
+            AcStagedRecord.source_ref == source_ref,
+            AcStagedRecord.op != "delete",
         )
+        if skip_failed:
+            query = query.filter(AcStagedRecord.status != "FAILED")
+        return query.order_by(AcStagedRecord.created_at.desc(), AcStagedRecord.id).first()
 
     def copies_at(
         self, tenant_id: str, company_id: str, entity_type: str, source_ref: str, created_at: datetime
@@ -416,6 +416,7 @@ class StagedDocRepository:
             AcStagedRecord.entity_type == entity_type,
             AcStagedRecord.source_ref == source_ref,
             AcStagedRecord.op != "delete",
+            AcStagedRecord.status != "FAILED",
         )
         ids = [rid for rid, at in self.db.query(AcStagedRecord.id, AcStagedRecord.created_at).filter(*scope)
                if at == created_at]
@@ -611,7 +612,7 @@ class SoRowIndexRepository:
 
     def replace_for_so(
         self, tenant_id: str, company_id: str, so_source_ref: str, so_doc_no: Optional[str],
-        staged_at: Optional[datetime], rows: "List[tuple[int, Optional[str], bool]]",
+        staged_at: Optional[datetime], rows: "List[tuple[int, Optional[str], bool]]", so_doc_key: Optional[str] = None,
     ) -> None:
         """Swap one SO's rows for ``rows`` (``(so_dtl_key, location, ambiguous)``)."""
         self.db.query(AcSoRowIndex).filter(
@@ -623,6 +624,7 @@ class SoRowIndexRepository:
             self.db.add(AcSoRowIndex(
                 tenant_id=tenant_id, company_id=company_id, so_source_ref=so_source_ref, so_doc_no=so_doc_no,
                 so_dtl_key=so_dtl_key, location=location, ambiguous=ambiguous, staged_at=staged_at,
+                so_doc_key=so_doc_key,
             ))
         self.db.flush()
 

@@ -1228,6 +1228,7 @@ class AcSoRowIndex(AutocountBase):
     location = Column(String, nullable=True)
     ambiguous = Column(Boolean, nullable=False, default=False)
     staged_at = Column(UTCDateTime(), nullable=True)  # the newest copy's created_at
+    so_doc_key = Column(String, nullable=True)  # the raw DocKey (the staged source_ref's key column varies per task)
 
 
 class AcApiCallLog(AutocountBase):

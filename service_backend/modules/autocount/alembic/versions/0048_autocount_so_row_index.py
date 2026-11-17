@@ -57,6 +57,7 @@ index = sa.table(
     sa.column("location", sa.String),
     sa.column("ambiguous", sa.Boolean),
     sa.column("staged_at", sa.DateTime(timezone=True)),
+    sa.column("so_doc_key", sa.String),
     schema=SCHEMA,
 )
 
@@ -81,10 +82,11 @@ def rows_of(tenant_id, company_id, source_ref, doc_no, staged_at, copies):
                 seen.setdefault(key, set()).add(str(line.get("Location") or ""))
     first = next((r for r in copies if isinstance(r, dict)), {}) or {}
     number = str(first.get("DocNo") or doc_no or "")
+    doc_key = None if first.get("DocKey") in (None, "") else str(first.get("DocKey"))
     return [{
         "id": str(uuid.uuid4()), "tenant_id": tenant_id, "company_id": company_id, "so_source_ref": source_ref,
         "so_doc_no": number, "so_dtl_key": key, "location": next(iter(locs)) if len(locs) == 1 else None,
-        "ambiguous": len(locs) > 1, "staged_at": staged_at,
+        "ambiguous": len(locs) > 1, "staged_at": staged_at, "so_doc_key": doc_key,
     } for key, locs in seen.items()]
 
 
@@ -96,6 +98,7 @@ def upgrade() -> None:
     # then rebuild the rows from scratch
     if not sa.inspect(bind).has_table(TABLE, schema=SCHEMA):
         _create()
+    bind.execute(sa.text(f"ALTER TABLE {SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS so_doc_key varchar"))
     op.create_index("ix_ac_so_row_index_dtl", TABLE, ["tenant_id", "company_id", "so_dtl_key"], schema=SCHEMA,
                     if_not_exists=True)
     op.create_index("ix_ac_so_row_index_so_ref", TABLE, ["tenant_id", "company_id", "so_source_ref"], schema=SCHEMA,
@@ -119,6 +122,7 @@ def _create() -> None:
         sa.Column("location", sa.String(), nullable=True),
         sa.Column("ambiguous", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("staged_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("so_doc_key", sa.String(), nullable=True),
         schema=SCHEMA,
     )
 
@@ -139,6 +143,7 @@ def _backfill(bind) -> None:
         .where(
             staged.c.entity_type == ENTITY_SALES_ORDER,
             sa.not_(sa.and_(staged.c.op == "delete", staged.c.status == "DISCARDED")),
+            staged.c.status != "FAILED",  # a copy whose mapping failed may be truncated: the newest GOOD copy counts
         )
         .subquery()
     )
@@ -157,7 +162,8 @@ def _backfill(bind) -> None:
         tenant_id, company_id, source_ref = current
         return rows_of(tenant_id, company_id, source_ref, group[0][3], group[0][6], [g[5] for g in group])
 
-    for row in bind.execute(newest).yield_per(500):
+    # streamed (server-side cursor): never every SO's raw in memory at once
+    for row in bind.execute(newest.execution_options(stream_results=True, yield_per=500)):
         key = (row[0], row[1], row[2])
         if key != current:
             batch.extend(flush_group())

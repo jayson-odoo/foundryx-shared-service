@@ -132,13 +132,16 @@ def _backfill(bind) -> None:
         .where(
             staged.c.entity_type == ENTITY_SHIPPING_ORDER,
             sa.not_(sa.and_(staged.c.op == "delete", staged.c.status == "DISCARDED")),
+            staged.c.status != "FAILED",  # a copy whose mapping failed may be truncated: the newest GOOD copy counts
         )
         .distinct(staged.c.tenant_id, staged.c.company_id, staged.c.source_ref)
         .order_by(staged.c.tenant_id, staged.c.company_id, staged.c.source_ref,
                   staged.c.created_at.desc(), staged.c.id)
     )
     batch = []
-    for tenant_id, company_id, source_ref, doc_no, row_op, raw in bind.execute(newest).yield_per(500):
+    # streamed (server-side cursor): never every SPO's raw in memory at once
+    for tenant_id, company_id, source_ref, doc_no, row_op, raw in bind.execute(
+            newest.execution_options(stream_results=True, yield_per=500)):
         if row_op == "delete":
             continue
         batch.extend(rows_of(tenant_id, company_id, source_ref, doc_no, raw))

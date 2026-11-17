@@ -108,13 +108,14 @@ def _dtl_index(
     return index
 
 
-def _doc_key_of(source_ref: str) -> Any:
-    """The DocKey of a staged ``{db}:{DocKey}`` source ref (int when numeric, as the raw carries it)."""
-    tail = str(source_ref).rsplit(":", 1)[-1]
+def _doc_key_of(stored: Optional[str]) -> Any:
+    """The SO's raw DocKey as indexed (int when numeric, as the raw carries it)."""
+    if stored in (None, ""):
+        return None
     try:
-        return int(tail)
+        return int(str(stored))
     except ValueError:
-        return tail or None
+        return stored
 
 
 def _so_dtl_lookup(db: Session, tenant_id: str, company: AcCompany, keys: Sequence[int]) -> Dict[int, Tuple[Any, str]]:
@@ -124,7 +125,7 @@ def _so_dtl_lookup(db: Session, tenant_id: str, company: AcCompany, keys: Sequen
     rows = SoRowIndexRepository(db).rows_for_keys(tenant_id, company.id, keys)
     floor = ""
     for row in sorted(rows, key=lambda r: (r.staged_at.isoformat() if r.staged_at else floor, r.so_source_ref)):
-        out[int(row.so_dtl_key)] = (_doc_key_of(row.so_source_ref), str(row.so_doc_no or ""))
+        out[int(row.so_dtl_key)] = (_doc_key_of(row.so_doc_key), str(row.so_doc_no or ""))
     return out
 
 

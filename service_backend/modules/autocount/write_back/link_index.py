@@ -96,7 +96,7 @@ def refresh_spo_links(db: Session, tenant_id: str, company_id: str, source_ref: 
     links: List[SpoLink] = []
     doc_no: Optional[str] = None
     if not deleted:
-        newest = StagedDocRepository(db).newest(tenant_id, company_id, ENTITY_SHIPPING_ORDER, source_ref)
+        newest = StagedDocRepository(db).newest(tenant_id, company_id, ENTITY_SHIPPING_ORDER, source_ref, skip_failed=True)
         raw = (newest.raw_json or {}) if newest is not None else {}
         if newest is not None and raw.get("Cancelled") != "T":
             links = spo_links_of(raw)
@@ -129,16 +129,23 @@ def refresh_so_rows(db: Session, tenant_id: str, company_id: str, source_ref: st
     included (none when the SO is deleted)."""
     rows: List[SoRow] = []
     doc_no: Optional[str] = None
+    doc_key: Optional[str] = None
     staged_at = None
     if not deleted:
         staged = StagedDocRepository(db)
-        newest = staged.newest(tenant_id, company_id, ENTITY_SALES_ORDER, source_ref)
+        newest = staged.newest(tenant_id, company_id, ENTITY_SALES_ORDER, source_ref, skip_failed=True)
         if newest is not None:
             copies = staged.copies_at(tenant_id, company_id, ENTITY_SALES_ORDER, source_ref, newest.created_at)
             rows = so_rows_of([c.raw_json or {} for c in copies] or [newest.raw_json or {}])
             doc_no = str((newest.raw_json or {}).get("DocNo") or newest.doc_no or "")
+            raw_key = (newest.raw_json or {}).get("DocKey")
+            doc_key = None if raw_key in (None, "") else str(raw_key)  # the raw DocKey (task key columns vary)
             staged_at = newest.created_at
-    SoRowIndexRepository(db).replace_for_so(tenant_id, company_id, source_ref, doc_no, staged_at, rows)
+    SoRowIndexRepository(db).replace_for_so(tenant_id, company_id, source_ref, doc_no, staged_at, rows, doc_key)
+
+
+# the entities whose staging writes keep a write-back index
+INDEXED_ENTITIES = (ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER, ENTITY_SALES_ORDER)
 
 
 def refresh_links(db: Session, tenant_id: str, company_id: str, entity_type: str, source_ref: str, *,
