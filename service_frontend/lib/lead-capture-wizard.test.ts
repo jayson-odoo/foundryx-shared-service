@@ -5,6 +5,7 @@ import {
   answerLabel,
   autoPage,
   blockReason,
+  defaultTarget,
   currentStep,
   errorScreenFor,
   isLeadsAccessMessage,
@@ -98,5 +99,25 @@ describe('lead capture wizard step engine', () => {
     expect(errorScreenFor(null)).toBe('generic');
     expect(isLeadsAccessMessage('(#103) Leads Access restricted')).toBe(true);
     expect(isLeadsAccessMessage('Meta could not be reached.')).toBe(false);
+  });
+});
+
+describe('default field map', () => {
+  const fields = [
+    { key: 'name', label: 'Name', type: 'text' },
+    { key: 'phone', label: 'Phone', type: 'text' },
+    { key: 'email', label: 'Email', type: 'text' },
+    { key: 'notes', label: 'Lead notes', type: 'text' },
+  ];
+  it('matches standard questions and sends the rest to notes', () => {
+    expect(defaultTarget({ key: 'full_name', label: 'Full name', type: 'FULL_NAME' }, fields)).toBe('name');
+    expect(defaultTarget({ key: 'email', label: 'Email', type: 'EMAIL' }, fields)).toBe('email');
+    expect(defaultTarget({ key: 'phone_number', label: 'Phone', type: 'PHONE' }, fields)).toBe('phone');
+    expect(defaultTarget({ key: 'budget', label: 'Budget', type: 'CUSTOM' }, fields)).toBe('notes');
+  });
+  it('uses only fields the consumer published', () => {
+    const custom = [{ key: 'contact_email', label: 'Email', type: 'text' }];
+    expect(defaultTarget({ key: 'email', label: 'Email', type: 'EMAIL' }, custom)).toBeNull();
+    expect(defaultTarget({ key: 'contact_email', label: 'E', type: 'CUSTOM' }, custom)).toBe('contact_email');
   });
 });

@@ -6,7 +6,7 @@
  * click with their answer kept. A blocked Continue carries its reason.
  * No React here so every rule is unit-tested on its own.
  */
-import type { WizardPage } from '@/types/lead-capture-wizard';
+import type { WizardConsumerField, WizardPage, WizardQuestion } from '@/types/lead-capture-wizard';
 
 export type WizardStepKey = 'channel' | 'signin' | 'page' | 'forms' | 'fields' | 'test';
 
@@ -197,4 +197,28 @@ export function errorScreenFor(code: string | null | undefined): WizardErrorScre
 /** Leads Access refusal on the form read (Meta code 103 family / text). */
 export function isLeadsAccessMessage(message: string | null | undefined): boolean {
   return Boolean(message && /leads access|\(#103\)|crm/i.test(message));
+}
+
+const STANDARD_TARGETS: Record<string, string[]> = {
+  FULL_NAME: ['name', 'full_name', 'fullName'],
+  FIRST_NAME: ['first_name', 'firstName', 'name'],
+  LAST_NAME: ['last_name', 'lastName'],
+  EMAIL: ['email'],
+  PHONE: ['phone', 'phone_number', 'mobile'],
+};
+const NOTES_KEYS = ['notes', 'note', 'remarks'];
+
+/**
+ * The default target of one form question (AC-64-24): standard questions
+ * (full name, email, phone) go to the matching consumer field; anything else
+ * to Lead notes. Only keys the consumer actually published are returned.
+ */
+export function defaultTarget(question: WizardQuestion, fields: WizardConsumerField[]): string | null {
+  const keys = new Set(fields.map((f) => f.key));
+  const byType = STANDARD_TARGETS[(question.type || '').toUpperCase()] ?? [];
+  const byKey = STANDARD_TARGETS[(question.key || '').toUpperCase()] ?? [];
+  for (const candidate of [...byType, ...byKey, question.key]) {
+    if (keys.has(candidate)) return candidate;
+  }
+  return NOTES_KEYS.find((k) => keys.has(k)) ?? null;
 }
