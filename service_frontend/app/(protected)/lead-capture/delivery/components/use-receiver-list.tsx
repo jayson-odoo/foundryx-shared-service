@@ -97,7 +97,7 @@ export function useReceiverList(
         meta: { headerTitle: 'URL' },
         header: ({ column }) => <DataGridColumnHeader title="URL" column={column} />,
         cell: ({ row }) => <ClampedText text={row.original.url} lines={1} className="font-medium" />,
-        size: 320,
+        size: 290,
         enableSorting: true,
       },
       {
@@ -116,7 +116,7 @@ export function useReceiverList(
             )}
           />
         ),
-        size: 220,
+        size: 190,
         enableSorting: true,
       },
       {
@@ -127,7 +127,7 @@ export function useReceiverList(
         cell: ({ row }) => (
           <span className="text-sm text-muted-foreground">{formatDateTime(row.original.createdAt)}</span>
         ),
-        size: 190,
+        size: 180,
         enableSorting: true,
       },
       {
