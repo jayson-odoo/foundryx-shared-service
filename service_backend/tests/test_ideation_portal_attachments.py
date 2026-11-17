@@ -248,6 +248,8 @@ def test_ac_a_06_deleted_comment_placeholder_has_no_attachments(setup):
     iid, owner = _owner(s, 1041)
     cid = _comment(s, owner, iid)
     assert _up(s, owner, iid, comment_id=cid).status_code == 201
+    # A live reply keeps the deleted comment on the list as a placeholder (AC-19).
+    _comment(s, owner, iid, body="reply", parentId=cid)
     assert s["client"].delete(f"/portal/ideas/{iid}/comments/{cid}", headers=owner).status_code == 204
     rows = s["client"].get(f"/portal/ideas/{iid}/comments", headers=owner).json()
     placeholder = [r for r in rows if r["id"] == cid]
@@ -350,3 +352,25 @@ def test_ac_a_11_upload_throttle_429(setup, monkeypatch):
     iid, owner = _owner(s, 1070)
     codes = [_up(s, owner, iid, name=f"{i}.png").status_code for i in range(3)]
     assert codes == [201, 201, 429]
+
+
+def test_ac_a_07_merged_child_comment_file_served_on_survivor(setup):
+    """A merged child's comment thread shows on its survivor's page, so its
+    comment files open there too; the child's report files never do."""
+    from modules.ideation.models import Idea
+
+    s = setup
+    child, owner = _owner(s, 1090)
+    survivor = _idea(s, 1091)
+    cid = _comment(s, owner, child)
+    comment_path = _up(s, owner, child, comment_id=cid).json()["contentPath"]
+    report_path = _up(s, owner, child).json()["contentPath"]
+    db = s["factory"]()
+    try:
+        db.query(Idea).filter(Idea.id == child).first().merged_into_id = survivor
+        db.commit()
+    finally:
+        db.close()
+    staff = _staff_session(s)
+    assert s["client"].get(comment_path, headers=staff).status_code == 200
+    assert s["client"].get(report_path, headers=staff).status_code == 404
