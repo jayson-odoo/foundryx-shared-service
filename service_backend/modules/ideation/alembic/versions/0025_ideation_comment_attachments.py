@@ -4,6 +4,10 @@ Adds ``comment_id`` (nullable, indexed, FK to ``idea_comments``) to
 ``idea_attachments`` so a file can hang off a comment. NULL = a report-level
 file, which is every row that already exists - so no backfill is needed.
 
+Adds ``thumb_key`` (nullable): the storage key of an image's small preview.
+Existing rows start NULL and the lazy path IS the backfill - the first
+``?variant=thumb`` read of an old image generates and stores its thumbnail.
+
 Idempotent ``ADD COLUMN IF NOT EXISTS`` / ``CREATE INDEX IF NOT EXISTS`` (same
 lesson as 0013). Postgres-only DDL; a no-op on the SQLite test engine (the suite
 creates the column via ``IdeationBase.metadata.create_all``).
@@ -34,6 +38,7 @@ def upgrade() -> None:
             f'ADD COLUMN IF NOT EXISTS comment_id VARCHAR NULL REFERENCES "{s}".idea_comments (id)'
         )
     )
+    bind.execute(text(f'ALTER TABLE "{s}".idea_attachments ADD COLUMN IF NOT EXISTS thumb_key VARCHAR NULL'))
     bind.execute(
         text(
             f"CREATE INDEX IF NOT EXISTS ix_{s}_idea_attachments_comment_id "
@@ -49,4 +54,5 @@ def downgrade() -> None:
     from modules.ideation.db import IDEATION_SCHEMA as s
 
     bind.execute(text(f'DROP INDEX IF EXISTS "{s}".ix_{s}_idea_attachments_comment_id'))
+    bind.execute(text(f'ALTER TABLE "{s}".idea_attachments DROP COLUMN IF EXISTS thumb_key'))
     bind.execute(text(f'ALTER TABLE "{s}".idea_attachments DROP COLUMN IF EXISTS comment_id'))

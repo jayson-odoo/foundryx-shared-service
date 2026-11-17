@@ -460,11 +460,13 @@ async def embed_upload_attachment(
     from the iframe. Scoped to tenant+product (404 otherwise); the token is the
     boundary (no operator permission)."""
     _assert_in_scope(db, principal, idea_id)
-    _assert_can_manage(db, principal, [idea_id])
     if commentId:
+        # Commenting is open to every embed user; authorship is the gate.
         IdeaCommentService(db).assert_author(
             principal.tenant_id, idea_id, commentId, _embed_viewer(principal)
         )
+    else:
+        _assert_can_manage(db, principal, [idea_id])
     content = await file.read(ATTACHMENT_CAP_BYTES + 1)
     if len(content) > ATTACHMENT_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
@@ -482,6 +484,7 @@ async def embed_upload_attachment(
 def embed_attachment_content(
     idea_id: str,
     attachment_id: str,
+    variant: Optional[str] = Query(default=None, pattern="^thumb$"),
     principal: EmbedTokenPrincipal = Depends(require_embed_principal),
     db: Session = Depends(get_db),
 ):
@@ -489,7 +492,7 @@ def embed_attachment_content(
     tenant+product (404 otherwise)."""
     _assert_in_scope(db, principal, idea_id)
     key, mime, filename = IdeaAttachmentService(db).content(
-        principal.tenant_id, idea_id, attachment_id
+        principal.tenant_id, idea_id, attachment_id, variant
     )
     return _serve_blob(db, principal.tenant_id, key, mime, filename, "inline")
 

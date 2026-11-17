@@ -5,6 +5,8 @@ An operator or embed user uploads a file onto an idea: sniffed by magic bytes
 ``ideation/ideas/<idea_id>/<attachment_id>``, recorded on ``idea_attachments``.
 Every lookup is tenant-scoped (idea AND attachment resolved WITH ``tenant_id``).
 """
+import io
+import logging
 import re
 import uuid
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -24,6 +26,13 @@ from ..schemas import IdeaAttachmentOut
 # AND comment files together) / a comment this many.
 MAX_ATTACHMENTS_PER_IDEA = 50
 MAX_ATTACHMENTS_PER_COMMENT = 10
+# Tiles never load the original: an image gets a small preview, made lazily on
+# the first ``?variant=thumb`` read (which is also the backfill for old rows).
+THUMB_VARIANT = "thumb"
+THUMB_MAX_SIDE = 320
+THUMB_SOURCE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
+_THUMB_READ_CAP = 26 * 1024 * 1024
+_log = logging.getLogger(__name__)
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -110,14 +119,7 @@ class IdeaAttachmentService:
         )
         self.db.add(row)
         self.db.commit()
-        return IdeaAttachmentOut(
-            id=row.id,
-            kind=row.kind,
-            name=name,
-            url="",
-            sizeBytes=row.size_bytes,
-            contentPath=f"{content_prefix}/{idea_id}/attachments/{row.id}/content",
-        )
+        return self.to_out(row, content_prefix)
 
     def comment_for_upload(self, tenant_id: str, idea_id: str, comment_id: str) -> IdeaComment:
         """The live comment an upload targets; 404 when it is unknown, deleted, or
@@ -197,10 +199,16 @@ class IdeaAttachmentService:
         )
 
     def content(
-        self, tenant_id: str, idea_id: str, attachment_id: str
+        self,
+        tenant_id: str,
+        idea_id: str,
+        attachment_id: str,
+        variant: Optional[str] = None,
     ) -> Tuple[str, str, str]:
         """``(storage_key, mime, filename)`` of an uploaded attachment; 404 when it
-        is outside the tenant/idea or is a URL-backed capture (no stored bytes)."""
+        is outside the tenant/idea or is a URL-backed capture (no stored bytes).
+        ``variant="thumb"`` serves the small preview instead (generated on first
+        use; 404 when the file is not a decodable image)."""
         row = (
             self.db.query(IdeaAttachment)
             .filter(
@@ -212,4 +220,74 @@ class IdeaAttachmentService:
         )
         if row is None or not row.storage_key:
             raise HTTPException(404, "Attachment not found.")
+        if variant == THUMB_VARIANT:
+            key = row.thumb_key or self._make_thumb(tenant_id, row)
+            mime = "image/png" if "thumbpng" in key else "image/jpeg"
+            return key, mime, "preview"
         return row.storage_key, row.mime or "application/octet-stream", row.filename or "file"
+
+    def _make_thumb(self, tenant_id: str, row: IdeaAttachment) -> str:
+        """Generate + store the preview of an image row (404 for anything else,
+        including a corrupt image or a decompression bomb - never a 500)."""
+        from app.services.storage import read_object
+
+        if (row.mime or "") not in THUMB_SOURCE_MIMES:
+            raise HTTPException(404, "No preview.")
+        storage = storage_for_tenant(self.db, tenant_id)
+        try:
+            data = read_object(storage, row.storage_key, max_bytes=_THUMB_READ_CAP)
+            content, mime, tag = _render_thumb(data)
+        except Exception as exc:  # noqa: BLE001 - bad image
+            _log.info("thumbnail not generated for %s: %s", row.id, type(exc).__name__)
+            raise HTTPException(404, "No preview.")
+        key = storage.save(f"ideation/ideas/{row.idea_id}/{row.id}.{tag}", content, mime)
+        row.thumb_key = key
+        self.db.commit()
+        return key
+
+    # ---- delete ------------------------------------------------------------
+
+    def purge_for_idea(self, tenant_id: str, idea_id: str) -> List[str]:
+        """Delete every attachment row of an idea (report AND comment files) and
+        return their blob keys. No commit - the caller deletes the blobs with
+        :meth:`delete_blobs` AFTER its commit."""
+        rows = (
+            self.db.query(IdeaAttachment)
+            .filter(IdeaAttachment.idea_id == idea_id, IdeaAttachment.tenant_id == tenant_id)
+            .all()
+        )
+        keys = [k for r in rows for k in (r.storage_key, r.thumb_key) if k]
+        for r in rows:
+            self.db.delete(r)
+        self.db.flush()
+        return keys
+
+    def delete_blobs(self, tenant_id: str, keys: Iterable[str]) -> None:
+        """Best-effort blob removal (a storage hiccup must not undo a delete)."""
+        keys = list(keys)
+        if not keys:
+            return
+        storage = storage_for_tenant(self.db, tenant_id)
+        for key in keys:
+            try:
+                storage.delete(key)
+            except Exception:  # noqa: BLE001
+                _log.warning("could not delete attachment blob %s", key)
+
+
+def _render_thumb(data: bytes) -> Tuple[bytes, str, str]:
+    """``(bytes, mime, key tag)`` of the preview: fits 320x320, EXIF-rotated,
+    JPEG (PNG when it has transparency). Pillow's default decompression-bomb
+    guard stays on - an oversize image raises and the caller answers 404."""
+    from PIL import Image, ImageOps
+
+    with Image.open(io.BytesIO(data)) as opened:
+        img = ImageOps.exif_transpose(opened)
+        img.thumbnail((THUMB_MAX_SIDE, THUMB_MAX_SIDE))
+        alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+        out = io.BytesIO()
+        if alpha:
+            img.convert("RGBA").save(out, "PNG")
+            return out.getvalue(), "image/png", "thumbpng"
+        img.convert("RGB").save(out, "JPEG", quality=80)
+        return out.getvalue(), "image/jpeg", "thumb"

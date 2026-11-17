@@ -1099,7 +1099,9 @@ class IdeaPortalService:
             comment_id=comment_id or None,
         )
 
-    def attachment_content(self, idea_id: str, attachment_id: str) -> Tuple[str, str, str]:
+    def attachment_content(
+        self, idea_id: str, attachment_id: str, variant: Optional[str] = None
+    ) -> Tuple[str, str, str]:
         """``(storage_key, mime, filename)`` of a file the caller may read: a
         report file only where the report text is not withheld from them, a
         comment file only while its comment is live."""
@@ -1126,7 +1128,7 @@ class IdeaPortalService:
                 raise _not_found()
         source_id = owner_id or idea.id
         try:
-            found = files.content(idea.tenant_id, source_id, attachment_id)
+            found = files.content(idea.tenant_id, source_id, attachment_id, variant)
         except HTTPException as exc:
             if exc.status_code == 404:
                 raise _not_found()

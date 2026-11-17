@@ -26,6 +26,7 @@ from app.services import status_machine
 from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaAttachment, IdeaVote
+from .attachments import IdeaAttachmentService
 from ..schemas import (
     BoardColumnOut,
     BoardOut,
@@ -178,18 +179,7 @@ class IdeaReadService:
         out: Dict[str, List[IdeaAttachmentOut]] = {}
         for r in rows:
             out.setdefault(r.idea_id, []).append(
-                IdeaAttachmentOut(
-                    id=r.id,
-                    kind=r.kind,
-                    name=(r.filename or "").strip() or r.kind,
-                    url=r.url or "",
-                    sizeBytes=r.size_bytes,
-                    contentPath=(
-                        f"{self.content_prefix}/{r.idea_id}/attachments/{r.id}/content"
-                        if r.storage_key
-                        else None
-                    ),
-                )
+                IdeaAttachmentService.to_out(r, self.content_prefix)
             )
         return out
 

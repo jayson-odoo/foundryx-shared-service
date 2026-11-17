@@ -369,11 +369,12 @@ async def upload_attachment(
 def attachment_content(
     idea_id: str,
     attachment_id: str,
+    variant: Optional[str] = Query(default=None, pattern="^thumb$"),
     p: PortalPrincipal = Depends(require_portal_principal),
     db: Session = Depends(get_db),
 ):
     try:
-        key, mime, filename = _svc(db, p).attachment_content(idea_id, attachment_id)
+        key, mime, filename = _svc(db, p).attachment_content(idea_id, attachment_id, variant)
     except PortalError as exc:
         _raise(exc)
     response = _serve_blob(db, p.tenant_id, key, mime, filename, "inline")
