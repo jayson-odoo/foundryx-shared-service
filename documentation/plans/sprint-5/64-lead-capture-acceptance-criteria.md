@@ -155,6 +155,18 @@ J, K. Release 2: E (WhatsApp ads) and F (Google Ads, website form). Review: `doc
   onto a Page the target already holds is refused). Leads already delivered stay with the old product. Lane L-C
   (screen) + L-B (move route).
 
+- AC-64-57 [B] Multi-product rule (owner 17 Nov: "the shared service should be able to serve multiple products"):
+  adding a product (EcoHub or any next one) needs zero backend configuration. After the product's company exists
+  (platform console) and Lead Capture is installed (App Store), its admin does everything else on Lead Capture
+  screens in Shared Service:
+  - Keys: create (shown once), list, revoke.
+  - Delivery: add the product's receiver URL (secret shown once), "Send test push", or choose "pull only".
+  - Fields: the product's lead field list, and the per-form field map with real question labels (L-A).
+  - Sources: AC-64-39.
+  - Leads log with delivery status and Redeliver: AC-64-53.
+
+  Every existing API stays for products that automate. Lane L-D (screens only; the routes already exist on main).
+
 ## E. Click-to-WhatsApp (needs omnichannel)
 - AC-64-31 Offered only when omnichannel is ACTIVE for the tenant. Number step lists the tenant's connected WhatsApp
   channels; "Connect a new number" runs omnichannel's existing Embedded Signup (no second implementation).
