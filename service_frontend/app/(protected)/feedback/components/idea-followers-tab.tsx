@@ -141,6 +141,7 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
     const columns: ColumnDef<IdeaFollower>[] = [
       {
         id: 'name',
+        accessorFn: (r) => r.name ?? '',
         meta: { headerTitle: 'Name' },
         header: ({ column }) => <DataGridColumnHeader title="Name" column={column} />,
         cell: ({ row }) => <ClampedText text={row.original.name ?? '-'} lines={1} />,
@@ -148,6 +149,7 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
       },
       {
         id: 'phone',
+        accessorFn: (r) => r.phone ?? '',
         meta: { headerTitle: 'Phone' },
         header: ({ column }) => <DataGridColumnHeader title="Phone" column={column} />,
         cell: ({ row }) => <span className="text-muted-foreground">{row.original.phone ?? '-'}</span>,
@@ -155,6 +157,7 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
       },
       {
         id: 'addedBy',
+        accessorFn: (r) => (r.addedByStaff ? 'Staff' : 'Themselves'),
         meta: { headerTitle: 'Added by' },
         header: ({ column }) => <DataGridColumnHeader title="Added by" column={column} />,
         cell: ({ row }) => <span>{row.original.addedByStaff ? 'Staff' : 'Themselves'}</span>,
@@ -162,6 +165,7 @@ export function IdeaFollowersTab({ ideaId, canManage }: IdeaFollowersTabProps) {
       },
       {
         id: 'since',
+        accessorFn: (r) => r.createdAt ?? '',
         meta: { headerTitle: 'Following since' },
         header: ({ column }) => <DataGridColumnHeader title="Following since" column={column} />,
         cell: ({ row }) => <span>{row.original.createdAt ? formatDmyDate(row.original.createdAt) : '-'}</span>,

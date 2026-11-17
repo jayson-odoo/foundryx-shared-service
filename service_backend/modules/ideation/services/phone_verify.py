@@ -125,6 +125,12 @@ def _hash(row_id: str, code: str) -> str:
     ).hexdigest()
 
 
+def _phone_key(tenant_id: str, digits: str) -> str:
+    """Throttle key for a phone: per tenant, so traffic in one tenant never
+    locks the same person out of another."""
+    return f"{tenant_id}:{digits}"
+
+
 def _wrong_code() -> PortalError:
     return PortalError(400, "wrong_code", "That code is not right. Check WhatsApp and try again.")
 
@@ -154,10 +160,10 @@ class PhoneStep:
             raise PortalError(422, "invalid_phone", "Enter a valid phone number.")
         throttle = ThrottleService(self.db)
         try:
-            throttle.enforce_idea_follow_phone(ip=self.ip, phone_key=digits)
+            throttle.enforce_idea_follow_phone(ip=self.ip, phone_key=_phone_key(self.p.tenant_id, digits))
         except Throttled as exc:
             raise _throttled(exc)
-        throttle.record_idea_follow_phone(ip=self.ip, phone_key=digits)
+        throttle.record_idea_follow_phone(ip=self.ip, phone_key=_phone_key(self.p.tenant_id, digits))
         target = product_target(self.db, self.p.tenant_id, self.p.product_id)
         if target is None:
             raise _unavailable()
@@ -213,12 +219,15 @@ class PhoneStep:
         self.db.add(row)
         self.db.commit()
 
-        sent = _call(target, SEND_CODE_PATH, {**body, "code": code})
+        try:
+            sent = _call(target, SEND_CODE_PATH, {**body, "code": code})
+        except PortalError:
+            self._void(row_id)
+            raise
         if 200 <= sent.status_code < 300:
             return {"sent": True}
         # Not delivered: the code must not stay usable.
-        row.used_at = _now()
-        self.db.commit()
+        self._void(row_id)
         self._common_errors(sent)
         logger.warning("feedback phone step: send-code refused: HTTP %s", sent.status_code)
         raise _unavailable()
@@ -232,35 +241,63 @@ class PhoneStep:
             raise PortalError(422, "invalid_phone", "Enter a valid phone number.")
         throttle = ThrottleService(self.db)
         try:
-            throttle.enforce_idea_follow_phone(ip=self.ip, phone_key=digits)
+            throttle.enforce_idea_follow_phone(ip=self.ip, phone_key=_phone_key(self.p.tenant_id, digits))
         except Throttled as exc:
             raise _throttled(exc)
+        # Every attempt counts BEFORE the code is compared (a parallel burst
+        # cannot slip past the throttle's read-then-write window).
+        throttle.record_idea_follow_phone(ip=self.ip, phone_key=_phone_key(self.p.tenant_id, digits))
         row = (
             self.db.query(IdeaPhoneCode)
             .filter(
                 IdeaPhoneCode.tenant_id == self.p.tenant_id,
                 IdeaPhoneCode.phone_digits == digits,
                 IdeaPhoneCode.used_at.is_(None),
+                IdeaPhoneCode.expires_at > _now(),
             )
             .order_by(IdeaPhoneCode.created_at.desc())
             .first()
         )
-        expires_at = row.expires_at if row is not None else None
-        if expires_at is not None and expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if row is None or expires_at <= _now() or row.attempts >= CODE_MAX_ATTEMPTS:
-            throttle.record_idea_follow_phone(ip=self.ip, phone_key=digits)
+        # Claim one try atomically (``attempts < MAX`` in the UPDATE itself):
+        # concurrent guesses can never exceed the cap, whatever the interleave.
+        claimed = 0
+        if row is not None:
+            claimed = (
+                self.db.query(IdeaPhoneCode)
+                .filter(
+                    IdeaPhoneCode.id == row.id,
+                    IdeaPhoneCode.used_at.is_(None),
+                    IdeaPhoneCode.attempts < CODE_MAX_ATTEMPTS,
+                )
+                .update({IdeaPhoneCode.attempts: IdeaPhoneCode.attempts + 1}, synchronize_session=False)
+            )
+            self.db.commit()
+        if not claimed:
             raise PortalError(400, "code_expired", "This code has expired. Send a new code.")
         if not (code.isdigit() and hmac.compare_digest(row.code_hash, _hash(row.id, code))):
-            row.attempts += 1
-            if row.attempts >= CODE_MAX_ATTEMPTS:
-                row.used_at = _now()
+            # The try that used up the last attempt ends the code.
+            self.db.query(IdeaPhoneCode).filter(
+                IdeaPhoneCode.id == row.id, IdeaPhoneCode.attempts >= CODE_MAX_ATTEMPTS
+            ).update({IdeaPhoneCode.used_at: _now()}, synchronize_session=False)
             self.db.commit()
-            throttle.record_idea_follow_phone(ip=self.ip, phone_key=digits)
             raise _wrong_code()
-        row.used_at = _now()
+        # Single use, atomically: only the first correct request wins.
+        won = (
+            self.db.query(IdeaPhoneCode)
+            .filter(IdeaPhoneCode.id == row.id, IdeaPhoneCode.used_at.is_(None))
+            .update({IdeaPhoneCode.used_at: _now()}, synchronize_session=False)
+        )
+        if not won:
+            self.db.commit()
+            raise PortalError(400, "code_expired", "This code has expired. Send a new code.")
         contact = self._contact_for(digits, row.contact_name)
         return self._session(contact)
+
+    def _void(self, row_id: str) -> None:
+        self.db.query(IdeaPhoneCode).filter(
+            IdeaPhoneCode.id == row_id, IdeaPhoneCode.used_at.is_(None)
+        ).update({IdeaPhoneCode.used_at: _now()}, synchronize_session=False)
+        self.db.commit()
 
     def _contact_for(self, digits: str, name: Optional[str]) -> Contact:
         """The SS contact for the proven phone (same-phone rule), created in the

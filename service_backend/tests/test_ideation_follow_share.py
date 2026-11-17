@@ -661,3 +661,47 @@ def test_ac_fs_04_the_submitter_lands_as_himself(setup, product):
     detail = s["client"].get(f"/portal/ideas/{iid}", headers=h).json()
     assert detail["isMine"] is True
     assert detail["following"] is True
+
+
+# ── review round 1 ────────────────────────────────────────────────────────────
+
+
+def test_rr1_follower_row_never_carries_the_submitters_status_page(setup):
+    """The per-item status page lets its holder comment AS the submitter and
+    read the submitter's full text: a follower's row must not carry it."""
+    s = setup
+    fan = _contact(s, phone="+60123450002")
+    iid = _idea(s, 561, submitter_contact_id=_contact(s, phone="+60123450001"))
+    _follow(s, _contact_session(s, fan), iid)
+    _move(s, iid)
+    requester, follower = _events(s, iid)
+    assert requester["track_url"]
+    assert follower["track_url"] is None
+    assert follower["board_url"]
+
+
+def test_rr1_undelivered_code_after_timeout_is_dead(setup, monkeypatch):
+    from modules.ideation.services import phone_verify
+
+    s = setup
+    _product_connection(s)
+    codes = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if request.url.path.endswith("/contacts/lookup"):
+            return httpx.Response(200, json={"contactId": "x", "name": "B", "phone": body["phone"]})
+        codes.append(body["code"])
+        raise httpx.ReadTimeout("slow", request=request)
+
+    monkeypatch.setattr(phone_verify, "_transport", httpx.MockTransport(handler))
+    _iid, token = _shared_item(s, 562)
+    assert _send(s, token, "+60123450002").status_code == 503
+    assert _verify(s, token, "+60123450002", codes[0]).status_code == 400
+
+
+def test_rr1_phone_throttle_is_per_tenant():
+    """A phone hammered in one tenant never locks it in another."""
+    from modules.ideation.services.phone_verify import _phone_key
+
+    assert _phone_key("t1", "60123450002") != _phone_key("t2", "60123450002")

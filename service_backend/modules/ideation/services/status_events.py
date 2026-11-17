@@ -120,7 +120,10 @@ def _write_event(
     settle-window comparison on either side. ``db.refresh`` pulls the
     DB-computed value back so ``occurred_at`` reflects it exactly."""
     mint_idea_identity(db, recipient)
-    track_url = mint_idea_link(db, recipient)
+    # The per-item status page lets its holder comment AS the submitter and read
+    # the submitter's full text: a follower never gets it, only their own board
+    # link (lane FEEDBACK-SUBSCRIBE review round 1).
+    track_url = mint_idea_link(db, recipient) if recipient_role == ROLE_REQUESTER else None
     # Lane PUBLIC-IDEAS-BOARD: the requester's personal feedback board link,
     # opening this idea (``None`` when the idea has no same-tenant contact).
     # ``track_url`` stays the per-idea status page, unchanged.
