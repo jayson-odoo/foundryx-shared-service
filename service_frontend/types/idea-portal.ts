@@ -6,13 +6,22 @@
 /** `contact` = a dealer on a personal feedback link (lane PUBLIC-IDEAS-BOARD). */
 export type PortalKind = 'staff' | 'crm' | 'contact';
 
+/** A product's look on its feedback board (lane SS-MULTI-PRODUCT-BOARD). */
+export interface PortalBrand {
+  name: string | null;
+  color: string | null;
+}
+
 export interface PortalPrincipal {
   kind: PortalKind;
   name: string | null;
   role: string;
+  /** Set when the board is scoped to one product: only that product shows. */
   productId: string | null;
   /** May hide ideas, edit changelog notes and delete anyone's comment. */
   canManage: boolean;
+  /** The product's board colour + name; null/absent = the default look. */
+  brand?: PortalBrand | null;
 }
 
 export interface PortalSession {

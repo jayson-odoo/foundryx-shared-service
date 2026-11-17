@@ -470,7 +470,8 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
             <IdeaStatusTimeline timeline={idea.timeline} />
           </div>
           <Voters voters={page.voters.data ?? []} />
-          {idea.productName && (
+          {/* A one-product board never names the product (owner 17 Nov). */}
+          {idea.productName && !principal.productId && (
             <Card>
               <CardContent className="flex justify-between py-4 text-sm">
                 <span className="text-muted-foreground">Product</span>

@@ -31,6 +31,7 @@ from app.config import settings
 from app.services.catalog_service import tenant_public_link_base
 from modules.omnichannel.models import Contact
 
+from ..db import IDEATION_SCHEMA
 from ..models import Idea, IdeaContactLink
 from .sinks import LINK_PLACEHOLDERS
 from .numbering import display_idea_number
@@ -54,12 +55,20 @@ def _contact(db: Session, tenant_id: str, contact_id: Optional[str]) -> Optional
     )
 
 
-def _live(db: Session, tenant_id: str, contact_id: str) -> Optional[IdeaContactLink]:
+def _live(
+    db: Session, tenant_id: str, contact_id: str, product_id: Optional[str] = None
+) -> Optional[IdeaContactLink]:
+    product = (
+        IdeaContactLink.product_id.is_(None)
+        if product_id is None
+        else IdeaContactLink.product_id == product_id
+    )
     return (
         db.query(IdeaContactLink)
         .filter(
             IdeaContactLink.tenant_id == tenant_id,
             IdeaContactLink.contact_id == contact_id,
+            product,
             IdeaContactLink.revoked_at.is_(None),
         )
         .order_by(IdeaContactLink.created_at.asc())
@@ -67,16 +76,21 @@ def _live(db: Session, tenant_id: str, contact_id: str) -> Optional[IdeaContactL
     )
 
 
-def get_or_create_link(db: Session, tenant_id: str, contact_id: str) -> IdeaContactLink:
-    """The contact's live link, minted on first use (flushed, never committed:
-    the caller owns the transaction)."""
-    row = _live(db, tenant_id, contact_id)
+def get_or_create_link(
+    db: Session, tenant_id: str, contact_id: str, product_id: Optional[str] = None
+) -> IdeaContactLink:
+    """The contact's live link for ``product_id`` (lane SS-MULTI-PRODUCT-BOARD:
+    one live link per contact per product; ``None`` = the whole-tenant board),
+    minted on first use (flushed, never committed: the caller owns the
+    transaction)."""
+    row = _live(db, tenant_id, contact_id, product_id)
     if row is not None:
         return row
     for _ in range(5):
         row = IdeaContactLink(
             tenant_id=tenant_id,
             contact_id=contact_id,
+            product_id=product_id,
             token=secrets.token_urlsafe(32),
             created_at=_now(),
         )
@@ -89,7 +103,7 @@ def get_or_create_link(db: Session, tenant_id: str, contact_id: str) -> IdeaCont
             # A concurrent mint for the same contact won the one-live-link
             # index (``uq_idea_contact_links_live``): use its row. Otherwise a
             # (vanishingly unlikely) token collision: try a fresh token.
-            existing = _live(db, tenant_id, contact_id)
+            existing = _live(db, tenant_id, contact_id, product_id)
             if existing is not None:
                 return existing
             continue
@@ -219,7 +233,45 @@ def mint_board_link(db: Session, idea: Idea, contact_id: object = SUBMITTER) -> 
         return None
     if idea.is_test and not _owns_test_item(db, idea, contact.id):
         return None
-    link = get_or_create_link(db, idea.tenant_id, contact.id)
+    # The link opens the board of the item's product (lane
+    # SS-MULTI-PRODUCT-BOARD): that board shows only that product.
+    link = get_or_create_link(db, idea.tenant_id, contact.id, idea.product_id)
     url = f"{board_base(db, idea.tenant_id)}/{link.token}"
     # The URL carries the number as users read it (FB-0016), never "idea".
     return f"{url}/{display_idea_number(idea.idea_number)}" if idea.idea_number else url
+
+
+def backfill_link_products_sql(schema: str) -> str:
+    """Stamp a product on live links minted before links carried one (lane
+    SS-MULTI-PRODUCT-BOARD, owner Q2 a): when every item the link's contact
+    submitted belongs to ONE product, the link becomes that product's board; a
+    contact with items on several products (or none) keeps the whole-tenant
+    board, as before. Read with the link's own tenant. Skips a link whose
+    contact already holds a live link for that product (the
+    one-live-link-per-product index). Idempotent. One statement, valid on
+    Postgres (migration 0022) and SQLite (tests)."""
+    links = f'"{schema}".idea_contact_links'
+    ideas = f'"{schema}".ideas'
+    mine = (
+        f"FROM {ideas} i WHERE i.tenant_id = idea_contact_links.tenant_id "
+        "AND i.submitter_contact_id = idea_contact_links.contact_id "
+        "AND i.product_id IS NOT NULL"
+    )
+    return (
+        f"UPDATE {links} SET product_id = (SELECT MIN(i.product_id) {mine}) "
+        "WHERE product_id IS NULL AND revoked_at IS NULL "
+        f"AND (SELECT COUNT(DISTINCT i.product_id) {mine}) = 1 "
+        f"AND NOT EXISTS (SELECT 1 FROM {links} o "
+        "WHERE o.tenant_id = idea_contact_links.tenant_id "
+        "AND o.contact_id = idea_contact_links.contact_id "
+        "AND o.revoked_at IS NULL "
+        f"AND o.product_id = (SELECT MIN(i.product_id) {mine}))"
+    )
+
+
+def backfill_link_products(db: Session, schema: str = IDEATION_SCHEMA) -> int:
+    """Run :func:`backfill_link_products_sql` on ``db`` (no commit). Returns how
+    many links were stamped."""
+    from sqlalchemy import text
+
+    return db.execute(text(backfill_link_products_sql(schema))).rowcount

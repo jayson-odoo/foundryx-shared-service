@@ -174,8 +174,8 @@ def link_session(body: PortalLinkSessionIn, request: Request, response: Response
 
 
 @router.get("/me", response_model=PortalPrincipalOut)
-def me(p: PortalPrincipal = Depends(require_portal_principal)):
-    return principal_out(p)
+def me(p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    return principal_out(p, db)
 
 
 # ── reads ─────────────────────────────────────────────────────────────────────

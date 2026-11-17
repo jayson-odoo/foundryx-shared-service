@@ -16,7 +16,9 @@ from app.models.catalog import Product
 from ..models import ProductDelivery
 from ..schemas import BUILD_REPO_PATTERN
 
-_UNSET = "\0unset"  # sentinel: an omitted build_repo (None means clear)
+_UNSET = "\0unset"  # sentinel: an omitted field (None means clear)
+# A product's feedback board colour (lane SS-MULTI-PRODUCT-BOARD).
+BOARD_COLOR_RE = re.compile(r"^#[0-9a-f]{6}$")
 
 
 def validate_origin(value: str) -> str:
@@ -70,6 +72,8 @@ class DeliveryService:
         product_id: str,
         product_domain_base: Optional[str],
         build_repo: Optional[str] = _UNSET,
+        board_color: Optional[str] = _UNSET,
+        board_name: Optional[str] = _UNSET,
     ) -> ProductDelivery:
         """Upsert the delivery config (one row per product). 404 if the product
         is missing; 422 if the origin is invalid. ``product_domain_base`` omitted keeps the stored value. ``build_repo`` left out keeps
@@ -81,6 +85,15 @@ class DeliveryService:
                 raise HTTPException(
                     422, detail={"message": message, "fieldErrors": {"buildRepo": message}}
                 )
+        if board_color is not _UNSET and board_color is not None:
+            board_color = board_color.strip().lower()
+            if not BOARD_COLOR_RE.fullmatch(board_color):
+                message = "Enter the colour as #rrggbb."
+                raise HTTPException(
+                    422, detail={"message": message, "fieldErrors": {"boardColor": message}}
+                )
+        if board_name is not _UNSET and board_name is not None:
+            board_name = board_name.strip()[:80] or None
         origin = validate_origin(product_domain_base) if product_domain_base is not None else None
         row = self._row(tenant_id, product_id)
         if row is None:
@@ -90,6 +103,10 @@ class DeliveryService:
             row.product_domain_base = origin
         if build_repo is not _UNSET:
             row.build_repo = build_repo
+        if board_color is not _UNSET:
+            row.board_color = board_color
+        if board_name is not _UNSET:
+            row.board_name = board_name
         self.db.commit()
         self.db.refresh(row)
         return row
