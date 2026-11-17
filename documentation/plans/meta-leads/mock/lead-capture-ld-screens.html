@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lead Capture Setup Screens</title>
+<style>
+:root{--bg:#f8fafc;--card:#fff;--text:#0f172a;--muted:#64748b;--line:#e2e8f0;--primary:#dc2626;--primary-text:#fff;--warn-bg:#fef3c7;--warn:#92400e;--bad-bg:#fee2e2;--bad:#991b1b;--ok-bg:#dcfce7;--ok:#166534;--chip:#f1f5f9}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1120;--card:#111827;--text:#e5e7eb;--muted:#94a3b8;--line:#1f2937;--primary:#ef4444;--primary-text:#fff;--warn-bg:#422006;--warn:#fcd34d;--bad-bg:#450a0a;--bad:#fca5a5;--ok-bg:#052e16;--ok:#86efac;--chip:#1f2937}}
+:root[data-theme="dark"]{--bg:#0b1120;--card:#111827;--text:#e5e7eb;--muted:#94a3b8;--line:#1f2937;--primary:#ef4444;--primary-text:#fff;--warn-bg:#422006;--warn:#fcd34d;--bad-bg:#450a0a;--bad:#fca5a5;--ok-bg:#052e16;--ok:#86efac;--chip:#1f2937}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
+.tabs button{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:999px;padding:6px 12px;cursor:pointer;font:inherit}
+.tabs button[aria-selected="true"]{background:var(--text);color:var(--bg);border-color:var(--text)}
+.frame{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.bar b{font-size:15px}
+.crumb{color:var(--muted);font-size:13px}
+.steps{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);overflow-x:auto}
+.steps span{white-space:nowrap;font-size:12px;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--muted)}
+.steps span.on{background:var(--text);color:var(--bg)}
+.body{padding:20px 16px}
+.q{font-size:16px;font-weight:600;margin:0 0 8px}
+.note{border-radius:8px;padding:12px;margin:0 0 14px}
+.warn{background:var(--warn-bg);color:var(--warn)}
+.bad{background:var(--bad-bg);color:var(--bad)}
+.ok{background:var(--ok-bg);color:var(--ok)}
+.btn{display:inline-block;border:0;border-radius:8px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer;background:var(--primary);color:var(--primary-text)}
+.btn2{background:transparent;color:var(--text);border:1px solid var(--line);font-weight:500}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.guide{border:1px dashed var(--line);border-radius:8px;padding:14px;margin:0 0 14px;color:var(--muted)}
+.guide ol{margin:6px 0 0 18px;padding:0}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+th{font-size:12px;color:var(--muted);font-weight:600}
+.pill{font-size:12px;padding:2px 8px;border-radius:999px;font-weight:600}
+.scroll{overflow-x:auto}
+.cap{color:var(--muted);font-size:12px;margin-top:10px}
+[hidden]{display:none!important}
+.theme{position:fixed;right:12px;bottom:12px}
+.sw{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border:1px solid var(--line);border-radius:8px;padding:14px;margin:0 0 14px}
+.sw small{display:block;color:var(--muted)}
+.tog{flex:none;width:40px;height:22px;border-radius:999px;background:var(--chip);border:1px solid var(--line);position:relative;cursor:pointer;padding:0}
+.tog::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--muted);transition:left .15s}
+.tog[aria-checked="true"]{background:var(--primary);border-color:var(--primary)}
+.tog[aria-checked="true"]::after{left:20px;background:#fff}
+</style>
+<style>
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:0 0 14px}
+.seg button{border:0;background:var(--card);color:var(--text);padding:7px 14px;font:inherit;cursor:pointer}
+.seg button.on{background:var(--primary);color:var(--primary-text)}
+.tool{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}
+.tool input{flex:1;min-width:140px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--card);color:var(--text);font:inherit}
+.pop{max-width:560px;margin:8px auto;border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:0 10px 30px rgba(0,0,0,.15)}
+.pop h3{margin:0;padding:14px 16px;border-bottom:1px solid var(--line);font-size:15px}
+.pop .pb{padding:14px 16px}
+.pop .pf{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.code{font-family:ui-monospace,monospace;background:var(--chip);border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:nowrap}
+.sel{border:1px solid var(--line);border-radius:8px;padding:6px 10px;min-width:160px;display:inline-block;color:var(--text);background:var(--card)}
+.map td{max-width:none}
+.el td{white-space:normal;max-width:none;font-size:13px}
+label{display:block;font-size:13px;margin:0 0 4px}
+.fld{margin:0 0 12px}
+.fld input{width:100%;border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--card);color:var(--text);font:inherit}
+.ctx{display:inline-block;border:1px solid var(--line);border-radius:8px;background:var(--card);box-shadow:0 6px 16px rgba(0,0,0,.12);padding:4px 0;margin:6px 0 0 40%}
+.ctx div{padding:6px 14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Lead Capture: Keys, Delivery, Fields (lane L-D, mock v1)</h1>
+  <p class="sub">Fake data only. One page per product company; the tab sits in the address bar.</p>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-s="k1">Keys</button>
+    <button role="tab" aria-selected="false" data-s="k2">Key created</button>
+    <button role="tab" aria-selected="false" data-s="d1">Delivery: push</button>
+    <button role="tab" aria-selected="false" data-s="d2">Receiver added</button>
+    <button role="tab" aria-selected="false" data-s="d3">Delivery: pull only</button>
+    <button role="tab" aria-selected="false" data-s="f1">Fields</button>
+    <button role="tab" aria-selected="false" data-s="f2">Map fields</button>
+    <button role="tab" aria-selected="false" data-s="f3">Map fields: Meta refused</button>
+    <button role="tab" aria-selected="false" data-s="el">Element list</button>
+  </div>
+
+  <!-- K1 -->
+  <section class="frame" data-p="k1">
+    <div class="bar"><b>Lead Capture</b><span class="crumb">Lead Capture &gt; Keys</span></div>
+    <div class="steps"><span class="on">Keys</span><span>Delivery</span><span>Fields</span></div>
+    <div class="body">
+      <div class="tool"><input placeholder="Search keys"><button class="btn btn2">Filters</button><button class="btn btn2">Columns</button><button class="btn">Create</button></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>CRM sync</td><td>fxl_live_ab12...</td><td>17/11/2026, 10:02 am</td><td>17/11/2026, 3:40 pm</td><td><span class="pill ok">Active</span></td></tr>
+          <tr><td>Old server</td><td>fxl_live_9f0c...</td><td>02/11/2026, 9:15 am</td><td>-</td><td><span class="pill bad">Revoked</span></td></tr>
+        </tbody>
+      </table></div>
+      <div class="ctx"><div>Revoke</div></div>
+      <p class="cap">Right-click a row: Revoke (confirm popup).</p>
+    </div>
+  </section>
+
+  <!-- K2 -->
+  <section class="frame" data-p="k2" hidden>
+    <div class="body">
+      <div class="pop"><h3>Key created</h3><div class="pb">
+        <div class="note warn">Copy this key now. It is shown only once.</div>
+        <div class="row"><div class="code" style="flex:1">fxl_live_ab12cd34ef56gh78ij90kl12mn34op56</div><button class="btn btn2">Copy</button></div>
+      </div><div class="pf"><button class="btn">Done</button></div></div>
+    </div>
+  </section>
+
+  <!-- D1 -->
+  <section class="frame" data-p="d1" hidden>
+    <div class="bar"><b>Lead Capture</b><span class="crumb">Lead Capture &gt; Delivery</span></div>
+    <div class="steps"><span>Keys</span><span class="on">Delivery</span><span>Fields</span></div>
+    <div class="body">
+      <div class="seg"><button class="on">Push to my system</button><button>Pull only</button></div>
+      <div class="tool"><input placeholder="Search receivers"><button class="btn btn2">Columns</button><button class="btn">Create</button></div>
+      <div class="scroll"><table>
+        <thead><tr><th>URL</th><th>Events</th><th>Added</th><th>Last delivered</th></tr></thead>
+        <tbody><tr><td>https://crm.example.com/hooks/leads</td><td>New lead</td><td>17/11/2026, 10:05 am</td><td>17/11/2026, 3:41 pm</td></tr></tbody>
+      </table></div>
+      <div class="ctx"><div>Send test push</div><div>Remove</div></div>
+      <p class="cap">Right-click a receiver: Send test push, Remove. Toast after a test push: "Test push sent" or the plain reason.</p>
+    </div>
+  </section>
+
+  <!-- D2 -->
+  <section class="frame" data-p="d2" hidden>
+    <div class="body">
+      <div class="pop"><h3>Add receiver</h3><div class="pb">
+        <div class="fld"><label>URL *</label><input value="https://crm.example.com/hooks/leads"></div>
+        <div class="fld"><label>Events *</label><span class="sel">New lead</span></div>
+        <div class="note warn">Copy this signing secret now. It is shown only once.</div>
+        <div class="row"><div class="code" style="flex:1">whsec_Qm9vYmFyYmF6cXV4cXV1eDEyMzQ1Njc4OTA</div><button class="btn btn2">Copy</button></div>
+      </div><div class="pf"><button class="btn">Done</button></div></div>
+    </div>
+  </section>
+
+  <!-- D3 -->
+  <section class="frame" data-p="d3" hidden>
+    <div class="bar"><b>Lead Capture</b><span class="crumb">Lead Capture &gt; Delivery</span></div>
+    <div class="steps"><span>Keys</span><span class="on">Delivery</span><span>Fields</span></div>
+    <div class="body">
+      <div class="seg"><button>Push to my system</button><button class="on">Pull only</button></div>
+      <div class="fld"><label>Leads address</label><div class="code">https://ss.example.com/api/v1/lead-capture/leads</div></div>
+      <div class="pop"><h3>Switch to pull only?</h3><div class="pb">1 receiver will be removed. New leads will no longer be pushed to it.</div>
+        <div class="pf"><button class="btn btn2">Cancel</button><button class="btn">Remove receivers</button></div></div>
+    </div>
+  </section>
+
+  <!-- F1 -->
+  <section class="frame" data-p="f1" hidden>
+    <div class="bar"><b>Lead Capture</b><span class="crumb">Lead Capture &gt; Fields</span></div>
+    <div class="steps"><span>Keys</span><span>Delivery</span><span class="on">Fields</span></div>
+    <div class="body">
+      <p class="q">Lead fields</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Key</th><th>Label</th><th>Type</th></tr></thead>
+        <tbody>
+          <tr><td>name</td><td>Name</td><td>Name</td></tr>
+          <tr><td>phone</td><td>Phone</td><td>Phone</td></tr>
+          <tr><td>email</td><td>Email</td><td>Email</td></tr>
+          <tr><td>budget</td><td>Budget</td><td>Text</td></tr>
+          <tr><td>notes</td><td>Lead notes</td><td>Notes</td></tr>
+        </tbody>
+      </table></div>
+      <div class="row" style="margin:10px 0 22px"><button class="btn btn2">Add field</button><button class="btn btn2">Use defaults</button><button class="btn">Save</button></div>
+      <p class="q">Form maps</p>
+      <div class="tool"><input placeholder="Search forms"><button class="btn btn2">Filters</button><button class="btn btn2">Columns</button><button class="btn btn2">Add form</button></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Page</th><th>Form</th><th>Mapped</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Sample Home Page</td><td>All forms</td><td>3</td><td><span class="pill ok">Mapped</span></td></tr>
+          <tr><td>Sample Home Page</td><td>Show unit enquiry</td><td>2 of 5</td><td><span class="pill warn">Needs mapping</span></td></tr>
+          <tr><td>Sample Home Page</td><td>Viewing booking</td><td>4 of 4</td><td><span class="pill ok">Mapped</span></td></tr>
+        </tbody>
+      </table></div>
+      <p class="cap">Click a row: the Map fields popup.</p>
+    </div>
+  </section>
+
+  <!-- F2 -->
+  <section class="frame" data-p="f2" hidden>
+    <div class="body">
+      <div class="pop" style="max-width:640px"><h3>Map fields: Show unit enquiry</h3><div class="pb">
+        <div class="scroll"><table class="map">
+          <thead><tr><th>Question</th><th>Lead field</th></tr></thead>
+          <tbody>
+            <tr><td>Full name</td><td><span class="sel">Name</span></td></tr>
+            <tr><td>Phone number</td><td><span class="sel">Phone</span></td></tr>
+            <tr><td>Email</td><td><span class="sel">Email</span></td></tr>
+            <tr><td>What is your budget?</td><td><span class="sel">Budget</span></td></tr>
+            <tr><td>Best time to call</td><td><span class="sel">Leave in lead notes</span></td></tr>
+          </tbody>
+        </table></div>
+      </div><div class="pf"><button class="btn btn2">Cancel</button><button class="btn">Save</button></div></div>
+    </div>
+  </section>
+
+  <!-- F3 -->
+  <section class="frame" data-p="f3" hidden>
+    <div class="body">
+      <div class="pop"><h3>Map fields: Show unit enquiry</h3><div class="pb">
+        <div class="note bad">Facebook did not return this form's questions: this Page has not given Leads Access yet.</div>
+        <div class="row"><button class="btn">Try again</button></div>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- Element list -->
+  <section class="frame" data-p="el" hidden>
+    <div class="body scroll"><table class="el">
+      <thead><tr><th>Element</th><th>Component (repo path)</th></tr></thead>
+      <tbody>
+        <tr><td>Page shell + tabs (tab in URL)</td><td>components/platform/resource-form (Tabs) / components/ui/tabs.tsx</td></tr>
+        <tr><td>Keys list, receivers list, form maps list</td><td>components/platform/resource-list (ResourceList, embedded like omnichannel workspace-api-keys-tab.tsx)</td></tr>
+        <tr><td>Right-click row actions</td><td>components/platform/resource-actions (action registry, surfaces row/bulk)</td></tr>
+        <tr><td>Key created reveal + Copy</td><td>pattern of omnichannel/settings/workspaces/components/mint-api-key-dialog.tsx + hooks/use-copy-to-clipboard</td></tr>
+        <tr><td>Signing secret reveal</td><td>omnichannel/settings/channels/components/webhook-secret-panel.tsx</td></tr>
+        <tr><td>Revoke / Remove / Pull-only confirm</td><td>components/platform/resource-actions ConfirmActionDialog</td></tr>
+        <tr><td>Push / Pull only choice</td><td>components/ui/toggle-group (segmented control as Active|Trashed)</td></tr>
+        <tr><td>Events picker</td><td>components/platform/multi-select</td></tr>
+        <tr><td>Lead field picker per question, field Type</td><td>components/platform/search-select</td></tr>
+        <tr><td>Status pills</td><td>components/platform/status-badge</td></tr>
+        <tr><td>Dates</td><td>hooks/use-datetime.ts (dd/mm/yyyy, h:mm am/pm)</td></tr>
+        <tr><td>Long URL / names</td><td>components/platform/clamped-text.tsx</td></tr>
+        <tr><td>Map fields popup</td><td>components/ui/dialog</td></tr>
+        <tr><td>Error + Try again</td><td>components/ui/alert</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+</div>
+<button class="btn btn2 theme" id="theme">Light / Dark</button>
+<script>
+document.querySelectorAll('[role=tab]').forEach(function(t){t.addEventListener('click',function(){
+  document.querySelectorAll('[role=tab]').forEach(function(x){x.setAttribute('aria-selected',x===t?'true':'false')});
+  document.querySelectorAll('[data-p]').forEach(function(p){p.hidden=p.getAttribute('data-p')!==t.getAttribute('data-s')});
+})});
+document.getElementById('theme').addEventListener('click',function(){
+  var r=document.documentElement,d=r.getAttribute('data-theme')==='dark'||(!r.getAttribute('data-theme')&&matchMedia('(prefers-color-scheme: dark)').matches);
+  r.setAttribute('data-theme',d?'light':'dark');
+});
+</script>
+</body>
+</html>
