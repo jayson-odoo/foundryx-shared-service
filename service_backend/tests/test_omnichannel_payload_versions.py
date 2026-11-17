@@ -123,6 +123,7 @@ V2_CHANGED_API = {
     "api.webhooks.create", "api.webhooks.list", "api.webhooks.update",
     "api.webhooks.disable", "api.webhooks.enable",
     "api.contacts.list", "api.contacts.get", "api.contacts.update", "api.contacts.messages",
+    "api.contacts.message", "api.contacts.comment",
 }
 
 
@@ -143,6 +144,8 @@ def test_header_2_adds_only_v2_keys_and_keeps_rio_and_webhooks_identical(client,
     for name in ("api.contacts.list", "api.contacts.get", "api.contacts.update"):
         assert '"windowOpen":' in out[name] and '"windows":[' in out[name], name
     assert '"window":{' in out["api.contacts.messages"]
+    assert '"sender":{"type":"API"' in out["api.contacts.messages"]
+    assert '"sender":{"type":"SYSTEM"' in out["api.contacts.comment"]
 
 
 @pytest.mark.parametrize("value", ["3", "0", "-1", "abc", "v2", "1.0", "2 2", " ", "99999"])
@@ -688,3 +691,158 @@ def test_other_refusals_and_the_dashboard_are_untouched_at_version_2(client, ses
     )
     assert staff.status_code == 422 and list(staff.json()) == ["detail"], staff.text
     assert isinstance(staff.json()["detail"], str)
+
+
+# ── Track A S3: sender attribution (stored always, returned at version 2) ────
+SENDER = {"externalId": "ecohub:user-42", "displayName": "  Aisyah Lim  ", "avatarUrl": "https://cdn.example.com/a.png"}
+STORED = {"externalId": "ecohub:user-42", "displayName": "Aisyah Lim", "avatarUrl": "https://cdn.example.com/a.png"}
+
+
+class _SpyAdapter:
+    """Replaces the provider adapter at the send_runner boundary; records every send."""
+
+    def __init__(self):
+        self.calls = []
+
+    def upload_media(self, *a, **k):
+        return "media-fake"
+
+    def send(self, *a, **k):
+        self.calls.append((a, k))
+        return {"external_message_id": f"wamid.s3-{len(self.calls)}"}
+
+
+@pytest.fixture
+def spy(monkeypatch):
+    adapter = _SpyAdapter()
+    monkeypatch.setattr("modules.omnichannel.services.send_runner.get_adapter", lambda *a, **k: adapter)
+    return adapter
+
+
+def _open_contact(client, session_factory, phone):
+    from tests.test_omnichannel_api_gateway import _seed_open_contact
+
+    hdr, channel_id = _key(client, session_factory)
+    cid = _seed_open_contact(session_factory, _default_workspace_id(session_factory), phone=phone, open_window=True)
+    return hdr, channel_id, cid
+
+
+def _row(session_factory, message_id):
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    try:
+        m = db.query(ConversationMessage).filter(ConversationMessage.id == message_id).one()
+        return {"sender_id": m.sender_id, "ext": m.sender_external_agent_id, "meta": dict(m.metadata_json or {}), "body": m.body}
+    finally:
+        db.close()
+
+
+def test_sender_is_stored_and_returned_only_at_version_2(client, session_factory, posted, spy):
+    hdr, channel_id, cid = _open_contact(client, session_factory, "+60123450051")
+    _two_endpoints(client, hdr, ("message.outbound",))
+    res = client.post(
+        f"{BASE}/messages",
+        json={"to": "+60123450051", "type": "text", "text": {"body": "Your quote is ready"}, "sender": SENDER},
+        headers=hdr,
+    )
+    assert res.status_code == 202, res.text
+    mid = res.json()["id"]
+    row = _row(session_factory, mid)
+    assert row["meta"]["senderAttribution"] == STORED
+    assert row["sender_id"].startswith("apikey:") and row["ext"] is None
+
+    one_v1 = client.get(f"{BASE}/contacts/{cid}/messages/{mid}", headers=hdr).json()
+    one_v2 = client.get(f"{BASE}/contacts/{cid}/messages/{mid}", headers={**hdr, HEADER: "2"}).json()
+    assert "sender" not in one_v1
+    assert one_v2["sender"] == {"type": "API", **STORED, "userId": None}
+    # D5: the existing sender fields are the same at both versions.
+    for key in ("senderType", "senderId", "senderName", "senderAvatarUrl", "senderExternalAgentId"):
+        assert one_v1[key] == one_v2[key], key
+    assert one_v1["senderName"] is None and one_v1["senderType"] == "AGENT"
+    history = client.get(f"{BASE}/contacts/{cid}/messages", headers={**hdr, HEADER: "2"}).json()["data"]
+    assert next(m for m in history if m["id"] == mid)["sender"]["displayName"] == "Aisyah Lim"
+    rio = client.get(f"{BASE}/contacts/{cid}/messages/{mid}?format=rio", headers={**hdr, HEADER: "2"}).text
+    assert "Aisyah" not in rio
+
+    calls = {c["url"]: json.loads(c["content"]) for c in posted.drain(session_factory)}
+    out_v1, out_v2 = calls[HOOK_V1]["data"], calls[HOOK_V2]["data"]
+    assert "sender" not in out_v1["message"]
+    assert out_v2["message"]["sender"]["externalId"] == "ecohub:user-42"
+    assert out_v1["source"] == out_v2["source"] == "api"
+    assert out_v1["message"]["senderName"] is None
+
+
+def test_customer_text_is_byte_identical_with_or_without_sender(client, session_factory, spy):
+    hdr, _, _ = _open_contact(client, session_factory, "+60123450052")
+    text = "Hello éè \U0001f600  spaced\nline two"
+    for extra in ({}, {"sender": SENDER}):
+        res = client.post(
+            f"{BASE}/messages", json={"to": "+60123450052", "type": "text", "text": {"body": text}, **extra}, headers=hdr,
+        )
+        assert res.status_code == 202, res.text
+    assert len(spy.calls) == 2
+    assert spy.calls[0] == spy.calls[1]
+    assert spy.calls[0][1]["text"] == spy.calls[1][1]["text"] == text
+    assert "Aisyah" not in repr(spy.calls[1]) and "ecohub:user-42" not in repr(spy.calls[1])
+
+
+def test_sender_on_multipart_and_structured_sends(client, session_factory, spy):
+    hdr, _, cid = _open_contact(client, session_factory, "+60123450053")
+    payload = json.dumps({"to": "+60123450053", "type": "image", "media": {"caption": "photo"}, "sender": SENDER})
+    res = client.post(f"{BASE}/messages", headers=hdr, data={"payload": payload}, files={"file": ("a.png", PNG, "image/png")})
+    assert res.status_code == 202, res.text
+    assert _row(session_factory, res.json()["id"])["meta"]["senderAttribution"] == STORED
+    res = client.post(
+        f"{BASE}/messages",
+        json={"to": "+60123450053", "type": "location", "location": {"lat": 3.1, "lng": 101.6}, "sender": SENDER},
+        headers=hdr,
+    )
+    assert res.status_code == 202, res.text
+    assert _row(session_factory, res.json()["id"])["meta"]["senderAttribution"] == STORED
+    # Without sender: nothing stored, version 2 shows a bare API sender.
+    res = client.post(f"{BASE}/messages", json={"to": "+60123450053", "type": "text", "text": {"body": "x"}}, headers=hdr)
+    mid = res.json()["id"]
+    assert "senderAttribution" not in _row(session_factory, mid)["meta"]
+    one = client.get(f"{BASE}/contacts/{cid}/messages/{mid}", headers={**hdr, HEADER: "2"}).json()
+    assert one["sender"] == {"type": "API", "externalId": None, "displayName": None, "avatarUrl": None, "userId": None}
+
+
+@pytest.mark.parametrize("sender", [
+    {"displayName": "A"},
+    {"externalId": "x", "displayName": "   "},
+    {"externalId": "bad id", "displayName": "A"},
+    {"externalId": "x" * 129, "displayName": "A"},
+    {"externalId": "x", "displayName": "A" * 121},
+    {"externalId": "x", "displayName": "A", "avatarUrl": "http://cdn.example.com/a.png"},
+    {"externalId": "x", "displayName": "A", "avatarUrl": "https://" + "a" * 2050},
+    "Aisyah",
+])
+def test_invalid_sender_is_a_typed_422_and_nothing_is_sent(client, session_factory, spy, sender):
+    hdr, _, _ = _open_contact(client, session_factory, "+60123450054")
+    res = client.post(
+        f"{BASE}/messages", json={"to": "+60123450054", "type": "text", "text": {"body": "x"}, "sender": sender}, headers=hdr,
+    )
+    _assert_invalid_request(res)
+    payload = json.dumps({"to": "+60123450054", "type": "image", "sender": sender})
+    res = client.post(f"{BASE}/messages", headers=hdr, data={"payload": payload}, files={"file": ("a.png", PNG, "image/png")})
+    _assert_invalid_request(res)
+    assert spy.calls == []
+
+
+def test_sender_types_for_customer_note_workflow_and_agent():
+    from types import SimpleNamespace
+
+    from modules.omnichannel.services.conversation_service import _message_sender
+
+    def msg(sender_type, sender_id=None, ext=None):
+        return SimpleNamespace(sender_type=sender_type, sender_id=sender_id, sender_external_agent_id=ext)
+
+    assert _message_sender(msg("CONTACT"), {}, None, None).type == "CUSTOMER"
+    assert _message_sender(msg("SYSTEM", "u1"), {}, None, None).type == "SYSTEM"
+    assert _message_sender(msg("AGENT"), {}, None, None).type == "WORKFLOW"
+    assert _message_sender(msg("AGENT", "u1"), {"broadcast": {"id": "b"}}, None, None).type == "BROADCAST"
+    native = _message_sender(msg("AGENT", "u1"), {}, None, "Staff One")
+    assert (native.type, native.userId, native.displayName) == ("AGENT", "u1", "Staff One")
+    embed = _message_sender(msg("AGENT", None, "ext-1"), {}, SimpleNamespace(name="Embed Agent", avatar_url=None), None)
+    assert (embed.type, embed.displayName, embed.userId) == ("AGENT", "Embed Agent", None)

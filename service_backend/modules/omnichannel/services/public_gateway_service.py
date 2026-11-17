@@ -153,6 +153,12 @@ def _window_refusal(
     return err
 
 
+def _attribution(sender) -> Optional[dict]:
+    """`metadata_extra` for a send that names its consumer-side author
+    (Track A S3); None leaves the send exactly as before."""
+    return {"senderAttribution": sender.stored()} if sender is not None else None
+
+
 def _iso_z(dt) -> Optional[str]:
     """Aware-UTC datetime → ISO-8601 Z. Used for Foundryx-extension fields on
     the Rio shapes (`cswExpiresAt`), which follow the house convention rather
@@ -1223,6 +1229,7 @@ class PublicGatewayService:
                     to=req.to,
                     channel=channel,
                     reply_to_message_id=reply_to,
+                    sender=req.sender,
                 )
         elif msg_type in ("interactive", "location", "contacts"):
             return self._send_structured(
@@ -1245,6 +1252,7 @@ class PublicGatewayService:
             item = self.messages.send_message(
                 contact.id, tenant_id, actor, payload, actor_is_human=False,
                 channel_id_override=self._override_for(channel),
+                metadata_extra=_attribution(req.sender),
             )
         except SendRejected as exc:
             raise self._map_send_rejected(exc, contact=contact, channel_id=channel.id) from exc
@@ -1349,6 +1357,7 @@ class PublicGatewayService:
         to: str,
         channel: Optional[Channel] = None,
         reply_to_message_id: Optional[str] = None,
+        sender=None,
     ) -> str:
         # Callers pass the resolved channel; `None` resolves the implicit one
         # (refused when it would be a guess).
@@ -1368,6 +1377,7 @@ class PublicGatewayService:
                 actor_is_human=False,
                 channel_id_override=self._override_for(channel),
                 reply_to_message_id=reply_to_message_id,
+                metadata_extra=_attribution(sender),
             )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
@@ -1427,6 +1437,7 @@ class PublicGatewayService:
                         actor_is_human=False,
                         channel_id_override=self._override_for(channel),
                         reply_to_message_id=reply_to_message_id,
+                        metadata_extra=_attribution(req.sender),
                     )
             elif msg_type == "location":
                 if not req.location:
@@ -1435,6 +1446,7 @@ class PublicGatewayService:
                     contact.id, tenant_id, actor, defn=dict(req.location), actor_is_human=False,
                     channel_id_override=self._override_for(channel),
                     reply_to_message_id=reply_to_message_id,
+                    metadata_extra=_attribution(req.sender),
                 )
             else:  # contacts
                 if not req.contacts:
@@ -1443,6 +1455,7 @@ class PublicGatewayService:
                     contact.id, tenant_id, actor, defn={"contacts": req.contacts},
                     actor_is_human=False, channel_id_override=self._override_for(channel),
                     reply_to_message_id=reply_to_message_id,
+                    metadata_extra=_attribution(req.sender),
                 )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
@@ -1496,6 +1509,7 @@ class PublicGatewayService:
         channel_id: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         version: int = pv.V1,
+        sender=None,
     ) -> Tuple[str, bool]:
         """Gateway multipart media send (plan 12 AC-12-10). Same idempotency
         semantics as the JSON ``send`` path. ``channel_id`` (plan 32 / A7a S6)
@@ -1535,6 +1549,7 @@ class PublicGatewayService:
                 to=to,
                 channel=channel,
                 reply_to_message_id=reply_to,
+                sender=sender,
             )
         except Exception as exc:
             self._settle_reservation_on_error(store, workspace_id, idempotency_key, reservation)

@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Sender attribution** (sections 3b, 4, 4.3, 9.1). `POST /messages` accepts an optional `sender {externalId, displayName, avatarUrl?}` (JSON body and multipart `payload`) naming the person on your side who wrote the message. It is stored on the message only: the customer receives exactly the same text, and the send stays an API send (`senderId` `apikey:<id>`, `message.outbound` `source` `api`). At payload version 2, `MessageItem` (history, single message, comment, `message.inbound` / `message.outbound`) gains `sender {type, externalId?, displayName?, avatarUrl?, userId?}`. `senderName`, `senderAvatarUrl` and `senderType` are unchanged at every version. A malformed `sender` answers `422 invalid_request`; a send without it behaves as before. |
 > | **2026-11-18** | **Window state and refusal details, version 2 only** (sections 3b, 6, 9.1, 10). At payload version 2 (`X-Fx-Api-Version: 2`, or an endpoint with `payloadVersion: 2`) `ThreadItem` gains `windowOpen`, `allowedSendTypes`, `windowReason` and `windows[]` (one entry per channel identity of the contact, so each WhatsApp number has its own window); the message history gains `window`; and the window refusals (`409 csw_window_closed` / `messaging_window_closed`) gain `details {channelId, windowExpiresAt, allowedSendTypes, reason}`. Status codes, `code` and `message` are unchanged at every version; version 1 bodies are unchanged byte for byte. |
 > | **2026-11-18** | **Payload versions** (sections 3b, 7, 10). A webhook endpoint can carry an optional `payloadVersion` (integer, set on `POST /webhooks` or `PATCH /webhooks/{id}`), and any `/api/v1/omnichannel/*` request can send an optional `X-Fx-Api-Version` header. Leaving both out keeps version 1: every webhook body and response stays exactly as it is today. New fields on an existing event or response will only ever appear at a higher version. Version 2 currently adds one key, `payloadVersion`, on the webhook endpoint item. An unknown version answers `422 invalid_request`. Non-breaking: nothing changes for an integration that does not opt in. |
 > | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and `POST /messages` as multipart up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send takes exactly one `file` part and one `payload` part, with at most 5 form fields; more answers `422 invalid_request`. |
@@ -170,6 +171,7 @@ Every webhook body and every response shape has a **payload version**. **The def
 |----|----|
 | 1 | The shapes in this guide. |
 | 2 | `payloadVersion` (integer) on the webhook endpoint item (§7): the version that endpoint's deliveries use. |
+| 2 | `sender` on `MessageItem` (§9.1, also `data.message` in `message.inbound` / `message.outbound`). |
 | 2 | Window state on `ThreadItem` (§9.1, also the `contact` in webhooks): `windowOpen`, `allowedSendTypes`, `windowReason`, `windows[]`. `window` on the message history (§6). `details` on the window refusals (§10). |
 
 ## 4. Sending messages
@@ -205,6 +207,7 @@ The JSON body always has `to` + `type`, plus one type-specific object:
   "to": "+60123456789",     // recipient - see the "to" formats table below
   "channelId": null,        // OPTIONAL - see "Choosing a channel" below
   "replyToMessageId": null, // OPTIONAL - see "Replying to a message" below
+  "sender": null,           // OPTIONAL - see "Who wrote it" below
   "type": "text",           // see the table below
   "text":        { … },
   "template":    { … },
@@ -329,7 +332,25 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/messages \
 
 The send takes exactly one `file` part and one `payload` part, with at most 5 further form fields besides the file (the `payload` part counts as one of them; the file part does not). Missing either part, a second file part or more fields → `422 invalid_request`.
 
-The `payload` JSON also accepts `replyToMessageId` (string) with the rules in §4 "Replying to a message"; a non-string value is `422 invalid_request`.
+The `payload` JSON also accepts `replyToMessageId` (string) with the rules in §4 "Replying to a message"; a non-string value is `422 invalid_request`. It also accepts `sender` with the rules in §4 "Who wrote it".
+
+### Who wrote it - `sender` (optional)
+
+`sender` names the person on your side who wrote the message, for your own records and your other screens:
+
+```jsonc
+"sender": {
+  "externalId": "ecohub:user-42",   // required, 1-128 chars of A-Z a-z 0-9 . _ : @ -
+  "displayName": "Aisyah Lim",      // required, 1-120 chars after trimming spaces
+  "avatarUrl": "https://…/a.png"    // optional, https only, at most 2048 chars
+}
+```
+
+* The customer never sees it: the text or caption sent is exactly the same with or without `sender`.
+* The send stays an API send: `senderId` is still `apikey:<id>`, `senderName` stays `null`, and `message.outbound` still says `source: "api"`.
+* It is read back as `MessageItem.sender` at payload version 2 (§3b, §9.1): `{"type": "API", "externalId", "displayName", "avatarUrl"}`.
+* It is accepted on every send type that creates a message (text, template, media, interactive, location, contacts); a reaction creates no message and ignores it.
+* A malformed `sender` answers `422 invalid_request` and nothing is sent. Leaving it out keeps today's behaviour.
 
 ### 4.4 Interactive, location, contacts
 
@@ -1150,7 +1171,13 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "errorMessage": null,
   "pricing": null,              // Meta pricing once a receipt carried it: { "billable": true, "pricingModel": "pmp", "category": "utility", "type": "regular" }; null for inbound and older messages (default shape only, `?format=rio` has none)
   "replyTo": { "id":"…", "body":"…", "senderType":"…", "senderName":"…" },
-  "createdAt": "2026-07-09T11:02:43Z"
+  "createdAt": "2026-07-09T11:02:43Z",
+  // Payload version 2 only (§3b) - absent at version 1:
+  "sender": {                   // who sent it
+    "type": "API",              // CUSTOMER | AGENT | SYSTEM | API | WORKFLOW | BROADCAST
+    "externalId": "ecohub:user-42", "displayName": "Aisyah Lim", "avatarUrl": null,  // API: your `sender` (§4 "Who wrote it"), else null
+    "userId": null              // AGENT: the staff user id (an inbox agent); embed agents show only displayName/avatarUrl
+  }
 }
 ```
 

@@ -33,6 +33,7 @@ from ..schemas import (
     PublicCommentRequest,
     PublicContactUpdateRequest,
     PublicSendRequest,
+    PublicSenderAttribution,
     PublicSendResponse,
     BusinessHoursUpdate,
     PublicBusinessHoursResponse,
@@ -217,6 +218,15 @@ async def send_message(
         reply_to = payload_obj.get("replyToMessageId")
         if reply_to is not None and not isinstance(reply_to, str):
             raise ApiError(422, "invalid_request", "replyToMessageId must be a string.")
+        sender = None
+        if payload_obj.get("sender") is not None:
+            try:
+                sender = PublicSenderAttribution.model_validate(payload_obj["sender"])
+            except ValidationError as exc:
+                errors = exc.errors(include_url=False, include_context=False)
+                for e in errors:
+                    e["loc"] = ("payload", "sender", *e.get("loc", ()))
+                raise RequestValidationError(errors) from None
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
@@ -237,6 +247,7 @@ async def send_message(
             channel_id=channel_id,
             reply_to_message_id=reply_to,
             version=version,
+            sender=sender,
         )
     else:
         try:
@@ -463,12 +474,14 @@ def get_contact_message(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Get one message on a contact's thread (full fidelity, any type).
     `MessageItem` by default; `RioMessageItem` with `?format=rio`."""
-    return PublicGatewayService(db).get_contact_message(
+    item = PublicGatewayService(db).get_contact_message(
         api_ws.tenant_id, api_ws.workspace_id, identifier, message_id, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 # ── Conversation lifecycle ───────────────────────────────────────────────────
@@ -517,10 +530,12 @@ def add_comment(
     payload: PublicCommentRequest,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> MessageItem:
-    return PublicGatewayService(db).add_comment(
+    item = PublicGatewayService(db).add_comment(
         api_ws.tenant_id, api_ws.workspace_id, identifier, payload.body
     )
+    return versioned(item, version, status_code=status.HTTP_201_CREATED)
 
 
 # ── Mark a contact read (resets unread; WhatsApp read receipts) ──────────────

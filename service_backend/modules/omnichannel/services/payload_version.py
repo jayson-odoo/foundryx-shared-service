@@ -38,6 +38,8 @@ GATED_KEYS: Dict[str, Dict[str, int]] = {
     # Track A S1: messaging window state.
     "ThreadItem": {"windowOpen": V2, "allowedSendTypes": V2, "windowReason": V2, "windows": V2},
     "PublicMessageListResponse": {"window": V2},
+    # Track A S3: who sent a message.
+    "MessageItem": {"sender": V2},
     # Track A S2: hand-built `details` on the public window refusals (409).
     "WindowRefusal": {"details": V2},
 }
