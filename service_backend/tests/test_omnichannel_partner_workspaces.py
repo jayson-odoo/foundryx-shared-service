@@ -174,6 +174,9 @@ def test_a_trashed_workspace_is_404_and_put_then_starts_a_new_one(client, sessio
 ID_ROUTES = [
     ("GET", "/workspaces/{ws}", None),
     ("GET", "/workspaces/{ws}/channels", None),
+    ("GET", "/workspaces/{ws}/api-keys", None),
+    ("POST", "/workspaces/{ws}/api-keys", {"name": "iso"}),
+    ("POST", "/workspaces/{ws}/api-keys/any-key-id/revoke", None),
 ]
 
 
@@ -183,7 +186,7 @@ def test_every_route_answers_the_same_404_for_another_tenants_workspace(client, 
     _seed_channel(session_factory, ws_b, phone_number_id="pn-iso-b")
     url = P + path.format(ws=ws_b)
     own = client.request(method, url, headers=hdr_b, json=body)
-    assert own.status_code in (200, 201), own.text  # control: B reaches its own workspace
+    assert own.status_code != 404 or own.json() != NOT_FOUND, own.text  # control: B reaches its own workspace
     cross = client.request(method, url, headers=hdr_a, json=body)
     unknown = client.request(method, P + path.format(ws="00000000-0000-0000-0000-00000000dead"), headers=hdr_a, json=body)
     assert cross.status_code == 404 and unknown.status_code == 404

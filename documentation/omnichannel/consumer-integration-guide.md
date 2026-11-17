@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Partner API: one workspace key per organisation** (section 6e). `POST /partner/workspaces/{workspaceId}/api-keys` mints an ordinary `fxw_live_` workspace key (shown once) that works on the existing API unchanged; list and revoke (revoke pauses the key's webhook endpoints, as a dashboard revoke does). Additive: existing keys keep exactly their power; no existing route or field changes. |
 > | **2026-11-18** | **Partner API: workspaces per organisation** (section 6e). `PUT /partner/workspaces/{externalOrgId}` creates or returns the organisation's workspace (idempotent), plus list, get and channel list. Every route is limited to the partner key's tenant with one uniform `404 workspace_not_found`. Additive: existing routes and fields are unchanged. |
 > | **2026-11-18** | **Partner API: partner key** (section 6e). New tenant-scoped partner key (`fxp_live_...`), minted from the dashboard by a tenant admin with the new Partner API Keys permission, and `GET /api/v1/omnichannel/partner/me`. Additive: workspace keys and every existing route, field and code are unchanged; a partner key is refused (`401 invalid_api_key`) on existing routes. |
 > | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and `POST /messages` as multipart up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send takes exactly one `file` part and one `payload` part, with at most 5 form fields; more answers `422 invalid_request`. |
@@ -899,6 +900,23 @@ Each of your organisations is one workspace, keyed by **your own organisation id
 **`GET /api/v1/omnichannel/partner/workspaces?externalOrgId=&page=&pageSize=`** lists your tenant's live workspaces, oldest first, as `{ "data": [workspace...], "total", "page", "pageSize" }` (`page` from 0, `pageSize` 1 to 100, default 25). Workspaces created in the dashboard are listed too, with `externalOrgId: null`.
 
 **`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}`** returns one workspace. **`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}/channels`** returns `{ "data": [PublicChannelItem...] }`, the same list as section 5a.
+
+### One workspace key per organisation
+
+Your partner key does not send messages. For each organisation, mint one ordinary workspace key (`fxw_live_...`) and use it on the existing API (sections 3 to 7) exactly as any other consumer does. It is the same kind of key a Foundryx admin mints in the dashboard: full power in its own workspace, same limits, same webhooks.
+
+**`POST /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys`** body `{ "name": "EcoHub org-42" }` (1 to 120 characters) answers `201`:
+
+```json
+{
+  "key": { "id": "9d2a...", "workspaceId": "5f0c...", "name": "EcoHub org-42", "keyPrefix": "AbCdEfGh", "maskedKey": "fxw_live_AbCdEfGh••••", "status": "ACTIVE", "lastUsedAt": null, "revokedAt": null, "createdAt": "2026-11-18T01:02:03Z", "webhookEndpointCount": 0 },
+  "fullKey": "fxw_live_..."
+}
+```
+
+`fullKey` is shown **once**; store it encrypted. The key also appears in the dashboard's key list for that workspace.
+
+**`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys`** lists the workspace's keys (`{ "data": [key...] }`, never the full key). **`POST /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys/{keyId}/revoke`** revokes one and answers the key with `status: "REVOKED"`; repeating it changes nothing. As with a dashboard revoke, the webhook endpoints the key owns are paused (section 7); resume them with another live key. An unknown key id, or one of another workspace, answers `404 api_key_not_found`; a workspace outside your tenant answers `404 workspace_not_found`.
 
 ### Isolation
 

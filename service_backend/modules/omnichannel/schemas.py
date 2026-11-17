@@ -1590,6 +1590,11 @@ class PartnerWorkspaceItem(ApiModel):
     channels: List[PublicChannelItem]
 
 
+class PartnerWorkspaceKeyCreateRequest(ApiModel):
+    """S8: name of the organisation's workspace key (an ordinary `fxw_live_` key)."""
+    name: str = Field(min_length=1, max_length=120)
+
+
 class PartnerWorkspaceListResponse(ApiModel):
     data: List[PartnerWorkspaceItem]
     total: int
