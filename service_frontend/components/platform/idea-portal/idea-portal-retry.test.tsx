@@ -76,4 +76,24 @@ describe('board comment uploads', () => {
     expect(svc.uploadAttachment.mock.calls[0][2]).toBe('cm1');
     expect(svc.addComment).toHaveBeenCalledTimes(1);
   });
+
+  it('a file or text added while a comment is still sending stays in the box', async () => {
+    let finish: (v: unknown) => void = () => {};
+    svc.addComment.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    svc.uploadAttachment.mockResolvedValue({});
+    const { container } = render(<IdeaPage ideaId="i10" />);
+    await screen.findByText('T');
+    const input = () => container.querySelector('input[type="file"]') as HTMLInputElement;
+    const box = screen.getByRole('textbox', { name: 'Leave a comment' });
+    await userEvent.type(box, 'first');
+    await userEvent.upload(input(), png('sent.png'));
+    await userEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    await userEvent.type(box, ' and more');
+    await userEvent.upload(input(), png('later.png'));
+    finish({ id: 'cm1' });
+    await waitFor(() => expect(svc.uploadAttachment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove sent.png' })).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Remove later.png' })).toBeInTheDocument();
+    expect(box).toHaveValue('first and more');
+  });
 });

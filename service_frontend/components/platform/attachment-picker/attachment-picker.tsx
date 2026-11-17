@@ -24,6 +24,8 @@ export interface AttachmentDraft {
   clear: () => void;
   /** Keep exactly these files (e.g. only the ones that failed to upload). */
   replace: (files: File[]) => void;
+  /** Remove the files just sent (keeping `keep` first); later additions stay. */
+  discard: (sent: File[], keep?: File[]) => void;
   /** Spread on the form / composer so paste and drop land in this draft. */
   wrapperProps: AttachmentDraftWrapperProps;
 }
@@ -73,6 +75,13 @@ export function useAttachmentDraft(): AttachmentDraft {
     setFiles(next);
   }, []);
 
+  /** Drop exactly the files just sent, keeping `keep` (those that failed)
+   * first; files added while the post was sending stay. */
+  const discard = useCallback((sent: File[], keep: File[] = []) => {
+    const gone = new Set(sent);
+    setFiles((prev) => [...keep, ...prev.filter((f) => !gone.has(f))]);
+  }, []);
+
   const wrapperProps = useMemo<AttachmentDraftWrapperProps>(
     () => ({
       onPaste: (e) => {
@@ -97,7 +106,7 @@ export function useAttachmentDraft(): AttachmentDraft {
     [add],
   );
 
-  return { files, error, add, remove, clear, replace, wrapperProps };
+  return { files, error, add, remove, clear, replace, discard, wrapperProps };
 }
 
 /** Object URLs for image previews, revoked on remove / unmount. */
@@ -198,19 +207,23 @@ export function useUploadRetry(
 ) {
   const [pending, setPending] = useState<PendingUploads | null>(null);
   const [busy, setBusy] = useState(false);
-  const { clear, replace } = draft;
+  const { clear, replace, discard } = draft;
 
+  /** `sent` = the files that went out with the post: only those leave the
+   * draft, so anything added while the post was sending is kept. */
   const track = useCallback(
-    (result: unknown) => {
+    (result: unknown, sent?: File[]) => {
       if (isCommentPostResult(result) && result.failed.length > 0) {
         setPending({ commentId: result.commentId, failed: result.failed });
-        replace(result.failed);
+        if (sent) discard(sent, result.failed);
+        else replace(result.failed);
       } else {
         setPending(null);
-        clear();
+        if (sent) discard(sent);
+        else clear();
       }
     },
-    [clear, replace],
+    [clear, replace, discard],
   );
 
   const retryNow = useCallback(async () => {

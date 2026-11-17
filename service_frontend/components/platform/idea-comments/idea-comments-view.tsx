@@ -259,9 +259,12 @@ function Composer({
     if (empty || busy) return;
     setBusy(true);
     try {
-      const result = await onSubmit(text.trim(), draft.files);
-      setText('');
-      uploads.track(result);
+      const sent = draft.files;
+      const sentText = text.trim();
+      const result = await onSubmit(sentText, sent);
+      // Only what was sent leaves the box; anything typed or added meanwhile stays.
+      setText((current) => (current.trim() === sentText ? '' : current));
+      uploads.track(result, sent);
     } finally {
       setBusy(false);
     }

@@ -80,9 +80,11 @@ function Composer({
     if (!canSend) return;
     setBusy(true);
     try {
-      const result = await onSubmit(trimmed, draft.files);
-      setBody('');
-      uploads.track(result);
+      const sent = draft.files;
+      const result = await onSubmit(trimmed, sent);
+      // Only what was sent leaves the box; anything typed or added meanwhile stays.
+      setBody((current) => (current.trim() === trimmed ? '' : current));
+      uploads.track(result, sent);
     } catch {
       // the hook surfaces the error
     } finally {
