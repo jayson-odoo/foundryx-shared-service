@@ -369,9 +369,9 @@ PENDING job (genuinely queued, not lost) is left untouched either way.
   fresh `get_db` override closure pinned its sessionmaker -> engine -> whole in-memory DB, so each
   xdist worker plateaued at ~4.5 GB. On a 16 GB, 4-core runner the kernel killed a worker ("node
   down: Not properly terminated") and xdist then waited forever until the 30 min job timeout.
-  `tests/conftest.py` now clears those caches after every test (`release_fastapi_call_caches`,
+  `tests/conftest.py` now clears those caches after every test (`_clear_fastapi_callable_caches`, landed by both PR #253 and SS-CI-TIMEOUT #263;
   guarded by `tests/test_conftest_memory.py`). If a suite run stalls at the end, check `dmesg` for
-  `oom-kill` and the log for `node down` before blaming a test; never just raise the timeout.
+  `oom-kill` and the log for `node down` before blaming a test, and fix the memory rather than only raising the timeout.
 
 ### Preview-as-a-job lessons (sprint-5/11 S4, `preview_job.py`/`preview_job_service.py`)
 

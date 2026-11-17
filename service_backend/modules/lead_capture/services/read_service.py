@@ -17,6 +17,7 @@ from ..models import LcApiKey, LcDelivery, LcLead, LcSource, LcWebhookEndpoint
 from . import key_service
 from .connect_service import get_settings
 from .leadgen_service import lead_item
+from .source_service import forms_mode, picked_forms
 
 MAX_PAGE = 100
 # Leads younger than this are held back from the pull: the time a lead is
@@ -44,10 +45,13 @@ def source_item(row: LcSource) -> schemas.SourceItem:
         status=row.status,
         pageId=row.account_ref,
         pageName=row.account_name,
-        formsMode=(row.config_json or {}).get("formsMode"),
+        formsMode=forms_mode(row),
+        formIds=picked_forms(row),
         needsMapping=notices,
         fieldMap=dict(row.field_map_json or {}),
         lastLeadAt=row.last_lead_at,
+        backfillLastRunAt=row.backfill_last_run_at,
+        backfillLastError=row.backfill_last_error,
         createdAt=row.created_at,
     )
 

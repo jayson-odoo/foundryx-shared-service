@@ -14,6 +14,8 @@ Hub → SSH into the server → `scripts/blue_green_deploy.sh` → verify.
 blocks the release the same way a failing build does. The release deploys
 main's head; dispatching an older ref skips unless **force_sha** is ticked
 (see "Stale-sha skip" below).
+Ticking **skip_tests** skips the test jobs when that exact sha already passed
+CI (see "Release without re-running the tests" below).
 
 ## CI
 
@@ -33,6 +35,37 @@ connection (conftest builds its own SQLite engine per test, `fakeredis`
 stands in for Redis, and the email dispatcher / startup orphan sweep are
 disabled). Coders still run targeted globs locally during a lane - CI is the
 full-suite backstop, not the first place a coder discovers a red test.
+
+## Release without re-running the tests (`skip_tests`)
+
+A normal release re-runs the six CI gates (about 18 hosted minutes) even
+though main's push CI already tested that exact commit. Owner rule (14 Nov
+2026): zero GitHub-hosted minutes where possible. So the "Run workflow"
+form has a second box, **skip_tests** (default off):
+
+- **Off (default):** unchanged - the six gates run, `build-and-deploy`
+  needs all six green.
+- **On:** the six gates are skipped and one small job, `ci-green-check`
+  ("Skip tests only if this sha already passed CI"), runs
+  `scripts/deploy_ci_green_guard.sh <sha>` instead. It reads the check runs
+  of the EXACT sha being released from the GitHub API and passes only when,
+  for each of the six gates, the newest non-skipped attempt concluded
+  `success` (a gate that passed and then failed on a re-run is red; a gate
+  still running is not green; skipped runs left by an earlier `skip_tests`
+  release prove nothing). If any gate is not green, or the API cannot be
+  read, the job fails with a line naming each gate, nothing is built or
+  deployed, and the owner email says "release refused, skip_tests but this
+  sha has no green CI run".
+
+When `ci-green-check` passes, everything after it is exactly as a normal
+release: image build and push, the stale-sha guard (`force_sha`), blue/green
+via Caddy, the health check on the new colour and the owner email.
+
+Use it for a release of main's head after main's push CI went green on that
+sha. If the push CI is still running, wait for it (or untick skip_tests).
+The gate names are pinned in the script and checked against the workflow by
+`service_backend/tests/test_deploy_skip_tests.py`; renaming a gate job means
+updating both.
 
 ## Topology
 

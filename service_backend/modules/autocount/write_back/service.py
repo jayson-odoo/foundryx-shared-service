@@ -439,17 +439,19 @@ class WriteBackService(WriteFrame):
         idempotency_key: Optional[str] = None,
         operations: Optional["OperationService"] = None,
         doc_date: Optional[date] = None,
+        pool_location: Optional[str] = None,
     ) -> WriteActionResult:
         """With ``operations`` (the gateway): the ``unlink_row`` operation runs. Without
         it the plan 55 flow. Both send ONE replace PUT (plan 61 F4): AutoCount never
         edits a link in place."""
-        if operations is None:
+        if operations is None:  # plan 55 path (live runner only): no pool return; the gateway always has operations
             plan = _Plan(ACTION_UNLINK, _PO, po_doc_key, po_dtl_key)
             return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
         return self._operation(
             operations, "unlink_row", tenant_id, company_id, key_id, idempotency_key,
             {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "doc_date": doc_date,
-             "expected_last_modified": expected_last_modified},
+             "expected_last_modified": expected_last_modified,
+             **({"pool_location": pool_location} if pool_location else {})},  # absent = today's hash
         )
 
     def spo_unlink(
@@ -692,8 +694,10 @@ class WriteBackService(WriteFrame):
                 return payloads.build_unlink_row(doc, plan.dtl_key, spo_ref=spo_ref)
             assert so_doc is not None and plan.so_dtl_key is not None and plan.qty is not None
             linked = self._so_linked_qty(company, doc, plan.so_dtl_key)
+            so_row = next((r for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key), None)
             return payloads.build_link(
                 doc, plan.dtl_key, so_doc, plan.so_dtl_key, plan.qty, so_linked_qty=linked, spo_ref=spo_ref,
+                note=payloads.so_link_note(so_doc, so_row) if so_row is not None else None,  # plan 66
             )
         except WriteRefusal as exc:
             raise self._refuse(row, exc.code, str(exc)) from None

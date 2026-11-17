@@ -6,7 +6,7 @@ Cause: FastAPI classifies each dependency callable through three
 ``functools.lru_cache(maxsize=4096)`` caches keyed by the callable itself.
 Every test installs a fresh ``get_db`` override closure, which captures that
 test's ``sessionmaker`` -> engine -> whole in-memory database copy, so a worker
-kept the last ~4096 tests' databases alive. ``release_fastapi_call_caches``
+kept the last ~4096 tests' databases alive. ``_clear_fastapi_callable_caches``
 (run after every test by conftest) lets them be freed.
 """
 import gc
@@ -27,7 +27,7 @@ def _classify_like_fastapi(call) -> None:
 
 
 def test_an_override_closure_does_not_keep_its_test_database_alive():
-    from tests.conftest import release_fastapi_call_caches
+    from tests.conftest import _clear_fastapi_callable_caches as release_fastapi_call_caches
 
     engine = create_engine("sqlite://", poolclass=StaticPool)
     factory = sessionmaker(bind=engine)

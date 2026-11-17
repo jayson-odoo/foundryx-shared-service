@@ -44,9 +44,19 @@ ROW_KEYS = (
 class WriteRefusal(Exception):
     """A request the builders refuse; ``code`` is stable, the text is operator-safe."""
 
-    def __init__(self, code: str, message: str = "") -> None:
+    def __init__(self, code: str, message: str = "", *, plain: bool = False) -> None:
+        """``plain``: ``message`` is the user-facing reason as is (no code prefix)."""
         self.code = code
-        super().__init__(f"{code}: {message}" if message else code)
+        super().__init__(message if plain and message else (f"{code}: {message}" if message else code))
+
+
+def on_spo_message(spo_ref: Optional[str] = None) -> str:
+    """The plain reason for ``ROW_ON_SPO`` (the CRM shows it as is): one text for the operations, the
+    batch link and the single-line primitives."""
+    where = f"shipping purchase order {spo_ref}" if spo_ref else "a shipping purchase order"
+    that = "that shipping purchase order" if spo_ref else "the shipping purchase order"
+    return (f"This purchase order line is on {where}, so the change was not made. "
+            f"Remove it from {that} first, then try again.")
 
 
 def _dec(value: Any) -> Decimal:
@@ -173,7 +183,7 @@ def _deleted(row: Doc) -> Doc:
 
 def _refuse_on_spo(spo_ref: Optional[str]) -> None:
     if spo_ref:
-        raise WriteRefusal("ROW_ON_SPO", f"row is referenced by {spo_ref}; unlink it there first")
+        raise WriteRefusal("ROW_ON_SPO", on_spo_message(spo_ref), plain=True)
 
 
 MAX_QTY = Decimal(1_000_000_000)
@@ -203,6 +213,7 @@ def build_link(
     *,
     so_linked_qty: Decimal = Decimal(0),
     spo_ref: Optional[str] = None,
+    note: Optional[str] = None,
 ) -> Doc:
     """Link ``qty`` of a PO row to an SO row in ONE PUT. AutoCount never links an
     existing row, so the whole row is replaced (the row ``"D"`` plus a new linked row,
@@ -237,6 +248,7 @@ def build_link(
     body = _header(po)
     new = _normal(_row_fields(po_row))
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
+    with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
     if qty == free:
         body["Details"] = [_deleted(po_row), new]
         return body
@@ -399,6 +411,21 @@ def so_link_values(so: Mapping[str, Any], so_row: Mapping[str, Any]) -> Doc:
     """Plan 65 D2 / D4: the ``so_link`` of ``transfer_restore`` for a row newly linked to
     ``so_row``: the SO row's day (None when it has none) and the note text."""
     return {"soDeliveryDate": _day(so_row.get("DeliveryDate")), "note": so_link_note(so, so_row)}
+
+
+# Plan 66: the plain note text a link flow puts on a line (operations / the split flow only). Never a vendor
+# key and never in LINE_KEYS: a caller's own line cannot carry a note through the add / edit doors.
+LINK_NOTE_KEY = "soNote"
+
+
+def with_link_note(new: Doc, line: Mapping[str, Any]) -> Doc:
+    """Plan 66: the NEW linked row ``new`` (built from ``line``) carries the note as ``FurtherDescription``
+    in the PUT that creates it: AutoCount stores it on an added row, not on an edit of an existing one (live
+    17 Nov). Only a row that carries a link and a note; anything else is left as built."""
+    note = line.get(LINK_NOTE_KEY)
+    if note and new.get("FromDocDtlKey"):
+        new["FurtherDescription"] = autocount_rtf(str(note))
+    return new
 
 
 def foc_on_row(row: Mapping[str, Any], taken: Decimal) -> bool:
@@ -682,7 +709,7 @@ def build_add_line(kind_name: str, doc: Doc, line: Mapping[str, Any]) -> VendorR
     _check_kind_doc(kind, doc)
     _check_line(line)
     body = _doc_header(kind, doc)
-    body["Details"] = [_vendor_line(line, 0, kind.name)]
+    body["Details"] = [with_link_note(_vendor_line(line, 0, kind.name), line)]
     return VendorRequest("PUT", kind.edit_path, body)
 
 
@@ -711,6 +738,7 @@ def build_row_replace(kind_name: str, doc: Doc, old_row: Mapping[str, Any], new_
     new = _vendor_line(new_row, 0, kind.name)
     if not new.get("FromDocType"):
         new.update(FromDocType="", FromDocNo="", FromDocDtlKey=0)
+    with_link_note(new, new_row)
     body = _doc_header(kind, doc)
     body["Details"] = [_deleted(old), new]
     return VendorRequest("PUT", kind.edit_path, body)
@@ -728,7 +756,7 @@ def build_link_batch(kind_name: str, doc: Doc, old_key: int, new_rows: Sequence[
     rest = _dec(old.get("Qty")) - taken
     if rest < 0:
         raise WriteRefusal("QTY_ABOVE_FREE", "quantity above the PO row quantity")
-    added = [_vendor_line(r, 0, kind.name) for r in new_rows]
+    added = [with_link_note(_vendor_line(r, 0, kind.name), r) for r in new_rows]
     body = _doc_header(kind, doc)
     if rest == 0:
         body["Details"] = [_deleted(old)] + added
@@ -914,6 +942,42 @@ def verify_cancel(kind_name: str, after: Doc) -> Verdict:
     if after.get("Cancelled") == "T":
         return Verdict(DONE)
     return Verdict(MISMATCH, "CANCEL_IGNORED")
+
+
+def change_landed(
+    kind_name: str, primitive: str, before: Doc, after: Doc, *, header_changes: Mapping[str, Any] = {},
+    line_changes: Sequence[Mapping[str, Any]] = (), line: Optional[Mapping[str, Any]] = None,
+    dtl_key: Optional[int] = None,
+) -> Tuple[bool, Optional[int]]:
+    """AUTOCOUNT-STRANDED-OPS-B: did THIS write's own change reach AutoCount? ``(landed, new DtlKey)``. Unlike
+    the verifiers it never judges the rest of the document (another person may have edited it since):
+    an edit's asked values read back as asked, an added line reads back among the new rows, a deleted line is
+    gone, a cancel reads cancelled. Unknown primitive -> not landed."""
+    kind_of(kind_name)
+    if primitive == "edit_doc":
+        if any(not _same(after.get(k), v) for k, v in header_changes.items()):
+            return False, None
+        for change in line_changes:
+            row = _row_by_key(after, change.get("DtlKey"))
+            if row is None or any(not _same(row.get(k), v) for k, v in change.items()
+                                  if k != "DtlKey" and k not in UNREADABLE_ROW_KEYS):
+                return False, None
+        return True, None
+    if primitive == "add_line":
+        sent = line or {}
+        known = {r.get("DtlKey") for r in before.get("Details") or []}
+        for row in after.get("Details") or []:
+            if row.get("DtlKey") in known:
+                continue
+            relaxed = _relax_transfer(sent, row) if sent.get("FromDocDtlKey") else sent
+            if _same_line(relaxed, row) and not _link_code(kind_name, sent, row):
+                return True, row.get("DtlKey")
+        return False, None
+    if primitive == "delete_line":
+        return _row_by_key(before, dtl_key) is not None and _row_by_key(after, dtl_key) is None, None
+    if primitive == "cancel_doc":
+        return after.get("Cancelled") == "T", None
+    return False, None
 
 
 def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after: Doc) -> Verdict:

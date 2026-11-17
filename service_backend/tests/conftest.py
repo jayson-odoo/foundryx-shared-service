@@ -438,33 +438,34 @@ def ideation_session_factory(_ideation_session_factory_template):
     engine.dispose()
 
 
-def release_fastapi_call_caches() -> None:
-    """Drop FastAPI's per-callable classification caches.
+def _clear_fastapi_callable_caches():
+    """Empty FastAPI's per-callable classification caches.
 
-    FastAPI (0.11x+) classifies every dependency callable through
-    ``functools.lru_cache(maxsize=4096)`` caches keyed by the callable. Each
-    test installs a fresh ``get_db`` override closure that captures its own
-    ``sessionmaker`` -> engine -> whole in-memory database copy, so without
-    this a worker kept the last ~4096 tests' databases alive (~4.5 GB per
-    xdist worker): the hosted runner OOM-killed a worker and xdist then hung to
-    the job timeout (PR #253 CI, test_conftest_memory.py). Clearing only costs a
-    re-classification of each dependency on its next call.
+    ``fastapi.dependencies.models`` memoises "is this dependency a generator /
+    async generator / coroutine" in module-level ``lru_cache``s (4096 entries
+    each, keyed by the callable itself). Every test's ``override_get_db``
+    closure lands there and pins that test's sessionmaker -> engine -> whole
+    in-memory SQLite database + compiled-statement cache. Across a worker's
+    ~3,500 tests that kept ~24M objects alive, so each full GC pass took up
+    to ~15 s and landed on whichever test was running (the random 20-240 s
+    outliers in CI, SS-CI-TIMEOUT). Looked up by attribute so a FastAPI
+    version without these caches is a no-op.
     """
     try:
-        from fastapi.dependencies import models as _fastapi_models
-    except ImportError:  # pragma: no cover - older FastAPI has no such caches
+        from fastapi.dependencies import models as _fastapi_dep_models
+    except ImportError:  # pragma: no cover - layout changed upstream
         return
-    for value in vars(_fastapi_models).values():
+    for value in vars(_fastapi_dep_models).values():
         cache_clear = getattr(value, "cache_clear", None)
         if callable(cache_clear):
             cache_clear()
 
 
 @pytest.fixture(autouse=True)
-def _release_fastapi_call_caches():
-    """Free each test's override closure (and its database) once it ends."""
+def _release_fastapi_callable_caches():
+    """Per test: drop the previous test's dependency callables (see above)."""
     yield
-    release_fastapi_call_caches()
+    _clear_fastapi_callable_caches()
 
 
 @pytest.fixture(autouse=True)
