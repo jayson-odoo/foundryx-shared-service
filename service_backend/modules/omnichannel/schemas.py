@@ -1394,12 +1394,20 @@ class OmnichannelSettingsUpdate(ApiModel):
     audioMaxBytes: Optional[int] = None
     documentMaxBytes: Optional[int] = None
     stickerMaxBytes: Optional[int] = None
+    # S12 (2026-11-18): per-number WhatsApp window enforcement for this row
+    # (true/false; null clears = inherit the tenant default, else off).
+    # Omitted = unchanged, like every field here.
+    strictNumberWindow: Optional[bool] = None
 
 
 class OmnichannelSettingsResponse(ApiModel):
     workspaceId: Optional[str] = None
     overrides: dict  # {imageMaxBytes: int|null, ...}
     effective: dict  # {IMAGE: {maxBytes, ceilingBytes, acceptedMimes}, ...}
+    # S12 (2026-11-18), staff dashboard read only: this row's stored value
+    # (null = not set here) and the resolved value the send policy uses.
+    strictNumberWindow: Optional[bool] = None
+    strictNumberWindowEffective: bool = False
 
 
 # ── Business hours (plan sprint-4/31 S5, D-A5-13) ────────────────────────────

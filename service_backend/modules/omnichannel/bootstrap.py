@@ -563,6 +563,15 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS business_timezone VARCHAR"
                 )
             )
+            # S12 (2026-11-18) - per-number WhatsApp window opt-in, nullable
+            # (NULL = today). Module Alembic 0027 is the real fix for a
+            # Postgres-tracked deploy; this covers the `create_all` path.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS strict_number_window BOOLEAN"
+                )
+            )
             # Plan 33 S2 (respond.io migration, D-A6-3) - `migrated_from`
             # descriptive markers. `migration_refs` itself is a brand-new
             # table already created by `create_all` above (per-module Alembic
