@@ -86,7 +86,7 @@ export function IdeaAttachmentPreviewDialog({
 
   return (
     <Dialog open={!!a} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl gap-3">
+      <DialogContent className="max-w-3xl gap-3" aria-describedby={undefined}>
         <DialogHeader className="flex-row items-center justify-between pr-8">
           <DialogTitle className="truncate">{a?.name}</DialogTitle>
           {a?.url &&

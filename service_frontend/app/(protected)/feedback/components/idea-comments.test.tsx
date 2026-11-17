@@ -35,7 +35,9 @@ vi.mock('@/lib/impersonation-store', () => ({ useImpersonationSession: () => nul
 vi.mock('@/hooks/use-datetime', () => ({
   useDatetime: () => ({
     formatDate: (v: string) => v.slice(0, 10),
-    formatDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
+    formatDateTime: (v: string) => `LONG:${v.slice(0, 10)}`,
+    // Owner standing rule: date-times read dd/mm/yyyy, h:mm am/pm.
+    formatDmyDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
     formatTime: (v: string) => v.slice(11, 16),
   }),
 }));

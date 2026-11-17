@@ -12,7 +12,7 @@ import uuid
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.services.storage import storage_for_tenant
@@ -91,9 +91,18 @@ class IdeaAttachmentService:
         mime = detect_attachment_mime(content, filename)
         if mime is None:
             raise HTTPException(415, "This file type is not supported.")
+        # Files of a deleted comment are hidden, so they never use up the limit.
         existing = (
             self.db.query(func.count(IdeaAttachment.id))
-            .filter(IdeaAttachment.idea_id == idea_id, IdeaAttachment.tenant_id == tenant_id)
+            .outerjoin(
+                IdeaComment,
+                and_(IdeaComment.id == IdeaAttachment.comment_id, IdeaComment.tenant_id == tenant_id),
+            )
+            .filter(
+                IdeaAttachment.idea_id == idea_id,
+                IdeaAttachment.tenant_id == tenant_id,
+                or_(IdeaAttachment.comment_id.is_(None), IdeaComment.deleted_at.is_(None)),
+            )
             .scalar()
         )
         if (existing or 0) >= MAX_ATTACHMENTS_PER_IDEA:

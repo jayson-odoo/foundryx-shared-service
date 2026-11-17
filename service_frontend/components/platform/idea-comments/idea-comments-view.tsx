@@ -89,7 +89,7 @@ function CommentRow({
   canDeleteHere,
   fetchAttachment,
 }: CommentRowProps) {
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
   if (comment.isDeleted) {
     return (
       <div className="flex items-center gap-2 py-1 text-sm italic text-muted-foreground">

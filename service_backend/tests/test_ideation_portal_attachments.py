@@ -193,6 +193,22 @@ def test_ac_a_04_item_cap_counts_report_and_comments(setup, monkeypatch):
     assert ITEM_LIMIT_MSG in res.text
 
 
+def test_ac_a_04_item_cap_skips_files_of_deleted_comments(setup, monkeypatch):
+    """Crew pass 17 Nov: files on a deleted comment are hidden, so they must not
+    use up the item's limit (the board has no per-file delete)."""
+    import modules.ideation.services.attachments as att
+
+    monkeypatch.setattr(att, "MAX_ATTACHMENTS_PER_IDEA", 2)
+    s = setup
+    iid, owner = _owner(s, 1024, sub="crm-a")
+    cid = _comment(s, owner, iid)
+    assert _up(s, owner, iid, comment_id=cid).status_code == 201
+    assert _up(s, owner, iid, comment_id=cid).status_code == 201
+    assert _up(s, owner, iid).status_code == 422
+    assert s["client"].delete(f"/portal/ideas/{iid}/comments/{cid}", headers=owner).status_code == 204
+    assert _up(s, owner, iid).status_code == 201
+
+
 def test_ac_a_04_item_limit_is_fifty():
     import modules.ideation.services.attachments as att
 
