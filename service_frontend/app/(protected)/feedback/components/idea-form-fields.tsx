@@ -26,7 +26,7 @@ import { FormRow } from '@/components/platform/resource-form';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { AttachmentDrop } from './attachment-drop';
-import { IdeaAttachmentPreviewDialog } from './idea-attachment-preview-dialog';
+import { IdeaAttachmentPreviewDialog } from '@/components/platform/attachment-preview/idea-attachment-preview-dialog';
 import { IdeaComments } from './idea-comments';
 import {
   IDEA_SOURCE_LABEL,

@@ -22,6 +22,13 @@ export interface IdeaAttachmentPreviewDialogProps {
   fetchContent?: (attachment: IdeaAttachment) => Promise<Blob>;
 }
 
+function saveAs(url: string, name: string): void {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+}
+
 const isPdf = (name: string, url: string) =>
   name.toLowerCase().endsWith('.pdf') || url.toLowerCase().split('?')[0].endsWith('.pdf');
 
@@ -82,13 +89,20 @@ export function IdeaAttachmentPreviewDialog({
       <DialogContent className="max-w-3xl gap-3">
         <DialogHeader className="flex-row items-center justify-between pr-8">
           <DialogTitle className="truncate">{a?.name}</DialogTitle>
-          {a?.url && (
-            <Button variant="outline" size="sm" asChild>
-              <a href={a.url} target="_blank" rel="noopener noreferrer" download={a.name}>
+          {a?.url &&
+            (contentPath ? (
+              // An uploaded file: the blob URL is same-origin, so a real button
+              // saves it under the file's own name.
+              <Button variant="outline" size="sm" onClick={() => saveAs(a.url, a.name)}>
                 <Download className="size-3.5" /> Download
-              </a>
-            </Button>
-          )}
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" asChild>
+                <a href={a.url} target="_blank" rel="noopener noreferrer" download={a.name}>
+                  <Download className="size-3.5" /> Download
+                </a>
+              </Button>
+            ))}
         </DialogHeader>
 
         <div className="flex min-h-[24rem] items-center justify-center overflow-hidden rounded-md border bg-muted/30">

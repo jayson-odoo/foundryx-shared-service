@@ -2,6 +2,7 @@
  * Idea portal wire types (lane IDEA-PORTAL) - mirror of
  * `service_backend/modules/ideation/schemas.py` `Portal*` models.
  */
+import type { IdeaAttachment } from '@/types/ideation';
 
 /** `contact` = a dealer on a personal feedback link (lane PUBLIC-IDEAS-BOARD). */
 export type PortalKind = 'staff' | 'crm' | 'contact';
@@ -89,6 +90,9 @@ export interface PortalIdea extends PortalCard {
   timeline: PortalTimelineStep[];
   portalHidden: boolean | null;
   note: string | null;
+  /** Report-level files (comment files ride their comment). Omitted for a
+   * contact viewer on another dealer's item, like the free text. */
+  attachments?: IdeaAttachment[];
 }
 
 export interface PortalVote {
@@ -119,6 +123,7 @@ export interface PortalComment {
   editedAt: string | null;
   likeCount: number;
   likedByMe: boolean;
+  attachments?: IdeaAttachment[];
 }
 
 export interface PortalLike {

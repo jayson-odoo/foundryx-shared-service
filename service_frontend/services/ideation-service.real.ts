@@ -155,10 +155,10 @@ export const realIdeationService: IdeaService & IdeaExtendedOps = {
     return apiFetch<IdeaComment[]>(`${idea(ideaId)}/comments`);
   },
 
-  addComment(ideaId: string, body: string, parentId?: string): Promise<IdeaComment> {
+  addComment(ideaId: string, body: string, parentId?: string, hasAttachments?: boolean): Promise<IdeaComment> {
     return apiFetch<IdeaComment>(`${idea(ideaId)}/comments`, {
       method: 'POST',
-      body: JSON.stringify(parentId ? { body, parentId } : { body }),
+      body: JSON.stringify({ body, ...(parentId ? { parentId } : {}), ...(hasAttachments ? { hasAttachments: true } : {}) }),
     });
   },
 
@@ -215,9 +215,10 @@ export const realIdeationService: IdeaService & IdeaExtendedOps = {
 
   // Attachment upload + serve (plan sprint-5/15). `apiFetch` skips the JSON
   // content-type for a FormData body so the browser sets the multipart boundary.
-  uploadAttachment(id: string, file: File): Promise<IdeaAttachment> {
+  uploadAttachment(id: string, file: File, commentId?: string): Promise<IdeaAttachment> {
     const body = new FormData();
     body.append('file', file);
+    if (commentId) body.append('commentId', commentId);
     return apiFetch<IdeaAttachment>(`${idea(id)}/attachments`, { method: 'POST', body });
   },
 

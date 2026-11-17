@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { MessageSquare, Pencil, Reply, Trash2 } from 'lucide-react';
-import type { IdeaComment, IdeaCommentThread } from '@/types/ideation';
+import type { IdeaAttachment, IdeaComment, IdeaCommentThread } from '@/types/ideation';
 import { cn } from '@/lib/utils';
 import { useDatetime } from '@/hooks/use-datetime';
 import {
@@ -19,6 +19,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Textarea } from '@/components/ui/textarea';
+import { AttachmentPicker, useAttachmentDraft } from '@/components/platform/attachment-picker/attachment-picker';
+import { AttachmentThumbs } from '@/components/platform/attachment-preview/attachment-thumbs';
 import { UserAvatar } from '@/components/platform/user-avatar';
 import { formatFeedbackNumber } from '@/lib/feedback-number';
 
@@ -29,7 +31,11 @@ export interface IdeaCommentsViewProps {
   error: string | null;
   /** Whether the viewer may post (composer + Reply). Reading is always allowed. */
   canComment: boolean;
-  onAdd: (body: string, parentId?: string) => Promise<void>;
+  /** `files` only when the surface offers attachments (`allowAttachments`). */
+  onAdd: (body: string, parentId?: string, files?: File[]) => Promise<void>;
+  /** Offer the attach control on the composers and show comment files. */
+  allowAttachments?: boolean;
+  fetchAttachment?: (attachment: IdeaAttachment) => Promise<Blob>;
   /** Omit on a surface where comments cannot be edited (the public page). */
   onEdit?: (commentId: string, body: string) => Promise<void>;
   /** Omit on a surface where comments cannot be deleted (the public page). */
@@ -58,6 +64,7 @@ interface CommentRowProps {
   onAskDelete: () => void;
   canEditHere: boolean;
   canDeleteHere: boolean;
+  fetchAttachment?: (attachment: IdeaAttachment) => Promise<Blob>;
 }
 
 function CommentRow({
@@ -72,6 +79,7 @@ function CommentRow({
   onAskDelete,
   canEditHere,
   canDeleteHere,
+  fetchAttachment,
 }: CommentRowProps) {
   const { formatDateTime } = useDatetime();
   if (comment.isDeleted) {
@@ -117,7 +125,12 @@ function CommentRow({
           />
         ) : (
           <>
-            <CommentBody text={comment.body ?? ''} />
+            {comment.body && <CommentBody text={comment.body} />}
+            <AttachmentThumbs
+              attachments={comment.attachments ?? []}
+              fetchContent={fetchAttachment}
+              className="mt-2"
+            />
             <div className="mt-1 flex flex-wrap items-center gap-3">
               {canComment && !comment.fromIdea && (
                 <button
@@ -215,10 +228,12 @@ function Composer({
   badge,
   testId,
   autoFocus,
+  allowAttachments,
 }: {
   placeholder?: string;
   submitLabel: string;
-  onSubmit: (body: string) => Promise<void>;
+  onSubmit: (body: string, files: File[]) => Promise<void>;
+  allowAttachments?: boolean;
   onCancel?: () => void;
   badge?: boolean;
   testId?: string;
@@ -226,21 +241,27 @@ function Composer({
 }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const empty = !text.trim();
+  const draft = useAttachmentDraft();
+  const empty = !text.trim() && draft.files.length === 0;
 
   const submit = async () => {
     if (empty || busy) return;
     setBusy(true);
     try {
-      await onSubmit(text.trim());
+      await onSubmit(text.trim(), draft.files);
       setText('');
+      draft.clear();
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="flex flex-col gap-2" data-testid={testId}>
+    <div
+      className="flex flex-col gap-2"
+      data-testid={testId}
+      {...(allowAttachments ? draft.wrapperProps : {})}
+    >
       <Textarea
         rows={3}
         value={text}
@@ -248,6 +269,7 @@ function Composer({
         autoFocus={autoFocus}
         onChange={(e) => setText(e.target.value)}
       />
+      {allowAttachments && <AttachmentPicker draft={draft} />}
       <div className="flex flex-wrap items-center justify-end gap-2">
         {badge && (
           <Badge variant="secondary" appearance="light" size="sm">
@@ -293,6 +315,8 @@ export function IdeaCommentsView({
   onEdit,
   onRemove,
   visibleToSubmitter = false,
+  allowAttachments = false,
+  fetchAttachment,
 }: IdeaCommentsViewProps) {
   // Which thread has the inline composer open, and the comment id it posts under.
   const [reply, setReply] = useState<{
@@ -328,6 +352,7 @@ export function IdeaCommentsView({
       onAskDelete={() => setDeleteId(comment.id)}
       canEditHere={Boolean(onEdit) && comment.canEdit}
       canDeleteHere={Boolean(onRemove) && comment.canDelete}
+      fetchAttachment={fetchAttachment}
     />
   );
 
@@ -349,7 +374,8 @@ export function IdeaCommentsView({
           placeholder="Write a comment"
           submitLabel="Comment"
           badge={visibleToSubmitter}
-          onSubmit={(body) => onAdd(body)}
+          allowAttachments={allowAttachments}
+          onSubmit={(body, files) => (files.length > 0 ? onAdd(body, undefined, files) : onAdd(body))}
         />
       )}
 
@@ -397,9 +423,10 @@ export function IdeaCommentsView({
                     testId="reply-composer"
                     submitLabel="Reply"
                     autoFocus
+                    allowAttachments={allowAttachments}
                     onCancel={() => setReply(null)}
-                    onSubmit={async (body) => {
-                      await onAdd(body, reply.parentId);
+                    onSubmit={async (body, files) => {
+                      await (files.length > 0 ? onAdd(body, reply.parentId, files) : onAdd(body, reply.parentId));
                       setReply(null);
                     }}
                   />

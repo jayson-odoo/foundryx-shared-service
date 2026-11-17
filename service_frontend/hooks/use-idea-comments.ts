@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { IdeaComment, IdeaCommentThread } from '@/types/ideation';
+import type { IdeaAttachment, IdeaComment, IdeaCommentThread } from '@/types/ideation';
 import { toast } from '@/lib/toast';
+import { shrinkImage } from '@/lib/shrink-image';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { countLiveComments, groupCommentThreads } from './idea-comment-threads';
 
@@ -12,9 +13,12 @@ export interface UseIdeaComments {
   count: number;
   loading: boolean;
   error: string | null;
-  add: (body: string, parentId?: string) => Promise<void>;
+  /** `files` are uploaded onto the new comment (the body may then be empty). */
+  add: (body: string, parentId?: string, files?: File[]) => Promise<void>;
   edit: (commentId: string, body: string) => Promise<void>;
   remove: (commentId: string) => Promise<void>;
+  /** Bytes of an uploaded file (auth-gated route), for thumbnails + preview. */
+  fetchContent?: (attachment: IdeaAttachment) => Promise<Blob>;
 }
 
 const messageOf = (e: unknown, fallback: string): string =>
@@ -70,11 +74,25 @@ export function useIdeaComments(ideaId: string): UseIdeaComments {
   );
 
   const add = useCallback(
-    (body: string, parentId?: string) =>
-      mutate(
-        () => service.addComment?.(ideaId, body, parentId),
-        'Could not post the comment.',
-      ),
+    (body: string, parentId?: string, files: File[] = []) =>
+      mutate(async () => {
+        if (!service.addComment) return;
+        const created =
+          files.length > 0 && !body
+            ? await service.addComment(ideaId, body, parentId, true)
+            : await service.addComment(ideaId, body, parentId);
+        if (files.length === 0 || !service.uploadAttachment) return;
+        const failed: string[] = [];
+        for (const file of files) {
+          try {
+            await service.uploadAttachment(ideaId, await shrinkImage(file), created.id);
+          } catch {
+            failed.push(file.name);
+          }
+        }
+        // The comment exists either way: name what did not upload.
+        if (failed.length > 0) toast.error(`Could not upload ${failed.join(', ')}.`);
+      }, 'Could not post the comment.'),
     [mutate, service, ideaId],
   );
   const edit = useCallback(
@@ -97,5 +115,13 @@ export function useIdeaComments(ideaId: string): UseIdeaComments {
   const threads = useMemo(() => groupCommentThreads(comments), [comments]);
   const count = useMemo(() => countLiveComments(comments), [comments]);
 
-  return { threads, count, loading, error, add, edit, remove };
+  const fetchContent = useMemo(
+    () =>
+      service.fetchAttachment
+        ? (a: IdeaAttachment) => service.fetchAttachment!(a.contentPath ?? '')
+        : undefined,
+    [service],
+  );
+
+  return { threads, count, loading, error, add, edit, remove, fetchContent };
 }

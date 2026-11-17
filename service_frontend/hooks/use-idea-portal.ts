@@ -8,7 +8,9 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { signOut as nextAuthSignOut, useSession } from 'next-auth/react';
 import { ApiError } from '@/lib/api-client';
 import { ideaPortalAuth } from '@/lib/idea-portal-auth';
+import { shrinkImage } from '@/lib/shrink-image';
 import { ideaPortalService } from '@/services/idea-portal-service';
+import type { IdeaAttachment } from '@/types/ideation';
 import type {
   PortalActivity,
   PortalCard,
@@ -24,6 +26,26 @@ import type {
   PortalVote,
   PortalVoter,
 } from '@/types/idea-portal';
+
+/** Upload files one after another (a big photo is shrunk first). Returns the
+ * files that did NOT make it, so the caller can name them and retry only those. */
+async function uploadFiles(ideaId: string, files: File[], commentId?: string): Promise<File[]> {
+  const failed: File[] = [];
+  for (const file of files) {
+    try {
+      await ideaPortalService.uploadAttachment(ideaId, await shrinkImage(file), commentId);
+    } catch {
+      failed.push(file);
+    }
+  }
+  return failed;
+}
+
+/** Fetch an uploaded file's bytes (its content route needs the portal token),
+ * for the thumbnails + preview dialog. */
+export function usePortalAttachmentFetch(): (attachment: IdeaAttachment) => Promise<Blob> {
+  return useCallback((attachment) => ideaPortalService.attachmentContent(attachment.contentPath ?? ''), []);
+}
 
 // ── runtime (portal vs Sorento iframe) ─────────────────────────────────────────
 
@@ -295,7 +317,9 @@ export interface UsePortalIdeaPage {
   order: 'asc' | 'desc';
   setOrder: (o: 'asc' | 'desc') => void;
   vote: () => Promise<void>;
-  addComment: (body: string, parentId?: string | null) => Promise<void>;
+  /** `files` are uploaded to the new comment after it is created (the body may
+   * then be empty). */
+  addComment: (body: string, parentId?: string | null, files?: File[]) => Promise<void>;
   deleteComment: (commentId: string) => Promise<void>;
   likeComment: (commentId: string) => Promise<void>;
   setHidden: (hidden: boolean) => Promise<void>;
@@ -343,9 +367,19 @@ export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
   );
 
   const addComment = useCallback(
-    (body: string, parentId?: string | null) =>
+    (body: string, parentId?: string | null, files: File[] = []) =>
       run(async () => {
-        await ideaPortalService.addComment(resolvedId, body, parentId);
+        const created = await ideaPortalService.addComment(
+          resolvedId,
+          body,
+          parentId,
+          files.length > 0 && !body,
+        );
+        const failed = files.length > 0 ? await uploadFiles(resolvedId, files, created.id) : [];
+        // The comment exists either way: name what did not upload instead of failing.
+        if (failed.length > 0) {
+          setActionError(`Could not upload ${failed.map((f) => f.name).join(', ')}.`);
+        }
         activity.reload();
       }),
     [run, resolvedId, activity],
@@ -405,20 +439,30 @@ export function usePortalIdeaPage(id: string): UsePortalIdeaPage {
 
 // ── submit ────────────────────────────────────────────────────────────────────
 
+export interface PortalSubmitResult {
+  idea: PortalIdea;
+  /** Files that failed to upload (the item itself exists). */
+  failed: File[];
+}
+
 export interface UsePortalSubmit {
   submitting: boolean;
   error: string | null;
-  submit: (input: PortalIdeaInput) => Promise<PortalIdea | null>;
+  /** Create the item, then upload `files` to it one by one. */
+  submit: (input: PortalIdeaInput, files?: File[]) => Promise<PortalSubmitResult | null>;
+  /** Retry only the given files against an item that already exists. */
+  retryUploads: (ideaId: string, files: File[]) => Promise<File[]>;
 }
 
 export function usePortalSubmit(): UsePortalSubmit {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const submit = useCallback(async (input: PortalIdeaInput) => {
+  const submit = useCallback(async (input: PortalIdeaInput, files: File[] = []) => {
     setSubmitting(true);
     setError(null);
     try {
-      return await ideaPortalService.submit(input);
+      const idea = await ideaPortalService.submit(input);
+      return { idea, failed: await uploadFiles(idea.id, files) };
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not submit the feedback.');
       return null;
@@ -426,7 +470,15 @@ export function usePortalSubmit(): UsePortalSubmit {
       setSubmitting(false);
     }
   }, []);
-  return { submitting, error, submit };
+  const retryUploads = useCallback(async (ideaId: string, files: File[]) => {
+    setSubmitting(true);
+    try {
+      return await uploadFiles(ideaId, files);
+    } finally {
+      setSubmitting(false);
+    }
+  }, []);
+  return { submitting, error, submit, retryUploads };
 }
 
 export type { PortalComment };

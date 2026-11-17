@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useIdeaPortal, usePortalProducts, usePortalSubmit } from '@/hooks/use-idea-portal';
+import { AttachmentPicker, useAttachmentDraft } from '@/components/platform/attachment-picker/attachment-picker';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -27,7 +28,10 @@ export function SubmitIdeaForm() {
   const router = useRouter();
   const { paths, principal } = useIdeaPortal();
   const products = usePortalProducts();
-  const { submit, submitting, error } = usePortalSubmit();
+  const { submit, retryUploads, submitting, error } = usePortalSubmit();
+  const draft = useAttachmentDraft();
+  // Set once the item exists but some files did not upload.
+  const [pending, setPending] = useState<{ ideaId: string; failed: File[] } | null>(null);
   const [title, setTitle] = useState('');
   const [problem, setProblem] = useState('');
   const [desiredOutcome, setDesiredOutcome] = useState('');
@@ -41,25 +45,37 @@ export function SubmitIdeaForm() {
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!canSubmit) return;
-    const created = await submit({
-      title: title.trim(),
-      problem: problem.trim(),
-      productId: effectiveProduct,
-      desiredOutcome: desiredOutcome.trim() || null,
-      useCases: useCases
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean),
-      currentWorkaround: currentWorkaround.trim() || null,
-    });
-    if (created) router.push(paths.idea(created.id));
+    if (!canSubmit || pending) return;
+    const result = await submit(
+      {
+        title: title.trim(),
+        problem: problem.trim(),
+        productId: effectiveProduct,
+        desiredOutcome: desiredOutcome.trim() || null,
+        useCases: useCases
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean),
+        currentWorkaround: currentWorkaround.trim() || null,
+      },
+      draft.files,
+    );
+    if (!result) return;
+    if (result.failed.length > 0) setPending({ ideaId: result.idea.id, failed: result.failed });
+    else router.push(paths.idea(result.idea.id));
+  };
+
+  const onRetry = async () => {
+    if (!pending) return;
+    const failed = await retryUploads(pending.ideaId, pending.failed);
+    if (failed.length > 0) setPending({ ideaId: pending.ideaId, failed });
+    else router.push(paths.idea(pending.ideaId));
   };
 
   return (
     <Card id="submit" data-testid="portal-submit">
       <CardContent className="py-4">
-        <form className="flex flex-col gap-3" onSubmit={onSubmit}>
+        <form className="flex flex-col gap-3" onSubmit={onSubmit} {...draft.wrapperProps}>
           <h2 className="font-heading font-semibold">Submit feedback</h2>
           <Field id="portal-title" label="Title" required>
             <Input id="portal-title" value={title} maxLength={120} onChange={(e) => setTitle(e.target.value)} />
@@ -86,10 +102,22 @@ export function SubmitIdeaForm() {
               />
             </Field>
           )}
+          {!pending && <AttachmentPicker draft={draft} />}
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" disabled={!canSubmit}>
-            {submitting ? 'Submitting…' : 'Submit'}
-          </Button>
+          {pending ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm text-destructive">
+                Could not upload {pending.failed.map((f) => f.name).join(', ')}.
+              </p>
+              <Button type="button" variant="outline" size="sm" disabled={submitting} onClick={() => void onRetry()}>
+                Try again
+              </Button>
+            </div>
+          ) : (
+            <Button type="submit" disabled={!canSubmit}>
+              {submitting ? 'Submitting…' : 'Submit'}
+            </Button>
+          )}
         </form>
       </CardContent>
     </Card>

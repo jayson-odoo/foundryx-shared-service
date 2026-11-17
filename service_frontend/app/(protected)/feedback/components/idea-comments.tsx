@@ -31,6 +31,8 @@ function CommentsBody({
       error={comments.error}
       canComment={canComment}
       visibleToSubmitter
+      allowAttachments
+      fetchAttachment={comments.fetchContent}
       onAdd={comments.add}
       onEdit={comments.edit}
       onRemove={comments.remove}
