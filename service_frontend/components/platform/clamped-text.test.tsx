@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ClampedText } from './clamped-text';
@@ -31,5 +31,20 @@ describe('ClampedText', () => {
   it('multi-line keeps the line clamp', () => {
     wrap(<ClampedText text="Two lines" lines={2} />);
     expect(screen.getByText('Two lines')).toHaveClass('line-clamp-2');
+  });
+
+  it('re-checks on hover: a cut that appears after mount still offers the full text', async () => {
+    let width = 100;
+    vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(() => width);
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(255);
+    wrap(<ClampedText text="Name that becomes cut" lines={1} />);
+    await act(async () => {});
+    const p = screen.getByText('Name that becomes cut');
+    expect(p).not.toHaveAttribute('data-state');
+    width = 400; // the column narrowed without resizing the text box
+    await act(async () => {
+      fireEvent.pointerEnter(p);
+    });
+    expect(screen.getByText('Name that becomes cut')).toHaveAttribute('data-state');
   });
 });
