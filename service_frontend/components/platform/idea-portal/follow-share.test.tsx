@@ -230,4 +230,39 @@ describe('the read-only share view', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent("isn't registered with Sorento CRM");
     expect(screen.getByLabelText('Your WhatsApp number')).toBeInTheDocument();
   });
+
+  it('the refusal clears as soon as the number is edited (crew pass 6b78d15b)', async () => {
+    mockPage();
+    const { ApiError } = await import('@/lib/api-client');
+    svc.share.sendCode.mockRejectedValue(
+      new ApiError("This number isn't registered with Sorento CRM. Ask your Sorento CRM contact to add you.", 404, null, null),
+    );
+    render(<IdeaPage ideaId="tok" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Follow' }));
+    const field = await screen.findByLabelText('Your WhatsApp number');
+    await userEvent.type(field, '0123450009');
+    await userEvent.click(screen.getByRole('button', { name: 'Send code' }));
+    await screen.findByRole('alert');
+    await userEvent.type(field, '2');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a wrong-code line clears as soon as the code is edited', async () => {
+    mockPage();
+    const { ApiError } = await import('@/lib/api-client');
+    svc.share.sendCode.mockResolvedValue({ sent: true });
+    svc.share.verifyCode.mockRejectedValue(
+      new ApiError('That code is not right. Check WhatsApp and try again.', 400, null, null),
+    );
+    render(<IdeaPage ideaId="tok" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Follow' }));
+    await userEvent.type(await screen.findByLabelText('Your WhatsApp number'), '012-345 0002');
+    await userEvent.click(screen.getByRole('button', { name: 'Send code' }));
+    const code = await screen.findByLabelText('Code sent to 012-345 0002');
+    await userEvent.type(code, '111111');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That code is not right');
+    await userEvent.type(code, '{Backspace}');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });

@@ -82,7 +82,10 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
                   autoComplete="tel"
                   autoFocus
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={(e) => {
+                    setPhone(e.target.value);
+                    step.clearError();
+                  }}
                 />
               </>
             ) : (
@@ -95,7 +98,10 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
                   maxLength={8}
                   autoFocus
                   value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => {
+                    setCode(e.target.value.replace(/\D/g, ''));
+                    step.clearError();
+                  }}
                 />
                 <Button type="button" mode="link" size="sm" className="self-start" onClick={restart}>
                   Send a new code

@@ -585,6 +585,9 @@ export interface UseSharePhoneStep {
    * their own board link (null when none). */
   verify: (code: string, action: ShareAction | null, ideaId: string) => Promise<PortalPhoneSession | null>;
   restart: () => void;
+  /** Drop a refusal once the visitor edits the number or the code: it was about
+   * what they typed before (crew pass 6b78d15b). */
+  clearError: () => void;
 }
 
 function stepError(err: unknown): string {
@@ -651,6 +654,8 @@ export function useSharePhoneStep(shareToken: string): UseSharePhoneStep {
     setError(null);
   }, []);
 
-  return { step, busy, error, sendCode, verify, restart };
+  const clearError = useCallback(() => setError(null), []);
+
+  return { step, busy, error, sendCode, verify, restart, clearError };
 }
 
