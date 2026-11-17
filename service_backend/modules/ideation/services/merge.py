@@ -29,6 +29,7 @@ from .actions import IdeaActionService
 from .card_fields import clean_text, clean_use_cases
 from .ideas import IdeaReadService
 from .numbering import display_idea_number, mint_idea_identity
+from . import history
 from .status_events import record_flatten_events, record_merge_events, record_unmerge_events
 
 
@@ -223,6 +224,17 @@ class IdeaMergeService:
         record_merge_events(
             self.db, tenant_id=tenant_id, survivor=survivor, members=members, actor=actor
         )
+        # The History tab of both sides (lane FEEDBACK-SUBSCRIBE).
+        who = history.user_actor(actor)
+        for member in members:
+            history.record(
+                self.db, tenant_id, survivor.id, history.ACTION_MERGED_IN, who,
+                to_value=display_idea_number(member.idea_number) or member.title,
+            )
+            history.record(
+                self.db, tenant_id, member.id, history.ACTION_MERGED_INTO, who,
+                to_value=display_idea_number(survivor.idea_number) or survivor.title,
+            )
         if flattened_children:
             # Review round 1 NIT #10 - a grandchild re-pointed straight onto
             # the NEW survivor (flatten) gets its OWN "merged" event too: its
@@ -451,6 +463,19 @@ class IdeaMergeService:
             former_survivor_ids=former_survivor_ids,
             actor=actor,
         )
+        who = history.user_actor(actor)
+        for child in targets:
+            former = self._idea_in_tenant(tenant_id, former_survivor_ids.get(child.id) or "")
+            if former is None:
+                continue
+            history.record(
+                self.db, tenant_id, former.id, history.ACTION_UNMERGED, who,
+                from_value=display_idea_number(child.idea_number) or child.title,
+            )
+            history.record(
+                self.db, tenant_id, child.id, history.ACTION_UNMERGED, who,
+                from_value=display_idea_number(former.idea_number) or former.title,
+            )
 
         self.db.commit()
         restored_ids = [t.id for t in targets]

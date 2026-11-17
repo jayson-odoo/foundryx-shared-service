@@ -7,7 +7,10 @@ Every lookup is tenant-scoped (idea AND attachment resolved WITH ``tenant_id``).
 """
 import re
 import uuid
-from typing import Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .history import HistoryActor
 
 from fastapi import HTTPException
 from sqlalchemy import func
@@ -57,6 +60,7 @@ class IdeaAttachmentService:
         content: bytes,
         *,
         content_prefix: str = "/ideation/ideas",
+        actor: Optional["HistoryActor"] = None,
     ) -> IdeaAttachmentOut:
         self.ensure_idea(tenant_id, idea_id)
         mime = detect_attachment_mime(content, filename)
@@ -88,6 +92,13 @@ class IdeaAttachmentService:
             size_bytes=len(content),
         )
         self.db.add(row)
+        # The item's History tab (lane FEEDBACK-SUBSCRIBE).
+        from . import history
+
+        history.record(
+            self.db, tenant_id, idea_id, history.ACTION_ATTACHMENT_ADDED, actor or history.HistoryActor(),
+            to_value=name,
+        )
         self.db.commit()
         return IdeaAttachmentOut(
             id=row.id,

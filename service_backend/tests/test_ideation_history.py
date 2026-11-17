@@ -102,3 +102,79 @@ def test_hist_07_rows_carry_no_ids(setup):
     s["client"].post(f"/ideation/ideas/{iid}/followers", headers=s["h"], json={"contactId": fan})
     body = str(_history(s, iid))
     assert fan not in body and iid not in body
+
+
+# ── crew pass 5441b840: every tracked staff action reaches History ───────────
+
+
+def test_hist_08_cancel_feedback_link_endpoint_is_recorded(setup):
+    s = setup
+    iid = _idea(s, 611, submitter_contact_id=_contact(s, first_name="Dealer One"))
+    assert s["client"].post(f"/ideation/ideas/{iid}/feedback-link/cancel", headers=s["h"]).status_code == 204
+    row = _history(s, iid)[0]
+    assert (row["action"], row["from"], row["to"]) == ("Feedback link cancelled", "Dealer One", None)
+    assert row["who"]
+
+
+def test_hist_09_cancel_feedback_link_deferred_action_is_recorded(setup):
+    """The item's "Cancel feedback link" runs through the grace-window action."""
+    from app.models.user import User
+    from modules.ideation.deferred_actions import _ideas_cancel_feedback_link
+
+    s = setup
+    iid = _idea(s, 612, submitter_contact_id=_contact(s, first_name="Dealer One"))
+    db = s["factory"]()
+    try:
+        user = db.query(User).filter(User.tenant_id == DEFAULT_TENANT_ID).first()
+        _ideas_cancel_feedback_link(db, DEFAULT_TENANT_ID, iid, {}, user.id)
+        db.commit()
+        name = user.name
+    finally:
+        db.close()
+    row = _history(s, iid)[0]
+    assert (row["action"], row["from"], row["who"]) == ("Feedback link cancelled", "Dealer One", name)
+
+
+def test_hist_10_merge_and_unmerge_are_recorded_on_both_items(setup):
+    s = setup
+    survivor = _idea(s, 613)
+    child = _idea(s, 614)
+    c = s["client"]
+    assert c.post(
+        "/ideation/ideas/merge", headers=s["h"], json={"survivorId": survivor, "ideaIds": [survivor, child]}
+    ).status_code == 200
+    assert _actions(_history(s, survivor))[0] == ("Merged in", None, "FB-0614")
+    assert _actions(_history(s, child))[0] == ("Merged into", None, "FB-0613")
+    assert c.post(f"/ideation/ideas/{child}/unmerge", headers=s["h"]).status_code == 200
+    assert _actions(_history(s, survivor))[0] == ("Unmerged", "FB-0614", None)
+    assert _actions(_history(s, child))[0] == ("Unmerged", "FB-0613", None)
+
+
+def test_hist_11_attachment_added_is_recorded(setup):
+    s = setup
+    iid = _idea(s, 615)
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    res = s["client"].post(
+        f"/ideation/ideas/{iid}/attachments",
+        headers=s["h"],
+        files={"file": ("shot.png", png, "application/octet-stream")},
+    )
+    assert res.status_code in (200, 201), res.text
+    assert _actions(_history(s, iid))[0] == ("Attachment added", None, "shot.png")
+
+
+def test_hist_12_linked_to_business_requirement_is_recorded(setup):
+    from tests.test_ideation_br import _FULL_ANSWERS
+
+    s = setup
+    iid = _idea(s, 616)
+    br = s["client"].post(
+        "/ideation/business-requirements",
+        headers=s["h"],
+        json={"productId": s["product_id"], "answers": _FULL_ANSWERS, "ideaIds": [iid]},
+    )
+    assert br.status_code in (200, 201), br.text
+    row = _history(s, iid)[0]
+    assert row["action"] == "Linked to business requirement"
+    assert row["to"]
+    assert br.json()["id"] not in str(row)

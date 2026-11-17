@@ -476,7 +476,7 @@ class BusinessRequirementService:
         self.db.flush()
 
         if idea_ids:
-            self._link_ideas(tenant_id, br, idea_ids)
+            self._link_ideas(tenant_id, br, idea_ids, actor)
 
         self.db.commit()
         self.db.refresh(br)
@@ -553,7 +553,7 @@ class BusinessRequirementService:
         return _truncate_title(problems[0]), problem_statement
 
     def _link_ideas(
-        self, tenant_id: str, br: BusinessRequirement, idea_ids: List[str]
+        self, tenant_id: str, br: BusinessRequirement, idea_ids: List[str], actor: Optional[User] = None
     ) -> None:
         """Link ideas to a BR (AC-BI-17). Each idea must be in the caller's
         tenant AND on the SAME product as the BR (cross-tenant / cross-product =
@@ -617,13 +617,20 @@ class BusinessRequirementService:
                     business_requirement_id=br.id,
                 )
             )
+            # The idea's History tab (lane FEEDBACK-SUBSCRIBE).
+            from . import history
+
+            history.record(
+                self.db, tenant_id, idea_id, history.ACTION_LINKED_BR, history.user_actor(actor),
+                to_value=(br.title or "").strip() or "Untitled business requirement",
+            )
         self.db.flush()
 
     def link_ideas(
-        self, tenant_id: str, br_id: str, idea_ids: List[str]
+        self, tenant_id: str, br_id: str, idea_ids: List[str], actor: Optional[User] = None
     ) -> List:
         br = self._br_or_404(tenant_id, br_id)
-        self._link_ideas(tenant_id, br, idea_ids)
+        self._link_ideas(tenant_id, br, idea_ids, actor)
         self.db.commit()
         return self.linked_ideas(tenant_id, br_id)
 

@@ -25,6 +25,12 @@ ACTION_FOLLOWER_ADDED = "Follower added"
 ACTION_FOLLOWER_REMOVED = "Follower removed"
 ACTION_SHARE_CREATED = "Share link created"
 ACTION_SHARE_STOPPED = "Share link stopped"
+ACTION_LINK_CANCELLED = "Feedback link cancelled"
+ACTION_MERGED_IN = "Merged in"
+ACTION_MERGED_INTO = "Merged into"
+ACTION_UNMERGED = "Unmerged"
+ACTION_ATTACHMENT_ADDED = "Attachment added"
+ACTION_LINKED_BR = "Linked to business requirement"
 
 
 class HistoryNotFound(Exception):
@@ -41,6 +47,11 @@ class HistoryActor:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def user_actor(user) -> HistoryActor:
+    """A staff user (or None: the system) as the History tab names them."""
+    return HistoryActor(name=getattr(user, "name", None) or None)
 
 
 def staff_actor(real_name: Optional[str], effective_name: Optional[str]) -> HistoryActor:

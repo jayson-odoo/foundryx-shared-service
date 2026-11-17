@@ -170,7 +170,11 @@ function AddFollowerDialog({
           <SearchSelect
             options={options}
             value={contactId}
-            onChange={(v) => setContactId(v || null)}
+            onChange={(v) => {
+              setContactId(v || null);
+              // A refusal belongs to the contact it was about.
+              setError(null);
+            }}
             onQueryChange={setQuery}
             ariaLabel="Contact"
             placeholder="Contact"

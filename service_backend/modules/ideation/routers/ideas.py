@@ -250,6 +250,7 @@ def similar_ideas(
 )
 async def upload_idea_attachment(
     idea_id: str,
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
@@ -262,7 +263,7 @@ async def upload_idea_attachment(
     if len(content) > ATTACHMENT_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
     return service.upload(
-        current_user.tenant_id, idea_id, file.filename or "", content
+        current_user.tenant_id, idea_id, file.filename or "", content, actor=_actor(request, current_user)
     )
 
 
@@ -399,13 +400,14 @@ def delete_idea(
 @router.post("/{idea_id}/feedback-link/cancel", status_code=status.HTTP_204_NO_CONTENT)
 def cancel_feedback_link(
     idea_id: str,
+    request: Request,
     current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
     db: Session = Depends(get_db),
 ) -> Response:
     """Cancel the personal feedback link of this idea's submitter contact (lane
     PUBLIC-IDEAS-BOARD, owner QD a). The next message mints a fresh link. 404
     when the idea is not in the tenant or has no submitter contact."""
-    if not cancel_feedback_link_for_idea(db, current_user.tenant_id, idea_id):
+    if not cancel_feedback_link_for_idea(db, current_user.tenant_id, idea_id, _actor(request, current_user)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

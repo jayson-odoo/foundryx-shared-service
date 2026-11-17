@@ -174,7 +174,7 @@ def link_br_ideas(
 ) -> List[IdeaOut]:
     """Link ideas to the BR (tenant-scoped + same-product, AC-BI-17)."""
     return BusinessRequirementService(db).link_ideas(
-        current_user.tenant_id, br_id, body.ideaIds
+        current_user.tenant_id, br_id, body.ideaIds, current_user
     )
 
 
