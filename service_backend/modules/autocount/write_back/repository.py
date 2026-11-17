@@ -240,6 +240,60 @@ class OperationRepository:
                     synchronize_session=False)
         )
 
+    def expire_stale_operation(self, tenant_id: str, company_id: str, operation_id: str, before: datetime) -> bool:
+        """Flip ONE ``in_progress`` operation that has not moved since ``before`` to
+        ``pending_verification`` (a same-key resend of a crashed run); updated_at kept."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+                AcWriteOperation.status == "in_progress",
+                AcWriteOperation.updated_at < before,
+            )
+            .update({"status": "pending_verification", "updated_at": AcWriteOperation.updated_at},
+                    synchronize_session=False)
+        ) == 1
+
+    def sweep_stale_in_progress(self, before: datetime) -> int:
+        """API-start crash sweep (system context, every tenant): every ``in_progress`` operation
+        that has not moved since ``before`` is a run whose process died -> ``pending_verification``
+        (updated_at kept). A live run heartbeats, so it is never older than the busy window."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(AcWriteOperation.status == "in_progress", AcWriteOperation.updated_at < before)
+            .update({"status": "pending_verification", "updated_at": AcWriteOperation.updated_at},
+                    synchronize_session=False)
+        )
+
+    def settle_not_applied(
+        self, tenant_id: str, company_id: str, operation_id: str, error_code: str, result: dict
+    ) -> bool:
+        """Conditional ``pending_verification`` -> ``recovered`` for an operation that never stored its
+        snapshot (BL-SS-368): True only for the one caller whose update matched."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+                AcWriteOperation.status == "pending_verification",
+                AcWriteOperation.snapshot_json.is_(None),
+            )
+            .update({"status": "recovered", "error_code": error_code, "result_json": result},
+                    synchronize_session=False)
+        ) == 1
+
+    def has_actions(self, tenant_id: str, operation_id: str) -> bool:
+        """Any write action recorded under the operation (a step that may have reached AutoCount)."""
+        return (
+            self.db.query(AcWriteAction.id)
+            .filter(AcWriteAction.tenant_id == tenant_id, AcWriteAction.operation_id == operation_id)
+            .first()
+            is not None
+        )
+
     def has_recent_pending(
         self, tenant_id: str, company_id: str, doc_type: str, doc_key: int, since: datetime
     ) -> bool:

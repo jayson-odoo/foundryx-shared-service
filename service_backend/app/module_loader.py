@@ -143,6 +143,31 @@ def boot_module_hooks() -> None:
             logger.error("Module '%s' boot hooks failed: %s", name, exc, exc_info=True)
 
 
+def run_module_startup_sweeps(db: Session) -> Dict[str, int]:
+    """API-start crash sweeps: call each discovered module's optional
+    ``on_api_startup(db) -> int`` (work a dead process left half-done, e.g. a
+    write operation stranded ``in_progress``). The module owns its own tables;
+    core only calls the hook. D8 isolation: one module's failure is logged and
+    rolled back, siblings still run. Returns ``{module: count}`` of non-zero sweeps."""
+    from app.services.app_store_service import module_hooks
+
+    swept: Dict[str, int] = {}
+    for manifest in discover_manifests():
+        name = manifest["module_name"]
+        hooks = module_hooks(name)
+        if hooks is None or not hasattr(hooks, "on_api_startup"):
+            continue
+        try:
+            count = int(hooks.on_api_startup(db) or 0)
+        except Exception:  # noqa: BLE001 - D8 isolation: startup never dies on a sweep
+            db.rollback()
+            logger.exception("Module '%s' startup sweep failed", name)
+            continue
+        if count:
+            swept[name] = count
+    return swept
+
+
 def sync_module_catalog(db: Session, modules_dir: Optional[Path] = None) -> None:
     """Upsert the global ``modules`` catalog from manifests; delist removed dirs."""
     from app.models.module import Module

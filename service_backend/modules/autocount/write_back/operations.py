@@ -253,6 +253,16 @@ def _create_info(kind: str, params: Dict[str, Any], started: datetime) -> Dict[s
     }
 
 
+def sweep_stranded_operations(db: Session) -> int:
+    """API-start crash sweep: every ``in_progress`` operation older than the busy window was left by a
+    process that died (gunicorn timeout, OOM kill, deploy) -> ``pending_verification``. A never-applied
+    one is then settled ``recovered`` by its next resend / resume (BL-SS-368). Returns how many."""
+    window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+    swept = OperationRepository(db).sweep_stale_in_progress(window)
+    db.commit()
+    return swept
+
+
 class OperationService:
     def __init__(
         self,
@@ -320,6 +330,13 @@ class OperationService:
             json.dumps({"op": op, "params": params}, sort_keys=True, default=str).encode()
         ).hexdigest()
         existing = self.ops.by_key(tenant_id, company.id, key_id, idempotency_key)
+        if existing is not None and existing.status == IN_PROGRESS:
+            # a same-key resend of a crashed run (its worker killed before ``_guarded``'s finally): past the busy
+            # window it is reconciled like any stale op, then settled below, never OPERATION_IN_PROGRESS for ever
+            window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+            if self.ops.expire_stale_operation(tenant_id, company.id, existing.id, window):
+                self.db.commit()
+                self.db.refresh(existing)
         if existing is not None:
             settled = self._settle_existing(existing, tenant_id, company, op, request_hash)
             if settled is not None:
@@ -367,6 +384,8 @@ class OperationService:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
         if row.op != SPLIT_LINK and row.op != LINK_BATCH and row.op not in OPS:
             return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
+        if self._never_applied(row):
+            return self._settle_not_applied(row)
         if row.status not in (NEEDS_ATTENTION, PENDING) or not row.snapshot_json or row.op == SPLIT_LINK:
             return self._from_row(row)
         company = CompanyRepository(self.db).get(tenant_id, company_id)
@@ -464,7 +483,7 @@ class OperationService:
             self._release_key(row)
             return None
         if (row.status == PENDING and row.op == op and row.request_hash == request_hash
-                and row.snapshot_json):
+                and (row.snapshot_json or self._never_applied(row))):
             res = self.resume(tenant_id=tenant_id, company_id=company.id, operation_id=row.id)
             if res.error_code == NOT_APPLIED and res.outcome in (RECOVERED, REFUSED):
                 fresh = self.ops.get(tenant_id, company.id, row.id)
@@ -473,6 +492,32 @@ class OperationService:
                     return None
             return res
         return self._replay(row, op, request_hash)
+
+    def _never_applied(self, row: AcWriteOperation) -> bool:
+        """BL-SS-368: a pending row operation that never stored its snapshot never wrote: every row
+        operation commits its snapshot BEFORE its first AutoCount write (``_execute_unlocked``,
+        ``_batch_locked``, ``_split_link``). Belt and braces: no step and no write action recorded."""
+        return (row.status == PENDING and not row.snapshot_json and not row.steps_json
+                and (row.op in OPS or row.op in (SPLIT_LINK, LINK_BATCH))
+                and not self.ops.has_actions(row.tenant_id, row.id))
+
+    def _settle_not_applied(self, row: AcWriteOperation) -> OperationResult:
+        """End a never-applied pending operation ``recovered`` / ``OPERATION_NOT_APPLIED`` (conditional, so
+        a concurrent settle or resume wins once); the next same-key press then runs fresh."""
+        message = "Nothing was changed in AutoCount. Please try again."
+        result = OperationResult(row.id, RECOVERED, NOT_APPLIED, message, doc_key=row.doc_key)
+        stored = _json_safe({
+            "outcome": RECOVERED, "errorCode": NOT_APPLIED, "message": message, "warnings": [],
+            "replacedLines": [], "document": None, "batch": None, "detail": None,
+        })
+        settled = self.ops.settle_not_applied(row.tenant_id, row.company_id, row.id, NOT_APPLIED, stored)
+        self.db.commit()
+        self.db.refresh(row)
+        if not settled:
+            return self._from_row(row) if row.status != IN_PROGRESS else OperationResult(
+                row.id, REFUSED, OPERATION_IN_PROGRESS)
+        logger.warning("autocount operation %s ended before its snapshot: settled as not applied", row.id)
+        return result
 
     def _replay(self, row: AcWriteOperation, op: str, request_hash: str) -> OperationResult:
         if row.op != op or row.request_hash != request_hash:

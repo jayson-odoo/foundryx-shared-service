@@ -136,6 +136,20 @@ def register_engine_entities() -> None:
     register_autocount_deferred_actions()
 
 
+def sweep_stranded_write_operations(db: Session) -> int:
+    """Lane AUTOCOUNT-STRANDED-OPS (C.c): at API start, every write operation a dead process left
+    ``in_progress`` past the busy window becomes ``pending_verification``; a never-applied one is
+    then settled ``recovered`` by its next resend / resume, so no stuck card waits for ever."""
+    from .write_back.operations import sweep_stranded_operations
+
+    return sweep_stranded_operations(db)
+
+
+def on_api_startup(db: Session) -> int:
+    """API-start hook (``app.module_loader.run_module_startup_sweeps``)."""
+    return sweep_stranded_write_operations(db)
+
+
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
     if engine.dialect.name == "postgresql":
