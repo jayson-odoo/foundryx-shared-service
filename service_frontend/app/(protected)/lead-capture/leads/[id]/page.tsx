@@ -44,8 +44,14 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function answerValue(value: string | string[] | null | undefined): string {
-  if (Array.isArray(value)) return value.join(', ') || '-';
+/** A form question key as words ("phone_number" -> "Phone number"). */
+function humanize(key: string): string {
+  const words = key.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim().toLowerCase();
+  return words ? words[0].toUpperCase() + words.slice(1) : '-';
+}
+
+function attributionValue(value: string | boolean | null): string {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   return value || '-';
 }
 
@@ -58,6 +64,8 @@ const ATTRIBUTION_LABELS: Record<string, string> = {
   adName: 'Ad name',
   formId: 'Form',
   pageId: 'Page',
+  isOrganic: 'Organic',
+  platform: 'Placement',
 };
 
 export default function LeadDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -114,7 +122,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                       <Row label="Channel" value={PLATFORM_LABELS[detail.lead.platform] ?? detail.lead.platform} />
                       <Row label="Form" value={detail.lead.formName ?? '-'} />
                       {Object.entries(detail.lead.fields).map(([key, value]) => (
-                        <Row key={key} label={key} value={value ?? '-'} />
+                        <Row key={key} label={detail.fieldLabels[key] ?? humanize(key)} value={value || '-'} />
                       ))}
                     </dl>
                   </CardContent>
@@ -127,7 +135,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                     <dl className="divide-y divide-border">
                       {detail.lead.answers.length === 0 ? <Row label="Answers" value="-" /> : null}
                       {detail.lead.answers.map((a, i) => (
-                        <Row key={`${a.key ?? i}`} label={a.label ?? a.key ?? '-'} value={answerValue(a.value)} />
+                        <Row key={`${a.key}-${i}`} label={humanize(a.key)} value={a.values?.join(', ') || '-'} />
                       ))}
                     </dl>
                   </CardContent>
@@ -138,13 +146,13 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                   </CardHeader>
                   <CardContent>
                     <dl className="divide-y divide-border">
-                      {Object.entries(detail.lead.attribution).filter(([, v]) => v).length === 0 ? (
+                      {Object.entries(detail.lead.attribution).filter(([, v]) => v !== null && v !== '').length === 0 ? (
                         <Row label="Ad" value="-" />
                       ) : null}
                       {Object.entries(detail.lead.attribution)
-                        .filter(([, v]) => v)
+                        .filter(([, v]) => v !== null && v !== '')
                         .map(([key, value]) => (
-                          <Row key={key} label={ATTRIBUTION_LABELS[key] ?? key} value={String(value)} />
+                          <Row key={key} label={ATTRIBUTION_LABELS[key] ?? humanize(key)} value={attributionValue(value)} />
                         ))}
                     </dl>
                   </CardContent>

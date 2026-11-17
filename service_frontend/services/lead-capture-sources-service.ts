@@ -94,7 +94,14 @@ export const leadCaptureSourcesService: LeadCaptureSourcesService = {
     );
     return { data: res.data, total: res.total, page: query.page };
   },
-  leadDetail: (id) => apiFetch<StaffLeadDetail>(`${BASE}/leads/${encodeURIComponent(id)}`),
+  async leadDetail(id) {
+    const [detail, fields] = await Promise.all([
+      apiFetch<Omit<StaffLeadDetail, 'fieldLabels'>>(`${BASE}/leads/${encodeURIComponent(id)}`),
+      apiFetch<{ data: { key: string; label: string }[] }>(`${BASE}/fields`),
+    ]);
+    const fieldLabels = Object.fromEntries(fields.data.map((f) => [f.key, f.label || f.key]));
+    return { ...detail, fieldLabels };
+  },
   redeliver: (deliveryId) =>
     apiFetch<LeadDelivery>(`${BASE}/deliveries/${encodeURIComponent(deliveryId)}/redeliver`, { method: 'POST' }),
   disconnect: async (sourceId) => {

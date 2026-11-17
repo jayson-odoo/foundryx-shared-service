@@ -29,10 +29,10 @@ export interface StaffLead {
   deliveryStatus: DeliveryStatus | null;
 }
 
+/** One Instant Form answer as the platform sent it. */
 export interface LeadAnswer {
-  key?: string;
-  label?: string;
-  value?: string | string[] | null;
+  key: string;
+  values: string[];
 }
 
 /** The documented lead body (consumer guide), as the detail shows it. */
@@ -51,7 +51,7 @@ export interface LeadBody {
   duplicateOf: string | null;
   fields: Record<string, string | null>;
   answers: LeadAnswer[];
-  attribution: Record<string, string | null>;
+  attribution: Record<string, string | boolean | null>;
 }
 
 export interface LeadDelivery {
@@ -71,4 +71,6 @@ export interface LeadDelivery {
 export interface StaffLeadDetail {
   lead: LeadBody;
   deliveries: LeadDelivery[];
+  /** The product's lead field labels, by key (map targets). */
+  fieldLabels: Record<string, string>;
 }
