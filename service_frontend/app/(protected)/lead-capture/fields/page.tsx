@@ -48,7 +48,10 @@ export default function LeadCaptureFieldsPage() {
             saving={fields.saving}
             save={fields.save}
             canManage={canManage}
-            onSaved={fields.reload}
+            onSaved={() => {
+              fields.reload();
+              refreshMaps();
+            }}
           />
           <div className="flex flex-col gap-2">
             <h2 className="text-base font-semibold">Form maps</h2>

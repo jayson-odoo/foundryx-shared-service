@@ -52,7 +52,7 @@ export function AddFormDialog({ open, sources, onOpenChange, onPick }: AddFormDi
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>Add form</DialogTitle>
         </DialogHeader>

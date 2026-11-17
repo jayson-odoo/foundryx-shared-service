@@ -206,3 +206,48 @@ def test_staff_and_gateway_call_the_same_service_functions(client, lc, posts, mo
     assert calls.count("list_keys") == 2
     assert calls.count("revoke") == 1
     assert calls.count("send_test_push") == 2
+
+
+# ── saving the field list keeps the field maps honest (crew-pass finding 5) ─
+
+
+def _source(lc) -> str:
+    from modules.lead_capture.models import LcSource
+
+    db = lc()
+    try:
+        row = LcSource(tenant_id=DEFAULT_TENANT_ID, platform="facebook", name="Sample Page", status="LIVE",
+                       account_ref="300000000000001", account_name="Sample Page", config_json={"formsMode": "all"})
+        db.add(row)
+        db.commit()
+        return row.id
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("door", ["staff", "gateway"])
+def test_saving_fields_drops_map_entries_for_removed_fields(client, lc, door):
+    headers = _staff(client) if door == "staff" else _bearer(_key(client)["key"])
+    base = "/lead-capture" if door == "staff" else GW
+    source_id = _source(lc)
+    fields = [
+        {"key": "client_name", "label": "Client", "type": "name"},
+        {"key": "budget", "label": "Budget", "type": "text"},
+        {"key": "best_time", "label": "Best time", "type": "text"},
+        {"key": "notes", "label": "Notes", "type": "notes"},
+    ]
+    assert client.put(f"{base}/fields", json=fields, headers=headers).status_code == 200
+    for form_id, mapping in (("111", {"q_budget": "budget", "q_time": "best_time"}), ("222", {"q_time": "best_time"}), ("*", {"q_budget": "budget"})):
+        res = client.put(f"{base}/sources/{source_id}/field-map", json={"formId": form_id, "map": mapping}, headers=headers)
+        assert res.status_code == 200, res.text
+
+    # Remove best_time: its entries go; a form left with no entry loses its map.
+    kept = [f for f in fields if f["key"] != "best_time"]
+    assert client.put(f"{base}/fields", json=kept, headers=headers).status_code == 200
+    source = next(s for s in client.get(f"{base}/sources", headers=headers).json()["data"] if s["id"] == source_id)
+    assert source["fieldMap"] == {"111": {"q_budget": "budget"}, "*": {"q_budget": "budget"}}
+
+    # Back to the defaults (name/phone/email/notes): budget is gone too.
+    assert client.put(f"{base}/fields", json=[], headers=headers).status_code == 200
+    source = next(s for s in client.get(f"{base}/sources", headers=headers).json()["data"] if s["id"] == source_id)
+    assert source["fieldMap"] == {}

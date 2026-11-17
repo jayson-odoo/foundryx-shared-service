@@ -118,7 +118,10 @@ PUT /sources/4c1f0000-0000-0000-0000-000000000001/field-map
 Show:
 
 - Fields: an editable list of Key, Label, Type (Name, Phone, Email, Lead notes, Text). "Use defaults" only when
-  `isDefault` is false.
+  `isDefault` is false; ask first ("Use the default fields?"), because it replaces the list.
+- Saving the field list (including Use defaults) also removes every map line that points at a field no longer in
+  the list, in the same call; a form left with no line loses its map. Reload the sources afterwards so the Form
+  maps list matches.
 - Form maps list: one row per (Page, form) from `GET /sources`:
   - every form id in a source's `fieldMap` (`"*"` = All forms);
   - every form in its `needsMapping` (Status: Needs mapping, plus `unmappedCount` answers that went to notes);
@@ -136,7 +139,9 @@ Errors:
 - `422 invalid_fields`: bad or repeated key, unknown type, more than 50 fields. Show the message next to the list.
 - `422 invalid_field_map`: a target that is not one of your fields (e.g. after removing a field). Reload the fields
   and the popup.
-- `422 invalid_form_id`: the form id is not digits only.
+- `422 invalid_form_id` (questions call): the form id is not digits only. Check it in your Add form step before
+  calling; the field-map call itself only refuses an id with characters other than letters, digits, `_` and `-`
+  (`422 invalid_field_map`).
 - Questions call: `400 token_invalid` (the Page must be reconnected), `400 meta_refused` (Meta's reason, e.g. the
   Page has not given Leads Access), `502 meta_unreachable` (try again). Show the message with "Try again".
 - `404 source_not_found`: the Page was disconnected. Reload the list.

@@ -50,7 +50,7 @@ export function CreateKeyDialog({ open, onOpenChange, onCreated }: CreateKeyDial
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>{fullKey ? 'Key created' : 'Create key'}</DialogTitle>
         </DialogHeader>

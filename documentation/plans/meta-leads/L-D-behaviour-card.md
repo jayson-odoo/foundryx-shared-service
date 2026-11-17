@@ -69,3 +69,11 @@ revoke/remove through the core grace-window engine.
   sources, form questions and field maps already had gateway routes.
 - A parity test fails when a staff route has no gateway counterpart (only Page connect stays staff-only, lane L-C).
 - Consumer guide updated (routes, errors, Test push, Key). EcoHub how-to: `docs/lead-capture/ecohub-quickstart-screens.md`.
+
+## Round 3 (crew-pass 0a5c355f NOT READY)
+- Long text: the shared `ClampedText` one-line mode now cuts with "..." and shows the full text on hover (a single
+  unbreakable string such as a URL was clipped mid-letter).
+- Keys: Create sits on the toolbar row with Search, Filters, Export, Columns; the grid fits 1280 with the row menu.
+- Saving the field list (Save fields or Use defaults) drops map lines that point at a removed field, in the same
+  service call for both doors; "Use defaults" asks first; the Form maps list refreshes after a save.
+- Lead fields lines stack at phone width; column chooser keeps the column's own label ("Last used").

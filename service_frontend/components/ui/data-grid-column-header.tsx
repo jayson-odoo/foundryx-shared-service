@@ -248,7 +248,7 @@ function DataGridColumnHeader<TData, TValue>({
                             checked={col.getIsVisible()}
                             onSelect={(event) => event.preventDefault()}
                             onCheckedChange={(value) => col.toggleVisibility(!!value)}
-                            className="capitalize"
+                            className={col.columnDef.meta?.headerTitle ? undefined : 'capitalize'}
                           >
                             {col.columnDef.meta?.headerTitle || col.id}
                           </DropdownMenuCheckboxItem>

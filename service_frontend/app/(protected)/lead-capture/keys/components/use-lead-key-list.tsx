@@ -86,7 +86,7 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
         meta: { headerTitle: 'Name' },
         header: ({ column }) => <DataGridColumnHeader title="Name" column={column} />,
         cell: ({ row }) => <ClampedText text={row.original.name} lines={1} className="font-medium" />,
-        size: 220,
+        size: 200,
         enableSorting: true,
       },
       {
@@ -97,7 +97,7 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
         cell: ({ row }) => (
           <ClampedText text={row.original.keyMasked} lines={1} className="font-mono text-sm text-muted-foreground" />
         ),
-        size: 200,
+        size: 170,
         enableSorting: true,
       },
       {
@@ -106,7 +106,7 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
         meta: { headerTitle: 'Created' },
         header: ({ column }) => <DataGridColumnHeader title="Created" column={column} />,
         cell: ({ row }) => dateCell(row.original.createdAt),
-        size: 190,
+        size: 170,
         enableSorting: true,
       },
       {
@@ -115,7 +115,7 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
         meta: { headerTitle: 'Last used' },
         header: ({ column }) => <DataGridColumnHeader title="Last used" column={column} />,
         cell: ({ row }) => dateCell(row.original.lastUsedAt),
-        size: 190,
+        size: 170,
         enableSorting: true,
       },
       {
@@ -128,7 +128,7 @@ export function useLeadKeyList(onCreate: () => void): ResourceListConfig<LeadKey
             <StatusBadge status={leadKeyStatus(row.original)} registry={LEAD_KEY_STATUS} />
           </div>
         ),
-        size: 130,
+        size: 120,
         enableSorting: true,
       },
       {

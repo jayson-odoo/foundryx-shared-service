@@ -62,7 +62,7 @@ export function AddReceiverDialog({ open, onOpenChange, onAdded }: AddReceiverDi
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>{secret ? 'Receiver added' : 'Add receiver'}</DialogTitle>
         </DialogHeader>

@@ -4,6 +4,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, ArrowDown, ArrowUp, Loader2, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Alert, AlertIcon, AlertTitle, AlertToolbar } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle, CardToolbar } from '@/components/ui/card';
 import {
@@ -45,6 +55,7 @@ const same = (a: LeadField[], b: LeadField[]) => JSON.stringify(a) === JSON.stri
 export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: LeadFieldsCardProps) {
   const [rows, setRows] = useState<LeadField[]>([]);
   const [submitted, setSubmitted] = useState(false);
+  const [confirmDefaults, setConfirmDefaults] = useState(false);
   const loaded = state.data?.data;
 
   useEffect(() => {
@@ -92,7 +103,7 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
         {canManage && state.data && (
           <CardToolbar>
             {!state.data.isDefault && (
-              <Button variant="outline" size="sm" disabled={saving} onClick={() => void persist([])}>
+              <Button variant="outline" size="sm" disabled={saving} onClick={() => setConfirmDefaults(true)}>
                 Use defaults
               </Button>
             )}
@@ -119,9 +130,9 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
           </Alert>
         )}
         {state.data && (
-          <div className="overflow-x-auto">
-            <div className="flex min-w-[520px] flex-col text-sm" role="list" aria-label="Lead fields">
-              <div className="grid grid-cols-[1fr_1fr_1fr_2.5rem] gap-2 border-b py-2 text-xs font-medium text-muted-foreground">
+          <div>
+            <div className="flex flex-col text-sm" role="list" aria-label="Lead fields">
+              <div className="hidden grid-cols-[1fr_1fr_1fr_2.5rem] gap-2 border-b py-2 text-xs font-medium text-muted-foreground sm:grid">
                 <span>Key *</span>
                 <span>Label</span>
                 <span>Type *</span>
@@ -131,11 +142,14 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
                 <div
                   key={i}
                   role="listitem"
-                  className="grid grid-cols-[1fr_1fr_1fr_2.5rem] items-start gap-2 border-b py-2 last:border-b-0"
+                  className="grid grid-cols-[1fr_2.5rem] items-start gap-2 border-b py-2 last:border-b-0 sm:grid-cols-[1fr_1fr_1fr_2.5rem]"
                 >
+                  {/* Phone width: Key, Label and Type stack beside the line menu. */}
+                  <div className="flex min-w-0 flex-col gap-2 sm:contents">
                   <div>
                     <Input
                       aria-label={`Key ${i + 1}`}
+                      placeholder="Key *"
                       value={row.key}
                       maxLength={64}
                       disabled={!canManage}
@@ -146,6 +160,7 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
                   </div>
                   <Input
                     aria-label={`Label ${i + 1}`}
+                    placeholder="Label"
                     value={row.label}
                     maxLength={200}
                     disabled={!canManage}
@@ -158,6 +173,7 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
                     disabled={!canManage}
                     onChange={(v) => update(i, { type: v as LeadFieldType })}
                   />
+                  </div>
                   <div>
                     {canManage && (
                       <DropdownMenu>
@@ -191,6 +207,29 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
           </div>
         )}
       </CardContent>
+      <AlertDialog open={confirmDefaults} onOpenChange={(open) => !saving && setConfirmDefaults(open)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Use the default fields?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your fields are replaced by Name, Phone, Email and Lead notes. Form map lines that point at a removed
+              field are cleared.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={saving}
+              onClick={(e) => {
+                e.preventDefault();
+                void persist([]).finally(() => setConfirmDefaults(false));
+              }}
+            >
+              Use default fields
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

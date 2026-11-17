@@ -128,6 +128,8 @@ Your CRM's own lead fields are the targets:
 - `key`: letters, digits, `_`, starting with a letter, at most 64; unique. `type`: `name`, `phone`, `email`,
   `notes` or `text`. At most 50 fields.
 - With no list published, the targets are `name` (name), `phone` (phone), `email` (email), `notes` (notes).
+- Saving the field list (`PUT /fields`, `[]` included) removes every field-map line whose field is no longer in the
+  list, on every source, in the same call; a form left with no line loses its map.
 - A source's field map says which form question fills which field: `"*"` applies to every form, a form's own map
   wins over it. Question keys are the Facebook form's question keys (as in `answers[].key`); a `null` or `""` target
   removes that entry; an empty `map` removes the form's map.

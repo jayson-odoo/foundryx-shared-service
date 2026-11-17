@@ -39,7 +39,7 @@ export function MapFieldsDialog(props: MapFieldsDialogProps) {
   const { target, onClose } = props;
   return (
     <Dialog open={target !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" aria-describedby={undefined}>
         {target && <MapFieldsBody key={`${target.sourceId}:${target.formId}`} {...props} target={target} />}
       </DialogContent>
     </Dialog>

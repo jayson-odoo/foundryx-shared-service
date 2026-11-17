@@ -3,6 +3,7 @@
 import { useCallback, useState } from 'react';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 import { ResourceList } from '@/components/platform/resource-list';
 import { CreateKeyDialog } from './components/create-key-dialog';
 import { useLeadKeyList } from './components/use-lead-key-list';
@@ -17,7 +18,10 @@ export default function LeadCaptureKeysPage() {
   return (
     <RequirePermission permission="lead_capture.keys.manage">
       <Container width="fluid">
-        <ResourceList key={nonce} config={config} />
+        {/* Own header so Create sits on the list's toolbar row (one row:
+            Search, Filters, Export, Columns, Create), like Delivery. */}
+        <PageHeader />
+        <ResourceList key={nonce} config={config} hideHeader restoreFromCtx />
       </Container>
       <CreateKeyDialog open={open} onOpenChange={setOpen} onCreated={() => setNonce((n) => n + 1)} />
     </RequirePermission>
