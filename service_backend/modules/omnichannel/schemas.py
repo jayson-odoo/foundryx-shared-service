@@ -1446,6 +1446,44 @@ class ApiKeyMintResponse(ApiModel):
     fullKey: str  # shown ONCE at mint, never again
 
 
+# ── Partner keys (tenant-scoped `fxp_live_`, S6) ─────────────────────────────
+class PartnerKeyItem(ApiModel):
+    id: str
+    name: str
+    keyPrefix: str
+    maskedKey: str  # fxp_live_{prefix}••••
+    status: str  # ACTIVE | REVOKED
+    allowedReturnOrigins: List[str] = []
+    lastUsedAt: Optional[datetime] = None
+    revokedAt: Optional[datetime] = None
+    createdAt: datetime
+
+
+class PartnerKeyListResponse(ApiModel):
+    data: List[PartnerKeyItem]
+
+
+class PartnerKeyCreateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+    allowedReturnOrigins: Optional[List[str]] = None
+
+
+class PartnerKeyUpdateRequest(ApiModel):
+    allowedReturnOrigins: Optional[List[str]] = None
+
+
+class PartnerKeyMintResponse(ApiModel):
+    key: PartnerKeyItem
+    fullKey: str  # shown ONCE at mint, never again
+
+
+class PartnerMeResponse(ApiModel):
+    tenantId: str
+    tenantName: str
+    keyId: str
+    keyName: str
+
+
 # ── Public send API (respond.io-style; text/template in v1) ──────────────────
 class PublicTextBody(ApiModel):
     body: str

@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Partner API: partner key** (section 6e). New tenant-scoped partner key (`fxp_live_...`), minted from the dashboard by a tenant admin with the new Partner API Keys permission, and `GET /api/v1/omnichannel/partner/me`. Additive: workspace keys and every existing route, field and code are unchanged; a partner key is refused (`401 invalid_api_key`) on existing routes. |
 > | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and `POST /messages` as multipart up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send takes exactly one `file` part and one `payload` part, with at most 5 form fields; more answers `422 invalid_request`. |
 > | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
 > | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
@@ -842,6 +843,36 @@ An invalid body answers `422 invalid_request` with the problems keyed by field, 
 ```
 
 `fieldErrors` is keyed `timezone` and `windows`. Only the first `windows` problem is reported; its message names the day and window it is about (for example `mon.0: …`).
+
+---
+
+## 6e. Partner API (provisioning organisations)
+
+**Who it is for:** a client application that serves many organisations of its own (for example a CRM where each customer company needs its own WhatsApp numbers) and wants to set them up without asking Foundryx staff for every one. The client application has its **own tenant**; each of its organisations becomes one workspace in that tenant.
+
+**Nothing changes for existing integrations.** Partner routes live under `/api/v1/omnichannel/partner/*` and accept only a partner key. Workspace keys (`fxw_live_`) and every route in sections 3 to 6d behave exactly as before.
+
+### How a partner key is issued
+
+A partner key (`fxp_live_...`) is minted from the Foundryx dashboard by an admin of your tenant who holds the **Partner API Keys: Manage** permission. It is never self-serve from the API. The full key is shown **once** at mint time; store it like a password. The admin can list keys, revoke one, and set each key's **allowed return origins** (exact `https://host[:port]` origins, used by the hosted connect flow that comes later; `http://` only for `localhost`).
+
+```
+Authorization: Bearer fxp_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+* The key **encodes your tenant** and nothing else. You never send a tenant id.
+* Missing, malformed, unknown or revoked key, or a workspace key, answers `401 invalid_api_key`. A partner key on a workspace-key route also answers `401 invalid_api_key`.
+* Tenant suspended or archived, or the omnichannel service off for the tenant: `403 service_not_enabled`.
+* The per-key limits of section 3a apply to each partner key on its own (10 in progress, 600 per minute, `429 rate_limited` with `Retry-After`).
+* Errors use the `/api/v1` envelope of section 3.
+
+### `GET /api/v1/omnichannel/partner/me`
+
+Proves the key works and shows what it is bound to.
+
+```json
+{ "tenantId": "8b1f...", "tenantName": "EcoHub", "keyId": "3c9e...", "keyName": "EcoHub production" }
+```
 
 ---
 
