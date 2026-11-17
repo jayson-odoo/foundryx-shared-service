@@ -17,7 +17,6 @@ from app.database import get_db
 
 from .. import schemas
 from ..gateway_auth import AuditedRoute, LeadGatewayKey, get_lead_gateway_key
-from ..models import LcApiKey
 from ..services import (
     backfill_service,
     connect_service,
@@ -280,7 +279,9 @@ def create_connect_session(
     db: Session = Depends(get_db),
 ) -> schemas.ConnectSessionCreated:
     """A single-use hosted wizard URL, 10 minutes (AC-64-06)."""
-    row_key = db.query(LcApiKey).filter(LcApiKey.id == key.key_id, LcApiKey.tenant_id == key.tenant_id).first()
+    row_key = connect_session_service.gateway_key(db, key.tenant_id, key.key_id)
+    if row_key is None:
+        raise ApiError(401, "invalid_api_key", "Missing, malformed, unknown or revoked key.")
     try:
         row, url = connect_session_service.create_session(
             db, key.tenant_id, return_origin=body.returnOrigin, key=row_key, source_id=body.sourceId

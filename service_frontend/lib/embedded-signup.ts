@@ -57,6 +57,15 @@ interface OAuthMessage {
   type: 'FX_WA_OAUTH';
   code?: string;
   error?: string;
+  /** Echo of the `state` this window sent (login-CSRF check). */
+  state?: string | null;
+}
+
+/** A fresh random OAuth `state` per dialog. */
+function newOAuthState(): string {
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /** Meta's Embedded Signup session-info message - identifies the EXACT number the
@@ -95,6 +104,7 @@ export function launchMetaOAuth(opts: MetaOAuthOptions): Promise<MetaOAuthResult
   if (typeof window === 'undefined') return Promise.reject(new Error('Sign-in runs in the browser only.'));
   const redirectUri = `${window.location.origin}${CALLBACK_PATH}`;
   const extras = opts.extras ? `&extras=${encodeURIComponent(JSON.stringify(opts.extras))}` : '';
+  const state = newOAuthState();
   const dialogUrl =
     `https://www.facebook.com/${opts.graphVersion}/dialog/oauth` +
     `?client_id=${encodeURIComponent(opts.appId)}` +
@@ -102,6 +112,7 @@ export function launchMetaOAuth(opts: MetaOAuthOptions): Promise<MetaOAuthResult
     `&response_type=code` +
     `&override_default_response_type=true` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+    `&state=${state}` +
     extras;
 
   const popup = window.open(dialogUrl, opts.windowName ?? 'fx_meta_oauth', 'popup,width=600,height=760');
@@ -139,6 +150,9 @@ export function launchMetaOAuth(opts: MetaOAuthOptions): Promise<MetaOAuthResult
       if (event.origin !== window.location.origin) return;
       const data = event.data as OAuthMessage | undefined;
       if (!data || data.type !== 'FX_WA_OAUTH') return;
+      // Only the answer to THIS dialog: a code relayed with another (or no)
+      // state is not ours (login CSRF).
+      if (data.state !== state) return;
       if (data.code) {
         settle(() => resolve({ code: data.code as string, redirectUri }));
       } else {

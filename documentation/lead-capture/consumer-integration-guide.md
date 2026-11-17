@@ -51,6 +51,7 @@ Every gateway error has one shape:
 | 422 | `ORIGIN_NOT_ALLOWED` | Connect session: `returnOrigin` is missing or not on this key's allowed origins |
 | 400 | `PERMISSION_DECLINED` | Facebook login: the person did not grant the lead permission (`leads_retrieval`) |
 | 400 | `LOGIN_FAILED` | Facebook login: Meta refused the code (used, expired, wrong redirect URI) |
+| 409 | `source_exists` | Wizard: the Page is already one of your sources; reconnect it with a session for that `sourceId` |
 | 409 | `channel_unavailable` | Facebook login while Facebook is not set up on this server (`GET /channels` lists none) |
 | 422 | `invalid_code` | Facebook login: `code` is empty or too long |
 | 502 | `subscribe_failed` | Connect: Meta could not be reached, or refused the Page's lead subscription; try again |
@@ -475,6 +476,9 @@ the hosted wizard is the reference UI).
    - `returnOrigin` must be on the key's allowed origins, else `422 ORIGIN_NOT_ALLOWED`.
    - `sourceId` (optional) reopens the wizard for one of your sources: Reconnect (`NEEDS_RECONNECT`,
      `DISCONNECTED`) or Map fields (`needsMapping` not empty). Another tenant's id = `404 source_not_found`.
+   - Revoking the key, or taking `returnOrigin` off its allowed origins, ends its unused links and running
+     wizards at once.
+   - The page cannot be framed (`frame-ancestors 'none'`): open it as a popup or a new tab.
    - The URL works ONCE and for 10 minutes. The secret is in the `#` fragment, so it never reaches a server log or a
      `Referer`. A used or expired URL shows "This link has expired" and nothing of the account.
 3. Your page opens `url` in a popup on the user's click:

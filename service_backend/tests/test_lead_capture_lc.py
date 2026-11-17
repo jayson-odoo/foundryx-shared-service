@@ -575,3 +575,56 @@ def test_consumer_guide_names_every_gateway_route():
         if f"`{path}`" not in guide:
             missing.append(path)
     assert missing == []
+
+
+# ── security review round 1 ─────────────────────────────────────────────────
+
+def test_revoking_the_key_ends_its_links_and_wizards(client, lc):
+    admin = _login(client)
+    key, key_id = _key_with_origins(client, admin)
+    wiz = _wizard(client, key)
+    unused = _secret(_session(client, key)["url"])
+    assert client.delete(f"/lead-capture/keys/{key_id}", headers=admin).status_code == 204
+    assert client.get("/public/lead-capture/wizard/context", headers=wiz).status_code == 401
+    assert _redeem(client, unused).status_code == 410
+
+
+def test_removing_the_origin_ends_its_wizards(client, lc):
+    admin = _login(client)
+    key, key_id = _key_with_origins(client, admin)
+    wiz = _wizard(client, key)
+    client.put(f"/lead-capture/keys/{key_id}/origins", json={"allowedOrigins": ["https://other.example"]}, headers=admin)
+    assert client.get("/public/lead-capture/wizard/context", headers=wiz).status_code == 401
+
+
+def test_a_new_source_session_never_takes_over_an_existing_source(client, lc):
+    admin = _login(client)
+    key, _ = _key_with_origins(client, admin)
+    first = _wizard(client, key)
+    client.post("/public/lead-capture/wizard/facebook/login", json={"code": "dev"}, headers=first)
+    sid = client.post("/public/lead-capture/wizard/facebook/connect", json={"pageId": DEV_PAGE}, headers=first).json()["id"]
+    second = _wizard(client, key)
+    client.post("/public/lead-capture/wizard/facebook/login", json={"code": "dev"}, headers=second)
+    res = client.post("/public/lead-capture/wizard/facebook/connect", json={"pageId": DEV_PAGE}, headers=second)
+    assert res.status_code == 409 and res.json()["error"]["code"] == "source_exists"
+    # A session opened FOR that source reconnects it.
+    third = _wizard(client, key, sourceId=sid)
+    client.post("/public/lead-capture/wizard/facebook/login", json={"code": "dev"}, headers=third)
+    res = client.post("/public/lead-capture/wizard/facebook/connect", json={"pageId": DEV_PAGE}, headers=third)
+    assert res.status_code == 200 and res.json()["id"] == sid
+
+
+def test_staff_post_back_only_to_own_tenant_subdomain(client, lc, monkeypatch):
+    monkeypatch.setattr(settings, "cors_origin_regex", r"http://[a-z0-9-]+\.localhost:300[0-5]")
+    admin = _login(client)
+    db = lc()
+    try:
+        from app.models.tenant import Tenant
+
+        slug = db.get(Tenant, DEFAULT_TENANT_ID).slug
+    finally:
+        db.close()
+    own = client.post("/lead-capture/connect-sessions", json={"returnOrigin": f"http://{slug}.localhost:3001"}, headers=admin)
+    assert own.status_code == 201, own.text
+    other = client.post("/lead-capture/connect-sessions", json={"returnOrigin": "http://someone-else.localhost:3001"}, headers=admin)
+    assert other.status_code == 422

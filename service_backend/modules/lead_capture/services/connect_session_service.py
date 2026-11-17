@@ -131,6 +131,12 @@ def clean_origins(values: List[str]) -> List[str]:
     return out
 
 
+def gateway_key(db: Session, tenant_id: str, key_id: str) -> Optional[LcApiKey]:
+    """The calling gateway key's row, tenant-scoped (None = gone/revoked)."""
+    row = db.query(LcApiKey).filter(LcApiKey.id == key_id, LcApiKey.tenant_id == tenant_id).first()
+    return row if row is not None and row.revoked_at is None else None
+
+
 def set_key_origins(db: Session, tenant_id: str, key_id: str, origins: List[str]) -> LcApiKey:
     row = db.query(LcApiKey).filter(LcApiKey.id == key_id, LcApiKey.tenant_id == tenant_id).first()
     if row is None:
@@ -141,14 +147,20 @@ def set_key_origins(db: Session, tenant_id: str, key_id: str, origins: List[str]
     return row
 
 
-def _staff_origin_allowed(origin: str) -> bool:
-    """A staff session posts back to this app's own frontend only."""
+def _staff_origin_allowed(db: Session, tenant_id: str, origin: str) -> bool:
+    """A staff session posts back to this app's own frontend only: a listed
+    app origin, or THIS tenant's own subdomain of it (never another
+    tenant's)."""
     allowed = {normalize_origin(o) for o in settings.cors_origins_list}
     allowed.add(normalize_origin(settings.frontend_url))
     if origin in allowed:
         return True
     pattern = settings.cors_origin_regex
-    return bool(pattern) and re.fullmatch(pattern, origin) is not None
+    if not pattern or re.fullmatch(pattern, origin) is None:
+        return False
+    tenant = db.get(Tenant, tenant_id)
+    host = urlsplit(origin).hostname or ""
+    return tenant is not None and bool(tenant.slug) and host.split(".", 1)[0] == tenant.slug
 
 
 # ── sessions ────────────────────────────────────────────────────────────────
@@ -180,7 +192,7 @@ def create_session(
         allowed = set(key.allowed_origins_json or [])
         if origin is None or origin not in allowed:
             raise SessionError(422, "ORIGIN_NOT_ALLOWED", "returnOrigin is not on this key's allowed origins.")
-    elif return_origin and (origin is None or not _staff_origin_allowed(origin)):
+    elif return_origin and (origin is None or not _staff_origin_allowed(db, tenant_id, origin)):
         raise SessionError(422, "ORIGIN_NOT_ALLOWED", "returnOrigin is not this app's origin.")
     if source_id:
         source_service.get_source(db, tenant_id, source_id)  # 404 when not this tenant's
@@ -210,6 +222,17 @@ def _tenant_usable(db: Session, tenant_id: str) -> bool:
     return ModuleRepository(db).is_active(tenant_id, MODULE_NAME)
 
 
+def _key_usable(db: Session, row: LcConnectSession) -> bool:
+    """A session a gateway key opened dies with the key (revoked, or its
+    origin taken off the allowed list since)."""
+    if not row.key_id:
+        return True
+    key = db.query(LcApiKey).filter(LcApiKey.id == row.key_id, LcApiKey.tenant_id == row.tenant_id).first()
+    if key is None or key.revoked_at is not None:
+        return False
+    return row.return_origin in set(key.allowed_origins_json or [])
+
+
 def redeem(db: Session, secret: Optional[str]) -> Dict[str, Any]:
     """Swap the URL secret for the wizard token, ONCE (AC-64-06/07). A used,
     expired, unknown or disabled session answers the same 410 with no tenant
@@ -233,7 +256,7 @@ def redeem(db: Session, secret: Optional[str]) -> Dict[str, Any]:
     if claimed != 1:
         raise expired
     row = db.query(LcConnectSession).filter(LcConnectSession.token_hash == token_hash).first()
-    if row is None or not _tenant_usable(db, row.tenant_id):
+    if row is None or not _tenant_usable(db, row.tenant_id) or not _key_usable(db, row):
         raise expired
     token = mint_scoped_token(
         EMBED_TYP,
@@ -287,7 +310,7 @@ def resolve_wizard(db: Session, token: Optional[str]) -> WizardPrincipal:
         )
         .first()
     )
-    if row is None or row.consumed_at is None:
+    if row is None or row.consumed_at is None or not _key_usable(db, row):
         raise denied
     if not _tenant_usable(db, row.tenant_id):
         raise SessionError(403, "service_not_enabled", "Lead Capture is not enabled for this account.")
@@ -447,6 +470,22 @@ def wizard_connect(db: Session, principal: WizardPrincipal, page_id: str) -> LcS
         bound = source_service.get_source(db, principal.tenant_id, session.source_id)
         if bound.account_ref and bound.account_ref != page_id:
             raise SessionError(409, "wrong_page", "Pick the Page this source was connected with.")
+    else:
+        # A "new source" session never takes over a source the tenant already
+        # has on this Page: reconnecting it is a session opened for it.
+        existing = (
+            db.query(LcSource.id)
+            .filter(
+                LcSource.tenant_id == principal.tenant_id,
+                LcSource.platform == PLATFORM_FACEBOOK,
+                LcSource.account_ref == page_id,
+            )
+            .first()
+        )
+        if existing is not None:
+            raise SessionError(
+                409, "source_exists", "This Page is already a source here. Reconnect it from the sources list."
+            )
     source = connect_service.connect_facebook(
         db,
         principal.tenant_id,
