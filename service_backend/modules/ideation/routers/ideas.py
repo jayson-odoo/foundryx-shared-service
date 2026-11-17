@@ -7,7 +7,7 @@ status / delete (``ideation.triage.manage``). Status moves ride the core status
 engine (server-authoritative - illegal moves refused)."""
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.v1.documents import _serve_blob
@@ -16,6 +16,10 @@ from app.dependencies import effective_permission_keys, get_current_user, requir
 from app.models.user import User
 
 from ..schemas import (
+    IdeaHistoryOut,
+    IdeaFollowerIn,
+    IdeaFollowerOut,
+    ShareLinkOut,
     BoardOut,
     IdeaAttachmentOut,
     IdeaCommentCreate,
@@ -37,11 +41,15 @@ from ..services.actions import IdeaActionService
 from ..services.attachments import IdeaAttachmentService
 from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
+from ..services import followers as follower_service
+from ..services import history as history_service
 from ..services.feedback_links import cancel_feedback_link_for_idea
+from ..services.share_links import staff_share_url, staff_stop_sharing
 from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
 from ..services.idea_types import list_idea_types
 from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
+from .history_actor import request_actor
 from ..services.similar import SimilarIdeasService
 
 router = APIRouter()
@@ -177,6 +185,7 @@ def reorder_ideas(
 @router.post("/merge", response_model=IdeaOut)
 def merge_ideas(
     body: MergeIn,
+    request: Request,
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
@@ -190,6 +199,7 @@ def merge_ideas(
         body.ideaIds,
         actor=current_user,
         fields=body.fields,
+        history_actor=request_actor(request, current_user),
     )
 
 
@@ -243,6 +253,7 @@ def similar_ideas(
 )
 async def upload_idea_attachment(
     idea_id: str,
+    request: Request,
     file: UploadFile = File(...),
     commentId: Optional[str] = Form(default=None),
     current_user: User = Depends(get_current_user),
@@ -266,7 +277,12 @@ async def upload_idea_attachment(
     if len(content) > ATTACHMENT_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
     return service.upload(
-        current_user.tenant_id, idea_id, file.filename or "", content, comment_id=commentId or None
+        current_user.tenant_id,
+        idea_id,
+        file.filename or "",
+        content,
+        comment_id=commentId or None,
+        actor=_actor(request, current_user),
     )
 
 
@@ -306,6 +322,7 @@ def list_idea_business_requirements(
 def update_idea(
     idea_id: str,
     body: IdeaUpdateIn,
+    request: Request,
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
@@ -327,6 +344,7 @@ def update_idea(
         use_cases=body.useCases,
         current_workaround=body.currentWorkaround,
         idea_type=body.type,
+        history_actor=_actor(request, current_user),
     )
 
 
@@ -346,12 +364,15 @@ def list_merged_ideas(
 @router.post("/{idea_id}/unmerge", response_model=List[IdeaOut])
 def unmerge_idea(
     idea_id: str,
+    request: Request,
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
     """Restore a merged child (AC-94-07), or dissolve a survivor's whole
     group (AC-94-08); 422 for an idea that is neither."""
-    return IdeaMergeService(db).unmerge(current_user.tenant_id, idea_id, actor=current_user)
+    return IdeaMergeService(db).unmerge(
+        current_user.tenant_id, idea_id, actor=current_user, history_actor=request_actor(request, current_user)
+    )
 
 
 @router.post("/{idea_id}/vote", response_model=IdeaOut)
@@ -402,14 +423,113 @@ def delete_idea(
 @router.post("/{idea_id}/feedback-link/cancel", status_code=status.HTTP_204_NO_CONTENT)
 def cancel_feedback_link(
     idea_id: str,
+    request: Request,
     current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
     db: Session = Depends(get_db),
 ) -> Response:
     """Cancel the personal feedback link of this idea's submitter contact (lane
     PUBLIC-IDEAS-BOARD, owner QD a). The next message mints a fresh link. 404
     when the idea is not in the tenant or has no submitter contact."""
-    if not cancel_feedback_link_for_idea(db, current_user.tenant_id, idea_id):
+    if not cancel_feedback_link_for_idea(db, current_user.tenant_id, idea_id, _actor(request, current_user)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── share link + followers (lane FEEDBACK-SUBSCRIBE) ──────────────────────────
+
+
+def _follow_http(exc: follower_service.FollowError):
+    raise HTTPException(exc.status_code, exc.message)
+
+
+_actor = request_actor
+
+
+@router.get("/{idea_id}/history", response_model=List[IdeaHistoryOut])
+def get_idea_history(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> List[IdeaHistoryOut]:
+    """The item's History (owner standing rule: who, on behalf of, when, plain
+    action, old -> new), newest first. 404 outside the tenant."""
+    try:
+        return history_service.list_history(db, current_user.tenant_id, idea_id)
+    except history_service.HistoryNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
+
+
+@router.post("/{idea_id}/share-link", response_model=ShareLinkOut)
+def get_share_link(
+    idea_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
+    db: Session = Depends(get_db),
+) -> ShareLinkOut:
+    """The item's read-only share link, minted on first use. 404 when the idea
+    is not in the tenant or is a test item."""
+    url = staff_share_url(db, current_user.tenant_id, idea_id, _actor(request, current_user))
+    if url is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
+    return ShareLinkOut(url=url)
+
+
+@router.delete("/{idea_id}/share-link", status_code=status.HTTP_204_NO_CONTENT)
+def stop_share_link(
+    idea_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
+    db: Session = Depends(get_db),
+) -> Response:
+    """"Stop sharing": the current share link stops working; the next Share
+    mints a new one."""
+    if not staff_stop_sharing(db, current_user.tenant_id, idea_id, _actor(request, current_user)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{idea_id}/followers", response_model=List[IdeaFollowerOut])
+def list_followers(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> List[IdeaFollowerOut]:
+    try:
+        return follower_service.staff_list(db, current_user.tenant_id, idea_id)
+    except follower_service.FollowError as exc:
+        _follow_http(exc)
+
+
+@router.post("/{idea_id}/followers", response_model=List[IdeaFollowerOut])
+def add_follower(
+    idea_id: str,
+    body: IdeaFollowerIn,
+    request: Request,
+    current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
+    db: Session = Depends(get_db),
+) -> List[IdeaFollowerOut]:
+    """Add a contact of this workspace as a follower (idempotent). 422 for a
+    contact outside the tenant."""
+    try:
+        return follower_service.staff_add(
+            db, current_user.tenant_id, idea_id, body.contactId, current_user.id, _actor(request, current_user)
+        )
+    except follower_service.FollowError as exc:
+        _follow_http(exc)
+
+
+@router.delete("/{idea_id}/followers/{contact_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_follower(
+    idea_id: str,
+    contact_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(TRIAGE_PERMISSION)),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        follower_service.staff_remove(db, current_user.tenant_id, idea_id, contact_id, _actor(request, current_user))
+    except follower_service.FollowError as exc:
+        _follow_http(exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

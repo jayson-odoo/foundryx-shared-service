@@ -9,7 +9,10 @@ import io
 import logging
 import re
 import uuid
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .history import HistoryActor
 
 from fastapi import HTTPException
 from sqlalchemy import and_, func, or_
@@ -80,6 +83,7 @@ class IdeaAttachmentService:
         *,
         content_prefix: str = "/ideation/ideas",
         comment_id: Optional[str] = None,
+        actor: Optional["HistoryActor"] = None,
     ) -> IdeaAttachmentOut:
         """Store one upload. ``comment_id`` attaches it to that comment (which
         must be live and belong to THIS idea and tenant, else 404); without it the
@@ -138,6 +142,13 @@ class IdeaAttachmentService:
             comment_id=comment_id,
         )
         self.db.add(row)
+        # The item's History tab (lane FEEDBACK-SUBSCRIBE).
+        from . import history
+
+        history.record(
+            self.db, tenant_id, idea_id, history.ACTION_ATTACHMENT_ADDED, actor or history.HistoryActor(),
+            to_value=name,
+        )
         self.db.commit()
         return self.to_out(row, content_prefix)
 

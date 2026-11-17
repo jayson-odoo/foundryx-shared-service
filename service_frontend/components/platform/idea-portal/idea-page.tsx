@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { ArrowLeft, Heart, Reply, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useDatetime } from '@/hooks/use-datetime';
-import { useIdeaPortal, usePortalAttachmentFetch, usePortalIdeaPage } from '@/hooks/use-idea-portal';
+import { useIdeaPortal, usePortalAttachmentFetch, usePortalIdeaPage, type ShareAction } from '@/hooks/use-idea-portal';
 import {
   AttachmentPicker,
   UploadRetryNotice,
@@ -16,6 +16,7 @@ import { AttachmentThumbs } from '@/components/platform/attachment-preview/attac
 import { IdeaStatusTimeline } from '@/app/(public)/public/feedback/[token]/components/idea-status-timeline';
 import { colorToHex } from '@/components/platform/status-badge';
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
@@ -29,6 +30,8 @@ import type { PortalActivity, PortalComment, PortalIdea, PortalVoter } from '@/t
 import { PortalStatusPill } from './portal-status-pill';
 import { PortalLoading, PortalMessage } from './portal-states';
 import { UpvoteBox } from './upvote-box';
+import { FollowShareBar } from './follow-share-bar';
+import { SharePhoneDialog } from './share-phone-dialog';
 import { formatFeedbackNumber } from '@/lib/feedback-number';
 
 const ORDER_OPTIONS = [
@@ -407,31 +410,53 @@ export interface IdeaPageProps {
 /** The idea (card) page: status, upvote box, the four fields, comments,
  * activity feed (newest first), "where is it" timeline, voters. */
 export function IdeaPage({ ideaId }: IdeaPageProps) {
-  const { mode, paths, principal } = useIdeaPortal();
+  const { mode, paths, principal, shareToken } = useIdeaPortal();
   const back = mode === 'link' ? { href: paths.feedback, label: 'Feedback' } : { href: paths.roadmap, label: 'Roadmap' };
   const { formatDmyDate: formatDate, timeZone } = useDatetime();
-  const page = usePortalIdeaPage(ideaId);
+  const shareView = mode === 'share' && Boolean(shareToken);
+  const page = usePortalIdeaPage(ideaId, shareView ? shareToken : null);
   const idea = page.idea.data;
+  // Lane FEEDBACK-SUBSCRIBE: on a share link every action asks for the phone.
+  const [phoneAction, setPhoneAction] = useState<ShareAction | null>(null);
+  const [followBusy, setFollowBusy] = useState(false);
 
   if (page.idea.loading && !idea) return <PortalLoading />;
   if (page.idea.notFound) return <PortalMessage text="This feedback isn’t available." />;
   if (!idea) return <PortalMessage text="This feedback could not be loaded." />;
 
   const onAction = (p: Promise<void>) => p.catch(() => toast.error(page.actionError ?? 'Something went wrong.'));
+  const ask = (action: ShareAction) => () => setPhoneAction(action);
+  const askAsync = (action: ShareAction) => () => {
+    setPhoneAction(action);
+    return Promise.resolve();
+  };
+  const toggleFollow = () => {
+    setFollowBusy(true);
+    onAction(page.toggleFollow()).finally(() => setFollowBusy(false));
+  };
 
   return (
     <>
-      <Link href={back.href} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="size-4" aria-hidden />
-        {back.label}
-      </Link>
+      {!shareView && (
+        <Link href={back.href} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="size-4" aria-hidden />
+          {back.label}
+        </Link>
+      )}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
         <div className="flex min-w-0 flex-col gap-5">
           <div className="flex gap-4" data-testid="portal-idea-hero">
-            <UpvoteBox size="lg" count={idea.upvotes} voted={idea.myVote} onVote={() => onAction(page.vote())} />
+            <UpvoteBox
+              size="lg"
+              count={idea.upvotes}
+              voted={idea.myVote}
+              onVote={shareView ? ask('upvote') : () => onAction(page.vote())}
+            />
             <div className="min-w-0">
               {idea.ideaNumber && <p className="text-sm font-medium text-muted-foreground">{formatFeedbackNumber(idea.ideaNumber)}</p>}
-              <div role="heading" aria-level={1} className="font-heading text-xl font-semibold break-words sm:text-2xl">{idea.title}</div>
+              <div role="heading" aria-level={1} className="font-heading text-xl font-semibold break-words sm:text-2xl">
+                <ClampedText text={idea.title} lines={2} />
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 {idea.statusLabel && <PortalStatusPill label={idea.statusLabel} color={idea.statusColor} />}
                 {idea.submitterFirstName && <span>Submitted by {idea.submitterFirstName}</span>}
@@ -439,6 +464,15 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
                 {idea.isMine && (
                   <span className="rounded-full border border-primary px-2 py-0.5 text-xs text-primary">Yours</span>
                 )}
+              </div>
+              <div className="mt-3">
+                <FollowShareBar
+                  following={Boolean(idea.following)}
+                  followerCount={idea.followerCount ?? 0}
+                  onFollow={shareView ? ask('follow') : principal.kind === 'contact' ? toggleFollow : null}
+                  onShare={shareView ? null : page.shareUrl}
+                  busy={followBusy}
+                />
               </div>
             </div>
           </div>
@@ -462,12 +496,18 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
 
           <Card>
             <CardContent className="py-4">
-              <Composer
-                placeholder="Leave a comment"
-                submitLabel="Comment"
-                onRetry={page.retryCommentUploads}
-                onSubmit={(body, files) => (files.length > 0 ? page.addComment(body, undefined, files) : page.addComment(body))}
-              />
+              {shareView ? (
+                <Button variant="outline" className="w-full" onClick={ask('comment')}>
+                  Leave a comment
+                </Button>
+              ) : (
+                <Composer
+                  placeholder="Leave a comment"
+                  submitLabel="Comment"
+                  onRetry={page.retryCommentUploads}
+                  onSubmit={(body, files) => (files.length > 0 ? page.addComment(body, undefined, files) : page.addComment(body))}
+                />
+              )}
               {page.actionError && <p className="mt-2 text-sm text-destructive">{page.actionError}</p>}
             </CardContent>
           </Card>
@@ -491,11 +531,14 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
                   <ActivityItem
                     key={`${row.event.kind}-${row.event.comment?.id ?? row.event.at}-${i}`}
                     e={row.event}
-                    onLike={(id) => onAction(page.likeComment(id))}
+                    onLike={shareView ? ask('like') : (id) => onAction(page.likeComment(id))}
                     onDelete={(id) => onAction(page.deleteComment(id))}
                     onRetry={page.retryCommentUploads}
-                    onReply={(parentId, body, files) =>
-                      files.length > 0 ? page.addComment(body, parentId, files) : page.addComment(body, parentId)
+                    onReply={
+                      shareView
+                        ? askAsync('comment')
+                        : (parentId, body, files) =>
+                            files.length > 0 ? page.addComment(body, parentId, files) : page.addComment(body, parentId)
                     }
                   />
                 ),
@@ -509,9 +552,10 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
             <h3 className="text-sm font-semibold">Where is it</h3>
             <IdeaStatusTimeline timeline={idea.timeline} />
           </div>
-          <Voters voters={page.voters.data ?? []} />
-          {/* A one-product board never names the product (owner 17 Nov). */}
-          {idea.productName && !principal.productId && (
+          {!shareView && <Voters voters={page.voters.data ?? []} />}
+          {/* A one-product board never names the product (owner 17 Nov); a share
+              link is one product's item, so it does not either. */}
+          {idea.productName && !principal.productId && !shareView && (
             <Card>
               <CardContent className="flex justify-between py-4 text-sm">
                 <span className="text-muted-foreground">Product</span>
@@ -521,6 +565,19 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
           )}
         </aside>
       </div>
+      {shareView && shareToken && (
+        <SharePhoneDialog
+          shareToken={shareToken}
+          ideaId={idea.id}
+          action={phoneAction}
+          onClose={() => setPhoneAction(null)}
+          onProven={(boardUrl) => {
+            setPhoneAction(null);
+            if (boardUrl) window.location.assign(boardUrl);
+            else page.idea.reload();
+          }}
+        />
+      )}
     </>
   );
 }
