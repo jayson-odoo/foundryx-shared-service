@@ -17,11 +17,13 @@ Dev rule (same as core): with ``META_APP_ID``/``META_APP_SECRET`` unset, or a
 """
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
+from app.integrations.meta.errors import TOKEN_ERROR_CODES, is_token_error  # noqa: F401 - re-export
 from app.integrations.meta.graph import (
     MetaGraphMixin,
     _dict_items,
@@ -38,12 +40,13 @@ from app.integrations.meta.graph import (
 logger = logging.getLogger(__name__)
 
 LEAD_FIELDS = "id,created_time,field_data,form_id,ad_id,adset_id,campaign_id,is_organic,platform"
-# Graph codes meaning the token no longer works or lost a permission.
-TOKEN_ERROR_CODES = {10, 102, 190, 200}
 # S-META F7 test-lead subcodes.
 SUBCODE_TEST_LEAD_EXISTS = 1892058  # POST /{form}/test_leads: one already exists
 SUBCODE_DELETE_NOT_TRUSTED = 1892035  # DELETE /{lead}: "Could Not Delete Lead", yet usually deleted
 _TEXT_CAP = 500
+PAGE_SIZE = 100
+MAX_PAGES = 20  # 2,000 rows per call at most; the next backfill run continues
+DEV_FORM_ID = "100000000000000"
 
 
 class MetaLeadError(Exception):
@@ -82,7 +85,7 @@ def _error(resp: httpx.Response, fallback: str) -> MetaLeadError:
     code = _error_code(resp)
     text = provider_error_text(_meta_error_text(resp)) or fallback
     return MetaLeadError(
-        text, code=code, subcode=_error_subcode(resp), token_invalid=code in TOKEN_ERROR_CODES
+        text, code=code, subcode=_error_subcode(resp), token_invalid=is_token_error(code)
     )
 
 
@@ -252,3 +255,90 @@ class MetaLeadClient(MetaGraphMixin):
         resp = self._send("POST", f"{form_id}/test_leads", page_token)
         if resp.status_code != 200:
             raise _error(resp, "Meta refused the test lead.")
+
+    # ── forms list, Terms flag, form leads (lane L-B: AC-64-23/28) ──────────
+
+    def leadgen_forms(self, page_token: str, page_id: str, *, dev: bool = False) -> List[Dict[str, Any]]:
+        """The Page's Instant Forms as ``[{id, name, status, createdTime}]``
+        (``GET /{page}/leadgen_forms``, Page token, every page of the list up
+        to ``MAX_PAGES``). Raises MetaLeadError."""
+        if not self._configured or dev:
+            return [{"id": DEV_FORM_ID, "name": f"Dev form {DEV_FORM_ID}", "status": "ACTIVE", "createdTime": None}]
+        forms: List[Dict[str, Any]] = []
+        after = ""
+        for _ in range(MAX_PAGES):
+            params = {"fields": "id,name,status,created_time", "limit": str(PAGE_SIZE)}
+            if after:
+                params["after"] = after
+            resp = self._get(f"{page_id}/leadgen_forms", page_token, params)
+            if resp.status_code != 200:
+                raise _error(resp, "Meta refused the form list.")
+            body = _json_obj(resp)
+            for item in _dict_items(_list_field(body, "data")):
+                form_id = _id_field(item, "id")
+                if not form_id:
+                    continue
+                forms.append({
+                    "id": form_id,
+                    "name": _text(item.get("name"))[:200] or None,
+                    "status": _text(item.get("status"))[:32] or None,
+                    "createdTime": _text(item.get("created_time")) or None,
+                })
+            after = _next_cursor(body)
+            if not after:
+                break
+        return forms
+
+    def leadgen_tos_accepted(self, page_token: str, page_id: str, *, dev: bool = False) -> Optional[bool]:
+        """The Page's ``leadgen_tos_accepted`` flag, or None when it cannot be
+        read. Never raises: the flag is a warning, never a blocker."""
+        if not self._configured or dev:
+            return True
+        try:
+            resp = self._get(page_id, page_token, {"fields": "leadgen_tos_accepted"})
+        except MetaLeadError:
+            return None
+        if resp.status_code != 200:
+            logger.info("leadgen_tos_accepted read returned %s", resp.status_code)
+            return None
+        flag = _json_obj(resp).get("leadgen_tos_accepted")
+        return flag if isinstance(flag, bool) else None
+
+    def form_leads(
+        self, page_token: str, form_id: str, since_epoch: int, *, dev: bool = False
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """``(leads, truncated)``: leads of one form created after
+        ``since_epoch`` (``GET /{form}/leads`` with a ``time_created`` filter,
+        Page token), up to ``MAX_PAGES`` x ``PAGE_SIZE``; ``truncated`` = more
+        pages were left unread. Raises MetaLeadError."""
+        if not self._configured or dev:
+            return [], False
+        filtering = json.dumps(
+            [{"field": "time_created", "operator": "GREATER_THAN", "value": int(since_epoch)}],
+            separators=(",", ":"),
+        )
+        leads: List[Dict[str, Any]] = []
+        after = ""
+        for _ in range(MAX_PAGES):
+            params = {"fields": LEAD_FIELDS, "filtering": filtering, "limit": str(PAGE_SIZE)}
+            if after:
+                params["after"] = after
+            resp = self._get(f"{form_id}/leads", page_token, params)
+            if resp.status_code != 200:
+                raise _error(resp, "Meta refused the form's lead list.")
+            body = _json_obj(resp)
+            leads.extend(i for i in _dict_items(_list_field(body, "data")) if _id_field(i, "id"))
+            after = _next_cursor(body)
+            if not after:
+                return leads, False
+        return leads, True
+
+
+def _next_cursor(body: Dict[str, Any]) -> str:
+    """Meta's ``paging.cursors.after`` when a next page exists, else ''."""
+    paging = body.get("paging")
+    if not isinstance(paging, dict) or not paging.get("next"):
+        return ""
+    cursors = paging.get("cursors")
+    after = cursors.get("after") if isinstance(cursors, dict) else None
+    return after if isinstance(after, str) and 0 < len(after) <= 512 else ""

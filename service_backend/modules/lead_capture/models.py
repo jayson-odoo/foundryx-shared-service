@@ -98,6 +98,30 @@ class LcSource(LeadCaptureBase):
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     last_lead_at = Column(UTCDateTime(), nullable=True)
+    # Backfill job (AC-64-28, migration 0004): last run and its error, shown
+    # with the source so the job is never silent.
+    backfill_last_run_at = Column(UTCDateTime(), nullable=True)
+    backfill_last_error = Column(String(500), nullable=True)
+
+
+class LcSourceEvent(LeadCaptureBase):
+    """A source's History (AC-64-38, migration 0004): connected, reconnected,
+    forms changed, needs reconnect, disconnected - who, on behalf of whom,
+    when, old -> new. No token, key or personal data ever lands here."""
+
+    __tablename__ = "lc_source_event"
+    __table_args__ = (Index("ix_lc_source_event_source", "tenant_id", "source_id", "created_at"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    source_id = Column(String, ForeignKey("lc_source.id"), nullable=False)
+    action = Column(String(32), nullable=False)
+    actor_type = Column(String(8), nullable=False)  # user | key | system
+    actor_id = Column(String, nullable=True)  # user id or gateway key id
+    on_behalf_of_id = Column(String, nullable=True)  # impersonated user, when any
+    from_value = Column(String(500), nullable=True)
+    to_value = Column(String(500), nullable=True)
+    created_at = _created()
 
 
 class LcSettings(LeadCaptureBase):

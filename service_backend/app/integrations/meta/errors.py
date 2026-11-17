@@ -38,3 +38,15 @@ class SendError(Exception):
         # is Meta's `Retry-After` header in whole seconds when it sent one.
         self.rate_limited = rate_limited
         self.retry_after = retry_after
+
+
+# Graph ``error.code`` values meaning the token no longer works or lost a
+# permission (plan 64 AC-64-29): 190 invalid / expired / revoked token,
+# 102 session, 10 and 200 permission denied or removed. One list for every
+# Meta caller that classifies token health.
+TOKEN_ERROR_CODES = frozenset({10, 102, 190, 200})
+
+
+def is_token_error(code: Optional[int]) -> bool:
+    """True when a Graph error code means: reconnect, the token is gone."""
+    return isinstance(code, int) and not isinstance(code, bool) and code in TOKEN_ERROR_CODES

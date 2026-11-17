@@ -419,8 +419,10 @@ def test_token_error_flips_needs_reconnect_with_one_event_and_one_mail(client, l
     data = updated[0]["data"]
     assert data["id"] == sid and data["status"] == SOURCE_NEEDS_RECONNECT and data["change"] == "needs_reconnect"
     (mail,) = _mails(lc)
-    assert "Foundryx" not in (mail.subject + mail.text_body + mail.html_body)
-    assert PAGE_TOKEN not in (mail.subject + mail.text_body + mail.html_body)
+    text = mail.subject + mail.text_body + mail.html_body
+    assert "Foundryx Test Page" in mail.subject  # the Page by name
+    assert "Foundryx" not in text.replace("Foundryx Test Page", "")  # white-label
+    assert PAGE_TOKEN not in text
     # a second failure (backfill tick, another webhook) sends nothing more
     db = lc()
     try:
@@ -451,7 +453,14 @@ def test_permission_removed_code_200_also_flips(client, lc, lgraph):
 def test_a_non_token_error_does_not_flip(client, lc, lgraph):
     headers = _login(client)
     sid = _source_id(client, headers)
-    lgraph.lead_status = 500
+    orig = lgraph.handler
+
+    def handler(request):
+        if request.url.path.endswith(f"/{LEAD_ID}"):
+            return httpx.Response(500, json={"error": {"message": "Service temporarily unavailable", "code": 2}})
+        return orig(request)
+
+    lgraph.handler = handler
     db = lc()
     try:
         with pytest.raises(Exception):

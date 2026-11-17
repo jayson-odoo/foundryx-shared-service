@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -28,20 +29,26 @@ from app.secrets import decrypt_secret
 
 from ..meta_leads import SUBCODE_TEST_LEAD_EXISTS, MetaLeadClient, MetaLeadError
 from ..models import PLATFORM_FACEBOOK, SOURCE_ROUTING_STATES, LcSource
+from . import source_service
 
 logger = logging.getLogger(__name__)
 
 _FORM_ID_RE = re.compile(r"^[0-9]{1,32}$")
 _LEAD_ID_RE = re.compile(r"^[0-9]{1,32}$")
 SEND_ATTEMPTS = 2
+# L-A gap (a): one test-lead request per source + form per minute. Each call
+# costs 3-8 Graph calls (list, delete, re-read, create); the minute also
+# covers the time Meta takes to deliver the lead it just made.
+TEST_LEAD_COOLDOWN_SECONDS = 60
 
 
 class FormError(Exception):
-    def __init__(self, status_code: int, code: str, message: str):
+    def __init__(self, status_code: int, code: str, message: str, retry_after: Optional[int] = None):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.retry_after = retry_after
 
 
 def _meta_error(exc: MetaLeadError) -> FormError:
@@ -96,6 +103,7 @@ def form_questions(
         read = meta.form_questions(creds["pageToken"], form_id, dev=bool(creds.get("dev")))
     except MetaLeadError as exc:
         logger.info("form questions read refused (code %s)", exc.code)
+        source_service.handle_meta_error(db, source, exc)
         raise _meta_error(exc) from None
     return {"formId": form_id, "formName": read.get("formName"), "data": read.get("questions") or []}
 
@@ -130,9 +138,11 @@ def send_test_lead(
         raise FormError(409, "source_not_connected", "This source is not receiving leads. Reconnect the Page.")
     meta = client or MetaLeadClient()
     creds = _page_token(source, meta)
-    if creds.get("dev") or not meta.configured:
-        if settings.environment != "development":
-            raise FormError(400, "token_invalid", "This source has no usable Page token. Reconnect the Page.")
+    dev = bool(creds.get("dev")) or not meta.configured
+    if dev and settings.environment != "development":
+        raise FormError(400, "token_invalid", "This source has no usable Page token. Reconnect the Page.")
+    _claim_cooldown(db, source, form_id)
+    if dev:
         _dev_test_lead(source, form_id)
         return {"formId": form_id}
     token = creds["pageToken"]
@@ -148,12 +158,35 @@ def send_test_lead(
                 logger.info("test lead create answered 1892058 (attempt %s)", attempt + 1)
     except MetaLeadError as exc:
         logger.info("test lead refused (code %s subcode %s)", exc.code, exc.subcode)
+        source_service.handle_meta_error(db, source, exc)
         raise _meta_error(exc) from None
     raise FormError(
         409,
         "test_lead_exists",
         "Meta still holds this form's previous test lead. Delete it in Meta's Lead Ads Testing Tool and try again.",
     )
+
+
+def _claim_cooldown(db: Session, source: LcSource, form_id: str) -> None:
+    """Refuse a second request for the same form within the cooldown, else
+    note this request (it also tells the ingest which source asked, so on a
+    shared Page only that source passes its test). Committed BEFORE any Meta
+    call: every attempt counts, and the lead may arrive before we return."""
+    from .leadgen_service import last_test_request, note_test_request
+
+    now = datetime.now(timezone.utc)
+    last = last_test_request(source, form_id)
+    if last is not None:
+        wait = TEST_LEAD_COOLDOWN_SECONDS - int((now - last).total_seconds())
+        if 0 < wait <= TEST_LEAD_COOLDOWN_SECONDS:
+            raise FormError(
+                429,
+                "test_lead_cooldown",
+                f"A test lead was just sent for this form. Try again in {wait} seconds.",
+                retry_after=wait,
+            )
+    note_test_request(source, form_id, now)
+    db.commit()
 
 
 def _dev_test_lead(source: LcSource, form_id: str) -> None:
