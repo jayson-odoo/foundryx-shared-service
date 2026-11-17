@@ -4,51 +4,60 @@ UAC: AC-64-57 (`documentation/plans/sprint-5/64-lead-capture-acceptance-criteria
 Owner rulings: 17 Nov 12:20 "no backend configuration should be needed", 12:25 "serve multiple products",
 15:27 product-interest map dropped, 16:16 developer/location map reverted (Meta answers stay in lead Notes).
 Mock: `documentation/plans/meta-leads/mock/lead-capture-ld-screens.html` (v1, fake data).
+Crew ruling (PR #259): option (a) - thin signed-in staff routes for receivers + "Send test push", and
+revoke/remove through the core grace-window engine.
 
 ## Who and where
 
 - The product's admin (any user of the product's company holding the Lead Capture permissions).
-- One page: **Lead Capture** in the sidebar (shown only while Lead Capture is installed for the company),
-  `/lead-capture?tab=keys|delivery|fields`. The tab is in the address bar.
-- Everything is the signed-in company's own data. A second product = a second company, its own page.
+- Sidebar block **Lead Capture** (shown only while Lead Capture is installed for the company) with three
+  pages, each pruned by its own permission: Keys `/lead-capture/keys`, Delivery `/lead-capture/delivery`,
+  Fields `/lead-capture/fields`.
+- Everything is the signed-in company's own data. A second product = a second company, its own pages.
 
-## Tabs
-
-### Keys (`lead_capture.keys.manage`)
-- Standard list: Name, Key (masked `fxl_live_ab12...`), Created, Last used, Status (Active / Revoked).
-  One toolbar row: Search, Filters (Status), Columns, **Create**.
+## Keys (`lead_capture.keys.manage`)
+- Standard list: Name, Key (masked `fxl_live_****1234`), Created, Last used, Status (Active / Revoked).
+  One toolbar row: Search, Filters (Status), Columns, Export, **Create**. Every column sorts; the list state
+  rides the address bar.
 - Create: popup asks Name -> Create -> the full key shows once with Copy; closing clears it.
-- Right-click a row: Revoke (confirm popup). Revoked keys stay in the list with status Revoked.
+- Row menu: Revoke (grace window, can be undone during the countdown). Revoked keys stay listed.
 
-### Delivery (`lead_capture.view`; changes `lead_capture.manage`)
+## Delivery (`lead_capture.view`; changes `lead_capture.manage`)
 - First choice, one of two: **Push to my system** or **Pull only**. Only the chosen path shows.
-  - Pull only: no receivers. Leads are fetched with the key from `GET /api/v1/lead-capture/leads`.
-    Choosing Pull only while receivers exist asks to remove them (confirm popup).
-  - Push: list of receivers: URL, Events, Added, Last delivered. Toolbar: Search, Columns, **Create**.
-- Create: popup asks URL + events (New lead ticked by default; Lead updated, Source updated) -> the signing
-  secret shows once with Copy.
-- Right-click a receiver: Send test push, Remove (confirm).
-- Send test push: queues one signed test delivery; a toast reports it was sent or names the plain reason.
+  The first view follows the stored state: receivers exist = Push, none = Pull only.
+  - Pull only: the leads address with Copy (`/api/v1/lead-capture/leads`, read with the key).
+    Choosing Pull only while receivers exist asks "Switch to pull only?" and removes them.
+  - Push: list of receivers: URL, Events, Added, Last delivered. Toolbar: Search, Filters (Events),
+    Columns, Export, **Create**.
+- Create: popup asks URL + Events (New lead ticked; Lead updated, Source updated) -> the signing
+  secret shows once with Copy. A refused URL shows the plain reason under the field.
+- Row menu: Send test push (one signed sample lead, `isTest: true`, to that receiver only; toast "Test push
+  sent." or the plain reason), Remove (grace window).
 
-### Fields (`lead_capture.view`; changes `lead_capture.manage`)
-- **Lead fields**: the product's own list (Key, Label, Type) in an editable line grid. With no list saved
-  the four defaults show (Name, Phone, Email, Lead notes). Save replaces the list; "Use defaults" clears it.
-- **Form maps**: one row per (Page, form) the company knows: forms with a "Map fields" notice and forms that
-  already have a map, plus "All forms" per Page. Columns: Page, Form, Mapped (n of m), Status
-  (Needs mapping / Mapped). Click a row: centred popup "Map fields":
-  - each form question (real labels from Meta, L-A) on its own row with a searchable picker of the
-    product's lead fields, or "Leave in lead notes";
-  - Save -> the form's "Map fields" notice clears.
-  - "Add form" in the toolbar: enter the Instant Form id, the questions load from Meta.
+## Fields (`lead_capture.view`; changes `lead_capture.manage`)
+- **Lead fields** card: the product's own list (Key, Label, Type) in an editable line grid; line menu =
+  Move up / Move down / Remove; Add field; Save (enabled when changed); "Use defaults" (shown when a list is
+  saved) clears back to Name, Phone, Email, Lead notes. Bad / duplicate keys are named next to the field on
+  Save.
+- **Form maps** list: one row per (Page, form) the company knows: forms with a "Map fields" notice and forms
+  with a map ("All forms" when an every-form map exists). Columns: Page, Form, Mapped questions, Answers in
+  notes, Status (Needs mapping / Mapped). Create = Add form (Page + Instant Form ID, digits only).
+- Click a row: centred popup "Map fields: <form>": each question (real labels from Meta, L-A) with a
+  searchable picker of the product's fields. The default entry names what happens without a map: a
+  standard question reads "Name (automatic)" etc., any other "Leave in lead notes". Save clears the form's
+  "Map fields" notice.
 - Generic only: any question to any field the product defines. No product-interest or developer logic.
 
 ## States (every load ends in content, empty, no-access or error + Try again)
-- Lead Capture not installed: page hidden from the menu; direct URL shows the standard not-installed page.
-- No permission: standard NoPermission page per tab.
-- No Page connected yet: Form maps shows an empty state (connect is lane L-C).
-- Meta refused the questions read: the popup shows Meta's plain reason + Try again.
+- Lead Capture not installed: the menu block is hidden and the module keys are revoked, so the pages show
+  the standard no-access page.
+- No permission: standard no-access page.
+- No Page connected yet: Form maps shows the empty list; Add form names the missing Page.
+- Meta refused the questions read: the popup shows the plain reason + Try again.
 
-## Backend needs (asked crew before code)
-- Keys, Fields, field map, questions: staff routes exist on main (`routers/staff.py`).
-- Delivery: the receiver routes exist only on the key-holder gateway (`routers/gateway.py:56`); the staff
-  side has none, and no "Send test push" route exists anywhere. See the crew-ask on the PR.
+## Backend added in this lane (option (a))
+- `GET/POST /lead-capture/webhooks`, `DELETE /lead-capture/webhooks/{id}`, `POST /lead-capture/webhooks/{id}/test`
+  (`routers/staff.py`), wrapping the same `delivery_service` functions the gateway uses.
+- `delivery_service.send_test_push` + `get_endpoint`; `queue_event` now shares `_queue_to` with it.
+- `modules/lead_capture/deferred_actions.py`: `lead_capture_keys.revoke`, `lead_capture_receivers.remove`.
+- No new table, permission or gateway change (consumer guide untouched).
