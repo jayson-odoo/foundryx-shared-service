@@ -131,10 +131,9 @@ def test_a_document_with_different_lines_is_not_ours(client, h, gw):
 
 
 def test_a_window_straddling_midnight_reads_both_day_lists(client, h, gw, db):
-    # Relative to today (MYT): the scan reaches back LOOKUP_MAX_DAYS only, so a
-    # fixed calendar date fell out of reach a week after it was written.
-    myt = timezone(timedelta(hours=8))
-    after = datetime.now(myt).date() - timedelta(days=1)  # the midnight between two days ago and yesterday
+    # The midnight that starts yesterday (MYT), so the window always sits inside the
+    # LOOKUP_MAX_DAYS reach whatever day the suite runs (fixed dates aged out).
+    after = datetime.now(MYT).date() - timedelta(days=1)
     before = after - timedelta(days=1)
     first_attempt_landed(client, h, gw, "cl-5", body())
     shift(h.vendor.docs["PO"][0], to=f"{after.isoformat()}T00:00:02.000")  # created just after MYT midnight

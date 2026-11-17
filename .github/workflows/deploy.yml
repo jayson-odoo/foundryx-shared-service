@@ -185,10 +185,11 @@ jobs:
     # proves the sha already passed it); every other event runs it as before.
     if: github.event_name != 'workflow_dispatch' || !inputs.skip_tests
     runs-on: ubuntu-latest
-    # The suite runs under pytest-xdist here (PR #77): measured 3m26s at
-    # `-n 4` locally, and the hosted runner has 4 cores - 30 min is a wide
-    # margin, not a target.
-    timeout-minutes: 30
+    # The suite runs under pytest-xdist here (PR #77) on the 4-core hosted
+    # runner. It grew to 23-26 min by Nov 2026 and runs were being cancelled
+    # at the old 30 min cap (SS-CI-TIMEOUT); the slowest tests were fixed and
+    # 45 min leaves headroom. Check `--durations` before raising this again.
+    timeout-minutes: 45
     env:
       # Conftest builds its own in-memory SQLite DB per test and disables the
       # email dispatcher / startup orphan sweep, so nothing here ever opens a
