@@ -408,11 +408,14 @@ def test_ac_55_15_spo_blocks_unlink(h, vendor_caps_all_on):
 # ---- step 8: PUT shape + vendor error -----------------------------------------
 
 def test_ac_55_20_put_goes_to_edit_endpoint_with_s2_body(h):
-    from modules.autocount.write_back.payloads import build_link
+    from modules.autocount.write_back.payloads import build_link, so_link_note
 
     po = h.ac.docs["purchaseorderbydocdate"][0]
     so = h.ac.docs["salesorderbydocdate"][0]
-    expected = build_link(copy.deepcopy(po), 12017, so, 11989, Decimal(10))
+    so_row = next(r for r in so["Details"] if r["DtlKey"] == 11989)
+    # plan 66: the new linked row carries the S/O note in this PUT too
+    expected = build_link(copy.deepcopy(po), 12017, so, 11989, Decimal(10), note=so_link_note(so, so_row))
+    assert expected["Details"][-1]["FurtherDescription"].endswith("\\par\r\n}")
     res = h.link_split()
     assert res.outcome == "done", res.error_code
     assert len(h.ac.put_calls) == 2  # plan 65 D4: then the restore write carrying the note

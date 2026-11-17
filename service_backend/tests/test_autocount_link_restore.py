@@ -383,8 +383,9 @@ def test_ac_65_07_the_restore_put_carries_the_rtf_note_on_the_new_row_only(h, ri
     sent = puts(h)
     new_key = rig.new_key(rig.so_dated)
     carrying = [(i, r) for i, c in enumerate(sent) for r in c.body["Details"] if "FurtherDescription" in r]
-    assert [(i, r["DtlKey"]) for i, r in carrying] == [(len(sent) - 1, new_key)]  # one row, in the restore PUT
-    assert carrying and carrying[0][1]["FurtherDescription"] == rtf(NOTE)
+    # plan 66: the new row in the link PUT (DtlKey 0) and the same row in the restore PUT, nothing else
+    assert [(i, r.get("DtlKey") or 0) for i, r in carrying] == [(0, 0), (len(sent) - 1, new_key)]
+    assert all(r["FurtherDescription"] == rtf(NOTE) for _i, r in carrying)
 
 
 def test_ac_65_07_blank_ref_and_a_zero_padded_date_in_the_sent_note(h, rig):

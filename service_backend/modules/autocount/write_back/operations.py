@@ -930,6 +930,9 @@ class OperationService:
     def _line_of(self, snap: Doc, link: Doc, qty: Optional[Decimal] = None) -> Doc:
         line = {k: v for k, v in snap["row"].items() if k != "DtlKey"}
         line.update(link)
+        note = (snap.get("soLink") or {}).get("note") if link.get("FromDocType") == "SO" else None
+        if note:  # plan 66: the note goes on the new linked row in the PUT that creates it
+            line[payloads.LINK_NOTE_KEY] = note
         if qty is not None:
             line["Qty"] = float(qty)
         return line
@@ -1372,6 +1375,7 @@ class OperationService:
                 FromDocType="SO", FromDocNo=link["so_no"], FromDocDtlKey=link["so_dtl_key"],
                 Location=link["location"], Qty=float(link["qty"]), FOCQty=0,
                 Discount=payloads.link_discount(old.get("Discount")),  # D2a: an amount stays on the kept row
+                **{payloads.LINK_NOTE_KEY: link["so_link"]["note"]},  # plan 66: the note in the link PUT
             ))
         if not applied:  # nothing to link: refused, nothing sent, the key is released
             return self._finish(row, REFUSED, ALL_LINKS_SKIPPED, message="every link was skipped",
