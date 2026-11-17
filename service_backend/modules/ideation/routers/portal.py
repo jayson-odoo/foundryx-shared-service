@@ -350,11 +350,17 @@ async def upload_attachment(
     p: PortalPrincipal = Depends(require_portal_principal),
     db: Session = Depends(get_db),
 ):
+    svc = _svc(db, p)
+    try:
+        # Authorise + throttle before the (up to 25 MB) body is read.
+        idea = svc.begin_upload(idea_id, commentId or None)
+    except PortalError as exc:
+        _raise(exc)
     content = await file.read(ATTACHMENT_CAP_BYTES + 1)
     if len(content) > ATTACHMENT_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
     try:
-        return _svc(db, p).upload_attachment(idea_id, file.filename or "", content, commentId or None)
+        return svc.store_upload(idea, file.filename or "", content, commentId or None)
     except PortalError as exc:
         _raise(exc)
 
@@ -370,7 +376,12 @@ def attachment_content(
         key, mime, filename = _svc(db, p).attachment_content(idea_id, attachment_id)
     except PortalError as exc:
         _raise(exc)
-    return _serve_blob(db, p.tenant_id, key, mime, filename, "inline")
+    response = _serve_blob(db, p.tenant_id, key, mime, filename, "inline")
+    # Always revalidate: a browser cache ignores the Authorization header, so a
+    # deleted comment's file or a second person on a shared device must never
+    # get a cached copy back without the server's say-so.
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
 
 
 @router.delete("/{idea_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)

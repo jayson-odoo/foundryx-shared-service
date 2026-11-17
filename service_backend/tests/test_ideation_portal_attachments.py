@@ -374,3 +374,45 @@ def test_ac_a_07_merged_child_comment_file_served_on_survivor(setup):
     staff = _staff_session(s)
     assert s["client"].get(comment_path, headers=staff).status_code == 200
     assert s["client"].get(report_path, headers=staff).status_code == 404
+
+
+def test_sec_public_status_thread_never_lists_files(setup):
+    """Security review S1: the anonymous status page (token only) never sees
+    comment file names / ids, even when the thread carries files."""
+    s = setup
+    owner = _crm_session(s, sub="crm-owner", ideas_manage=False)
+    iid = _idea(s, 1100, crm_user="crm-owner", token="tok-attach-public-1100")
+    cid = _comment(s, owner, iid)
+    assert _up(s, owner, iid, comment_id=cid).status_code == 201
+    rows = s["client"].get("/public/ideas/tok-attach-public-1100/comments").json()
+    assert rows and all(r["attachments"] == [] for r in rows)
+
+
+def test_sec_refused_uploads_count_against_the_throttle(setup, monkeypatch):
+    """Security review N2: a refused upload (unsupported type) still uses the
+    caller's upload budget, so it cannot be looped for free."""
+    monkeypatch.setattr(settings, "throttle_idea_portal_upload_max", 2, raising=False)
+    s = setup
+    iid, owner = _owner(s, 1101)
+    codes = [_up(s, owner, iid, content=HTML, name=f"{i}.html").status_code for i in range(2)]
+    assert codes == [415, 415]
+    assert _up(s, owner, iid).status_code == 429
+
+
+def test_sec_served_file_always_revalidates(setup):
+    """Security review N1: the browser cache must revalidate every time."""
+    s = setup
+    iid, owner = _owner(s, 1102)
+    path = _up(s, owner, iid).json()["contentPath"]
+    assert s["client"].get(path, headers=owner).headers["cache-control"] == "private, no-cache"
+
+
+def test_sec_unknown_attachment_is_the_board_404(setup):
+    """Security review N4: an unknown attachment id answers like any other
+    board miss."""
+    s = setup
+    iid, owner = _owner(s, 1103)
+    miss = s["client"].get(f"/portal/ideas/{iid}/attachments/nope/content", headers=owner)
+    other = s["client"].get("/portal/ideas/nope/attachments/nope/content", headers=owner)
+    assert miss.status_code == other.status_code == 404
+    assert miss.json() == other.json()

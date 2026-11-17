@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from jose import JWTError, jwt
+from fastapi import HTTPException
 from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -1062,17 +1063,17 @@ class IdeaPortalService:
         d.update(authorRole=self.p.role, likeCount=0, likedByMe=False)
         return d
 
-    def upload_attachment(
-        self, idea_id: str, filename: str, content: bytes, comment_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Attach a file to a report (its owner or a manager) or to the caller's
-        own comment. Same sniff / caps / storage as the staff upload."""
+    def begin_upload(self, idea_id: str, comment_id: Optional[str] = None) -> Idea:
+        """Authorise + throttle an upload BEFORE its body is read: a report file
+        needs its owner or a manager, a comment file the comment's author. Every
+        attempt counts against the caller's upload bucket (refused ones too)."""
         from app.services.throttle import Throttled, ThrottleService
 
         idea = self._resolve(idea_id, follow_merge=False)
-        comments = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX)
         if comment_id:
-            comments.assert_author(idea.tenant_id, idea.id, comment_id, self.p.viewer)
+            IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).assert_author(
+                idea.tenant_id, idea.id, comment_id, self.p.viewer
+            )
         elif not (self.p.can_manage or self._is_owned(idea.id)):
             raise _forbidden()
         throttle = ThrottleService(self.db)
@@ -1081,7 +1082,15 @@ class IdeaPortalService:
             throttle.enforce_idea_portal_upload(principal_key=key)
         except Throttled as exc:
             raise PortalError(429, "too_many_uploads", "Too many uploads. Try again later.", exc.retry_after_seconds)
-        created = IdeaAttachmentService(self.db).upload(
+        throttle.record_idea_portal_upload(principal_key=key)
+        return idea
+
+    def store_upload(
+        self, idea: Idea, filename: str, content: bytes, comment_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Store a file authorised by :meth:`begin_upload` through the ONE
+        ``IdeaAttachmentService.upload`` (same sniff / caps / storage as staff)."""
+        return IdeaAttachmentService(self.db).upload(
             idea.tenant_id,
             idea.id,
             filename,
@@ -1089,8 +1098,6 @@ class IdeaPortalService:
             content_prefix=PORTAL_CONTENT_PREFIX,
             comment_id=comment_id or None,
         )
-        throttle.record_idea_portal_upload(principal_key=key)
-        return created
 
     def attachment_content(self, idea_id: str, attachment_id: str) -> Tuple[str, str, str]:
         """``(storage_key, mime, filename)`` of a file the caller may read: a
@@ -1118,7 +1125,12 @@ class IdeaPortalService:
             if merged_child is None or files.comment_id_of(idea.tenant_id, owner_id, attachment_id) is None:
                 raise _not_found()
         source_id = owner_id or idea.id
-        found = files.content(idea.tenant_id, source_id, attachment_id)
+        try:
+            found = files.content(idea.tenant_id, source_id, attachment_id)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise _not_found()
+            raise
         comment_id = files.comment_id_of(idea.tenant_id, source_id, attachment_id)
         if comment_id is None:
             if self._text_withheld(self._is_owned(idea.id)):

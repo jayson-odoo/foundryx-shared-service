@@ -170,7 +170,10 @@ class IdeaCommentService:
     def list_public(self, idea: Idea) -> List[IdeaCommentOut]:
         """The thread of THIS idea (a resolved public-token idea) for an anonymous
         reader - never a survivor's thread, flags always false."""
-        return self._project_names(self._list_for(idea.tenant_id, idea.id, PUBLIC_VIEWER))
+        # Files are never listed to an anonymous token holder (no public serve
+        # route; their names alone can be sensitive).
+        rows = self._list_for(idea.tenant_id, idea.id, PUBLIC_VIEWER)
+        return self._project_names([c.model_copy(update={"attachments": []}) for c in rows])
 
     @staticmethod
     def _project_names(rows: List[IdeaCommentOut]) -> List[IdeaCommentOut]:
