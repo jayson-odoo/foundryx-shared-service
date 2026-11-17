@@ -44,7 +44,7 @@ The call log (`ac_api_call_log.request_json`) of that link tells H1/H2/H3 apart 
   status done. The restore PUT always carries the note (`transfer_row_drift`, `payloads.py:341`) and is the only
   write that can set the new row's DeliveryDate (the link PUT leaves it empty, plan 65 probe P2). The date
   stuck, the note did not: AutoCount accepts `FurtherDescription` on an edit of an EXISTING row without storing
-  it (case c; owner3.sql confirms the note was in that PUT).
+  it (case c; PENDING owner3.sql, which shows whether the note was in that PUT).
 
 ## 4. Fix (held until the db3 probe, lane SO-NOTE-DB3-PROBE)
 
