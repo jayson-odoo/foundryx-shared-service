@@ -238,7 +238,11 @@ class ConversationService:
         return {ws_id: {f.key for f in fields} for ws_id, fields in grouped.items()}
 
     # ── Mapping ──────────────────────────────────────────────────────────────
-    def _thread_items(self, contacts: List[Contact], tenant_id: str) -> List[ThreadItem]:
+    def _thread_items(
+        self, contacts: List[Contact], tenant_id: str, *, with_windows: bool = True
+    ) -> List[ThreadItem]:
+        """``with_windows=False`` skips the version 2 ``windows[]`` list (left
+        null) for a staff-only caller that never serializes above version 1."""
         if not contacts:
             return []
         ids = [c.id for c in contacts]
@@ -254,15 +258,25 @@ class ConversationService:
         )
         # Plan 32 / A7a (D-A7-5) - the per-identity messaging window, batched
         # for the whole page by (contact_id, channel_id) pair.
-        identity_pairs = [
+        # One query for every identity of the page's contacts: the thread's
+        # own (contact, current channel) identity, and the payload version 2
+        # `windows[]` list (identities on live channels).
+        identity_pairs = {
             (c.id, previews[c.id].channel_id)
             for c in contacts
             if c.id in previews and previews[c.id].channel_id
-        ]
-        identity_windows = self.repo.identity_windows_for(identity_pairs, tenant_id)
-        # Payload version 2 window state (`windows[]`): every identity of the
-        # page's contacts, one more batched query.
-        all_identities = self.repo.identities_with_channel_types(ids, tenant_id)
+        }
+        identity_windows = {}
+        all_identities: Dict[str, list] = {}
+        if with_windows:
+            for identity, channel_type, is_trashed in self.repo.identities_with_channel_types(ids, tenant_id):
+                pair = (identity.contact_id, identity.channel_id)
+                if pair in identity_pairs:
+                    identity_windows[pair] = identity
+                if not is_trashed:
+                    all_identities.setdefault(identity.contact_id, []).append((identity, channel_type))
+        else:
+            identity_windows = self.repo.identity_windows_for(list(identity_pairs), tenant_id)
         now = datetime.now(timezone.utc)
         tag_refs = ContactTagService(self.db).refs_for_contacts(ids, tenant_id)
         lifecycle_map = self._lifecycle_map(contacts, tenant_id)
@@ -347,7 +361,7 @@ class ConversationService:
                         list(current_window.allowed_send_types) if current_window else None
                     ),
                     windowReason=current_window.reason if current_window else None,
-                    windows=_window_items(all_identities.get(c.id, []), now),
+                    windows=_window_items(all_identities.get(c.id, []), now) if with_windows else None,
                 )
             )
         return items
