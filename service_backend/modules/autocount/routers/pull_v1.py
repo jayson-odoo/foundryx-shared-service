@@ -32,7 +32,7 @@ import re
 from decimal import Decimal
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -577,7 +577,7 @@ def _write_route(
     call: WriteCall,
     operations: Optional[OperationService] = None,
     *,
-    with_detail: bool = False,
+    with_detail: Union[bool, Callable[[WriteBody], bool]] = False,
 ) -> JSONResponse:
     """The shared write-route frame. ``call(service, raw, tenant_id, company_id,
     key_id)`` invokes the service method; everything before it is auth, scope,
@@ -608,7 +608,8 @@ def _write_route(
         result = call(service, raw, key_row.tenant_id, company.id, key_row.id)
         status_code = _write_status(result)
         _finalize(db, ctx, action, status_code)
-        return _json_response(status_code, _write_body(result, with_detail=with_detail))
+        detail = with_detail(raw) if callable(with_detail) else with_detail
+        return _json_response(status_code, _write_body(result, with_detail=detail))
     except PullGatewayError as exc:
         _merge_error_context(ctx, exc)
         exc.with_context(company_code=company_code_hint)
@@ -662,8 +663,11 @@ def unlink_po_row(
             pool_location=(_optional_text(raw, "poolLocation") or "").strip() or None,  # plan 66
         )
 
-    # plan 66: ``detail`` = the free PO row the qty went back to (the pool row merged into, or the moved row)
-    return _write_route(request, db, raw_body, service, "write_unlink", call, operations, with_detail=True)
+    # plan 66: with ``poolLocation`` the answer carries ``detail`` = the free PO row the qty went back to (the
+    # pool row merged into, or the moved row); without it the body is plan 64's, unchanged (AC-64-07)
+    return _write_route(request, db, raw_body, service, "write_unlink", call, operations,
+                        with_detail=lambda raw: bool(isinstance(raw.get("poolLocation"), str)
+                                                     and raw["poolLocation"].strip()))
 
 
 @router.post("/spo-links/unlink")

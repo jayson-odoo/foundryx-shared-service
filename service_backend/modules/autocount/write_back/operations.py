@@ -816,13 +816,14 @@ class OperationService:
         linked row's own receipt check. None = no merge (today's new free row).
 
         Plan 66 (owner 17 Nov): with a pool location the free row must sit AT the pool location (exact
-        code) and match on item, unit and unit price only. The delivery date is the SO's and means
-        nothing once unlinked, so it is not matched; the pool row keeps its own date."""
+        code) and match on item and unit ONLY. Unit price and delivery date are not matched (the date is
+        the SO's, meaningless once unlinked; owner: "unit price also can ignore"): the pool row keeps its
+        own price and date, only its Qty goes up."""
         if defn.kind != "PO" or defn.mode != "unlink":
             return None
         pool = self._pool_location
         same = ("ItemCode", "UOM") if pool else ("ItemCode", "UOM", "Location")
-        values = ("UnitPrice",) if pool else ("UnitPrice", "DeliveryDate")
+        values: Tuple[str, ...] = () if pool else ("UnitPrice", "DeliveryDate")
         for cand in doc.get("Details") or []:
             if cand.get("DtlKey") == row.get("DtlKey") or _link_of("PO", cand):
                 continue
@@ -1290,7 +1291,8 @@ class OperationService:
         if not landed:
             return self._needs_attention(row, company, snap, "RESUMED")
         self.prims._stage(company, snap["kind"], doc, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc,
+                            detail=_row_in(doc, free_key))
 
     def _resume_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, key: int, doc: Doc,
                      location: Optional[str]) -> Doc:
