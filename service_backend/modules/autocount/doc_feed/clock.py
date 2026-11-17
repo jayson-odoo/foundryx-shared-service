@@ -16,6 +16,11 @@ def myt_date(aware_utc: datetime) -> date:
     return aware_utc.astimezone(MYT).date()
 
 
+def myt_today() -> date:
+    """Today's MYT calendar date (the one place the AutoCount day-list lookups read the clock)."""
+    return myt_date(datetime.now(timezone.utc))
+
+
 def yyyymmdd(day: date) -> str:
     """``yyyyMMdd`` with no separators - the vendor's own query-string form."""
     return day.strftime("%Y%m%d")
