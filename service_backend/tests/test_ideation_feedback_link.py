@@ -138,7 +138,7 @@ def test_ac_fb_10_contact_principal(setup):
     cid = _contact(setup, first_name="Dealer One")
     h = _contact_session(setup, cid)
     me = setup["client"].get("/portal/ideas/me", headers=h).json()
-    assert me == {"kind": "contact", "name": "Dealer", "role": "Dealer", "productId": None, "canManage": False}
+    assert me == {"kind": "contact", "name": "Dealer", "role": "Dealer", "productId": None, "canManage": False, "brand": None}
 
 
 @pytest.mark.parametrize("token", ["x" * 40, "short", "bad token with spaces!!", ""])
