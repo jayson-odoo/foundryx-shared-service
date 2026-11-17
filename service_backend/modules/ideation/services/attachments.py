@@ -32,8 +32,9 @@ THUMB_VARIANT = "thumb"
 THUMB_MAX_SIDE = 320
 THUMB_SOURCE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
 _THUMB_READ_CAP = 26 * 1024 * 1024
-# An image over this many pixels is never decoded (a 656 KB PNG can claim
-# 13000x13000 and cost gigabytes of memory); real phone photos (48 MP) fit.
+# An image whose decode would exceed this many pixels is never decoded (a 656 KB
+# PNG can claim 13000x13000 and cost gigabytes of memory). A JPEG is measured
+# after its reduced-scale decode, so a full-size 48 MP phone photo still previews.
 THUMB_MAX_SOURCE_PIXELS = 40_000_000
 # ``thumb_key == ""`` = "no preview": a refused or undecodable image, remembered
 # so later reads answer 404 without touching storage. NULL = not tried yet.
@@ -296,17 +297,19 @@ class IdeaAttachmentService:
 def _render_thumb(data: bytes) -> Tuple[bytes, str]:
     """``(bytes, mime)`` of the preview: fits 320x320, EXIF-rotated, JPEG (PNG when
     it has transparency). The size is read from the header and an image over
-    ``THUMB_MAX_SOURCE_PIXELS`` is refused BEFORE any decode; a JPEG decodes at
-    reduced scale (``draft``); the small result is rotated, never the original.
+    ``THUMB_MAX_SOURCE_PIXELS`` (a JPEG: at its reduced ``draft`` scale) is refused
+    BEFORE any decode; the small result is rotated, never the original.
     Pillow's own decompression-bomb guard stays on."""
     from PIL import Image, ImageOps
 
     with Image.open(io.BytesIO(data)) as opened:
+        if opened.format == "JPEG":
+            # Decode at reduced scale (up to 1/8): the limit below applies to
+            # the size actually decoded, so a full-size phone photo previews.
+            opened.draft("RGB", (640, 640))
         width, height = opened.size
         if width * height > THUMB_MAX_SOURCE_PIXELS:
             raise _ThumbRefused("too many pixels")
-        if opened.format == "JPEG":
-            opened.draft("RGB", (640, 640))
         opened.thumbnail((THUMB_MAX_SIDE, THUMB_MAX_SIDE))
         img = ImageOps.exif_transpose(opened)
         alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)

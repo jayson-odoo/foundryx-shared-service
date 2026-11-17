@@ -245,7 +245,11 @@ NOT_STORAGE_KEYS = {
     ("meetings", "dedupe_key"): "meeting de-duplication hash",
     # Written by the bot worker as a worker-host path / artefact reference
     # (LocalArtifacts.key_of), never through tenant StorageService.
-    ("meetings", "screenshot_key"): "worker artefact reference, not a tenant storage key",
+    # Local mode: a path on the worker host; S3 mode: a raw key in the tenant
+    # bucket WITHOUT the ``conn:<id>:`` prefix, so the storage migration (which
+    # rewrites ``conn:`` keys only) could not move it even if registered.
+    # Nothing reads it today; carrying the connection id = backlog BL-SS-370.
+    ("meetings", "screenshot_key"): "worker artefact key without a conn: prefix (backlog BL-SS-370)",
 }
 
 

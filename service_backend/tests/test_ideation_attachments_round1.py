@@ -254,3 +254,21 @@ def test_delete_item_also_removes_generated_thumbnail(ctx, media_root):
     assert len([p for p in media_root.rglob("*") if p.is_file()]) == 2  # original + thumb
     assert c.delete(f"/ideation/ideas/{iid}", headers=h).status_code == 204
     assert [p for p in media_root.rglob("*") if p.is_file()] == []
+
+
+def test_big_jpeg_previews_from_its_reduced_decode(ctx, monkeypatch):
+    """A full-size phone photo (e.g. 48 MP) still gets a preview: a JPEG decodes
+    at reduced scale, so the pixel limit applies to that size; a PNG of the same
+    size (decoded in full) is still refused."""
+    from PIL import Image
+
+    monkeypatch.setattr("modules.ideation.services.attachments.THUMB_MAX_SOURCE_PIXELS", 1_200_000)
+    c, h, iid = ctx["c"], ctx["h"], ctx["idea_id"]
+    buf = io.BytesIO()
+    Image.new("RGB", (2400, 1800), (30, 90, 200)).save(buf, "JPEG")
+    jpeg = _up(c, h, iid, buf.getvalue(), name="photo.jpg").json()
+    res = _thumb(c, h, jpeg["contentPath"])
+    assert res.status_code == 200, res.text
+    assert max(Image.open(io.BytesIO(res.content)).size) <= 320
+    png = _up(c, h, iid, _real_png((2400, 1800)), name="big.png").json()
+    assert _thumb(c, h, png["contentPath"]).status_code == 404
