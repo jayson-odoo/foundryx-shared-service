@@ -131,16 +131,24 @@ def test_a_document_with_different_lines_is_not_ours(client, h, gw):
 
 
 def test_a_window_straddling_midnight_reads_both_day_lists(client, h, gw, db):
+    # Relative to today (MYT): the scan reaches back LOOKUP_MAX_DAYS only, so a
+    # fixed calendar date fell out of reach a week after it was written.
+    myt = timezone(timedelta(hours=8))
+    after = datetime.now(myt).date() - timedelta(days=1)  # the midnight between two days ago and yesterday
+    before = after - timedelta(days=1)
     first_attempt_landed(client, h, gw, "cl-5", body())
-    shift(h.vendor.docs["PO"][0], to="2026-11-11T00:00:02.000")  # created just after MYT midnight
+    shift(h.vendor.docs["PO"][0], to=f"{after.isoformat()}T00:00:02.000")  # created just after MYT midnight
     op = db.query(AcWriteOperation).filter_by(op="create_doc:PO").one()
-    op.snapshot_json = dict(op.snapshot_json, start="2026-11-10T23:59:50+08:00", end="2026-11-11T00:00:05+08:00")
+    op.snapshot_json = dict(
+        op.snapshot_json, start=f"{before.isoformat()}T23:59:50+08:00", end=f"{after.isoformat()}T00:00:05+08:00"
+    )
     db.commit()
     r = client.post(URL, json=body(), headers=gw.hdr("cl-5"))
     assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
     assert len(posts(h)) == 1
     days = sorted(c.query["lastModified"] for c in lookups(h))
-    assert days[:2] == ["20261110", "20261111"], days  # both sides of the midnight (later days may follow, up to today)
+    # both sides of the midnight (later days may follow, up to today)
+    assert days[:2] == [before.strftime("%Y%m%d"), after.strftime("%Y%m%d")], days
 
 
 def test_every_lookup_get_is_in_the_api_call_log(client, h, gw):
