@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER
+from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER, ENTITY_SALES_ORDER, ENTITY_SHIPPING_ORDER
 
 from sqlalchemy import Text, and_, cast, exists, func, not_, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
@@ -78,6 +78,8 @@ RUNNING_JOB_STATUSES = (JOB_PENDING, JOB_RUNNING)
 # Chunk size for an ``IN (...)`` list - a 50k-row extract must never build one
 # enormous parameter list (several drivers cap it outright).
 _IN_CHUNK = 500
+# the entities whose staging writes keep a write-back index (write_back/link_index.refresh_links)
+_INDEXED_ENTITIES = (ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER, ENTITY_SALES_ORDER)
 
 
 class ConnectionRepository:
@@ -818,7 +820,7 @@ class StagedRecordRepository:
         revived: List[str] = []
         for start in range(0, len(refs), _IN_CHUNK):
             chunk = refs[start : start + _IN_CHUNK]
-            if entity_type in (ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER):  # plan 62 / C.d: copy comes back
+            if entity_type in _INDEXED_ENTITIES:  # plan 62 / C.d: the link / row index copy comes back
                 revived.extend(
                     r[0] for r in self.db.query(AcStagedRecord.source_ref).filter(
                         AcStagedRecord.tenant_id == tenant_id,
@@ -857,8 +859,23 @@ class StagedRecordRepository:
         job staged may survive it, so a hard delete (not a status flip) is
         correct here - unlike ``mark(..., status=STAGED_DISCARDED)``, which
         is for a row that DID legitimately exist and is merely being
-        superseded. Does not commit; the caller owns the transaction."""
-        return (
+        superseded. Does not commit; the caller owns the transaction.
+
+        The write-back indexes (PO -> SO links, SPO -> PO links, SO rows) were refreshed from these rows
+        when they were staged; each affected document is rebuilt from what survives (lane
+        AUTOCOUNT-STRANDED-OPS C.d), so a rolled-back page never leaves an index pointing at a gone copy."""
+        touched = (
+            self.db.query(AcStagedRecord.entity_type, AcStagedRecord.source_ref)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.job_id == job_id,
+                AcStagedRecord.entity_type.in_(_INDEXED_ENTITIES),
+            )
+            .distinct()
+            .all()
+        )
+        count = (
             self.db.query(AcStagedRecord)
             .filter(
                 AcStagedRecord.tenant_id == tenant_id,
@@ -867,6 +884,22 @@ class StagedRecordRepository:
             )
             .delete(synchronize_session=False)
         )
+        if touched:
+            from modules.autocount.write_back.link_index import refresh_links
+
+            self.db.flush()
+            for entity_type, ref in touched:
+                # rebuilt from the surviving newest copy; a still-live delete intent of another job keeps it empty
+                live_delete = self.db.query(AcStagedRecord.id).filter(
+                    AcStagedRecord.tenant_id == tenant_id,
+                    AcStagedRecord.company_id == company_id,
+                    AcStagedRecord.entity_type == entity_type,
+                    AcStagedRecord.source_ref == ref,
+                    AcStagedRecord.op == STAGED_OP_DELETE,
+                    AcStagedRecord.status == STAGED,
+                ).first() is not None
+                refresh_links(self.db, tenant_id, company_id, entity_type, ref, deleted=live_delete)
+        return count
 
     def pending_delete_refs(
         self,

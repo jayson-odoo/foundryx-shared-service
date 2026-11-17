@@ -38,7 +38,7 @@ from modules.autocount.presets import (
     PresetField,
     WrapperPreset,
 )
-from modules.autocount.write_back.repository import StagedDocRepository
+from modules.autocount.write_back.repository import SoRowIndexRepository, StagedDocRepository
 
 Doc = Dict[str, Any]
 
@@ -108,6 +108,48 @@ def _dtl_index(
     return index
 
 
+def _doc_key_of(source_ref: str) -> Any:
+    """The DocKey of a staged ``{db}:{DocKey}`` source ref (int when numeric, as the raw carries it)."""
+    tail = str(source_ref).rsplit(":", 1)[-1]
+    try:
+        return int(tail)
+    except ValueError:
+        return tail or None
+
+
+def _so_dtl_lookup(db: Session, tenant_id: str, company: AcCompany, keys: Sequence[int]) -> Dict[int, Tuple[Any, str]]:
+    """SO line DtlKey -> (DocKey, DocNo) for just ``keys``, from the SO-row index (lane AUTOCOUNT-STRANDED-OPS
+    C.d): one indexed query, never a load of every staged SO. The newest staged SO holding a key wins."""
+    out: Dict[int, Tuple[Any, str]] = {}
+    rows = SoRowIndexRepository(db).rows_for_keys(tenant_id, company.id, keys)
+    floor = ""
+    for row in sorted(rows, key=lambda r: (r.staged_at.isoformat() if r.staged_at else floor, r.so_source_ref)):
+        out[int(row.so_dtl_key)] = (_doc_key_of(row.so_source_ref), str(row.so_doc_no or ""))
+    return out
+
+
+def _po_dtl_lookup(db: Session, tenant_id: str, company: AcCompany, lines: Sequence[Doc]) -> Dict[int, Tuple[Any, str]]:
+    """PO line DtlKey -> (DocKey, DocNo) for the PO rows an SPO's lines point at: the newest staged copy of each
+    PO the lines NAME (``FromDocNo``, one indexed query), never a load of every staged PO (C.d). A line that
+    names no PO falls back to the full walk (rare: AutoCount fills FromDocNo on an SPO line)."""
+    wanted = {int(ln["FromDocDtlKey"]) for ln in lines
+              if isinstance(ln, dict) and ln.get("FromDocType") == "PO" and _present(ln.get("FromDocDtlKey"))}
+    if not wanted:
+        return {}
+    numbers = {str(ln.get("FromDocNo")) for ln in lines
+               if isinstance(ln, dict) and ln.get("FromDocType") == "PO" and not _blank(ln.get("FromDocNo"))}
+    index: Dict[int, Tuple[Any, str]] = {}
+    for staged in StagedDocRepository(db).newest_by_doc_nos(tenant_id, company.id, ENTITY_PURCHASE_ORDER, numbers):
+        raw = staged.raw_json or {}
+        for line in raw.get(_LINES_KEY) or []:
+            if isinstance(line, dict) and line.get("DtlKey") in wanted:
+                index[line["DtlKey"]] = (raw.get("DocKey"), str(raw.get("DocNo") or ""))
+    if wanted - set(index) and any(isinstance(ln, dict) and ln.get("FromDocType") == "PO" and _blank(ln.get("FromDocNo"))
+                                   for ln in lines):
+        index = {**_dtl_index(db, tenant_id, company, ENTITY_PURCHASE_ORDER), **index}
+    return index
+
+
 def _present(value: Any) -> bool:
     """A wrapper link key counts only when set (0 and "" mean unlinked)."""
     return not _blank(value) and value != 0
@@ -147,8 +189,9 @@ def _raw_for_mapping(
     if lines is None:
         lines = doc.get("Details") or []
     raw = {k: v for k, v in doc.items() if k not in ("Details", _LINES_KEY)}
-    so_index = _dtl_index(db, tenant_id, company, ENTITY_SALES_ORDER) if kind != KIND_SO else {}
-    po_index = _dtl_index(db, tenant_id, company, ENTITY_PURCHASE_ORDER) if kind == KIND_SPO else {}
+    so_keys = [int(ln["FromSODtlKey"]) for ln in lines if isinstance(ln, dict) and _present(ln.get("FromSODtlKey"))]
+    so_index = _so_dtl_lookup(db, tenant_id, company, so_keys) if kind != KIND_SO and so_keys else {}
+    po_index = _po_dtl_lookup(db, tenant_id, company, lines) if kind == KIND_SPO else {}
     raw[_LINES_KEY] = [
         _premap_line(line, kind, so_index, po_index)
         for line in lines

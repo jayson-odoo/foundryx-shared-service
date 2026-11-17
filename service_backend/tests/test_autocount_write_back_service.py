@@ -180,10 +180,10 @@ class Harness:
         )
         self.db.add(row)
         self.db.flush()
-        if entity == "shipping_order":  # C.d: a real staging write keeps the SPO -> PO-row index true
-            from modules.autocount.write_back.link_index import refresh_spo_links
+        if entity != "purchase_order":  # C.d: a real staging write keeps the SPO / SO row indexes true
+            from modules.autocount.write_back.link_index import refresh_links
 
-            refresh_spo_links(self.db, tenant_id, row.company_id, row.source_ref)
+            refresh_links(self.db, tenant_id, row.company_id, entity, row.source_ref)
         self.db.commit()
         return row
 

@@ -35,7 +35,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from modules.autocount.alerts import _safe_subject, alert_recipients
-from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
 from modules.autocount.models import AcCompany, AcWriteOperation
 from modules.autocount.repositories import CompanyRepository
 from modules.autocount.write_back import call_log as cl, capabilities, frame, guard, payloads
@@ -55,7 +54,6 @@ from modules.autocount.write_back.frame import (
     WRITE_DISABLED,
     WriteActionResult,
     _dec,
-    _lines,
 )
 from modules.autocount.write_back.doc_kinds import KINDS, WIRE_SLUGS
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
@@ -230,6 +228,11 @@ def _link_of(kind: str, row: Doc) -> int:
     return int((row.get("FromSODtlKey") if kind == "PO" else row.get("FromDocDtlKey")) or 0)
 
 
+class _Abandoned(Exception):
+    """The run's own row left ``in_progress`` before its snapshot was stored (expired past the busy window,
+    then settled not-applied): nothing was written, and nothing may be written now."""
+
+
 class _AmbiguousCreate(Exception):
     """More than one document matches a create that may have landed."""
 
@@ -255,8 +258,9 @@ def _create_info(kind: str, params: Dict[str, Any], started: datetime) -> Dict[s
 
 def sweep_stranded_operations(db: Session) -> int:
     """API-start crash sweep: every ``in_progress`` operation older than the busy window was left by a
-    process that died (gunicorn timeout, OOM kill, deploy) -> ``pending_verification``. A never-applied
-    one is then settled ``recovered`` by its next resend / resume (BL-SS-368). Returns how many."""
+    process that died (gunicorn timeout, OOM kill, deploy) -> ``pending_verification`` (its document is free
+    again). A never-applied row operation is then settled ``recovered`` by its next resend / resume
+    (BL-SS-368). Returns how many."""
     window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
     swept = OperationRepository(db).sweep_stale_in_progress(window)
     db.commit()
@@ -428,6 +432,11 @@ class OperationService:
                 self.db.commit()
                 return OperationResult(None, REFUSED, DOC_BUSY)
             return self._finish(row, done.status, done.code, message=done.message, batch=done.batch)
+        except _Abandoned:  # the row is no longer ours: answer from it as stored, never overwrite it
+            self.db.rollback()
+            logger.warning("autocount operation %s lost its row before the snapshot: stopped, nothing sent", row.id)
+            fresh = self.ops.get(row.tenant_id, row.company_id, row.id)
+            return self._from_row(fresh) if fresh is not None else OperationResult(None, REFUSED, NOT_APPLIED)
         except Exception:  # noqa: BLE001 - the in_progress lock must never be stranded
             logger.exception("autocount operation failed (%s)", row.id)
             self.db.rollback()
@@ -563,6 +572,17 @@ class OperationService:
             self._row.steps_json = _json_safe(self._steps)
             self.db.commit()
 
+    def _store_snapshot(self, row: AcWriteOperation, snapshot: Doc) -> None:
+        """A fresh run's first snapshot, the line before its first AutoCount write: stored only while the row is
+        still ``in_progress`` (BL-SS-368 settles a pending row with no snapshot as not applied, so a run that lost
+        its row in between must stop here, unwritten)."""
+        stored = _json_safe(snapshot)
+        kept = self.ops.store_snapshot(row.tenant_id, row.company_id, row.id, stored)
+        self.db.commit()
+        if not kept:
+            raise _Abandoned()
+        self.db.refresh(row)
+
     def _check_deadline(self) -> None:
         """No further step past the operation-wide deadline (below the busy window,
         read through ``time`` so a patched clock works): pending_verification, resumable."""
@@ -617,8 +637,7 @@ class OperationService:
         with self.prims.staged_memo():  # C.d: one staged read per document for the row AND every merge candidate
             plan = self._guards(company, defn, spec, doc)
         snapshot = self._snapshot(company, defn, spec, doc, doc_date, plan)
-        row.snapshot_json = snapshot
-        self.db.commit()
+        self._store_snapshot(row, snapshot)
         return self._steps_run(row, company, op, defn, spec, snapshot)
 
     def _is_part_of_row(self, company: AcCompany, base_url: str, spec: _Spec, params: Dict[str, Any]) -> bool:
@@ -901,11 +920,9 @@ class OperationService:
         if defn.kind == "SPO":
             return {"FromDocType": "PO", "FromDocNo": row.get("FromDocNo") or "", "FromDocDtlKey": key}
         number = row.get("FromDocNo") or ""
-        if not number:
-            for staged in self.prims.staged.for_entity(company.tenant_id, company.id, ENTITY_SALES_ORDER):
-                if any(r.get("DtlKey") == key for r in _lines(staged.raw_json)):
-                    number = str((staged.raw_json or {}).get("DocNo") or staged.doc_no or "")
-                    break
+        if not number:  # C.d: one indexed query, never a load of every staged SO
+            found = self.prims._so_row(company.tenant_id, company.id, key)
+            number = found[0] if found else ""
         return {"FromDocType": "SO", "FromDocNo": number, "FromDocDtlKey": key}
 
     # ── steps (AC-57-30, 31, 33, 34, 35, 39) ─────────────────────────────────
@@ -1370,8 +1387,7 @@ class OperationService:
                       for link in applied],
             "skipped": skipped,
         })
-        row.snapshot_json = snapshot
-        self.db.commit()
+        self._store_snapshot(row, snapshot)
         self._log_remark_overwrite(doc)
         none_linked = {"links": [], "skipped": skipped, "freeLine": None}
         try:
@@ -1630,8 +1646,7 @@ class OperationService:
         legacy.so_lock_held = True  # _execute holds the SO row lock around this call
         qty = Decimal(str(params["qty"]))
         # the over-link guard of other callers counts this link while its outcome is unknown (pending_link_qty)
-        row.snapshot_json = {"mode": "split", "links": [{"soDtlKey": spec.target_dtl_key, "qty": str(qty)}]}
-        self.db.commit()
+        self._store_snapshot(row, {"mode": "split", "links": [{"soDtlKey": spec.target_dtl_key, "qty": str(qty)}]})
         found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))
         if found is None and missing == frame.DOC_KIND_MISMATCH or found is None and missing:
             raise _Done(REFUSED, missing)

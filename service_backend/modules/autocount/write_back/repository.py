@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from modules.autocount.models import (
     AcEntityConfig,
     AcPoSoLink,
+    AcSoRowIndex,
     AcSpoPoLink,
     AcStagedRecord,
     AcWriteAction,
@@ -257,6 +258,20 @@ class OperationRepository:
                     synchronize_session=False)
         ) == 1
 
+    def store_snapshot(self, tenant_id: str, company_id: str, operation_id: str, snapshot: dict) -> bool:
+        """Conditional first-snapshot write: only while the operation is still ``in_progress`` (a run whose row
+        was expired and settled meanwhile must never go on to write); bumps updated_at (heartbeat)."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+                AcWriteOperation.status == "in_progress",
+            )
+            .update({"snapshot_json": snapshot, "updated_at": func.now()}, synchronize_session=False)
+        ) == 1
+
     def sweep_stale_in_progress(self, before: datetime) -> int:
         """API-start crash sweep (system context, every tenant): every ``in_progress`` operation
         that has not moved since ``before`` is a run whose process died -> ``pending_verification``
@@ -388,6 +403,49 @@ class StagedDocRepository:
             .order_by(AcStagedRecord.created_at.desc(), AcStagedRecord.id)
             .first()
         )
+
+    def copies_at(
+        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str, created_at: datetime
+    ) -> List[AcStagedRecord]:
+        """Every non-delete staged copy of one document staged at ``created_at`` (equally new copies). The
+        instant is matched in Python over the document's (id, created_at) pairs (exact on every engine), and
+        only the matching copies' payloads are loaded."""
+        scope = (
+            AcStagedRecord.tenant_id == tenant_id,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.entity_type == entity_type,
+            AcStagedRecord.source_ref == source_ref,
+            AcStagedRecord.op != "delete",
+        )
+        ids = [rid for rid, at in self.db.query(AcStagedRecord.id, AcStagedRecord.created_at).filter(*scope)
+               if at == created_at]
+        if not ids:
+            return []
+        return self.db.query(AcStagedRecord).filter(*scope, AcStagedRecord.id.in_(ids)).order_by(AcStagedRecord.id).all()
+
+    def newest_by_doc_nos(
+        self, tenant_id: str, company_id: str, entity_type: str, doc_nos: "set[str]"
+    ) -> List[AcStagedRecord]:
+        """The newest non-delete staged copy of each document whose ``doc_no`` is in ``doc_nos`` (indexed on
+        (tenant, company, entity_type, doc_no), 0048)."""
+        if not doc_nos:
+            return []
+        rows = (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.entity_type == entity_type,
+                AcStagedRecord.doc_no.in_(sorted(doc_nos)),
+                AcStagedRecord.op != "delete",
+            )
+            .order_by(AcStagedRecord.created_at.desc(), AcStagedRecord.id)
+            .all()
+        )
+        newest: Dict[str, AcStagedRecord] = {}
+        for row in rows:
+            newest.setdefault(row.source_ref, row)
+        return list(newest.values())
 
     def for_entity(
         self, tenant_id: str, company_id: str, entity_type: str
@@ -526,8 +584,7 @@ class SpoPoLinkRepository:
                 AcSpoPoLink.company_id == company_id,
                 AcSpoPoLink.po_dtl_key == po_dtl_key,
             )
-            .order_by(AcSpoPoLink.spo_source_ref)
-            .first()
+            .first()  # any one SPO answers the guard; no ORDER BY, so the po_dtl_key index drives the plan
         )
         return None if row is None else str(row[0] or row[1])
 
@@ -543,3 +600,52 @@ class SpoPoLinkRepository:
         if except_ref is not None:
             query = query.filter(AcSpoPoLink.spo_source_ref != except_ref)
         return Decimal(str(query.scalar() or 0))
+
+
+class SoRowIndexRepository:
+    """The SO-row index ``ac_so_row_index`` (lane AUTOCOUNT-STRANDED-OPS, C.d); every call is tenant + company
+    scoped."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def replace_for_so(
+        self, tenant_id: str, company_id: str, so_source_ref: str, so_doc_no: Optional[str],
+        staged_at: Optional[datetime], rows: "List[tuple[int, Optional[str], bool]]",
+    ) -> None:
+        """Swap one SO's rows for ``rows`` (``(so_dtl_key, location, ambiguous)``)."""
+        self.db.query(AcSoRowIndex).filter(
+            AcSoRowIndex.tenant_id == tenant_id,
+            AcSoRowIndex.company_id == company_id,
+            AcSoRowIndex.so_source_ref == so_source_ref,
+        ).delete(synchronize_session=False)
+        for so_dtl_key, location, ambiguous in rows:
+            self.db.add(AcSoRowIndex(
+                tenant_id=tenant_id, company_id=company_id, so_source_ref=so_source_ref, so_doc_no=so_doc_no,
+                so_dtl_key=so_dtl_key, location=location, ambiguous=ambiguous, staged_at=staged_at,
+            ))
+        self.db.flush()
+
+    def rows_for_keys(self, tenant_id: str, company_id: str, so_dtl_keys: "List[int]") -> List[AcSoRowIndex]:
+        """The indexed rows holding any of ``so_dtl_keys`` (chunked IN lists)."""
+        keys = sorted(set(so_dtl_keys))
+        out: List[AcSoRowIndex] = []
+        for start in range(0, len(keys), 500):
+            out.extend(self.db.query(AcSoRowIndex).filter(
+                AcSoRowIndex.tenant_id == tenant_id,
+                AcSoRowIndex.company_id == company_id,
+                AcSoRowIndex.so_dtl_key.in_(keys[start:start + 500]),
+            ).all())
+        return out
+
+    def rows_for(self, tenant_id: str, company_id: str, so_dtl_key: int) -> List[AcSoRowIndex]:
+        """The indexed rows holding ``so_dtl_key`` (normally one SO), newest staged first."""
+        return (
+            self.db.query(AcSoRowIndex)
+            .filter(
+                AcSoRowIndex.tenant_id == tenant_id,
+                AcSoRowIndex.company_id == company_id,
+                AcSoRowIndex.so_dtl_key == so_dtl_key,
+            )
+            .all()
+        )

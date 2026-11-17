@@ -138,8 +138,10 @@ def register_engine_entities() -> None:
 
 def sweep_stranded_write_operations(db: Session) -> int:
     """Lane AUTOCOUNT-STRANDED-OPS (C.c): at API start, every write operation a dead process left
-    ``in_progress`` past the busy window becomes ``pending_verification``; a never-applied one is
-    then settled ``recovered`` by its next resend / resume, so no stuck card waits for ever."""
+    ``in_progress`` past the busy window becomes ``pending_verification``; a never-applied ROW operation
+    (link / unlink / relink / batch / split) is then settled ``recovered`` by its next resend / resume, so
+    its card no longer waits for ever. (A single-document primitive left pending without an answer still
+    replays as in progress: its outcome is unknown and needs a document lookup first - follow-up.)"""
     from .write_back.operations import sweep_stranded_operations
 
     return sweep_stranded_operations(db)

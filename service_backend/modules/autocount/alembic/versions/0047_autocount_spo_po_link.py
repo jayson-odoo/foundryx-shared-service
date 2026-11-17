@@ -133,6 +133,9 @@ def upgrade() -> None:
             batch = []
     if batch:
         bind.execute(sa.insert(link), batch)
+    # fresh statistics, so the very first lookup plans on the po_dtl_key index (both indexes lead with
+    # tenant + company; with no stats the planner can pick the wrong one and walk the company's rows)
+    bind.execute(sa.text(f"ANALYZE {SCHEMA}.{TABLE}"))
 
 
 def downgrade() -> None:

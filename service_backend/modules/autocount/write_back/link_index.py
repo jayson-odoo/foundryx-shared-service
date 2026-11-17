@@ -12,8 +12,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER
-from modules.autocount.write_back.repository import PoSoLinkRepository, SpoPoLinkRepository, StagedDocRepository
+from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER, ENTITY_SALES_ORDER, ENTITY_SHIPPING_ORDER
+from modules.autocount.write_back.repository import (
+    PoSoLinkRepository,
+    SoRowIndexRepository,
+    SpoPoLinkRepository,
+    StagedDocRepository,
+)
 
 Link = Tuple[Optional[int], int, Decimal]
 
@@ -99,6 +104,43 @@ def refresh_spo_links(db: Session, tenant_id: str, company_id: str, source_ref: 
     SpoPoLinkRepository(db).replace_for_spo(tenant_id, company_id, source_ref, doc_no, links)
 
 
+# ── SO-row index (lane AUTOCOUNT-STRANDED-OPS, C.d) ─────────────────────────────────────────────────
+
+SoRow = Tuple[int, Optional[str], bool]
+
+
+def so_rows_of(copies: List[Dict[str, Any]]) -> List[SoRow]:
+    """``(so_dtl_key, location, ambiguous)`` of every line of an SO's equally-newest staged copies: one entry
+    per DtlKey; copies that disagree on its location -> ``(key, None, True)`` (``SO_LOCATION_AMBIGUOUS``)."""
+    seen: Dict[int, set] = {}
+    for raw in copies:
+        lines = (raw or {}).get("_lines")
+        for line in lines if isinstance(lines, list) else []:
+            if not isinstance(line, dict):
+                continue
+            key = _int(line.get("DtlKey"))
+            if key:
+                seen.setdefault(key, set()).add(str(line.get("Location") or ""))
+    return [(key, next(iter(locs)) if len(locs) == 1 else None, len(locs) > 1) for key, locs in seen.items()]
+
+
+def refresh_so_rows(db: Session, tenant_id: str, company_id: str, source_ref: str, *, deleted: bool = False) -> None:
+    """Rewrite one SO's index rows from its newest staged copy, every copy staged at that same moment
+    included (none when the SO is deleted)."""
+    rows: List[SoRow] = []
+    doc_no: Optional[str] = None
+    staged_at = None
+    if not deleted:
+        staged = StagedDocRepository(db)
+        newest = staged.newest(tenant_id, company_id, ENTITY_SALES_ORDER, source_ref)
+        if newest is not None:
+            copies = staged.copies_at(tenant_id, company_id, ENTITY_SALES_ORDER, source_ref, newest.created_at)
+            rows = so_rows_of([c.raw_json or {} for c in copies] or [newest.raw_json or {}])
+            doc_no = str((newest.raw_json or {}).get("DocNo") or newest.doc_no or "")
+            staged_at = newest.created_at
+    SoRowIndexRepository(db).replace_for_so(tenant_id, company_id, source_ref, doc_no, staged_at, rows)
+
+
 def refresh_links(db: Session, tenant_id: str, company_id: str, entity_type: str, source_ref: str, *,
                   deleted: bool = False) -> None:
     """The ONE hook every staging write calls: keeps whichever link index the entity feeds true."""
@@ -106,3 +148,5 @@ def refresh_links(db: Session, tenant_id: str, company_id: str, entity_type: str
         refresh_po_links(db, tenant_id, company_id, source_ref, deleted=deleted)
     elif entity_type == ENTITY_SHIPPING_ORDER:
         refresh_spo_links(db, tenant_id, company_id, source_ref, deleted=deleted)
+    elif entity_type == ENTITY_SALES_ORDER:
+        refresh_so_rows(db, tenant_id, company_id, source_ref, deleted=deleted)

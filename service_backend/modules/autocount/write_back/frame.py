@@ -30,6 +30,7 @@ from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
 from modules.autocount.write_back.repository import (
     EntitySourceRepository,
+    SoRowIndexRepository,
     SpoPoLinkRepository,
     StagedDocRepository,
     WriteActionRepository,
@@ -326,6 +327,20 @@ class WriteFrame:
         """DocNo of a staged, non-cancelled SPO with a row pointing at the PO row: ONE indexed query on
         ``ac_spo_po_link`` (the newest copy of each SPO), never a load of every staged SPO (C.d)."""
         return SpoPoLinkRepository(self.db).spo_doc_no(tenant_id, company_id, po_dtl_key)
+
+    def _so_row(self, tenant_id: str, company_id: str, so_dtl_key: int) -> Optional[Tuple[str, Optional[str], bool]]:
+        """The SO row ``so_dtl_key`` from the NEWEST staged SO holding it: ``(so_doc_no, location, ambiguous)``,
+        None when no staged SO holds it. ONE indexed query on ``ac_so_row_index``, never a load of every staged
+        SO (C.d). ``ambiguous``: equally new copies disagree on its location (``SO_LOCATION_AMBIGUOUS``)."""
+        rows = SoRowIndexRepository(self.db).rows_for(tenant_id, company_id, so_dtl_key)
+        if not rows:
+            return None
+        floor = datetime.min.replace(tzinfo=timezone.utc)
+        newest_at = max(r.staged_at or floor for r in rows)
+        newest = sorted((r for r in rows if (r.staged_at or floor) == newest_at), key=lambda r: r.so_source_ref)
+        locations = {r.location for r in newest}
+        ambiguous = any(r.ambiguous for r in newest) or len(locations) > 1
+        return str(newest[0].so_doc_no or ""), None if ambiguous else newest[0].location, ambiguous
 
     @contextlib.contextmanager
     def staged_memo(self) -> Iterator[None]:

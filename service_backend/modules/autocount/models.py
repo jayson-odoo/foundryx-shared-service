@@ -469,6 +469,8 @@ class AcStagedRecord(AutocountBase):
         Index("ix_ac_staged_scope", "tenant_id", "company_id", "entity_type"),
         Index("ix_ac_staged_job", "tenant_id", "job_id"),
         Index("ix_ac_staged_ref", "tenant_id", "company_id", "source_ref"),
+        # lane AUTOCOUNT-STRANDED-OPS C.d (0048): an SPO re-stage finds the POs its lines name by number
+        Index("ix_ac_staged_doc_no", "tenant_id", "company_id", "entity_type", "doc_no"),
     )
 
     id = Column(String, primary_key=True, default=_uuid)
@@ -1202,6 +1204,30 @@ class AcSpoPoLink(AutocountBase):
     spo_dtl_key = Column(BigInteger, nullable=True)
     po_dtl_key = Column(BigInteger, nullable=False)
     qty = Column(Numeric(20, 8), nullable=False)
+
+
+class AcSoRowIndex(AutocountBase):
+    """SO-row index (lane AUTOCOUNT-STRANDED-OPS, C.d): one row per line (``DtlKey``) of a sales order's
+    NEWEST staged copy (every copy staged at that same newest moment), so "which SO holds this row, and at
+    which location?" is one indexed query instead of loading every staged sales order into the request.
+    ``ambiguous`` = equally new copies disagree on the line's location. A deleted SO has no rows. Rewritten
+    by ``write_back/link_index.py`` on every SO staging write."""
+
+    __tablename__ = "ac_so_row_index"
+    __table_args__ = (
+        Index("ix_ac_so_row_index_dtl", "tenant_id", "company_id", "so_dtl_key"),
+        Index("ix_ac_so_row_index_so_ref", "tenant_id", "company_id", "so_source_ref"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    so_source_ref = Column(String, nullable=False)
+    so_doc_no = Column(String, nullable=True)
+    so_dtl_key = Column(BigInteger, nullable=False)
+    location = Column(String, nullable=True)
+    ambiguous = Column(Boolean, nullable=False, default=False)
+    staged_at = Column(UTCDateTime(), nullable=True)  # the newest copy's created_at
 
 
 class AcApiCallLog(AutocountBase):

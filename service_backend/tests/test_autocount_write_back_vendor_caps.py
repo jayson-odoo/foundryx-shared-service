@@ -360,6 +360,10 @@ def test_relocate_location_comes_from_the_staged_so_row(h):
             r["Location"] = "BRW-ZZ"
     so.raw_json = raw
     h.db.commit()
+    from modules.autocount.write_back.link_index import refresh_links  # the raw edit stands in for a staging write
+
+    refresh_links(h.db, so.tenant_id, so.company_id, "sales_order", so.source_ref)
+    h.db.commit()
     _relocate(h, dtl)
     assert h.ac.put_bodies[0]["Details"][0]["Location"] == "BRW-ZZ"
 
