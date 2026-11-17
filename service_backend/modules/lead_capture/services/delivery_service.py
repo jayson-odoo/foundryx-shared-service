@@ -95,6 +95,8 @@ def verify(secret: str, header: str, body: bytes, *, tolerance: int = 300, now: 
 
 # The screens call an endpoint a "receiver" (crew pass on #259).
 RECEIVER_GONE = "This receiver was already removed."
+# An id this company never had (e.g. a mistyped id on the gateway).
+RECEIVER_UNKNOWN = "This receiver does not exist."
 
 
 def _validate_events(events: List[str]) -> List[str]:
@@ -153,7 +155,9 @@ def delete_endpoint(db: Session, tenant_id: str, endpoint_id: str) -> None:
         .filter(LcWebhookEndpoint.id == endpoint_id, LcWebhookEndpoint.tenant_id == tenant_id)
         .first()
     )
-    if row is None or not row.active:
+    if row is None:
+        raise DeliveryError(404, "endpoint_not_found", RECEIVER_UNKNOWN)
+    if not row.active:
         raise DeliveryError(404, "endpoint_not_found", RECEIVER_GONE)
     row.active = False
     # Pending deliveries to it stop here (never sent to a removed endpoint).
@@ -232,7 +236,9 @@ def get_endpoint(db: Session, tenant_id: str, endpoint_id: str) -> LcWebhookEndp
         .filter(LcWebhookEndpoint.id == endpoint_id, LcWebhookEndpoint.tenant_id == tenant_id)
         .first()
     )
-    if row is None or not row.active:
+    if row is None:
+        raise DeliveryError(404, "endpoint_not_found", RECEIVER_UNKNOWN)
+    if not row.active:
         raise DeliveryError(404, "endpoint_not_found", RECEIVER_GONE)
     return row
 

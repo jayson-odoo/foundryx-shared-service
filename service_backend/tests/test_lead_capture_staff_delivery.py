@@ -296,3 +296,15 @@ def test_stale_test_push_and_remove_say_receiver_not_endpoint(client, lc):
         assert res.status_code == 404
         assert res.json()["detail"]["code"] == "endpoint_not_found"
         assert res.json()["detail"]["message"] == "This receiver was already removed."
+
+
+def test_an_unknown_receiver_id_says_it_does_not_exist(client, lc):
+    # Reviewer: a mistyped id on the gateway must not read "already removed".
+    headers = _login(client)
+    for res in (
+        client.post("/lead-capture/webhooks/00000000-0000-0000-0000-000000000000/test", headers=headers),
+        client.delete("/lead-capture/webhooks/00000000-0000-0000-0000-000000000000", headers=headers),
+    ):
+        assert res.status_code == 404
+        assert res.json()["detail"]["code"] == "endpoint_not_found"
+        assert res.json()["detail"]["message"] == "This receiver does not exist."

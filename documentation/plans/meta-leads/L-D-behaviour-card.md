@@ -103,6 +103,7 @@ revoke/remove through the core grace-window engine.
   search stays cleared.
 - A record already gone when a grace-window action is started reads in plain words, never its id: "This receiver
   was already removed.", "This key was already revoked." (core engine: per-action `gone_message`, generic "This
-  record no longer exists."). Stale Send test push / Remove: "This receiver was already removed.".
+  record no longer exists."). Stale Send test push / Remove: "This receiver was already removed."; an id the company
+  never had (e.g. mistyped on the gateway): "This receiver does not exist." (code `endpoint_not_found` either way).
 - CI: the AutoCount write-back deadline test runs on a fake clock (it failed on a busy runner).
 
