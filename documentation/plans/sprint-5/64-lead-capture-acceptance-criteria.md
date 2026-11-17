@@ -141,6 +141,20 @@ J, K. Release 2: E (WhatsApp ads) and F (Google Ads, website form). Review: `doc
 - AC-64-38 [B] Every source has a History tab (shared history component): connected, reconnected, forms changed,
   fields mapped, sharing setting changed, disconnected, with who, on behalf of, when, and old -> new.
 
+- AC-64-39 [B] No backend configuration for routing (owner 17 Nov: "no backend configuration should be needed"). A
+  product's admin controls which Facebook Page and which forms feed that product entirely from screens: Lead Capture >
+  Sources (Shared Service, per product) and the hosted wizard opened from the product's "Connect a source" (AC-64-06).
+  The screens offer Connect, Forms ("All forms" / "Only the forms I tick"), Disconnect (typed confirm; leads kept) and
+  the Page-sharing switch (AC-64-36). Moving a Page from product A to product B = Disconnect in A, then Connect in B,
+  with no API call, SQL or env change. Lane L-C (screens); the backend routes come from L-B.
+- AC-64-56 [B] Platform operator "Lead routing" screen (platform console, `tenants.manage_modules`): one list of every
+  connected Facebook Page across products (Page name, product, forms mode, status, last lead), filter by product and
+  status, and a row action "Move to product..." (picker of products with Lead Capture installed). Move = in one
+  transaction, under the Page lock: the source changes product, its field map resets to that product's defaults, the
+  "Map fields" notice is raised, History records who / when / from -> to, and the D13 sharing rule applies (a move
+  onto a Page the target already holds is refused). Leads already delivered stay with the old product. Lane L-C
+  (screen) + L-B (move route).
+
 ## E. Click-to-WhatsApp (needs omnichannel)
 - AC-64-31 Offered only when omnichannel is ACTIVE for the tenant. Number step lists the tenant's connected WhatsApp
   channels; "Connect a new number" runs omnichannel's existing Embedded Signup (no second implementation).
