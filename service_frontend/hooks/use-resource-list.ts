@@ -123,14 +123,16 @@ export function useResourceList<T>({
   const [loadedQuery, setLoadedQuery] = useState<ListQuery>(query);
 
   // Reset to first page whenever the result set (not just the page) changes.
-  const firstRender = useRef(true);
+  // Compared by VALUE: an equal sort/filter object set again after mount (e.g.
+  // the grid syncing its sorting state) must not throw a restored `ctx` page
+  // back to page 1 on reload.
+  const resultSetKey = JSON.stringify([debouncedSearch, sort, filter, statusView, segment, pageSize]);
+  const lastResultSetKey = useRef(resultSetKey);
   useEffect(() => {
-    if (firstRender.current) {
-      firstRender.current = false;
-      return;
-    }
+    if (lastResultSetKey.current === resultSetKey) return;
+    lastResultSetKey.current = resultSetKey;
     setPage(0);
-  }, [debouncedSearch, sort, filter, statusView, segment, pageSize]);
+  }, [resultSetKey]);
 
   useEffect(() => {
     let active = true;

@@ -124,8 +124,20 @@ export function useLeadSources(): LoadState<LeadSourceItem[]> {
   return useLoad(leadCaptureService.listSources, 'Could not load the lead sources.');
 }
 
-export function useFormQuestions(sourceId: string, formId: string): LoadState<LeadFormQuestions> {
-  const load = useCallback(() => leadCaptureService.formQuestions(sourceId, formId), [sourceId, formId]);
+/** `fromMeta: false` (the "All forms" map) skips the Meta read: there is no
+ *  single form to read, and the call would only answer `invalid_form_id`. */
+export function useFormQuestions(
+  sourceId: string,
+  formId: string,
+  fromMeta = true,
+): LoadState<LeadFormQuestions> {
+  const load = useCallback(
+    () =>
+      fromMeta
+        ? leadCaptureService.formQuestions(sourceId, formId)
+        : Promise.resolve<LeadFormQuestions>({ formId, formName: null, data: [] }),
+    [sourceId, formId, fromMeta],
+  );
   return useLoad(load, 'Could not load the form questions.');
 }
 

@@ -5,6 +5,7 @@ import {
   formMapRows,
   initialTargets,
   isFormId,
+  storedMapQuestions,
   targetOptions,
   validateLeadFields,
 } from './lead-field-map';
@@ -85,13 +86,27 @@ describe('initialTargets + targetOptions + payload', () => {
     expect(start).toEqual({ full_name: '', what_is_your_budget: 'budget', best_time: 'budget' });
   });
 
+  it('shows an explicit map to the automatic field as that field, not blank', () => {
+    const start = initialTargets(questions, { '222': { full_name: 'name' } }, '222', fields);
+    expect(start.full_name).toBe('name');
+    expect(targetOptions(questions[0], fields).map((o) => o.value)).toContain('name');
+  });
+
+  it('All forms lines are the stored question keys', () => {
+    expect(storedMapQuestions({ '*': { budget_q: 'budget', best: 'budget' } }, '*').map((q) => q.key)).toEqual([
+      'budget_q',
+      'best',
+    ]);
+    expect(storedMapQuestions({}, '*')).toEqual([]);
+  });
+
   it('drops a mapped target that is no longer a product field', () => {
     expect(initialTargets(questions, { '222': { best_time: 'gone' } }, '222', fields).best_time).toBe('');
   });
 
   it('names the default after what happens with no map', () => {
     expect(targetOptions(questions[0], fields)[0].label).toBe('Name (automatic)');
-    expect(targetOptions(questions[0], fields).map((o) => o.value)).toEqual(['', 'phone', 'budget']);
+    expect(targetOptions(questions[0], fields).map((o) => o.value)).toEqual(['', 'name', 'phone', 'budget']);
     expect(targetOptions(questions[2], fields)[0].label).toBe('Leave in lead notes');
     expect(targetOptions(questions[2], fields).map((o) => o.value)).toEqual(['', 'name', 'phone', 'budget']);
   });

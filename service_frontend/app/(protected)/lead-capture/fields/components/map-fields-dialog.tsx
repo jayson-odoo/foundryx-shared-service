@@ -16,8 +16,8 @@ import {
 import { ClampedText } from '@/components/platform/clamped-text';
 import { SearchSelect } from '@/components/platform/search-select';
 import { leadCaptureErrorMessage, useFormQuestions, useSaveFieldMap } from '@/hooks/use-lead-capture';
-import { fieldMapPayload, initialTargets, targetOptions } from '@/lib/lead-field-map';
-import type { LeadField, LeadSourceItem } from '@/types/lead-capture';
+import { fieldMapPayload, initialTargets, storedMapQuestions, targetOptions } from '@/lib/lead-field-map';
+import { ALL_FORMS, type LeadField, type LeadSourceItem } from '@/types/lead-capture';
 
 export interface MapTarget {
   sourceId: string;
@@ -54,11 +54,20 @@ function MapFieldsBody({
   onClose,
   onSaved,
 }: MapFieldsDialogProps & { target: MapTarget }) {
-  const questions = useFormQuestions(target.sourceId, target.formId);
+  const allForms = target.formId === ALL_FORMS;
+  const loaded = useFormQuestions(target.sourceId, target.formId, !allForms);
   const { saving, save } = useSaveFieldMap();
   // The user's picks over the starting map (derived, so no first-paint flicker).
   const [picked, setPicked] = useState<Record<string, string>>({});
   const source = sources.find((s) => s.id === target.sourceId);
+  // "All forms" lists the question keys its stored map already names.
+  const questions = useMemo(
+    () =>
+      allForms && loaded.data
+        ? { ...loaded, data: { ...loaded.data, data: storedMapQuestions(source?.fieldMap ?? {}, ALL_FORMS) } }
+        : loaded,
+    [allForms, loaded, source],
+  );
   const title = questions.data?.formName || target.formName;
   const initial = useMemo(
     () => (questions.data ? initialTargets(questions.data.data, source?.fieldMap ?? {}, target.formId, fields) : {}),

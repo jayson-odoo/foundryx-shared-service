@@ -78,4 +78,29 @@ describe('useCopyToClipboard', () => {
     expect(result.current.error).toBe(false);
     expect(result.current.isCopied).toBe(true);
   });
+
+  it('without the clipboard API (plain http) falls back to the copy command instead of throwing', () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    const exec = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', { value: exec, configurable: true });
+    const { result } = renderHook(() => useCopyToClipboard({ timeout: 1000 }));
+
+    act(() => {
+      result.current.copyToClipboard('fxl_live_secret');
+    });
+    expect(exec).toHaveBeenCalledWith('copy');
+    expect(result.current.isCopied).toBe(true);
+  });
+
+  it('shows the inline error when neither copy path works', () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    Object.defineProperty(document, 'execCommand', { value: vi.fn().mockReturnValue(false), configurable: true });
+    const { result } = renderHook(() => useCopyToClipboard({ timeout: 1000 }));
+
+    act(() => {
+      result.current.copyToClipboard('fxl_live_secret');
+    });
+    expect(result.current.error).toBe(true);
+    expect(result.current.isCopied).toBe(false);
+  });
 });

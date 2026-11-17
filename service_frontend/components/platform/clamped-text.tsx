@@ -57,7 +57,7 @@ export function ClampedText({ text, lines = 3, className }: ClampedTextProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{paragraph}</TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-xs whitespace-pre-wrap break-words">
+      <TooltipContent side="bottom" align="start" className="max-w-xs whitespace-pre-wrap break-words">
         {text}
       </TooltipContent>
     </Tooltip>

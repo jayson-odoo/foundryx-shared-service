@@ -142,8 +142,10 @@ export function targetOptions(
     : `Leave in ${notesLabel.toLowerCase()}`;
   return [
     { value: '', label: fallback },
+    // The automatic field stays a choice too: a stored map may name it
+    // explicitly, and the picker must show exactly what is stored.
     ...fields
-      .filter((f) => f.type !== 'notes' && f.key !== auto?.key)
+      .filter((f) => f.type !== 'notes')
       .map((f) => ({ value: f.key, label: f.label || f.key })),
   ];
 }
@@ -156,4 +158,15 @@ export function fieldMapPayload(
   const out: Record<string, string | null> = {};
   for (const q of questions) out[q.key] = selection[q.key] || null;
   return out;
+}
+
+/**
+ * The "All forms" ("*") map has no single form to read questions from, so its
+ * lines are the question keys it already maps, labelled by key.
+ */
+export function storedMapQuestions(
+  fieldMap: LeadSourceItem['fieldMap'],
+  formId: string,
+): LeadFormQuestion[] {
+  return Object.keys(fieldMap?.[formId] ?? {}).map((key) => ({ key, label: key, type: '' }));
 }
