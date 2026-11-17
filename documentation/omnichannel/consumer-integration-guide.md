@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Payload versions** (sections 3b, 7, 10). A webhook endpoint can carry an optional `payloadVersion` (integer, set on `POST /webhooks` or `PATCH /webhooks/{id}`), and any `/api/v1/omnichannel/*` request can send an optional `X-Fx-Api-Version` header. Leaving both out keeps version 1: every webhook body and response stays exactly as it is today. New fields on an existing event or response will only ever appear at a higher version. Version 2 currently adds one key, `payloadVersion`, on the webhook endpoint item. An unknown version answers `422 invalid_request`. Non-breaking: nothing changes for an integration that does not opt in. |
 > | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and `POST /messages` as multipart up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send takes exactly one `file` part and one `payload` part, with at most 5 form fields; more answers `422 invalid_request`. |
 > | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
 > | **2026-11-05** | **Erase call log** (section 6a, Erase a contact). The log of the erase call shows `phone:<erased>` in place of the number. Additive: no API field changes. |
@@ -154,6 +155,20 @@ Every request body under your API key is limited: 256 KiB, and `POST /messages` 
 The limits are per key. If your integration needs more, ask support to raise the limits for a key.
 
 `GET /omnichannel/media/{messageId}` (§8) is counted too when you call it with your API key. Over a limit it answers `429` with a `Retry-After` header and the plain body `{"detail": "Too many requests for this key."}` (not the `/api/v1` error envelope above).
+
+## 3b. Payload versions
+
+Every webhook body and every response shape has a **payload version**. **The default is version 1, forever, unless you opt in**: version 1 is the shapes this guide documents, byte for byte, and they never change under you. A new field on an existing event or response only ever appears in a higher version; new routes and new opt-in event types need no version.
+
+* **Responses, per request:** send `X-Fx-Api-Version: 2` on any `/api/v1/omnichannel/*` call. No header, or `1`, is version 1.
+* **Webhooks, per endpoint:** register or update the endpoint with `"payloadVersion": 2` (§7). Every delivery to that endpoint uses version 2; an endpoint without it gets version 1. Two endpoints on different versions each receive their own body for the same event, each signed over its own bytes (same event `id` and `occurredAt`).
+* An unknown version (a value that is not a supported integer, such as `3`, `0`, `abc`) answers `422 invalid_request` and nothing is done; it never falls back silently.
+* `?format=rio` shapes (§6b) are the same at every version.
+
+| Version | Adds |
+|----|----|
+| 1 | The shapes in this guide. |
+| 2 | `payloadVersion` (integer) on the webhook endpoint item (§7): the version that endpoint's deliveries use. |
 
 ## 4. Sending messages
 
@@ -1013,7 +1028,7 @@ async def receive(request: Request):
 |----|----|----|
 | GET | `/api/v1/omnichannel/webhooks` | List your endpoints (secrets never echoed) |
 | POST | `/api/v1/omnichannel/webhooks` | Register one for all channels → returns the signing secret **once** |
-| PATCH | `/api/v1/omnichannel/webhooks/{id}` | Change name / url / events |
+| PATCH | `/api/v1/omnichannel/webhooks/{id}` | Change name / url / events / payloadVersion |
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret (returned once) |
 | POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume delivery (`409 endpoint_paused_by_staff` on enable when staff paused it) |
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove it |
@@ -1032,6 +1047,8 @@ curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/webhooks \
 ```
 
 Each endpoint reads `status` (`ACTIVE`, `DISABLED` or `AUTO_DISABLED`), `consecutiveFailures` (the current run of failed events) and `disabledReason` (why it is not `ACTIVE`, `null` otherwise).
+
+**Payload version (§3b).** `POST` and `PATCH` accept an optional `payloadVersion` (a JSON integer, `1` or `2`) that chooses the body shape of this endpoint's deliveries. Left out on `POST`, the endpoint gets version 1; left out or `null` on `PATCH`, it stays as it is. Any other value answers `422 invalid_request` and nothing changes. Endpoints registered before 2026-11-18 stay on version 1. The endpoint item shows `payloadVersion` only when you call with `X-Fx-Api-Version: 2`; a version 1 endpoint then reads `1`.
 
 > **`signingSecret` is shown once.** Store it before you close the response - there is no endpoint that returns it again, only `/rotate`, which invalidates the old one immediately. Deploy the new secret **before** rotating or you will reject your own deliveries.
 
@@ -1334,7 +1351,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
 | `service_not_enabled` | 403 | Omnichannel not active for your tenant, the tenant is suspended or archived, or the key's workspace is trashed - contact the operator. The key works again once restored. |
-| `invalid_request` | 422 | A body over the size limit ("Request body is too large."), malformed body / failed validation (`details` has specifics; on `/workflows` also a bad `cursor`, `limit` or `inputs`, more than 200 workflows or nodes, and on `PUT /business-hours` `details.fieldErrors` keyed `timezone` / `windows`), a reaction refused for its channel (§4), or a `replyToMessageId` that is not found for this contact, is not a string, or is sent with a reaction (§4). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
+| `invalid_request` | 422 | An unknown `X-Fx-Api-Version` header or webhook `payloadVersion` (§3b), a body over the size limit ("Request body is too large."), malformed body / failed validation (`details` has specifics; on `/workflows` also a bad `cursor`, `limit` or `inputs`, more than 200 workflows or nodes, and on `PUT /business-hours` `details.fieldErrors` keyed `timezone` / `windows`), a reaction refused for its channel (§4), or a `replyToMessageId` that is not found for this contact, is not a string, or is sent with a reaction (§4). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number, or (plan 32 / A7a, plan 34 / A7b) an `id:`/`psid:`/`igsid:`/`webchat:` value that resolves no contact on the chosen channel. Never creates a contact for these four prefixes. |
 | `invalid_channel` | 422 | (plan 32 / A7a) The `channelId` you sent is unknown, inactive, or belongs to another workspace. |
 | `reply_channel_mismatch` | 422 | `replyToMessageId` quotes a message that was sent on another channel than the one resolved for this send. Nothing is sent; pass the quoted message's `channelId` (see §4 "Replying to a message"). |

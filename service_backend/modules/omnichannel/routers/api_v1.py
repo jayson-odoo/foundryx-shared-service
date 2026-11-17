@@ -7,11 +7,14 @@ Bearer key. Errors use the structured `{error:{code,message}}` envelope
 JWT `require_module` gate - service-active is re-checked inside the dependency.
 """
 import json
+import re
 from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -61,6 +64,7 @@ from ..schemas import (
     WebhookEndpointUpdateRequest,
     WebhookSecretResponse,
 )
+from ..services import payload_version
 from ..services.business_hours import BusinessHoursService
 from ..services.key_workflows import KeyWorkflowService, put_business_hours
 from ..services.media_pipeline import META_CEILINGS
@@ -72,7 +76,47 @@ from ..services.public_gateway_service import (
 )
 from ..services.webchat_visitor_service import WebchatInvalidRequest, read_capped_json
 
-router = APIRouter()
+API_VERSION_HEADER = "X-Fx-Api-Version"
+
+
+def api_version(
+    value: Optional[str] = Header(
+        default=None,
+        alias=API_VERSION_HEADER,
+        description=(
+            "Response payload version. Absent or `1` = the documented shapes as "
+            "they are today. A higher version adds the keys introduced in it."
+        ),
+    ),
+) -> int:
+    """`X-Fx-Api-Version` request header -> the response payload version. Absent
+    is version 1. An unknown value is a typed 422, never a silent fallback (same
+    rule as `?format=`). Runs on every route of this router, so a bad value is
+    refused everywhere; a route whose shapes have versioned keys also takes it
+    as a parameter and answers with `versioned`."""
+    if value is None:
+        return payload_version.V1
+    raw = value.strip()
+    if re.fullmatch(r"[1-9][0-9]{0,2}", raw) and int(raw) in payload_version.VERSIONS:
+        return int(raw)
+    known = ", ".join(str(v) for v in payload_version.VERSIONS)
+    raise ApiError(
+        422, "invalid_request",
+        f"Unknown {API_VERSION_HEADER} '{value}'. Use one of: {known}.",
+    )
+
+
+def versioned(item, version: int, status_code: int = status.HTTP_200_OK):
+    """Version 1 returns the model untouched, so FastAPI serializes it exactly as
+    before. A higher version answers the JSON dumped at that version."""
+    if version == payload_version.V1:
+        return item
+    with payload_version.serializing(version):
+        content = jsonable_encoder(item)
+    return JSONResponse(content, status_code=status_code)
+
+
+router = APIRouter(dependencies=[Depends(api_version)])
 
 # Cap on a JSON body the gateway reads itself (the send route and the workflow routes).
 _JSON_BODY_CAP = 256 * 1024
@@ -506,13 +550,14 @@ def _wh_guard(exc: Exception):
 def list_webhooks(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointListResponse:
     """Your workspace's registered callbacks (secrets are never echoed).
 
     Workspace-scoped, matching what the per-id routes can mutate - listing by
     active channel would hide an endpoint that `PATCH`/`DELETE` still reach."""
     rows = _webhook_service(db).list_for_workspace(api_ws.tenant_id, api_ws.workspace_id)
-    return WebhookEndpointListResponse(data=[_wh_item(r) for r in rows])
+    return versioned(WebhookEndpointListResponse(data=[_wh_item(r) for r in rows]), version)
 
 
 @router.post("/webhooks", response_model=WebhookEndpointMintResponse, status_code=201)
@@ -520,6 +565,7 @@ def create_webhook(
     payload: WebhookEndpointCreateRequest,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointMintResponse:
     """Register a callback that covers every channel of your workspace. The
     signing secret is returned ONCE - store it; it is never shown again."""
@@ -538,6 +584,7 @@ def create_webhook(
             # The activity log is pruned per tenant; this row is permanent.
             created_by=f"apikey:{api_ws.key_id}",
             key_id=api_ws.key_id,
+            payload_version=payload.payloadVersion,
         )
     except WebhookNoActiveChannel as exc:
         raise ApiError(409, "no_active_channel", str(exc)) from exc
@@ -545,7 +592,11 @@ def create_webhook(
         raise _key_revoked() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
-    return WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret)
+    return versioned(
+        WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret),
+        version,
+        status_code=status.HTTP_201_CREATED,
+    )
 
 
 def _paused_by_staff() -> ApiError:
@@ -582,6 +633,7 @@ def update_webhook(
     payload: WebhookEndpointUpdateRequest,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointItem:
     from ..services.webhook_service import (
         WebhookError,
@@ -595,7 +647,7 @@ def update_webhook(
         row = _webhook_service(db).update(
             api_ws.tenant_id, endpoint_id,
             name=payload.name, url=payload.url, events=payload.events,
-            key_id=api_ws.key_id,
+            key_id=api_ws.key_id, payload_version=payload.payloadVersion,
         )
     except WebhookKeyRevoked as exc:
         raise _key_revoked() from exc
@@ -605,7 +657,7 @@ def update_webhook(
         raise _endpoint_not_found() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
-    return _wh_item(row)
+    return versioned(_wh_item(row), version)
 
 
 @router.post("/webhooks/{endpoint_id}/rotate", response_model=WebhookSecretResponse)
@@ -637,6 +689,7 @@ def enable_webhook(
     endpoint_id: str,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointItem:
     """Re-enable a disabled endpoint (also clears an AUTO_DISABLED strike count)."""
     from ..services.webhook_service import WebhookKeyRevoked, WebhookNotFound, WebhookPausedByStaff
@@ -652,7 +705,7 @@ def enable_webhook(
         raise _paused_by_staff() from exc
     except WebhookNotFound as exc:
         raise _endpoint_not_found() from exc
-    return _wh_item(row)
+    return versioned(_wh_item(row), version)
 
 
 @router.post("/webhooks/{endpoint_id}/disable", response_model=WebhookEndpointItem)
@@ -660,6 +713,7 @@ def disable_webhook(
     endpoint_id: str,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointItem:
     from ..services.webhook_service import WebhookKeyRevoked, WebhookNotFound
 
@@ -672,7 +726,7 @@ def disable_webhook(
         raise _key_revoked() from exc
     except WebhookNotFound as exc:
         raise _endpoint_not_found() from exc
-    return _wh_item(row)
+    return versioned(_wh_item(row), version)
 
 
 @router.delete("/webhooks/{endpoint_id}", status_code=204)
