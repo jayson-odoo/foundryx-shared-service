@@ -131,7 +131,7 @@ function MapFieldsBody({
         {canManage && (
           <Button variant="primary" onClick={onSave} disabled={saving || !questions.data}>
             {saving && <Loader2 className="size-4 animate-spin" />}
-            Save
+            Save map
           </Button>
         )}
       </DialogFooter>

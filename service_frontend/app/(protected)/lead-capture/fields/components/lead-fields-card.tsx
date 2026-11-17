@@ -98,7 +98,7 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
             )}
             <Button variant="primary" size="sm" disabled={saving || !dirty} onClick={onSave}>
               {saving && <Loader2 className="size-4 animate-spin" />}
-              Save
+              Save fields
             </Button>
           </CardToolbar>
         )}
@@ -120,73 +120,69 @@ export function LeadFieldsCard({ state, saving, save, canManage, onSaved }: Lead
         )}
         {state.data && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[520px] text-sm">
-              <thead>
-                <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="py-2 pe-2 font-medium">Key *</th>
-                  <th className="py-2 pe-2 font-medium">Label</th>
-                  <th className="py-2 pe-2 font-medium">Type *</th>
-                  {canManage && <th className="w-10" />}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, i) => (
-                  <tr key={i} className="border-b align-top last:border-b-0">
-                    <td className="py-2 pe-2">
-                      <Input
-                        aria-label={`Key ${i + 1}`}
-                        value={row.key}
-                        maxLength={64}
-                        disabled={!canManage}
-                        aria-invalid={submitted && errors[i] ? true : undefined}
-                        onChange={(e) => update(i, { key: e.target.value })}
-                      />
-                      {submitted && errors[i] && <p className="mt-1 text-xs text-destructive">{errors[i]}</p>}
-                    </td>
-                    <td className="py-2 pe-2">
-                      <Input
-                        aria-label={`Label ${i + 1}`}
-                        value={row.label}
-                        maxLength={200}
-                        disabled={!canManage}
-                        onChange={(e) => update(i, { label: e.target.value })}
-                      />
-                    </td>
-                    <td className="py-2 pe-2">
-                      <SearchSelect
-                        ariaLabel={`Type ${i + 1}`}
-                        options={TYPE_OPTIONS}
-                        value={row.type}
-                        disabled={!canManage}
-                        onChange={(v) => update(i, { type: v as LeadFieldType })}
-                      />
-                    </td>
+            <div className="flex min-w-[520px] flex-col text-sm" role="list" aria-label="Lead fields">
+              <div className="grid grid-cols-[1fr_1fr_1fr_2.5rem] gap-2 border-b py-2 text-xs font-medium text-muted-foreground">
+                <span>Key *</span>
+                <span>Label</span>
+                <span>Type *</span>
+                <span />
+              </div>
+              {rows.map((row, i) => (
+                <div
+                  key={i}
+                  role="listitem"
+                  className="grid grid-cols-[1fr_1fr_1fr_2.5rem] items-start gap-2 border-b py-2 last:border-b-0"
+                >
+                  <div>
+                    <Input
+                      aria-label={`Key ${i + 1}`}
+                      value={row.key}
+                      maxLength={64}
+                      disabled={!canManage}
+                      aria-invalid={submitted && errors[i] ? true : undefined}
+                      onChange={(e) => update(i, { key: e.target.value })}
+                    />
+                    {submitted && errors[i] && <p className="mt-1 text-xs text-destructive">{errors[i]}</p>}
+                  </div>
+                  <Input
+                    aria-label={`Label ${i + 1}`}
+                    value={row.label}
+                    maxLength={200}
+                    disabled={!canManage}
+                    onChange={(e) => update(i, { label: e.target.value })}
+                  />
+                  <SearchSelect
+                    ariaLabel={`Type ${i + 1}`}
+                    options={TYPE_OPTIONS}
+                    value={row.type}
+                    disabled={!canManage}
+                    onChange={(v) => update(i, { type: v as LeadFieldType })}
+                  />
+                  <div>
                     {canManage && (
-                      <td className="py-2">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" mode="icon" size="sm" aria-label={`Line ${i + 1} actions`}>
-                              <MoreHorizontal className="size-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem disabled={i === 0} onSelect={() => move(i, -1)}>
-                              <ArrowUp className="size-4" /> Move up
-                            </DropdownMenuItem>
-                            <DropdownMenuItem disabled={i === rows.length - 1} onSelect={() => move(i, 1)}>
-                              <ArrowDown className="size-4" /> Move down
-                            </DropdownMenuItem>
-                            <DropdownMenuItem variant="destructive" onSelect={() => removeRow(i)}>
-                              <Trash2 className="size-4" /> Remove
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </td>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" mode="icon" size="sm" aria-label={`Line ${i + 1} actions`}>
+                            <MoreHorizontal className="size-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem disabled={i === 0} onSelect={() => move(i, -1)}>
+                            <ArrowUp className="size-4" /> Move up
+                          </DropdownMenuItem>
+                          <DropdownMenuItem disabled={i === rows.length - 1} onSelect={() => move(i, 1)}>
+                            <ArrowDown className="size-4" /> Move down
+                          </DropdownMenuItem>
+                          <DropdownMenuItem variant="destructive" onSelect={() => removeRow(i)}>
+                            <Trash2 className="size-4" /> Remove
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                  </div>
+                </div>
+              ))}
+            </div>
             {canManage && rows.length < MAX_LEAD_FIELDS && (
               <Button variant="outline" size="sm" className="mt-3" onClick={addRow}>
                 <Plus className="size-4" /> Add field

@@ -70,7 +70,7 @@ describe('MapFieldsDialog', () => {
     expect(screen.getByRole('combobox', { name: 'What is your budget?' })).toHaveTextContent('Budget');
     expect(screen.getByRole('combobox', { name: 'Best time to call' })).toHaveTextContent('Leave in lead notes');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save map' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(saveFieldMap).toHaveBeenCalledWith('src1', '222', {
       full_name: null,
