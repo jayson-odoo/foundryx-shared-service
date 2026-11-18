@@ -11,6 +11,7 @@ import type {
   WizardContext,
   WizardDone,
   WizardFormList,
+  WizardGoogleConnect,
   WizardGuidedSource,
   WizardPage,
   WizardQuestionList,
@@ -39,6 +40,10 @@ export interface LeadCaptureWizardService {
   connect(token: string, pageId: string): Promise<WizardSource>;
   /** Google Ads: this session's source with its URL + a key (again = a new key). */
   googleSource(token: string): Promise<WizardGuidedSource>;
+  /** Google sign-in (plan 68): exchange the code; the accounts the person can reach. */
+  googleLogin(token: string, code: string, redirectUri?: string): Promise<WizardPage[]>;
+  googleForms(token: string, accountId: string): Promise<WizardPage[]>;
+  googleConnect(token: string, accountId: string, formIds: string[]): Promise<WizardGoogleConnect>;
   source(token: string, sourceId: string): Promise<WizardSource>;
   forms(token: string, sourceId: string): Promise<WizardFormList>;
   saveForms(token: string, sourceId: string, formsMode: 'all' | 'pick', formIds: string[]): Promise<WizardSource>;
@@ -67,6 +72,22 @@ export const leadCaptureWizardService: LeadCaptureWizardService = {
     publicFetch<WizardSource>(`${BASE}/wizard/facebook/connect`, auth(token, json('POST', { pageId }))),
   googleSource: (token) =>
     publicFetch<WizardGuidedSource>(`${BASE}/wizard/google/source`, auth(token, json('POST', {}))),
+  googleLogin: async (token, code, redirectUri) =>
+    (
+      await publicFetch<{ data: WizardPage[] }>(
+        `${BASE}/wizard/google/login`,
+        auth(token, json('POST', { code, redirectUri: redirectUri ?? null })),
+      )
+    ).data,
+  googleForms: async (token, accountId) =>
+    (
+      await publicFetch<{ data: WizardPage[] }>(
+        `${BASE}/wizard/google/accounts/${encodeURIComponent(accountId)}/forms`,
+        auth(token),
+      )
+    ).data,
+  googleConnect: (token, accountId, formIds) =>
+    publicFetch<WizardGoogleConnect>(`${BASE}/wizard/google/connect`, auth(token, json('POST', { accountId, formIds }))),
   source: (token, sourceId) =>
     publicFetch<WizardSource>(`${BASE}/wizard/sources/${encodeURIComponent(sourceId)}`, auth(token)),
   forms: (token, sourceId) =>

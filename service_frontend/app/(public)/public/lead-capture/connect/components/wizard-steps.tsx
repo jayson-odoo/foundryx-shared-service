@@ -5,7 +5,7 @@
  * one question; data + actions come from `useLeadCaptureWizard` only.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Check, Copy, ExternalLink, Facebook, Loader2, Megaphone } from 'lucide-react';
+import { AlertTriangle, Check, Copy, ExternalLink, Facebook, Loader2, LogIn, Megaphone } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -15,7 +15,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import type { UseLeadCaptureWizard } from '@/hooks/use-lead-capture-wizard';
 import { blockReason, defaultTarget } from '@/lib/lead-capture-wizard';
 import { cn } from '@/lib/utils';
-import { CREATE_FORM_GUIDE, GOOGLE_TEST_DATA_GUIDE, GuidePlayer } from './guide-player';
+import { CREATE_FORM_GUIDE, GOOGLE_SIGNIN_TEST_GUIDE, GOOGLE_TEST_DATA_GUIDE, GuidePlayer } from './guide-player';
 
 interface StepProps {
   wizard: UseLeadCaptureWizard;
@@ -82,7 +82,22 @@ export function ChannelStep({ wizard }: StepProps) {
   );
 }
 
+function GoogleSignInStep({ wizard }: StepProps) {
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <Button type="button" onClick={() => void wizard.signIn()} disabled={wizard.busy === 'signin'}>
+        {wizard.busy === 'signin' ? <Loader2 className="animate-spin" /> : <LogIn aria-hidden />}
+        Continue with Google
+      </Button>
+      <Button type="button" variant="ghost" onClick={wizard.switchToGuided} disabled={Boolean(wizard.busy)}>
+        Set up with a URL and key instead
+      </Button>
+    </div>
+  );
+}
+
 export function SignInStep({ wizard }: StepProps) {
+  if (wizard.state.channel === 'google') return <GoogleSignInStep wizard={wizard} />;
   return (
     <Button
       type="button"
@@ -125,7 +140,101 @@ export function PageStep({ wizard }: StepProps) {
   );
 }
 
+/** Google sign-in: which Google Ads account (one = chosen for the person). */
+export function AccountStep({ wizard }: StepProps) {
+  const { state } = wizard;
+  const options = (state.googleAccounts ?? []).map((a) => ({ label: a.name, value: a.id }));
+  const chosen = state.googleForms !== null;
+  return (
+    <div className="flex flex-col gap-3">
+      <SearchSelect
+        options={options}
+        value={state.accountId}
+        onChange={(v) => wizard.pickAccount(v)}
+        placeholder="Pick an account"
+        searchPlaceholder="Search accounts"
+        ariaLabel="Google Ads account"
+        disabled={chosen}
+        className="w-full sm:max-w-sm"
+      />
+      {chosen ? null : (
+        <StepAction
+          label="Continue"
+          onClick={() => void wizard.chooseAccount()}
+          reason={blockReason('account', state)}
+          busy={wizard.busy === 'account'}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Google sign-in: tick lead forms; we write the URL + key into each (G-D5). */
+function GoogleFormsStep({ wizard }: StepProps) {
+  const { state, googleResults } = wizard;
+  const forms = state.googleForms ?? [];
+  if (forms.length === 0) {
+    return (
+      <div className="flex flex-col gap-3">
+        <p className="flex items-start gap-2 text-sm text-foreground">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+          This account has no lead forms yet.
+        </p>
+        <StepAction label="Check again" onClick={() => void wizard.chooseAccount()} busy={wizard.busy === 'account'} />
+      </div>
+    );
+  }
+  const result = Object.fromEntries(googleResults.map((r) => [r.id, r]));
+  const failed = googleResults.filter((r) => !r.ok).map((r) => r.id);
+  const connected = new Set(googleResults.filter((r) => r.ok).map((r) => r.id));
+  const toggle = (id: string, on: boolean) =>
+    wizard.setFormsChoice('pick', on ? [...state.formIds, id] : state.formIds.filter((f) => f !== id));
+  return (
+    <div className="flex flex-col gap-3">
+      <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto rounded-md border border-border p-2">
+        {forms.map((form) => (
+          <li key={form.id} className="flex flex-col gap-0.5">
+            <label className="flex min-w-0 items-center gap-2 rounded px-1 py-1.5 text-sm hover:bg-accent">
+              <Checkbox
+                checked={state.formIds.includes(form.id)}
+                disabled={connected.has(form.id)}
+                onCheckedChange={(v) => toggle(form.id, v === true)}
+              />
+              <ClampedText text={form.name} lines={1} className="min-w-0 flex-1" />
+              {result[form.id]?.ok ? <Check className="size-4 shrink-0 text-success" aria-label="Connected" /> : null}
+            </label>
+            {result[form.id] && !result[form.id].ok ? (
+              <p className="flex items-start gap-1.5 ps-8 text-xs text-destructive">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                <ClampedText text={result[form.id].message ?? 'Google Ads refused the change.'} lines={2} />
+              </p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {failed.length > 0 ? (
+        <div className="flex flex-wrap items-start gap-3">
+          <StepAction label="Try again" onClick={() => void wizard.connectGoogle(failed)} busy={wizard.busy === 'forms'} />
+          {connected.size > 0 ? (
+            <Button type="button" variant="ghost" onClick={wizard.continueWithoutFailed} disabled={Boolean(wizard.busy)}>
+              Continue without them
+            </Button>
+          ) : null}
+        </div>
+      ) : (
+        <StepAction
+          label="Connect forms"
+          onClick={() => void wizard.connectGoogle()}
+          reason={blockReason('forms', state)}
+          busy={wizard.busy === 'forms'}
+        />
+      )}
+    </div>
+  );
+}
+
 export function FormsStep({ wizard }: StepProps) {
+  if (wizard.state.channel === 'google') return <GoogleFormsStep wizard={wizard} />;
   const { state, forms } = wizard;
   if (!forms) {
     return (
@@ -323,7 +432,7 @@ export function CopyStep({ wizard }: StepProps) {
 function GoogleTestStep({ wizard }: StepProps) {
   return (
     <div className="flex flex-col gap-3">
-      <GuidePlayer frames={GOOGLE_TEST_DATA_GUIDE} />
+      <GuidePlayer frames={wizard.state.googleSignIn ? GOOGLE_SIGNIN_TEST_GUIDE : GOOGLE_TEST_DATA_GUIDE} />
       {wizard.testWaiting ? (
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" aria-hidden />

@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
 import { launchMetaOAuth } from '@/lib/embedded-signup';
+import { launchGoogleOAuth } from '@/lib/google-oauth';
 import { postToOpener } from '@/lib/lead-capture-post-message';
 import {
   INITIAL_WIZARD_STATE,
@@ -27,6 +28,7 @@ import type {
   WizardContext,
   WizardDone,
   WizardFormList,
+  WizardGoogleFormResult,
   WizardQuestionList,
   WizardSource,
   WizardTestLead,
@@ -94,6 +96,14 @@ export interface UseLeadCaptureWizard {
   confirmCopy: () => Promise<void>;
   /** Google: wait again after the wait ran out. */
   waitForGoogleTest: () => Promise<void>;
+  /** Google sign-in (plan 68). */
+  googleResults: WizardGoogleFormResult[];
+  pickAccount: (accountId: string) => void;
+  chooseAccount: () => Promise<void>;
+  connectGoogle: (formIds?: string[]) => Promise<void>;
+  continueWithoutFailed: () => void;
+  /** Google: set up by hand (URL + key) instead of signing in (G-D9). */
+  switchToGuided: () => void;
   signIn: () => Promise<void>;
   pickPage: (pageId: string) => void;
   connectPage: () => Promise<void>;
@@ -130,6 +140,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
   const [testFormId, setTestFormId] = useState<string | null>(null);
   const [testWaiting, setTestWaiting] = useState(false);
   const [done, setDone] = useState<WizardDone | null>(null);
+  const [googleResults, setGoogleResults] = useState<WizardGoogleFormResult[]>([]);
   const opened = useRef(false);
   const pollTimer = useRef<number | null>(null);
   /** False once the wizard closed, unmounted or its session ended: a poll
@@ -230,11 +241,17 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
 
   const chooseChannel = useCallback(
     (key: string) => {
-      setState((s) => ({ ...s, channel: key }));
-      if (key === 'google' && !state.guided) void showGuided();
+      const signInFirst = key === 'google' && Boolean(context?.googleLogin?.available);
+      setState((s) => ({ ...s, channel: key, googleSignIn: signInFirst }));
+      if (key === 'google' && !signInFirst && !state.guided) void showGuided();
     },
-    [showGuided, state.guided],
+    [context, showGuided, state.guided],
   );
+
+  const switchToGuided = useCallback(() => {
+    setState((s) => ({ ...s, googleSignIn: false }));
+    if (!state.guided) void showGuided();
+  }, [showGuided, state.guided]);
 
   const copyGuided = useCallback(
     async (which: 'url' | 'key') => {
@@ -251,9 +268,36 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     [state.guided],
   );
 
+  const signInGoogle = useCallback(
+    async (t: string) => {
+      const login = context?.googleLogin;
+      if (!login?.available) throw new Error('Google sign-in is not available right now.');
+      let code = 'simulated';
+      let redirectUri: string | undefined;
+      if (!login.simulated) {
+        const result = await launchGoogleOAuth({ clientId: login.clientId ?? '', scopes: login.scopes });
+        code = result.code;
+        redirectUri = result.redirectUri;
+      }
+      const accounts = await svc.googleLogin(t, code, redirectUri);
+      if (accounts.length === 0) {
+        setProblem({ screen: 'generic', message: 'No Google Ads account was found for this Google sign-in.' });
+        return;
+      }
+      const bound = context?.source?.platform === 'google' ? context.source.pageId : null;
+      const pick = bound && accounts.some((a) => a.id === bound) ? bound : autoPage(accounts);
+      setState((s) => ({ ...s, signedIn: true, googleAccounts: accounts, accountId: pick ?? s.accountId }));
+    },
+    [context],
+  );
+
   const signIn = useCallback(
     () =>
       run('signin', async (t) => {
+        if (state.channel === 'google') {
+          await signInGoogle(t);
+          return;
+        }
         const login = context?.login;
         if (!login?.available) throw new Error('Facebook is not available right now.');
         let code = 'simulated';
@@ -277,7 +321,21 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
         const pick = bound && pages.some((p) => p.id === bound) ? bound : autoPage(pages);
         setState((s) => ({ ...s, signedIn: true, pages, pageId: pick ?? s.pageId }));
       }),
-    [context, run],
+    [context, run, signInGoogle, state.channel],
+  );
+
+  const pickAccount = useCallback((accountId: string) => {
+    setState((s) => ({ ...s, accountId }));
+  }, []);
+
+  const chooseAccount = useCallback(
+    () =>
+      run('account', async (t) => {
+        if (!state.accountId) return;
+        const list = await svc.googleForms(t, state.accountId);
+        setState((s) => ({ ...s, googleForms: list, formIds: list.length === 1 ? [list[0].id] : [] }));
+      }),
+    [run, state.accountId],
   );
 
   const pickPage = useCallback((pageId: string) => {
@@ -425,6 +483,31 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     [poll, run, state.sourceId],
   );
 
+  const connectGoogle = useCallback(
+    (formIds?: string[]) =>
+      run('forms', async (t) => {
+        if (!state.accountId) return;
+        const ids = formIds ?? state.formIds;
+        const res = await svc.googleConnect(t, state.accountId, ids);
+        setSource(res.source);
+        setGoogleResults((prev) => [...prev.filter((r) => !ids.includes(r.id)), ...res.forms]);
+        const allOk = res.forms.every((r) => r.ok);
+        setState((s) => ({ ...s, sourceId: res.source.id, formsSaved: allOk }));
+        if (allOk) {
+          const baseline = (await svc.lastTestLead(t, res.source.id)).leadId;
+          polling.current = true;
+          setTestWaiting(true);
+          poll(t, res.source.id, baseline, GOOGLE_POLL_LIMIT);
+        }
+      }),
+    [poll, run, state.accountId, state.formIds],
+  );
+
+  const continueWithoutFailed = useCallback(() => {
+    setState((s) => ({ ...s, formsSaved: true }));
+    void waitForGoogleTest();
+  }, [waitForGoogleTest]);
+
   const confirmCopy = useCallback(async () => {
     setState((s) => ({ ...s, copyConfirmed: true }));
     await waitForGoogleTest();
@@ -492,6 +575,12 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
       copyGuided,
       confirmCopy,
       waitForGoogleTest,
+      googleResults,
+      pickAccount,
+      chooseAccount,
+      connectGoogle,
+      continueWithoutFailed,
+      switchToGuided,
       signIn,
       pickPage,
       connectPage,
@@ -508,7 +597,8 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     }),
     [
       phase, context, state, busy, problem, forms, fields, questions, mapFormId, testFormId, testWaiting, done, source,
-      chooseChannel, showGuided, copyGuided, confirmCopy, waitForGoogleTest, signIn, pickPage, connectPage, setFormsChoice, saveForms, reloadForms, chooseMapForm,
+      chooseChannel, showGuided, copyGuided, confirmCopy, waitForGoogleTest, googleResults, pickAccount,
+      chooseAccount, connectGoogle, continueWithoutFailed, switchToGuided, signIn, pickPage, connectPage, setFormsChoice, saveForms, reloadForms, chooseMapForm,
       saveFieldMap, sendTestLead, finish, close,
     ],
   );

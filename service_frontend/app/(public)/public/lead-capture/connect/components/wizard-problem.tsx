@@ -18,8 +18,13 @@ export function WizardProblem({ wizard }: { wizard: UseLeadCaptureWizard }) {
   let action: { label: string; run: () => void } = { label: 'Try again', run: wizard.dismissProblem };
   let guide = false;
 
+  const google = wizard.state.channel === 'google';
   switch (problem.screen) {
     case 'permission-declined': // E1
+      if (google) {
+        action = { label: 'Try again', run: () => void wizard.signIn() };
+        break; // the server's Google wording
+      }
       text = 'Facebook did not give permission to read leads. Leave every permission ticked on the Facebook screen.';
       action = { label: 'Try again', run: () => void wizard.signIn() };
       break;
@@ -37,6 +42,10 @@ export function WizardProblem({ wizard }: { wizard: UseLeadCaptureWizard }) {
       action = { label: 'Choose another Page', run: wizard.dismissProblem };
       break;
     case 'reconnect': // E5
+      if (google) {
+        action = { label: 'Sign in again', run: () => void wizard.signIn() };
+        break;
+      }
       text = 'Facebook stopped sharing leads for this Page. Sign in again to reconnect it.';
       action = { label: 'Sign in again', run: () => void wizard.signIn() };
       break;
