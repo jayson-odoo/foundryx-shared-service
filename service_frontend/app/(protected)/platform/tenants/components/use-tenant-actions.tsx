@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import {
   Archive,
   CirclePause,
@@ -11,6 +12,8 @@ import {
   Trash2,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
+import type { FxIconRef } from '@/components/fx/icons';
 import type {
   StatusGraph,
   StatusNodeData,
@@ -47,8 +50,30 @@ function edgeDescription(target: StatusNodeData | undefined): string {
   return `Moves the tenant to "${target.label}" - sign-in is allowed again.`;
 }
 
+/**
+ * Other Action icons under the Foundryx UIUX switch (one icon per meaning);
+ * the lifecycle edges keep their own drawn icons.
+ */
+export const TENANT_FX_ICONS: Record<string, FxIconRef> = {
+  edit: 'edit',
+  'open-tenant': <ExternalLink aria-hidden="true" className="size-[18px]" />,
+  purge: 'trash',
+};
+
+/**
+ * What the Foundryx UIUX purge confirm asks to type (owner decision: the
+ * record's name or number replaces the press and hold): one tenant types its
+ * slug, several type how many there are. With the switch off the confirm
+ * keeps `expected` (the slug, or DELETE for several).
+ */
+export function fxPurgeExpected(rows: Pick<TenantListItem, 'slug'>[]): string {
+  return rows.length === 1 ? rows[0].slug : String(rows.length);
+}
+
 export function useTenantActions(): ResourceAction<TenantListItem>[] {
   const router = useRouter();
+  const fx = useFx();
+  const byWhom = useSession().data?.user?.name ?? undefined;
   const [graph, setGraph] = useState<StatusGraph | null>(null);
 
   // The tenant entity's edge graph drives the lifecycle buttons. Fetched via
@@ -137,7 +162,15 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
       // exist at all, and the type (a discriminated union) rejects supplying
       // both.
       if (deferredActionKey) {
-        return { ...common, deferred: { actionKey: deferredActionKey, entityType: 'tenant' } };
+        return {
+          ...common,
+          deferred: {
+            actionKey: deferredActionKey,
+            entityType: 'tenant',
+            // Foundryx UIUX switch only: the one-tenant countdown names it.
+            fxName: (rows: TenantListItem[]) => (rows.length === 1 ? rows[0].name : undefined),
+          },
+        };
       }
       return {
         ...common,
@@ -161,7 +194,16 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
             )
           ).filter(Boolean).length;
           const skipped = rows.length - fired;
-          if (skipped > 0) {
+          if (fx) {
+            toast.fxDone({
+              what:
+                fired === 1 && rows.length === 1
+                  ? `${label}: ${rows[0].name}`
+                  : `${label}: ${fired} ${fired === 1 ? 'tenant' : 'tenants'}`,
+              howMany: skipped > 0 ? `${skipped} skipped, no longer eligible` : undefined,
+              byWhom,
+            });
+          } else if (skipped > 0) {
             toast.warning(
               `${label}: ${fired} updated, ${skipped} skipped (no longer eligible).`,
             );
@@ -192,11 +234,24 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
       isVisible: (rows) =>
         rows.length > 0 && rows.every((t) => !t.isPlatform && rowIsArchived(t)),
       confirm: {
-        title: 'Delete permanently?',
-        description:
-          'This erases the tenant and ALL its data - users, roles, settings, module data. It cannot be undone (archive already blocks sign-in; delete only when the data is truly disposable).',
-        confirmLabel: 'Delete forever',
+        // Foundryx UIUX switch: the question names its object, one line says
+        // what does not come back, the action is verb + object. Off keeps
+        // today's words.
+        title: fx
+          ? (rows) =>
+              rows.length === 1
+                ? `Delete ${rows[0].name} permanently?`
+                : `Delete ${rows.length} tenants permanently?`
+          : 'Delete permanently?',
+        description: fx
+          ? 'Users, roles, settings and module data are erased and do not come back.'
+          : 'This erases the tenant and ALL its data - users, roles, settings, module data. It cannot be undone (archive already blocks sign-in; delete only when the data is truly disposable).',
+        confirmLabel: fx
+          ? (rows) => (rows.length === 1 ? 'Delete tenant' : `Delete ${rows.length} tenants`)
+          : 'Delete forever',
+        fxKeepLabel: (rows) => (rows.length === 1 ? 'Keep tenant' : 'Keep tenants'),
         input: {
+          fxExpected: fxPurgeExpected,
           expected: (rows) => (rows.length === 1 ? rows[0].slug : 'DELETE'),
           hint: (rows) =>
             rows.length === 1
@@ -208,7 +263,18 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
         await Promise.all(
           rows.map((t) => tenantAdminService.purge(t.id, t.slug)),
         );
-        toast.success(`Deleted ${rows.length} tenant(s) permanently.`);
+        // No Undo: a purge erases the tenant, nothing in the API brings it back.
+        if (fx) {
+          toast.fxDone({
+            what:
+              rows.length === 1
+                ? `Tenant ${rows[0].slug} deleted permanently`
+                : `${rows.length} tenants deleted permanently`,
+            byWhom,
+          });
+        } else {
+          toast.success(`Deleted ${rows.length} tenant(s) permanently.`);
+        }
         rt.reload();
       },
     };
@@ -255,5 +321,5 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
       ),
       deleteAction,
     ];
-  }, [router, graph]);
+  }, [router, graph, fx, byWhom]);
 }
