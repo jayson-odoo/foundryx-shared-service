@@ -303,6 +303,16 @@ class GoogleConnectRequest(BaseModel):
     formIds: List[str] = Field(default_factory=list, max_length=200)
 
 
+class GoogleLogin(ApiModel):
+    loginId: str
+    accounts: List[GoogleAccount]
+    expiresAt: Optional[datetime] = None
+
+
+class GatewayGoogleConnectRequest(GoogleConnectRequest):
+    loginId: str = Field(min_length=1, max_length=64)
+
+
 class GoogleFormResult(BaseModel):
     id: str
     name: str

@@ -31,6 +31,7 @@ from .. import google_ads
 from ..google_ads import GoogleAdsClient, GoogleAdsError
 from ..models import PLATFORM_GOOGLE, SOURCE_ROUTING_STATES, LcSource
 from . import google_source_service, source_service
+from ..models import SESSION_KIND_LOGIN, LcConnectSession
 from .connect_session_service import LOGIN_TTL, SessionError, WizardPrincipal
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,39 @@ def connect(
     db.commit()
     db.refresh(source)
     return source, results
+
+
+# ── gateway door: a product's own wizard (AC-68-30) ────────────────────────
+
+def create_login(
+    db: Session, tenant_id: str, key_id: str, code: str, redirect_uri: Optional[str], *, client: Optional[GoogleAdsClient] = None
+) -> Dict[str, Any]:
+    """A product exchanged a Google code through the gateway: the tokens stay
+    on a ``login`` session row; the product gets an opaque ``loginId``."""
+    _require_available()
+    row = LcConnectSession(tenant_id=tenant_id, kind=SESSION_KIND_LOGIN, key_id=key_id, expires_at=_now() + LOGIN_TTL)
+    db.add(row)
+    db.flush()
+    rows = wizard_login(db, WizardPrincipal(tenant_id=tenant_id, session=row), code, redirect_uri, client=client)
+    return {"loginId": row.id, "accounts": rows, "expiresAt": row.google_expires_at}
+
+
+def login_principal(db: Session, tenant_id: str, login_id: str, key_id: str) -> WizardPrincipal:
+    """The ``loginId`` of THIS key on THIS tenant; anything else answers the
+    same ``LOGIN_REQUIRED`` (no enumeration)."""
+    row = (
+        db.query(LcConnectSession)
+        .filter(
+            LcConnectSession.id == (login_id or "")[:64],
+            LcConnectSession.tenant_id == tenant_id,
+            LcConnectSession.key_id == key_id,
+            LcConnectSession.kind == SESSION_KIND_LOGIN,
+        )
+        .first()
+    )
+    if row is None or not row.google_encrypted:
+        raise SessionError(409, "LOGIN_REQUIRED", "Sign in to Google again.")
+    return WizardPrincipal(tenant_id=tenant_id, session=row)
 
 
 def signed_in_email(principal: WizardPrincipal) -> Optional[str]:

@@ -319,3 +319,53 @@ def test_reopened_source_adds_forms_to_the_same_source(client, lc, google):
     res = client.post(f"{BASE}/google/connect", json={"accountId": ACCOUNT, "formIds": [FORM_B]}, headers=reopened)
     assert res.status_code == 200, res.text
     assert res.json()["source"]["id"] == sid and sorted(res.json()["source"]["formIds"]) == sorted([FORM_A, FORM_B])
+
+
+# ── D. gateway door for a product's own wizard (AC-68-30) ───────────────────
+
+def _gw_key(client, tenant_session=None):
+    from tests.test_lead_capture_prototype import _key
+
+    return {"Authorization": f"Bearer {_key(client, _login(client))}"}
+
+
+def test_gateway_google_login_door_end_to_end(client, lc, google):
+    gw = _gw_key(client)
+    cfg = client.get("/api/v1/lead-capture/google/login-config", headers=gw)
+    assert cfg.status_code == 200 and cfg.json()["clientId"] == "client-123.apps.example"
+    res = client.post("/api/v1/lead-capture/google/login", json={"code": "c", "redirectUri": "https://crm.example.com/cb"}, headers=gw)
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["accounts"] == [{"id": ACCOUNT, "name": "Acme Ads"}] and body["loginId"] and body["expiresAt"]
+    assert REFRESH not in res.text and ACCESS not in res.text
+    forms = client.get(f"/api/v1/lead-capture/google/logins/{body['loginId']}/accounts/{ACCOUNT}/forms", headers=gw)
+    assert [f["id"] for f in forms.json()["data"]] == [FORM_A, FORM_B]
+    made = client.post(
+        "/api/v1/lead-capture/sources/google/connect",
+        json={"loginId": body["loginId"], "accountId": ACCOUNT, "formIds": [FORM_A]},
+        headers=gw,
+    )
+    assert made.status_code == 200, made.text
+    assert made.json()["source"]["pageId"] == ACCOUNT and made.json()["forms"][0]["ok"] is True
+
+
+def test_gateway_login_id_is_tenant_and_key_scoped(client, lc, google):
+    from modules.lead_capture.services import key_service
+
+    gw = _gw_key(client)
+    login_id = client.post("/api/v1/lead-capture/google/login", json={"code": "c"}, headers=gw).json()["loginId"]
+    other_same_tenant = _gw_key(client)
+    assert client.get(f"/api/v1/lead-capture/google/logins/{login_id}/accounts/{ACCOUNT}/forms", headers=other_same_tenant).status_code == 409
+    _second_tenant(lc, allow_sharing=False)
+    db = lc()
+    try:
+        _row, b_key = key_service.issue(db, TENANT_B, name="B", created_by=None)
+        db.commit()
+    finally:
+        db.close()
+    res = client.post(
+        "/api/v1/lead-capture/sources/google/connect",
+        json={"loginId": login_id, "accountId": ACCOUNT, "formIds": [FORM_A]},
+        headers={"Authorization": f"Bearer {b_key}"},
+    )
+    assert res.status_code == 409 and res.json()["error"]["code"] == "LOGIN_REQUIRED"

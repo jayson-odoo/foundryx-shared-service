@@ -61,7 +61,12 @@ export function WizardProblem({ wizard }: { wizard: UseLeadCaptureWizard }) {
       </p>
       {guide ? <GuidePlayer frames={LEADS_ACCESS_GUIDE} /> : null}
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" onClick={action.run} disabled={Boolean(wizard.busy)}>
+        <Button
+          type="button"
+          variant={problem.screen === 'generic' ? 'outline' : 'primary'}
+          onClick={action.run}
+          disabled={Boolean(wizard.busy)}
+        >
           {action.label}
         </Button>
         {guide ? (
