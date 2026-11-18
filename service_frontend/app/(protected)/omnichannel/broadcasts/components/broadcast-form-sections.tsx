@@ -50,6 +50,7 @@ export function DetailsSection({
   onNameChange,
   onLabelsChange,
   error,
+  pulseTarget,
 }: {
   name: string;
   labels: string[];
@@ -57,6 +58,8 @@ export function DetailsSection({
   onNameChange: (v: string) => void;
   onLabelsChange: (v: string[]) => void;
   error?: string;
+  /** Foundryx UIUX only: `data-fx-pulse-target` on the Name field. */
+  pulseTarget?: string;
 }) {
   const [draft, setDraft] = useState('');
 
@@ -76,7 +79,7 @@ export function DetailsSection({
         <CardTitle>Details</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4 py-4">
-        <div className="space-y-1.5">
+        <div className="space-y-1.5" data-fx-pulse-target={pulseTarget}>
           <label className="text-sm text-muted-foreground">Name *</label>
           <Input value={name} onChange={(e) => onNameChange(e.target.value)} disabled={!editing} />
           {error && <ClampedText text={error} lines={2} className="text-xs text-destructive" />}
@@ -155,12 +158,15 @@ export function ChannelSection({
   editing,
   onChange,
   error,
+  pulseTarget,
 }: {
   channels: Channel[];
   value: string;
   editing: boolean;
   onChange: (channelId: string) => void;
   error?: string;
+  /** Foundryx UIUX only: `data-fx-pulse-target` on the Channel field. */
+  pulseTarget?: string;
 }) {
   return (
     <Card>
@@ -168,7 +174,7 @@ export function ChannelSection({
         <CardTitle>Channel</CardTitle>
       </CardHeader>
       <CardContent className="py-4">
-        <div className="max-w-sm space-y-1.5">
+        <div className="max-w-sm space-y-1.5" data-fx-pulse-target={pulseTarget}>
           <label className="text-sm text-muted-foreground">Channel *</label>
           <SearchSelect
             options={channels.map((c) => ({ label: c.name, value: c.id }))}
@@ -210,15 +216,18 @@ export function MessageSectionHeader({
   editing,
   onChange,
   error,
+  pulseTarget,
 }: {
   templates: WhatsAppTemplate[];
   templateId: string;
   editing: boolean;
   onChange: (templateId: string) => void;
   error?: string;
+  /** Foundryx UIUX only: `data-fx-pulse-target` on the Template field. */
+  pulseTarget?: string;
 }) {
   return (
-    <div className="max-w-sm space-y-1.5">
+    <div className="max-w-sm space-y-1.5" data-fx-pulse-target={pulseTarget}>
       <label className="text-sm text-muted-foreground">Template *</label>
       <SearchSelect
         options={templates.map((t) => ({ label: `${t.name} (${t.language ?? 'default'})`, value: t.id }))}

@@ -44,9 +44,12 @@ export interface AudienceSectionProps {
   editing: boolean;
   value: BroadcastAudience;
   onChange: (next: BroadcastAudience) => void;
+  /** Foundryx UIUX only: `data-fx-pulse-target` on the field that picks who
+   *  gets it (segment, contacts or the filter button). */
+  pulseTarget?: string;
 }
 
-export function AudienceSection({ workspaceId, editing, value, onChange }: AudienceSectionProps) {
+export function AudienceSection({ workspaceId, editing, value, onChange, pulseTarget }: AudienceSectionProps) {
   const { segments } = useContactSegments(workspaceId);
   const { count } = useAudiencePreview(workspaceId, value);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -90,7 +93,7 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
           </div>
 
           {value.kind === 'segment' && (
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" data-fx-pulse-target={pulseTarget}>
               <label className="text-sm text-muted-foreground">Segment</label>
               <SearchSelect
                 options={segments.map((s) => ({ label: s.name, value: s.id }))}
@@ -107,7 +110,7 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
           )}
 
           {value.kind === 'contacts' && (
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" data-fx-pulse-target={pulseTarget}>
               <label className="text-sm text-muted-foreground">Contacts</label>
               <MultiSelect
                 options={contactOptions}
@@ -122,7 +125,7 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
         </div>
 
         {value.kind === 'filter' && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" data-fx-pulse-target={pulseTarget}>
             <Popover open={filterOpen} onOpenChange={setFilterOpen}>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm" disabled={!editing}>
