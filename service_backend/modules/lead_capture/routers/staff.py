@@ -12,9 +12,27 @@ from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
 from .. import schemas
-from ..services import connect_service, delivery_service, field_service, form_service, key_service, read_service
+from ..services import (
+    backfill_service,
+    connect_service,
+    delivery_service,
+    field_service,
+    form_service,
+    key_service,
+    read_service,
+    source_service,
+)
 
 router = APIRouter()
+
+
+def _http(exc) -> HTTPException:
+    retry_after = getattr(exc, "retry_after", None)
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.message},
+        headers={"Retry-After": str(int(retry_after))} if retry_after else None,
+    )
 
 _VIEW = require_permission("lead_capture.view")
 _MANAGE = require_permission("lead_capture.manage")
@@ -36,6 +54,7 @@ def connect_facebook(
             system_user_token=body.systemUserToken,
             forms_mode=body.formsMode,
             user_id=actor_id,
+            actor=source_service.Actor.user(actor_id, user.id),
         )
     except connect_service.ConnectError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
@@ -150,4 +169,61 @@ def send_test_lead(
     try:
         return schemas.TestLeadAccepted(**form_service.send_test_lead(db, user.tenant_id, source_id, body.formId))
     except form_service.FormError as exc:
-        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+        raise _http(exc)
+
+
+# ── lane L-B: forms, backfill, history, disconnect ──────────────────────────
+
+@router.get("/sources/{source_id}/forms", response_model=schemas.FormList)
+def list_forms(source_id: str, user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.FormList:
+    try:
+        return source_service.list_forms(db, user.tenant_id, source_id)
+    except source_service.SourceError as exc:
+        raise _http(exc)
+
+
+@router.put("/sources/{source_id}/forms", response_model=schemas.SourceItem)
+def put_forms(
+    source_id: str,
+    body: schemas.FormsUpdate,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.SourceItem:
+    try:
+        row = source_service.set_forms(
+            db, user.tenant_id, source_id, body.formsMode, body.formIds, source_service.Actor.user(actor_id, user.id)
+        )
+    except source_service.SourceError as exc:
+        raise _http(exc)
+    return read_service.source_item(row)
+
+
+@router.post("/sources/{source_id}/backfill", response_model=schemas.BackfillAccepted, status_code=202)
+def run_backfill(source_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.BackfillAccepted:
+    try:
+        return schemas.BackfillAccepted(sourceId=backfill_service.request_backfill(db, user.tenant_id, source_id))
+    except source_service.SourceError as exc:
+        raise _http(exc)
+
+
+@router.get("/sources/{source_id}/history", response_model=schemas.SourceEventList, response_model_by_alias=True)
+def source_history(source_id: str, user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.SourceEventList:
+    try:
+        return source_service.history(db, user.tenant_id, source_id)
+    except source_service.SourceError as exc:
+        raise _http(exc)
+
+
+@router.delete("/sources/{source_id}", status_code=204)
+def disconnect_source(
+    source_id: str,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        source_service.disconnect(db, user.tenant_id, source_id, actor=source_service.Actor.user(actor_id, user.id))
+    except source_service.SourceError as exc:
+        raise _http(exc)
+    return Response(status_code=204)
