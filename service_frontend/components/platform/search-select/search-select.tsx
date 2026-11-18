@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -85,8 +85,18 @@ export function SearchSelect({
   // Clear the typed search whenever the popover closes - programmatic closes
   // (an option select calls setOpen(false), which does NOT fire onOpenChange)
   // must reset too, else the next open's text appends to the stale query.
+  // A caller filtering on `onQueryChange` hears the reset too, else its list
+  // stays narrowed under an empty box (crew pass 4025e5e9).
+  const typedRef = useRef('');
+  const onQueryChangeRef = useRef(onQueryChange);
+  onQueryChangeRef.current = onQueryChange;
   useEffect(() => {
-    if (!open) setQuery('');
+    if (open) return;
+    setQuery('');
+    if (typedRef.current) {
+      typedRef.current = '';
+      onQueryChangeRef.current?.('');
+    }
   }, [open]);
   const flat = groups ? groups.flatMap((g) => g.options) : (options ?? []);
   const selected = flat.find((o) => o.value === value);
@@ -141,6 +151,7 @@ export function SearchSelect({
             value={query}
             onValueChange={(v) => {
               setQuery(v);
+              typedRef.current = v;
               onQueryChange?.(v);
             }}
           />

@@ -13,21 +13,24 @@ from typing import List, Optional
 
 from typing import Callable
 
-from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.database import get_db
+from app.api.v1.documents import _serve_blob
 from app.dependencies import get_current_user, get_real_user
 from app.models.user import User
 
 from ..schemas import (
+    IdeaAttachmentOut,
     IdeaCommentCreate,
     PortalActivityOut,
     PortalChangelogOut,
     PortalCommentOut,
     PortalEmbedSessionIn,
+    PortalFollowOut,
     PortalLinkSessionIn,
     PortalHiddenIn,
     PortalIdeaCreateIn,
@@ -41,6 +44,11 @@ from ..schemas import (
     PortalSessionOut,
     PortalVoteOut,
     PortalVoterOut,
+    ShareLinkOut,
+    SharePhoneIn,
+    SharePhoneSentOut,
+    SharePhoneSessionOut,
+    SharePhoneVerifyIn,
 )
 from ..services.portal import (
     IdeaPortalService,
@@ -51,6 +59,7 @@ from ..services.portal import (
     session_for_embed,
     session_for_link,
     session_for_staff,
+    share_principal,
 )
 
 NO_STORE_HEADERS = {
@@ -81,7 +90,14 @@ class _NoStoreRoute(APIRoute):
                 if convert is None:
                     raise
                 response = await convert(request, exc)
-            response.headers.update(NO_STORE_HEADERS)
+            # A served attachment keeps its own ``private`` cache policy (the
+            # browser may reuse its own copy for a few minutes; shared caches
+            # may not) - everything else is never cached.
+            keep_private = "private" in response.headers.get("cache-control", "")
+            for name, value in NO_STORE_HEADERS.items():
+                if keep_private and name == "Cache-Control":
+                    continue
+                response.headers[name] = value
             return response
 
         return wrapped
@@ -89,6 +105,7 @@ class _NoStoreRoute(APIRoute):
 
 router = APIRouter(route_class=_NoStoreRoute)
 MAX_COLUMNS = 20
+ATTACHMENT_CAP_BYTES = 25 * 1024 * 1024
 
 
 def _raise(exc: PortalError):
@@ -244,6 +261,78 @@ def submit_idea(
         _raise(exc)
 
 
+# ── read-only share link (lane FEEDBACK-SUBSCRIBE) - declared before
+#    ``/{idea_id}`` routes. No auth: the share token is the capability, and it
+#    only ever reads. ─────────────────────────────────────────────────────────
+
+
+def _share(db: Session, token: str):
+    try:
+        p, idea_id = share_principal(db, token)
+    except PortalError as exc:
+        _raise(exc)
+    return _svc(db, p), idea_id
+
+
+@router.get("/shared/{token}", response_model=PortalIdeaOut, response_model_exclude_unset=True)
+def shared_idea(token: str, db: Session = Depends(get_db)):
+    svc, idea_id = _share(db, token)
+    try:
+        return svc.detail(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/shared/{token}/comments", response_model=List[PortalCommentOut])
+def shared_comments(token: str, db: Session = Depends(get_db)):
+    svc, idea_id = _share(db, token)
+    try:
+        return svc.comments(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/shared/{token}/activity", response_model=List[PortalActivityOut])
+def shared_activity(
+    token: str,
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+):
+    svc, idea_id = _share(db, token)
+    try:
+        return svc.activity(idea_id, order=order)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/shared/{token}/phone/send-code", response_model=SharePhoneSentOut)
+def shared_send_code(token: str, body: SharePhoneIn, request: Request, db: Session = Depends(get_db)):
+    """Follow / comment / upvote from a share link, step 1: the item's product
+    sends a WhatsApp code to this phone if it is one of its contacts."""
+    from app.services.throttle import client_ip
+
+    from ..services.phone_verify import PhoneStep
+
+    try:
+        return PhoneStep(db, token, client_ip(request)).send_code(body.phone)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/shared/{token}/phone/verify", response_model=SharePhoneSessionOut)
+def shared_verify_code(token: str, body: SharePhoneVerifyIn, request: Request, db: Session = Depends(get_db)):
+    """Step 2: the product checks the code; on success the visitor continues as
+    THEIR OWN contact (portal session + personal board link)."""
+    from app.services.throttle import client_ip
+
+    from ..services.phone_verify import PhoneStep
+
+    try:
+        return PhoneStep(db, token, client_ip(request)).verify(body.phone, body.code)
+    except PortalError as exc:
+        _raise(exc)
+
+
 @router.get("/{idea_id}", response_model=PortalIdeaOut, response_model_exclude_unset=True)
 def idea_detail(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
     try:
@@ -282,6 +371,30 @@ def set_note(
 def vote(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
     try:
         return _svc(db, p).vote(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/{idea_id}/follow", response_model=PortalFollowOut)
+def follow(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).follow(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.delete("/{idea_id}/follow", response_model=PortalFollowOut)
+def unfollow(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).unfollow(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/{idea_id}/share", response_model=ShareLinkOut)
+def share(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).share(idea_id)
     except PortalError as exc:
         _raise(exc)
 
@@ -328,6 +441,51 @@ def add_comment(
         return _svc(db, p).add_comment(idea_id, body=body.body, parent_id=body.parentId)
     except PortalError as exc:
         _raise(exc)
+
+
+@router.post(
+    "/{idea_id}/attachments", response_model=IdeaAttachmentOut, status_code=status.HTTP_201_CREATED
+)
+async def upload_attachment(
+    idea_id: str,
+    file: UploadFile = File(...),
+    commentId: Optional[str] = Form(default=None),
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    svc = _svc(db, p)
+    try:
+        # Authorise + throttle before the (up to 25 MB) body is read.
+        idea = svc.begin_upload(idea_id, commentId or None)
+    except PortalError as exc:
+        _raise(exc)
+    content = await file.read(ATTACHMENT_CAP_BYTES + 1)
+    if len(content) > ATTACHMENT_CAP_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
+    try:
+        return svc.store_upload(idea, file.filename or "", content, commentId or None)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/{idea_id}/attachments/{attachment_id}/content")
+def attachment_content(
+    idea_id: str,
+    attachment_id: str,
+    variant: Optional[str] = Query(default=None, pattern="^thumb$"),
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        key, mime, filename = _svc(db, p).attachment_content(idea_id, attachment_id, variant)
+    except PortalError as exc:
+        _raise(exc)
+    response = _serve_blob(db, p.tenant_id, key, mime, filename, "inline")
+    # Always revalidate: a browser cache ignores the Authorization header, so a
+    # deleted comment's file or a second person on a shared device must never
+    # get a cached copy back without the server's say-so.
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
 
 
 @router.delete("/{idea_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)

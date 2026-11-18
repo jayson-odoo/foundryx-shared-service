@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import event
@@ -29,7 +29,7 @@ from app.secrets import decrypt_secret, encrypt_secret
 from .. import mapping
 from ..meta_leads import MetaLeadClient, MetaLeadError
 from ..models import PLATFORM_FACEBOOK, SOURCE_LIVE, SOURCE_ROUTING_STATES, SOURCE_WAITING_FOR_TEST, LcLead, LcSource
-from . import delivery_service, field_service
+from . import delivery_service, field_service, source_service
 
 logger = logging.getLogger(__name__)
 
@@ -133,19 +133,13 @@ def process_leadgen(
     *,
     client: Optional[MetaLeadClient] = None,
 ) -> List[str]:
-    """Store + deliver one Meta lead for every live source on the Page.
-    Returns the new lead ids (empty on a replay)."""
+    """Store + deliver one Meta lead for every live source on the Page that
+    takes its form. Returns the new lead ids (empty on a replay)."""
     sources = [s for s in _live_sources(db, page_id) if _active(db, s.tenant_id)]
-    if not sources:
+    takers = [s for s in sources if source_service.accepts_form(s, form_id)]
+    if not takers:
         return []
-    held = {
-        sid for (sid,) in db.query(LcLead.source_id)
-        .filter(LcLead.platform == PLATFORM_FACEBOOK, LcLead.platform_lead_id == leadgen_id,
-                LcLead.source_id.in_([s.id for s in sources]))
-        .all()
-    }
-    todo = [s for s in sources if s.id not in held]
-    if not todo:
+    if not _missing(db, takers, leadgen_id):
         return []
 
     meta = client or MetaLeadClient()
@@ -153,7 +147,8 @@ def process_leadgen(
     raw: Optional[Dict[str, Any]] = None
     token_used: Optional[Dict[str, Any]] = None
     last_error: Optional[MetaLeadError] = None
-    for source in sources:  # first healthy token on the Page (AC-64-37)
+    dead: set = set()
+    for source in list(sources):  # first healthy token on the Page (AC-64-37)
         creds = _source_token(source)
         if creds is None or (configured and creds.get("dev")):
             continue  # a dev credential never answers once a real Meta app is set
@@ -164,19 +159,81 @@ def process_leadgen(
         except MetaLeadError as exc:
             last_error = exc
             logger.warning("lead read failed with one source token (code %s)", exc.code)
+            if exc.token_invalid:
+                source_service.mark_needs_reconnect(db, source.id)  # AC-64-29
+                dead.add(source.id)
     if raw is None or token_used is None:
         raise last_error or MetaLeadError("No usable Page token for this Page.")
 
-    dev = bool(token_used.get("dev")) or not meta.configured
     lead_form = _clean_id(raw.get("form_id")) or form_id
+    todo = [s for s in _live_sources(db, page_id) if s.id not in dead and _active(db, s.tenant_id)]
+    todo = [s for s in todo if source_service.accepts_form(s, lead_form)]
+    return store_lead(
+        db, page_id, raw, todo, meta=meta, token=token_used, form_id_hint=form_id, created_time=created_time
+    )
+
+
+def _missing(db: Session, sources: List[LcSource], leadgen_id: str) -> List[LcSource]:
+    held = {
+        sid for (sid,) in db.query(LcLead.source_id)
+        .filter(LcLead.platform == PLATFORM_FACEBOOK, LcLead.platform_lead_id == leadgen_id,
+                LcLead.source_id.in_([s.id for s in sources]))
+        .all()
+    }
+    return [s for s in sources if s.id not in held]
+
+
+def store_lead(
+    db: Session,
+    page_id: str,
+    raw: Dict[str, Any],
+    sources: List[LcSource],
+    *,
+    meta: MetaLeadClient,
+    token: Dict[str, Any],
+    form_id_hint: str = "",
+    created_time: Optional[int] = None,
+    test_ids_cache: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """THE store path for a lead read from Meta, shared by the webhook and the
+    backfill (AC-64-28): one ``lc_lead`` per source in ``sources`` that does
+    not hold it yet (idempotent on (source, platform lead id), AC-64-27), each
+    mapped with that source's own map and delivered to that tenant only.
+    Commits, then hands the deliveries to the worker."""
+    leadgen_id = _clean_id(raw.get("id"))
+    if not leadgen_id or not sources:
+        return []
+    lead_form = _clean_id(raw.get("form_id")) or form_id_hint
+    dev = bool(token.get("dev")) or not meta.configured
+    if not _missing(db, sources, leadgen_id):
+        return []  # every source holds it already: no Graph call
+    # Graph calls first, never while holding the row locks below.
+    form_name = _read_form_name(meta, sources, token, lead_form, dev)
     ad_id = _clean_id(raw.get("ad_id"))
     if dev:
         is_test = True
     elif ad_id:
         is_test = False
     else:
-        test_ids = meta.test_lead_ids(token_used["pageToken"], lead_form)
+        if test_ids_cache is not None and lead_form in test_ids_cache:
+            test_ids = test_ids_cache[lead_form]  # one read per form per backfill run
+        else:
+            test_ids = meta.test_lead_ids(token["pageToken"], lead_form)
+            if test_ids_cache is not None:
+                test_ids_cache[lead_form] = test_ids
         is_test = bool(test_ids and leadgen_id in test_ids)
+    # Re-read every row under a lock: the Graph calls before this took
+    # seconds, and a forms change or a disconnect saved meanwhile must win
+    # (no stale config_json written back, no lead for a source that left).
+    fresh = [source_service.locked_source(db, s.id) for s in sources]
+    fresh = [
+        s for s in fresh
+        if s is not None and s.status in SOURCE_ROUTING_STATES and source_service.accepts_form(s, lead_form)
+    ]
+    todo = _missing(db, fresh, leadgen_id)
+    if not todo:
+        db.rollback()
+        return []
 
     answers = mapping.answers_from(raw.get("field_data"))
     platform_created = mapping.parse_meta_time(raw.get("created_time")) or mapping.parse_meta_time(created_time)
@@ -189,9 +246,15 @@ def process_leadgen(
         "isOrganic": raw.get("is_organic") if isinstance(raw.get("is_organic"), bool) else None,
     }
     now = datetime.now(timezone.utc)
+    # L-A gap (b): on a shared Page, Meta's test lead reaches every product,
+    # but only the source(s) that asked for it pass their test. A test lead
+    # nobody asked for (Meta's own Testing Tool) passes every waiting source.
+    askers = (
+        {s.id for s in _live_sources(db, page_id) if test_requested(s, lead_form, now)} if is_test else set()
+    )
     created_ids: List[str] = []
     delivery_ids: List[str] = []
-    form_name = _form_name(meta, todo, token_used, lead_form, dev)
+    _cache_form_name(todo, lead_form, form_name)
     target_cache: Dict[str, List] = {}
     for source in todo:
         if source.tenant_id not in target_cache:
@@ -222,7 +285,11 @@ def process_leadgen(
         except IntegrityError:
             continue  # a parallel run stored it first (AC-64-27)
         source.last_lead_at = now
-        if is_test and source.status == SOURCE_WAITING_FOR_TEST:
+        if (
+            is_test
+            and source.status == SOURCE_WAITING_FOR_TEST
+            and (not askers or source.id in askers)
+        ):
             source.status = SOURCE_LIVE  # the source passed its test (AC-64-16)
         if lead_form and not has_map and unmapped:
             notice = dict(source.needs_mapping_json or {})
@@ -254,27 +321,66 @@ def process_leadgen(
     return created_ids
 
 
+# ── test-lead requests (L-A gaps a/b) ──────────────────────────────────────
+TEST_REQUESTS_KEY = "testLeadRequests"
+TEST_REQUEST_WINDOW = timedelta(hours=1)
+
+
+def _request_time(source: LcSource, form_id: str) -> Optional[datetime]:
+    value = ((source.config_json or {}).get(TEST_REQUESTS_KEY) or {}).get(form_id)
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def test_requested(source: LcSource, form_id: str, now: datetime) -> bool:
+    """This source asked Meta for a test lead on ``form_id`` within the hour."""
+    when = _request_time(source, form_id) if form_id else None
+    return when is not None and now - when <= TEST_REQUEST_WINDOW
+
+
+def last_test_request(source: LcSource, form_id: str) -> Optional[datetime]:
+    return _request_time(source, form_id)
+
+
+def note_test_request(source: LcSource, form_id: str, now: datetime) -> None:
+    config = dict(source.config_json or {})
+    requests = {
+        k: v for k, v in (config.get(TEST_REQUESTS_KEY) or {}).items()
+        if isinstance(v, str) and (_request_time(source, k) or now) > now - TEST_REQUEST_WINDOW
+    }
+    requests[form_id] = now.isoformat()
+    config[TEST_REQUESTS_KEY] = requests
+    source.config_json = config  # fresh dict: in-place JSON edits are not tracked
+
+
 _FORM_NAMES_KEY = "formNames"
 
 
-def _form_name(
+def _read_form_name(
     meta: MetaLeadClient, sources: List[LcSource], token: Dict[str, Any], form_id: str, dev: bool
 ) -> Optional[str]:
-    """The form's name, cached per source in ``config_json["formNames"]`` (each
-    tenant's own row; a shared Page reads it once and every source on the Page
-    keeps a copy). Only a name actually read is cached, so a failed read is
-    retried with the next lead. No commit here: the lead transaction owns it."""
+    """The form's name: the copy cached in a source's ``config_json["formNames"]``
+    (a shared Page reads it once), else read from Meta. None when unknown;
+    never blocks the lead."""
     if not form_id:
         return None
     for source in sources:
         cached = ((source.config_json or {}).get(_FORM_NAMES_KEY) or {}).get(form_id)
         if isinstance(cached, str) and cached:
-            name = cached
-            break
-    else:
-        name = meta.form_name(token["pageToken"], form_id, dev=dev)
-        if not name:
-            return None
+            return cached
+    return meta.form_name(token["pageToken"], form_id, dev=dev) or None
+
+
+def _cache_form_name(sources: List[LcSource], form_id: str, name: Optional[str]) -> None:
+    """Keep a copy of a name actually read on each source (rows already
+    re-read under lock by the caller; no commit here - the lead txn owns it)."""
+    if not form_id or not name:
+        return
     for source in sources:
         config = dict(source.config_json or {})
         names = dict(config.get(_FORM_NAMES_KEY) or {})
@@ -282,7 +388,6 @@ def _form_name(
             names[form_id] = name
             config[_FORM_NAMES_KEY] = names
             source.config_json = config  # fresh dict: in-place JSON edits are not tracked
-    return name
 
 
 def lead_item(lead: LcLead, source: LcSource) -> Dict[str, Any]:

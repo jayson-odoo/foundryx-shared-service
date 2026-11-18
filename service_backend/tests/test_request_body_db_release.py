@@ -32,6 +32,7 @@ import gc
 import json
 import os
 import tempfile
+import time
 import uuid
 import weakref
 from dataclasses import dataclass, field
@@ -989,44 +990,78 @@ def test_no_statement_runs_before_the_body_arrives_whatever_the_content_type(
 
 
 # ── memory: a refused request does not stay reachable ───────────────────────
-def _requests_holding(marker: bytes, forms: bool = False) -> int:
-    """Live `Request` objects whose cached body contains `marker`; with `forms`, also
-    those that hold a parsed form (and so its uploaded files)."""
+# Every `Request` and `SpooledTemporaryFile` built while a memory test runs is
+# recorded in a WeakSet, and the heap that existed before the test is frozen
+# (gc.freeze), so a check is one young-generation collection plus a look at the
+# few recorded objects. Walking gc.get_objects() instead cost ~4 s per check on a
+# CI worker whose heap holds millions of objects (SS-CI-TIMEOUT). Frozen objects
+# still count as reachable, so a request kept alive by anything older than the
+# test is still caught.
+_LIVE_REQUESTS: "weakref.WeakSet" = weakref.WeakSet()
+_LIVE_SPOOLED: "weakref.WeakSet" = weakref.WeakSet()
+
+
+@pytest.fixture
+def memory_tracking(monkeypatch):
     from starlette.requests import Request
 
+    for cls, registry in ((Request, _LIVE_REQUESTS), (tempfile.SpooledTemporaryFile, _LIVE_SPOOLED)):
+        original = cls.__init__
+
+        def tracked_init(self, *args, _original=original, _registry=registry, **kwargs):
+            _original(self, *args, **kwargs)
+            _registry.add(self)
+
+        monkeypatch.setattr(cls, "__init__", tracked_init)
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
+        _LIVE_REQUESTS.clear()
+        _LIVE_SPOOLED.clear()
+
+
+def _requests_holding(marker: bytes, forms: bool = False) -> int:
+    """Live `Request` objects (built under `memory_tracking`) whose cached body contains
+    `marker`; with `forms`, also those that hold a parsed form (and so its uploaded files)."""
     gc.collect()
     held = 0
-    for obj in gc.get_objects():
-        try:
-            if not isinstance(obj, Request):
-                continue
-            body = getattr(obj, "_body", None)
-            if (body is not None and marker in body) or (forms and getattr(obj, "_form", None) is not None):
-                held += 1
-        except ReferenceError:
-            continue
+    for obj in list(_LIVE_REQUESTS):
+        body = getattr(obj, "_body", None)
+        if (body is not None and marker in body) or (forms and getattr(obj, "_form", None) is not None):
+            held += 1
     return held
 
 
 def _open_spooled_files() -> int:
     gc.collect()
-    count = 0
-    for obj in gc.get_objects():
-        try:
-            if isinstance(obj, tempfile.SpooledTemporaryFile) and not obj.closed:
-                count += 1
-        except ReferenceError:
-            continue
-    return count
+    return sum(1 for obj in list(_LIVE_SPOOLED) if not obj.closed)
 
 
-def test_memory_scan_control_sees_a_live_request_and_an_open_file():
+# The last request of a run can stay referenced for a moment after its event loop
+# closes (loop / worker-thread teardown). The old full-heap walk took seconds per
+# check and so hid that window; a check now takes milliseconds, so it re-checks
+# until the count settles. A real leak never settles and still fails.
+SETTLE_SECONDS = 5.0
+
+
+def _settled(count: Callable[[], int], expected: int = 0) -> int:
+    deadline = time.monotonic() + SETTLE_SECONDS
+    value = count()
+    while value != expected and time.monotonic() < deadline:
+        time.sleep(0.05)
+        value = count()
+    return value
+
+
+def test_memory_scan_control_sees_a_live_request_and_an_open_file(memory_tracking):
     from starlette.requests import Request
 
     async def receive():
         return {"type": "http.request", "body": b"", "more_body": False}
 
-    base_requests = _requests_holding(b"control-marker")  # earlier tests in this process may hold some
+    base_requests = _requests_holding(b"control-marker")  # tracking starts empty per test, so 0
     base_files = _open_spooled_files()
     request = Request({"type": "http", "method": "POST", "headers": [], "query_string": b""}, receive)
     request._body = b"head-control-marker-tail"
@@ -1090,7 +1125,7 @@ _REFUSALS = [
 
 
 @pytest.mark.parametrize("scenario,kind", _REFUSALS, indirect=["scenario"])
-def test_a_refused_request_does_not_stay_in_memory(scenario, kind, session_factory):
+def test_a_refused_request_does_not_stay_in_memory(scenario, kind, session_factory, memory_tracking):
     import dataclasses
 
     headers = _refused_headers(scenario, kind, session_factory)
@@ -1101,12 +1136,12 @@ def test_a_refused_request_does_not_stay_in_memory(scenario, kind, session_facto
         scn = dataclasses.replace(scenario, body=body, content_type="application/json")
         statuses.add(asyncio.run(_drive(scn, hold=False, headers=headers)).status)
     assert statuses and all(s in (401, 403) for s in statuses), statuses  # every request was refused
-    held = sum(_requests_holding(marker) for marker in markers)
+    held = _settled(lambda: sum(_requests_holding(marker) for marker in markers))
     assert held == 0, f"{held} refused request(s) still hold their body in memory"
 
 
 @pytest.mark.parametrize("scenario,kind", _REFUSALS, indirect=["scenario"])
-def test_a_refused_upload_does_not_leave_its_file_open(scenario, kind, session_factory):
+def test_a_refused_upload_does_not_leave_its_file_open(scenario, kind, session_factory, memory_tracking):
     import dataclasses
 
     headers = _refused_headers(scenario, kind, session_factory)
@@ -1122,9 +1157,9 @@ def test_a_refused_upload_does_not_leave_its_file_open(scenario, kind, session_f
         scn = dataclasses.replace(scenario, body=body, content_type=ctype)
         statuses.add(asyncio.run(_drive(scn, hold=False, headers=headers)).status)
     assert statuses and all(s in (401, 403) for s in statuses), statuses
-    forms_after = _requests_holding(b"no-such-marker", forms=True)
+    forms_after = _settled(lambda: _requests_holding(b"no-such-marker", forms=True), forms_before)
     assert forms_after - forms_before == 0, "a refused upload's parsed form is still reachable"
-    assert _open_spooled_files() - opened_before == 0, "refused uploads left temp files open"
+    assert _settled(_open_spooled_files, opened_before) - opened_before == 0, "refused uploads left temp files open"
 
 
 # ── a token of the wrong kind is refused before the body ────────────────────

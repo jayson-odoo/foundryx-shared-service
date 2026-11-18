@@ -50,6 +50,33 @@ class ApiError(Exception):
         return {"error": err}
 
 
+def _scrub_secrets(errors: Any) -> Any:
+    """A validation error echoes the rejected ``input``; never for a secret.
+    An error on a secret-named field (token, secret, password, api key...)
+    loses its input; a whole-object input (e.g. a missing field reports the
+    entire body) is passed through the activity-log ``redact``, which masks
+    secret-named keys and keeps the rest."""
+    from app.activity_log.redaction import MASK, _is_secret_key, redact
+
+    if not isinstance(errors, (list, tuple)):
+        return errors
+    out = []
+    for err in errors:
+        if not isinstance(err, dict):
+            out.append(err)
+            continue
+        err = dict(err)
+        loc = err.get("loc") or ()
+        if any(isinstance(part, str) and _is_secret_key(part) for part in loc):
+            if "input" in err:
+                err["input"] = MASK
+            err.pop("ctx", None)
+        elif isinstance(err.get("input"), (dict, list, tuple)):
+            err["input"] = redact(err["input"])
+        out.append(err)
+    return out
+
+
 def _encodable(value: Any) -> Any:
     """Scrub lone UTF-16 surrogates from echoed validation input: they cannot be
     UTF-8 encoded, so the 422 response itself would otherwise 500 (AC-19-44)."""
@@ -111,10 +138,10 @@ def install_api_error_handler(app: FastAPI) -> None:
                     422,
                     "invalid_request",
                     "Request validation failed.",
-                    _encodable(jsonable_encoder(exc.errors())),
+                    _encodable(jsonable_encoder(_scrub_secrets(exc.errors()))),
                 ).to_body(),
             )
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"detail": _encodable(jsonable_encoder(exc.errors()))},
+            content={"detail": _encodable(jsonable_encoder(_scrub_secrets(exc.errors())))},
         )

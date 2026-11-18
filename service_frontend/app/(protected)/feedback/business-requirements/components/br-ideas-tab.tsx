@@ -172,6 +172,9 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
       ],
       actions,
       getEntityId: unlinkEntityId,
+      // Right-click / long-press and bulk Unlink refresh the tab too (crew
+      // pass 4025e5e9): the list is built from the linked set held here.
+      onDeferredCommitted: () => onChanged(),
     };
   }, [ideas, canManage, unlinkEntityId, onChanged]);
 
