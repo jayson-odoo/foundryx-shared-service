@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -17,10 +17,15 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { useFx } from '@/hooks/use-fx';
+import { FxSearchSelect } from '@/components/fx/fields/fx-search-select';
 
 export interface SearchSelectOption {
   label: string;
   value: string;
+  /** Foundryx UIUX only: one muted second line (a code, a size, a price),
+   *  also matched by the search. Ignored with the switch off. */
+  description?: string;
 }
 
 export interface SearchSelectGroup {
@@ -57,6 +62,14 @@ export interface SearchSelectProps {
    * instead of forking a parallel searchable-select component.
    */
   onQueryChange?: (query: string) => void;
+  /** Foundryx UIUX only (ignored with the switch off): the caller is fetching
+   *  new results, so the list keeps its last ones, dimmed. */
+  loading?: boolean;
+  /** Foundryx UIUX only: how many results match in all, when the caller
+   *  fetched only a page ("Keep typing to narrow 1,240 results"). */
+  total?: number;
+  /** Foundryx UIUX only: the plural noun for "No products match "oak"". */
+  noun?: string;
 }
 
 /**
@@ -65,7 +78,12 @@ export interface SearchSelectProps {
  * like the user/role pickers. Sibling of `MultiSelect` (which additionally
  * does select-all); fixed 2-3-option micro-enums may stay plain Select.
  */
-export function SearchSelect({
+export function SearchSelect(props: SearchSelectProps) {
+  // Foundryx UIUX switch: the playbook dropdown while on; today's while off.
+  return useFx() ? <FxSearchSelect {...props} /> : <SearchSelectLegacy {...props} />;
+}
+
+function SearchSelectLegacy({
   options,
   groups,
   value,
@@ -85,8 +103,18 @@ export function SearchSelect({
   // Clear the typed search whenever the popover closes - programmatic closes
   // (an option select calls setOpen(false), which does NOT fire onOpenChange)
   // must reset too, else the next open's text appends to the stale query.
+  // A caller filtering on `onQueryChange` hears the reset too, else its list
+  // stays narrowed under an empty box (crew pass 4025e5e9).
+  const typedRef = useRef('');
+  const onQueryChangeRef = useRef(onQueryChange);
+  onQueryChangeRef.current = onQueryChange;
   useEffect(() => {
-    if (!open) setQuery('');
+    if (open) return;
+    setQuery('');
+    if (typedRef.current) {
+      typedRef.current = '';
+      onQueryChangeRef.current?.('');
+    }
   }, [open]);
   const flat = groups ? groups.flatMap((g) => g.options) : (options ?? []);
   const selected = flat.find((o) => o.value === value);
@@ -141,6 +169,7 @@ export function SearchSelect({
             value={query}
             onValueChange={(v) => {
               setQuery(v);
+              typedRef.current = v;
               onQueryChange?.(v);
             }}
           />

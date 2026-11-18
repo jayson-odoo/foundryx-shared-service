@@ -7,15 +7,15 @@ takes no lock on any existing table (online-safe). Idempotent guard
 (inspector check), same style as `0026_omni_contact_erasures`. Revision id
 <= 32 chars.
 
-Revision ID: 0027_omni_partner_api_keys
-Revises: 0026_omni_contact_erasures
+Revision ID: 0028_omni_partner_api_keys
+Revises: 0027_omni_payload_version
 Create Date: 2026-11-18
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0027_omni_partner_api_keys"
-down_revision = "0026_omni_contact_erasures"
+revision = "0028_omni_partner_api_keys"
+down_revision = "0027_omni_payload_version"
 branch_labels = None
 depends_on = None
 

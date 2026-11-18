@@ -1,6 +1,10 @@
+'use client';
+
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
+import { useFx } from '@/hooks/use-fx';
+import { FxInput } from '@/components/fx/fields/fx-input';
 
 // Define input size variants
 const inputVariants = cva(
@@ -120,7 +124,12 @@ const inputWrapperVariants = cva(
   },
 );
 
-function Input({
+// Foundryx UIUX switch: the playbook field while on; today's input while off.
+function Input(props: React.ComponentProps<'input'> & VariantProps<typeof inputVariants>) {
+  return useFx() ? <FxInput {...props} /> : <InputLegacy {...props} />;
+}
+
+function InputLegacy({
   className,
   type,
   variant,

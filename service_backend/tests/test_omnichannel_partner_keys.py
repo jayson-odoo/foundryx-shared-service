@@ -297,7 +297,7 @@ def _assigns(path: Path) -> dict:
 
 
 def test_partner_key_migration_revises_the_previous_head():
-    meta = _assigns(VERSIONS / "0027_omni_partner_api_keys.py")
-    assert meta["revision"] == "0027_omni_partner_api_keys"
-    assert meta["down_revision"] == "0026_omni_contact_erasures"
+    meta = _assigns(VERSIONS / "0028_omni_partner_api_keys.py")
+    assert meta["revision"] == "0028_omni_partner_api_keys"
+    assert meta["down_revision"] == "0027_omni_payload_version"
     assert len(meta["revision"]) <= 32

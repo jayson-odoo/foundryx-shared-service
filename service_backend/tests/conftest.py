@@ -438,6 +438,36 @@ def ideation_session_factory(_ideation_session_factory_template):
     engine.dispose()
 
 
+def _clear_fastapi_callable_caches():
+    """Empty FastAPI's per-callable classification caches.
+
+    ``fastapi.dependencies.models`` memoises "is this dependency a generator /
+    async generator / coroutine" in module-level ``lru_cache``s (4096 entries
+    each, keyed by the callable itself). Every test's ``override_get_db``
+    closure lands there and pins that test's sessionmaker -> engine -> whole
+    in-memory SQLite database + compiled-statement cache. Across a worker's
+    ~3,500 tests that kept ~24M objects alive, so each full GC pass took up
+    to ~15 s and landed on whichever test was running (the random 20-240 s
+    outliers in CI, SS-CI-TIMEOUT). Looked up by attribute so a FastAPI
+    version without these caches is a no-op.
+    """
+    try:
+        from fastapi.dependencies import models as _fastapi_dep_models
+    except ImportError:  # pragma: no cover - layout changed upstream
+        return
+    for value in vars(_fastapi_dep_models).values():
+        cache_clear = getattr(value, "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _release_fastapi_callable_caches():
+    """Per test: drop the previous test's dependency callables (see above)."""
+    yield
+    _clear_fastapi_callable_caches()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_reference_guards():
     """Snapshot/restore the process-global reference-guard registry per test.

@@ -165,6 +165,8 @@ export interface IdeaComment {
   /** Set when this comment lives on an idea merged into the one shown
    * (read-only there - canEdit/canDelete are false). */
   fromIdea?: IdeaSourceRef | null;
+  /** Files attached to this comment (empty on a deleted placeholder). */
+  attachments?: IdeaAttachment[];
 }
 
 /** A top-level comment with its replies (one level), oldest first. */
@@ -282,4 +284,13 @@ export type MergeFieldChoices = Partial<Record<MergeFieldKey, string[]>>;
 export interface SimilarIdeas {
   available: boolean;
   ideas: Idea[];
+}
+
+/** A follower of a feedback item on the operator page (lane FEEDBACK-SUBSCRIBE). */
+export interface IdeaFollower {
+  contactId: string;
+  name: string | null;
+  phone: string | null;
+  addedByStaff: boolean;
+  createdAt: string | null;
 }

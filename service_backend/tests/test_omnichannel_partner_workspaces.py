@@ -247,8 +247,8 @@ def test_dashboard_workspace_routes_are_unchanged(client):
 
 
 # ── migration chain ──────────────────────────────────────────────────────────
-def test_external_ref_migration_revises_the_partner_key_migration():
-    meta = _assigns(VERSIONS / "0028_omni_workspace_external_ref.py")
-    assert meta["revision"] == "0028_omni_workspace_external_ref"
-    assert meta["down_revision"] == "0027_omni_partner_api_keys"
+def test_external_ref_migration_revises_the_omnichannel_head():
+    meta = _assigns(VERSIONS / "0031_omni_workspace_external_ref.py")
+    assert meta["revision"] == "0031_omni_workspace_external_ref"
+    assert meta["down_revision"] == "0030_omni_delivery_history_ix"
     assert len(meta["revision"]) <= 32

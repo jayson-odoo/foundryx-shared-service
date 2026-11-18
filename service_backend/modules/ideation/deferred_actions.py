@@ -69,8 +69,9 @@ def _ideas_cancel_feedback_link(
     db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str
 ) -> None:
     from .services.feedback_links import cancel_feedback_link_for_idea
+    from .services.history import user_actor
 
-    cancel_feedback_link_for_idea(db, tenant_id, entity_id)
+    cancel_feedback_link_for_idea(db, tenant_id, entity_id, user_actor(_actor(db, tenant_id, actor_user_id)))
 
 
 # Lane PUBLIC-IDEAS-BOARD (owner QD a): cancel the submitter contact's personal
@@ -154,7 +155,7 @@ def _br_idea_unlink(db: Session, tenant_id: str, entity_id: str, payload: dict, 
     from .services.business_requirements import BusinessRequirementService
 
     br_id, idea_id = _unlink_key(entity_id)
-    BusinessRequirementService(db).unlink_idea(tenant_id, br_id, idea_id)
+    BusinessRequirementService(db).unlink_idea(tenant_id, br_id, idea_id, _actor(db, tenant_id, actor_user_id))
 
 
 BR_IDEA_UNLINK = DeferredActionDef(
