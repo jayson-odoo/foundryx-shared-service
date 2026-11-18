@@ -645,3 +645,14 @@ def test_last_test_lead_read_is_scoped_and_moves_on_a_new_test_lead(client, lc):
     assert after["leadId"] and after["receivedAt"]
     other = _wizard(client, key)
     assert client.get(f"{base}/sources/{sid}/test-lead", headers=other).status_code == 404
+
+
+def test_plain_http_origins_only_outside_production(monkeypatch):
+    """A test copy on a tailnet IP over http may list its origin; production
+    accepts http for localhost only."""
+    monkeypatch.setattr(settings, "environment", "development")
+    assert sessions.normalize_origin("http://100.127.79.93:3109") == "http://100.127.79.93:3109"
+    monkeypatch.setattr(settings, "environment", "production")
+    assert sessions.normalize_origin("http://100.127.79.93:3109") is None
+    assert sessions.normalize_origin("http://localhost:3001") == "http://localhost:3001"
+    assert sessions.normalize_origin("https://crm.example.com") == "https://crm.example.com"

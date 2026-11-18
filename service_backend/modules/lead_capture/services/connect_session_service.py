@@ -98,7 +98,8 @@ def _aware(value: Optional[datetime]) -> Optional[datetime]:
 def normalize_origin(value: Optional[str]) -> Optional[str]:
     """``scheme://host[:port]`` lower-cased, or None when ``value`` is not a
     bare web origin (a path, query, fragment, user info or other scheme = not
-    an origin). ``http`` only for localhost (dev)."""
+    an origin). ``http`` only for localhost, or any host outside production
+    (test copies on a private address)."""
     if not isinstance(value, str) or not value.strip() or len(value) > 255:
         return None
     raw = value.strip()
@@ -113,9 +114,17 @@ def normalize_origin(value: Optional[str]) -> Optional[str]:
         return None
     if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/"):
         return None
-    if scheme == "http" and not (host == "localhost" or host.endswith(".localhost") or host == "127.0.0.1"):
+    if scheme == "http" and not (
+        host == "localhost" or host.endswith(".localhost") or host == "127.0.0.1" or _plain_http_allowed()
+    ):
         return None
     return f"{scheme}://{host}" + (f":{port}" if port else "")
+
+
+def _plain_http_allowed() -> bool:
+    """Test copies on a private address (e.g. a tailnet IP over plain http)
+    may list http origins; production never does."""
+    return settings.environment in ("development", "test")
 
 
 def clean_origins(values: List[str]) -> List[str]:
