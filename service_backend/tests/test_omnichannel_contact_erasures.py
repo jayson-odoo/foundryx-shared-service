@@ -183,11 +183,10 @@ def test_ac_58_03_migration_revision_chain_and_single_head():
             p = _assigned(text, "down_revision")
             if p:
                 parents.update(p if isinstance(p, (tuple, list)) else [p])
-    # exactly one head; later revisions may sit on top of 0026 (the head itself
-    # is pinned by scripts/check_migration_heads.py, not by this test)
+    # Later revisions stack on top, so 0026 stays in the chain under one head.
     heads = revs - parents
-    assert len(heads) == 1
-    assert "0026_omni_contact_erasures" in heads | parents
+    assert len(heads) == 1, heads
+    assert heads == {"0026_omni_contact_erasures"} or "0026_omni_contact_erasures" in parents
 
 
 # ═════════════════════════════════════════════════════════════════════════════

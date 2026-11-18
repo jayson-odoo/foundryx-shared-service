@@ -2,9 +2,11 @@
  * Idea portal wire types (lane IDEA-PORTAL) - mirror of
  * `service_backend/modules/ideation/schemas.py` `Portal*` models.
  */
+import type { IdeaAttachment } from '@/types/ideation';
 
 /** `contact` = a dealer on a personal feedback link (lane PUBLIC-IDEAS-BOARD). */
-export type PortalKind = 'staff' | 'crm' | 'contact';
+/** `share` = anyone on one item's read-only share link (lane FEEDBACK-SUBSCRIBE). */
+export type PortalKind = 'staff' | 'crm' | 'contact' | 'share';
 
 /** A product's look on its feedback board (lane SS-MULTI-PRODUCT-BOARD). */
 export interface PortalBrand {
@@ -89,6 +91,29 @@ export interface PortalIdea extends PortalCard {
   timeline: PortalTimelineStep[];
   portalHidden: boolean | null;
   note: string | null;
+  /** Lane FEEDBACK-SUBSCRIBE: contacts following it (the submitter not counted). */
+  followerCount?: number;
+  /** A test item (crew s4): Share and Follow are not offered. */
+  isTest?: boolean;
+  /** This viewer gets its WhatsApp status updates (submitter or follower). */
+  following?: boolean;
+  /** Report-level files (comment files ride their comment). Omitted for a
+   * contact viewer on another dealer's item, like the free text. */
+  attachments?: IdeaAttachment[];
+}
+
+export interface PortalFollow {
+  following: boolean;
+  followerCount: number;
+}
+
+export interface PortalShareLink {
+  url: string;
+}
+
+/** Proven phone on a share link: the visitor's own session + personal board link. */
+export interface PortalPhoneSession extends PortalSession {
+  boardUrl: string | null;
 }
 
 export interface PortalVote {
@@ -119,6 +144,7 @@ export interface PortalComment {
   editedAt: string | null;
   likeCount: number;
   likedByMe: boolean;
+  attachments?: IdeaAttachment[];
 }
 
 export interface PortalLike {

@@ -34,6 +34,7 @@ from ..api_auth import gateway_key_enabled
 from ..models import Channel, ConversationMessage, WebhookDelivery, WebhookEndpoint
 from ..schemas import MessageItem
 from ..security import decrypt_secret
+from . import payload_version
 from .webhook_service import AUTO_DISABLE_THRESHOLD, WebhookError, assert_deliverable
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,11 @@ def _fan_out(
     """Shared body of ``enqueue_event`` / ``enqueue_workspace_event``. Creates
     durable delivery rows + queues each POST. Failure-isolated: never raises.
     ``data`` may be a callable: it runs only when at least one endpoint
-    subscribes, so a scope with no subscriber pays nothing to build the payload."""
+    subscribes, so a scope with no subscriber pays nothing to build the payload.
+    It runs once per payload version among the endpoints, inside
+    ``payload_version.serializing``, so a key gated to a higher version reaches
+    only the endpoints that opted in; a prebuilt dict is the same for every
+    version, so data that dumps a versioned shape must be a callable."""
     try:
         endpoints = _active_endpoints(db, tenant_id, workspace_id, channel_id, event_type)
         # Further channels whose own endpoints are also told: one delivery per endpoint.
@@ -161,9 +166,18 @@ def _fan_out(
         # Same state check as the key routes; an error here is logged below.
         if not gateway_key_enabled(db, tenant_id, workspace_id):
             return 0
-        envelope = build_envelope(
-            event_type, workspace_id, channel_id, event_id, data() if callable(data) else data
-        )
+        # One body per payload version among the endpoints, each built at that
+        # version; a NULL endpoint version is version 1 (today's exact body).
+        envelopes: Dict[int, Dict[str, Any]] = {}
+        occurred_at = datetime.now(timezone.utc)  # one event: one time in every body
+        for ep in endpoints:
+            version = payload_version.effective(ep.payload_version)
+            if version not in envelopes:
+                with payload_version.serializing(version):
+                    body = data() if callable(data) else data
+                envelopes[version] = build_envelope(
+                    event_type, workspace_id, channel_id, event_id, body, occurred_at
+                )
         delivery_ids: List[str] = []
         for ep in endpoints:
             row = WebhookDelivery(
@@ -171,7 +185,7 @@ def _fan_out(
                 endpoint_id=ep.id,
                 event_id=event_id,
                 event_type=event_type,
-                payload_json=envelope,
+                payload_json=envelopes[payload_version.effective(ep.payload_version)],
                 status="PENDING",
                 next_attempt_at=datetime.now(timezone.utc),
             )

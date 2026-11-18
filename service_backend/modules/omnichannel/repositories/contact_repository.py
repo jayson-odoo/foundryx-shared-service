@@ -643,6 +643,30 @@ class ContactRepository:
             if (r.contact_id, r.channel_id) in wanted
         }
 
+    def identities_with_channel_types(
+        self, contact_ids: List[str], tenant_id: str
+    ) -> List[Tuple[ContactChannelIdentity, str, bool]]:
+        """Every identity of the given contacts with its channel's type and
+        trashed flag - ONE query for a whole page. `_thread_items` derives both
+        the per-thread window (what `identity_windows_for` answers) and the
+        version 2 `windows[]` list from it. Tenant-scoped on both tables."""
+        ids = [c for c in set(contact_ids) if c]
+        if not ids:
+            return []
+        return [
+            (identity, channel_type, bool(is_trashed))
+            for identity, channel_type, is_trashed in (
+                self.db.query(ContactChannelIdentity, Channel.channel_type, Channel.is_trashed)
+                .join(Channel, Channel.id == ContactChannelIdentity.channel_id)
+                .filter(
+                    ContactChannelIdentity.tenant_id == tenant_id,
+                    ContactChannelIdentity.contact_id.in_(ids),
+                    Channel.tenant_id == tenant_id,
+                )
+                .all()
+            )
+        ]
+
     def find_by_phone_digits(
         self, phone_digits: str, workspace_id: str, tenant_id: str
     ) -> Optional[Contact]:

@@ -831,6 +831,9 @@ class WebhookEndpoint(OmniBase):
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # Payload version of this endpoint's deliveries; NULL = version 1, the
+    # payloads as they were before versioning (services/payload_version.py).
+    payload_version = Column(Integer, nullable=True)
 
 
 class WorkflowOwner(OmniBase):

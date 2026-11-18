@@ -92,11 +92,13 @@ export interface IdeaService {
    * partial test double stays valid. */
   listComments?(ideaId: string): Promise<IdeaComment[]>;
   /** Post a comment; `parentId` makes it a reply (normalised server side). */
-  addComment?(ideaId: string, body: string, parentId?: string): Promise<IdeaComment>;
+  /** `hasAttachments` allows an empty body (the files follow as uploads). */
+  addComment?(ideaId: string, body: string, parentId?: string, hasAttachments?: boolean): Promise<IdeaComment>;
   editComment?(ideaId: string, commentId: string, body: string): Promise<IdeaComment>;
   deleteComment?(ideaId: string, commentId: string): Promise<void>;
-  /** Upload one file onto an idea (multipart) - plan sprint-5/15. */
-  uploadAttachment?(id: string, file: File): Promise<IdeaAttachment>;
+  /** Upload one file onto an idea (multipart) - plan sprint-5/15; with
+   * `commentId` onto the caller's own comment. */
+  uploadAttachment?(id: string, file: File, commentId?: string): Promise<IdeaAttachment>;
   /** Fetch an uploaded attachment's bytes (auth-gated route) as a Blob. */
   fetchAttachment?(contentPath: string): Promise<Blob>;
   /** Promote ideas to a draft Business Requirement from a surface with no BR

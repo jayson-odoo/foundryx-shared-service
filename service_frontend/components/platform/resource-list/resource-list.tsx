@@ -157,6 +157,16 @@ export function ResourceList<T extends object>({
     restoreFromCtx: restoreFromCtx ?? !hideHeader,
   });
   const prefs = useViewPreferences(config.viewKey);
+  // Right-click (long-press on touch) on a row opens that row's actions at
+  // the cursor (owner standing rule: row actions live in right-click). `n`
+  // remounts the menu so a second right-click reopens it.
+  const [rowMenu, setRowMenu] = useState<{ row: T; x: number; y: number; n: number } | null>(null);
+  const hasRowActions = config.actions.some((a) => a.surfaces.row);
+  const pageCommitted = config.onDeferredCommitted;
+  const onDeferredCommitted = useMemo(
+    () => (pageCommitted ? (_a: unknown, ids: string[]) => pageCommitted(ids) : undefined),
+    [pageCommitted],
+  );
 
   // Opt-in (config.urlState): mirror the live query into the address bar's
   // `ctx` so reload / a shared link restores the exact view.
@@ -451,7 +461,7 @@ export function ResourceList<T extends object>({
   const createButton =
     config.onCreate &&
     (!config.createPermission || can(config.createPermission)) ? (
-      <Button variant="primary" size="sm" onClick={config.onCreate}>
+      <Button variant={config.createVariant ?? 'primary'} size="sm" onClick={config.onCreate}>
         <Plus />
         {config.createLabel ?? 'Create'}
       </Button>
@@ -478,6 +488,12 @@ export function ResourceList<T extends object>({
         // treat an opt-out row (rowHref '#'/'') as clickable too (cursor-
         // pointer with a dead click, since openRow no-ops on '#'/'').
         onRowClick={config.onRowSelect ? openRow : undefined}
+        onRowContextMenu={
+          hasRowActions
+            ? (row, event) =>
+                setRowMenu((prev) => ({ row, x: event.clientX, y: event.clientY, n: (prev?.n ?? 0) + 1 }))
+            : undefined
+        }
         tableLayout={{
           columnsResizable: true,
           columnsMovable: true,
@@ -627,6 +643,7 @@ export function ResourceList<T extends object>({
                     rows={selectedRows}
                     runtime={runtime}
                     getEntityId={config.getEntityId}
+                    onDeferredCommitted={config.onDeferredCommitted}
                   />
                   {canExport && (
                     <Button
@@ -782,6 +799,7 @@ export function ResourceList<T extends object>({
                             getEntityId={config.getEntityId}
                             runtime={runtime}
                             surface="row"
+                            onDeferredCommitted={onDeferredCommitted}
                           />
                         </div>
                         <div className="p-5 pt-10">
@@ -827,6 +845,26 @@ export function ResourceList<T extends object>({
           onExport={handleExport}
         />
       </DataGrid>
+      {rowMenu && (
+        <ActionMenu
+          key={rowMenu.n}
+          defaultOpen
+          actions={config.actions}
+          rows={[rowMenu.row]}
+          getEntityId={config.getEntityId}
+          runtime={runtime}
+          surface="row"
+          onDeferredCommitted={onDeferredCommitted}
+          align="start"
+          trigger={
+            <span
+              aria-hidden
+              className="pointer-events-none fixed size-0"
+              style={{ left: rowMenu.x, top: rowMenu.y }}
+            />
+          }
+        />
+      )}
     </>
   );
 }
