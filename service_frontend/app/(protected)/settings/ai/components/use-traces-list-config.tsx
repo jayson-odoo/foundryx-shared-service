@@ -14,13 +14,22 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { FxListMoment, useFxByWhom } from '@/components/fx/pages/w3-logs/fx-log-parts';
 import { aiService } from '@/services/ai-service';
 import type { AiTrace } from '@/types/ai';
 import { tracePath } from './paths';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
+/** `n trace(s)` for the Foundryx UIUX done toast. */
+function tracesWord(n: number): string {
+  return n === 1 ? 'Trace' : `${n} traces`;
+}
+
 function useTraceActions(): ResourceAction<AiTrace>[] {
+  const fx = useFx();
+  const byWhom = useFxByWhom();
   return useMemo<ResourceAction<AiTrace>[]>(
     () => [
       {
@@ -34,18 +43,42 @@ function useTraceActions(): ResourceAction<AiTrace>[] {
           const flagged = !rows.every((t) => t.flagged);
           for (const trace of rows) await aiService.flagTrace(trace.id, flagged);
           // Flagging is what keeps a trace past the short `ok` retention window.
-          toast.success(flagged ? 'Flagged for review.' : 'Flag removed.');
+          if (fx) {
+            // Undo puts each trace's flag back as it was, through the same
+            // flag endpoint, so it really reverses the action.
+            const before = rows.map((t) => ({ id: t.id, flagged: t.flagged }));
+            toast.fxDone({
+              what: flagged
+                ? `${tracesWord(rows.length)} flagged for review`
+                : `Flag removed from ${rows.length === 1 ? 'the trace' : `${rows.length} traces`}`,
+              byWhom,
+              undo: () =>
+                void (async () => {
+                  try {
+                    for (const t of before) {
+                      if (t.flagged !== flagged) await aiService.flagTrace(t.id, t.flagged);
+                    }
+                  } catch {
+                    toast.error("Couldn't undo. The flags stay as they are.");
+                  }
+                  runtime.reload();
+                })(),
+            });
+          } else {
+            toast.success(flagged ? 'Flagged for review.' : 'Flag removed.');
+          }
           runtime.reload();
         },
       },
     ],
-    [],
+    [fx, byWhom],
   );
 }
 
 export function useTracesListConfig(): ResourceListConfig<AiTrace> {
   const actions = useTraceActions();
   const { formatDateTime } = useDatetime();
+  const fx = useFx();
 
   return useMemo<ResourceListConfig<AiTrace>>(() => {
     const columns: ColumnDef<AiTrace>[] = [
@@ -72,11 +105,14 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
         accessorFn: (row) => row.createdAt,
         meta: { headerTitle: 'When' },
         header: ({ column }) => <DataGridColumnHeader title="When" column={column} />,
-        cell: ({ row }) => (
-          <span className="text-sm text-muted-foreground">
-            {row.original.createdAt ? formatDateTime(row.original.createdAt) : '-'}
-          </span>
-        ),
+        cell: ({ row }) =>
+          fx ? (
+            <FxListMoment iso={row.original.createdAt} className="text-sm text-(--fx-ink-2)" />
+          ) : (
+            <span className="text-sm text-muted-foreground">
+              {row.original.createdAt ? formatDateTime(row.original.createdAt) : '-'}
+            </span>
+          ),
         size: 170,
         enableSorting: true,
       },
@@ -243,6 +279,14 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
         { field: 'flagged', label: 'Flagged', type: 'bool' },
       ],
       actions,
+      // Foundryx UIUX switch only. No column copies: prompts and outputs
+      // never show in the list, and the error text is not an identifier.
+      fx: {
+        noun: 'traces',
+        phoneHidden: ['tokens', 'error'],
+        cardLines: [['agentName'], ['model', 'latencyMs'], ['created']],
+        iconFor: { flag: <Flag aria-hidden="true" className="size-[18px]" /> },
+      },
     };
-  }, [actions, formatDateTime]);
+  }, [actions, formatDateTime, fx]);
 }

@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ResourceList } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import type { AutocountCall, CallOutcome } from '@/types/autocount';
 import { AC_CALL_OUTCOME_REGISTRY } from '../../components/autocount-meta';
 import { useCallDetail } from './use-call-detail';
@@ -57,7 +58,9 @@ function CallDialogBody({ callId }: { callId: string }) {
 /** The AutoCount calls list; a row opens a centred dialog with the request and the response. */
 export function CallsView() {
   const [open, setOpen] = useState<AutocountCall | null>(null);
-  const { formatDmyDateTime } = useDatetime();
+  const { formatDmyDateTime, formatDateTime } = useDatetime();
+  // Foundryx UIUX switch on: the call's moment in the full 12-hour form.
+  const fx = useFx();
   const config = useCallsListConfig({ onOpenCall: setOpen });
 
   return (
@@ -76,7 +79,9 @@ export function CallsView() {
                     size="sm"
                   />
                 </DialogTitle>
-                <DialogDescription>{formatDmyDateTime(open.createdAt)}</DialogDescription>
+                <DialogDescription>
+                  {fx ? formatDateTime(open.createdAt) : formatDmyDateTime(open.createdAt)}
+                </DialogDescription>
               </DialogHeader>
               <DialogBody>
                 <CallDialogBody callId={open.id} />
