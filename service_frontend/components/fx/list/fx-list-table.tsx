@@ -169,7 +169,9 @@ export function FxListTable({
     const ro = new ResizeObserver(([entry]) => setAvailable(Math.floor(entry.contentRect.width)));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+    // Phone cards and the table are different elements: watch the new one
+    // when the list widens past the phone breakpoint (or narrows to it).
+  }, [phone]);
 
   useLayoutEffect(() => {
     const root = measureRef.current;
@@ -185,7 +187,9 @@ export function FxListTable({
       next[id] = Math.ceil(max) + CELL_PAD;
     });
     setNeeds((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
-  }, [rowsKey, columnIds, rows.length]);
+    // `phone`: the measuring copy only exists beside the table, so a list
+    // first shown as phone cards measures once it widens into a table.
+  }, [rowsKey, columnIds, rows.length, phone]);
 
   // --- the plan: which columns stay, which become info lines, how wide
   const plan = useMemo(() => {
@@ -328,8 +332,12 @@ export function FxListTable({
           data-stuck={stuck || undefined}
           className={cn(
             'overflow-hidden border-b border-(--fx-line) bg-(--fx-surface) transition-shadow duration-(--fx-t-hover) ease-(--fx-ease-out)',
+            // Frozen right under the frozen page header, wherever it sits:
+            // `--fx-head-top` (the shell, css/demos/demo1.css) moves to the
+            // very top when the top bar merges into the page header, and the
+            // row glides with it; without the shell it is under the top bar.
             freeze &&
-              'sticky top-[calc(var(--header-height,0px)+var(--shell-top-offset,0px)+var(--fx-page-head-h,0px))] z-(--z-sticky-header) data-[stuck=true]:shadow-[0_8px_14px_-10px_var(--fx-shade)]',
+              'sticky top-[calc(var(--fx-head-top,calc(var(--header-height,0px)+var(--shell-top-offset,0px)))+var(--fx-page-head-h,0px))] z-(--z-sticky-header) data-[stuck=true]:shadow-[0_8px_14px_-10px_var(--fx-shade)] motion-safe:transition-[top,box-shadow] motion-safe:duration-(--fx-t-layout) motion-safe:ease-(--fx-ease-out)',
           )}
         >
           <table className="w-full table-fixed border-separate border-spacing-0 text-sm" style={tableStyle}>
