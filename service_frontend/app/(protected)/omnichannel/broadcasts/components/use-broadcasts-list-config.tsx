@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { Ban } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { DataGridTableRowSelect, DataGridTableRowSelectAll } from '@/components/ui/data-grid-table';
@@ -12,6 +13,7 @@ import { OverflowPills } from '@/components/platform/overflow-pills';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import { broadcastService } from '@/services/broadcast-service';
 import type { Broadcast } from '@/types/omnichannel';
 import type { FilterFieldDef, ListQuery } from '@/types/resource';
@@ -33,6 +35,7 @@ export function useBroadcastsListConfig(workspaceId: string | null): ResourceLis
   const { formatDateTime, formatDate } = useDatetime();
   const actions = useBroadcastActions(workspaceId);
   const router = useRouter();
+  const fx = useFx();
 
   return useMemo<ResourceListConfig<Broadcast>>(() => {
     const columns: ColumnDef<Broadcast>[] = [
@@ -112,9 +115,14 @@ export function useBroadcastsListConfig(workspaceId: string | null): ResourceLis
       {
         id: 'recipients',
         accessorFn: (row) => row.counts.total,
-        meta: { headerTitle: 'Recipients' },
+        meta: { headerTitle: 'Recipients', fxAlign: 'end' },
         header: ({ column }) => <DataGridColumnHeader title="Recipients" column={column} />,
-        cell: ({ row }) => <span>{row.original.counts.total}</span>,
+        cell: ({ row }) =>
+          fx ? (
+            <span className="tabular-nums">{row.original.counts.total.toLocaleString('en-US')}</span>
+          ) : (
+            <span>{row.original.counts.total}</span>
+          ),
         size: 110,
         // Not in the backend's sort whitelist (`name/status/channel/
         // scheduledAt/createdAt/createdBy`, plan §BROADCAST_FILTER_COLUMNS) -
@@ -150,6 +158,14 @@ export function useBroadcastsListConfig(workspaceId: string | null): ResourceLis
         header: ({ column }) => <DataGridColumnHeader title="Sent / Delivered / Read / Failed" column={column} />,
         cell: ({ row }) => {
           const c = row.original.counts;
+          if (fx) {
+            return (
+              <span className="tabular-nums text-(--fx-ink-2)">
+                {c.sent.toLocaleString('en-US')} / {c.delivered.toLocaleString('en-US')} / {c.read.toLocaleString('en-US')} /{' '}
+                <span className={c.failed > 0 ? 'text-(--fx-act)' : undefined}>{c.failed.toLocaleString('en-US')}</span>
+              </span>
+            );
+          }
           return (
             <span className="text-muted-foreground">
               {c.sent} / {c.delivered} / {c.read} / {c.failed}
@@ -223,6 +239,23 @@ export function useBroadcastsListConfig(workspaceId: string | null): ResourceLis
       createLabel: 'New broadcast',
       onCreate: () => router.push(broadcastNewPath),
       createPermission: 'broadcasts.manage',
+      // Foundryx UIUX switch only (ignored while off): New broadcast is the
+      // red action; the row and bulk actions become icon actions.
+      fx: {
+        mainActionId: 'create',
+        iconFor: {
+          edit: 'edit',
+          send: 'send',
+          cancel: <Ban aria-hidden="true" className="size-[18px]" />,
+          duplicate: 'copy',
+          delete: 'trash',
+        },
+        columnKind: { status: 'status' },
+        copyable: ['name', 'channel'],
+        phoneHidden: ['labels', 'audience', 'counts', 'createdBy', 'createdAt'],
+        cardLines: [['name', 'status'], ['channel', 'recipients'], ['scheduledAt']],
+        noun: 'broadcasts',
+      },
     };
-  }, [actions, workspaceId, formatDateTime, formatDate, router]);
+  }, [actions, workspaceId, formatDateTime, formatDate, router, fx]);
 }

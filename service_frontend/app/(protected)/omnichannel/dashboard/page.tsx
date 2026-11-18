@@ -19,19 +19,16 @@ import { useReportFilters } from '@/hooks/use-report-filters';
 import { useReportMeta } from '@/hooks/use-report-meta';
 import { useWorkspaceChannels } from '@/hooks/use-workspace-channels';
 import { useWorkspaceMembers } from '@/hooks/use-workspace-members';
-import { DurationStatCard } from '../components/duration-stat-card';
 import { ReportFilterBar } from '../components/report-filter-bar';
-import { LifecycleTiles } from './components/lifecycle-tiles';
-import { OpenedClosedCard } from './components/opened-closed-card';
-import { StateTiles } from './components/state-tiles';
-import { TopAgentsCard } from './components/top-agents-card';
+import { ReportZoneLine } from '../components/report-zone-line';
+import { DashboardContent } from './components/dashboard-content';
 
 export default function OmnichannelDashboardPage() {
   const { workspaceId, workspaces, ready, setWorkspaceId } = useActiveWorkspace();
   const { members } = useWorkspaceMembers(workspaceId);
   const { meta } = useReportMeta(workspaceId);
   const { state, setDateRange, setUserId, setChannelId, setGranularity, filters } = useReportFilters();
-  const { dashboard, loading, error } = useOmnichannelDashboard(workspaceId, filters);
+  const { dashboard, loading, error, reload } = useOmnichannelDashboard(workspaceId, filters);
 
   const { options: channelOptions } = useWorkspaceChannels(workspaceId);
 
@@ -50,7 +47,7 @@ export default function OmnichannelDashboardPage() {
       <Fragment>
         <Container width="fluid">
           <PageHeader
-            description={`Timezone: ${filters.tz}`}
+            description={<ReportZoneLine timeZone={filters.tz} />}
             actions={
               workspaces.length > 1 ? (
                 <SearchSelect
@@ -84,26 +81,7 @@ export default function OmnichannelDashboardPage() {
         </Container>
 
         <Container width="fluid">
-          {loading || !dashboard ? (
-            <div className="flex items-center justify-center py-24 text-muted-foreground">
-              <LoaderCircleIcon className="size-6 animate-spin" />
-            </div>
-          ) : error ? (
-            <div className="flex items-center justify-center py-24 text-sm text-muted-foreground">
-              Couldn&apos;t load the dashboard.
-            </div>
-          ) : (
-            <div className="flex flex-col gap-4">
-              <StateTiles tiles={dashboard.tiles} />
-              <LifecycleTiles stages={dashboard.lifecycle} />
-              <OpenedClosedCard buckets={dashboard.buckets} series={dashboard.series} />
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <DurationStatCard title="First response time" stats={dashboard.responseTotals} />
-                <DurationStatCard title="Resolution time" stats={dashboard.resolutionTotals} />
-              </div>
-              <TopAgentsCard agents={dashboard.topAgents} />
-            </div>
-          )}
+          <DashboardContent dashboard={dashboard} loading={loading} error={error} reload={reload} />
         </Container>
       </Fragment>
     </RequirePermission>

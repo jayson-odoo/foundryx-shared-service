@@ -153,8 +153,6 @@ const RECIPIENTS: BroadcastRecipient[] = [
     contactName: 'Aisyah Rahman',
     phone: '+60 12-345 6789',
     state: 'read',
-    errorText: null,
-    skipReason: null,
     attemptedAt: '2026-11-18T06:15:00Z',
   } as BroadcastRecipient,
   {
@@ -164,7 +162,6 @@ const RECIPIENTS: BroadcastRecipient[] = [
     phone: null,
     state: 'failed',
     errorText: 'Number is not on WhatsApp',
-    skipReason: null,
     attemptedAt: '2026-11-18T06:16:00Z',
   } as BroadcastRecipient,
 ];
