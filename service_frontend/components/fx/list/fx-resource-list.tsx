@@ -73,7 +73,12 @@ import { FilterBuilder } from '@/components/platform/resource-list/filter-builde
 import type { ResourceListProps } from '@/components/platform/resource-list/resource-list';
 import type { FxColumnKind } from '@/components/platform/resource-list/types';
 import { FxIconAction, FxIconActionButton } from '@/components/fx/actions/icon-action';
-import { useRegisterMainAction, type FxMainActionSpec } from '@/components/fx/actions/page-actions-context';
+import {
+  useRegisterMainAction,
+  useRegisterOtherActions,
+  type FxMainActionSpec,
+  type FxOtherActionSpec,
+} from '@/components/fx/actions/page-actions-context';
 import { FxTooltip } from '@/components/fx/fx-tooltip';
 import type { FilterGroup } from '@/types/resource';
 import { FxColumnsPanel } from './fx-columns-panel';
@@ -89,6 +94,9 @@ import {
 import { FxPager } from './fx-pager';
 import { FxListState, fxListStateKind } from './fx-list-state';
 import { FxSelectionBar } from './fx-selection-bar';
+
+const NO_OTHERS: FxOtherActionSpec[] = [];
+const NO_IDS: string[] = [];
 
 /** Phones show cards (playbook "Responsive": 720px and below). */
 export const FX_PHONE_QUERY = '(max-width: 719px)';
@@ -560,6 +568,8 @@ export function FxResourceList<T extends object>({
     [createIsMain, onCreate, createLabel, fullLabel, selectedRows],
   );
   useRegisterMainAction(mainSpec);
+  // The page's More list (FX-16): header Other Actions named here sit in More.
+  useRegisterOtherActions(NO_OTHERS, config.fx?.moreActionIds ?? NO_IDS);
 
   const listStyle = { '--fx-page-head-h': `${pageHeadH}px` } as CSSProperties;
   const showToggle = viewsOn && !config.rowReorder && !phone;
