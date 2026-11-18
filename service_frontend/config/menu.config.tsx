@@ -394,14 +394,16 @@ export const MENU_SIDEBAR: MenuConfig = [
       },
     ],
   },
-  // Lead Capture (plan 64 lane L-D, AC-64-57) - module menu block, visible
-  // only while `lead_capture` is ACTIVE for the tenant AND the user holds the
-  // key each page gates on. Same tags in all three menu copies.
+  // Lead Capture (plan 64 lanes L-C/L-D) - module menu block, visible only
+  // while `lead_capture` is ACTIVE for the tenant AND the user holds the key
+  // each page gates on. Same tags in all three menu copies.
   {
     title: 'Lead Capture',
     icon: Magnet,
     module: 'lead_capture',
     children: [
+      { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
+      { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
       { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
       { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
       { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
@@ -590,13 +592,15 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
-      // Lead Capture (plan 64 lane L-D) - desktop mega copy.
+      // Lead Capture (plan 64 lanes L-C/L-D) - desktop mega copy.
       {
         title: 'Lead Capture',
         module: 'lead_capture',
         children: [
           {
             children: [
+              { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
+              { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
               { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
               { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
               { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
@@ -798,14 +802,16 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
       },
     ],
   },
-  // Lead Capture (plan 64 lane L-D, AC-64-57) - module menu block, visible
-  // only while `lead_capture` is ACTIVE for the tenant AND the user holds the
-  // key each page gates on. Same tags in all three menu copies.
+  // Lead Capture (plan 64 lanes L-C/L-D) - module menu block, visible only
+  // while `lead_capture` is ACTIVE for the tenant AND the user holds the key
+  // each page gates on. Same tags in all three menu copies.
   {
     title: 'Lead Capture',
     icon: Magnet,
     module: 'lead_capture',
     children: [
+      { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
+      { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
       { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
       { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
       { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },

@@ -179,7 +179,20 @@ def test_ac_fs_05_test_item_cannot_be_followed(setup):
     fan = _contact(s, phone="+60123450002")
     iid = _idea(s, 505, submitter_contact_id=fan)
     _set(s, iid, is_test=True)
-    assert _follow(s, _contact_session(s, fan), iid).status_code == 404
+    res = _follow(s, _contact_session(s, fan), iid)
+    assert res.status_code == 409
+    assert res.json()["error"]["message"] == "Test items cannot be followed."
+
+
+def test_share_live_fix_staff_cannot_add_a_follower_to_a_test_item_plain_words(setup):
+    s = setup
+    iid = _idea(s, 506, submitter_contact_id=_contact(s))
+    _set(s, iid, is_test=True)
+    res = s["client"].post(
+        f"/ideation/ideas/{iid}/followers", headers=s["h"], json={"contactId": _contact(s, phone="+60123450003")}
+    )
+    assert res.status_code == 409
+    assert "Test items cannot be followed." in res.text
 
 
 # ── AC-FS-6: followers get the status update ──────────────────────────────────
@@ -347,7 +360,65 @@ def test_ac_fs_01_test_item_has_no_share_link(setup):
     s = setup
     iid = _idea(s, 533, submitter_contact_id=_contact(s))
     _set(s, iid, is_test=True)
-    assert s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).status_code == 404
+    res = s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"])
+    assert res.status_code == 409
+    assert "Test items cannot be shared." in res.text
+
+
+def test_share_live_fix_own_test_item_on_the_board_says_why_and_flags_it(setup):
+    """crew s4: a contact's own TRUE test item (listed as Yours) is flagged
+    ``isTest`` on the item page (the board hides Share/Follow), and a Share call
+    is refused in plain words, never "Feedback not found."."""
+    s = setup
+    author = _contact(s)
+    iid = _idea(s, 544, submitter_contact_id=author)
+    _set(s, iid, is_test=True)
+    h = _contact_session(s, author)
+    detail = s["client"].get(f"/portal/ideas/{iid}", headers=h)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["isTest"] is True
+    res = s["client"].post(f"/portal/ideas/{iid}/share", headers=h)
+    assert res.status_code == 409
+    assert res.json()["error"]["message"] == "Test items cannot be shared."
+
+
+def test_share_live_fix_real_item_is_not_flagged_test(setup):
+    s = setup
+    author = _contact(s)
+    iid = _idea(s, 545, submitter_contact_id=author)
+    assert s["client"].get(f"/portal/ideas/{iid}", headers=_contact_session(s, author)).json()["isTest"] is False
+
+
+def test_share_live_fix_link_opens_on_the_ss_frontend_for_a_crm_tenant(setup, monkeypatch):
+    """A tenant whose public links go to the CRM (template base) still gets a
+    share link on the shared-service frontend: only it has the share page
+    (``app/(public)/public/feedback/share/[token]``). Board links keep the CRM."""
+    from app.config import settings
+    from modules.ideation.services import feedback_links
+
+    monkeypatch.setattr(
+        feedback_links, "tenant_public_link_base", lambda db, tid: "https://crm.example.test/portal/ideas/{token}"
+    )
+    monkeypatch.setattr(settings, "frontend_url", "https://ss.example.test/")
+    s = setup
+    iid = _idea(s, 540, submitter_contact_id=_contact(s))
+    url = s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).json()["url"]
+    assert url.startswith("https://ss.example.test/public/feedback/share/")
+    author = _contact(s)
+    iid2 = _idea(s, 542, submitter_contact_id=author)
+    res = s["client"].post(f"/portal/ideas/{iid2}/share", headers=_contact_session(s, author))
+    assert res.json()["url"].startswith("https://ss.example.test/public/feedback/share/")
+    assert feedback_links.board_base(None, "t").startswith("https://crm.example.test/feedback/board")
+
+
+def test_share_live_fix_plain_tenant_base_is_the_ss_frontend(setup, monkeypatch):
+    from modules.ideation.services import feedback_links
+
+    monkeypatch.setattr(feedback_links, "tenant_public_link_base", lambda db, tid: "https://ss.tenant.test/")
+    s = setup
+    iid = _idea(s, 541, submitter_contact_id=_contact(s))
+    url = s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).json()["url"]
+    assert url.startswith("https://ss.tenant.test/public/feedback/share/")
 
 
 def test_ac_fs_02_share_view_read_only_no_phones(setup):

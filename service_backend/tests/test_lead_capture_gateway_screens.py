@@ -67,9 +67,17 @@ def _bearer(key: str) -> dict:
 
 # ── route parity: every staff screen action has a gateway door ─────────────
 
-# Staff-only on purpose: connecting a Page needs Foundryx's system-user token
-# (product-side connect = lane L-C).
-STAFF_ONLY = {("POST", "/sources/facebook")}
+# Staff-only on purpose:
+# - connecting a Page needs Foundryx's system-user token (product-side connect = lane L-C);
+# - a key's allowed origins are set by a Shared Service admin only (L-C, guide section on the hosted wizard);
+# - the paged staff Sources list and the staff lead detail are L-C's signed-in views of data the gateway
+#   already serves as `GET /sources` and `GET /leads`.
+STAFF_ONLY = {
+    ("POST", "/sources/facebook"),
+    ("PUT", "/keys/{key_id}/origins"),
+    ("GET", "/sources/list"),
+    ("GET", "/leads/{lead_id}"),
+}
 
 
 def _routes(router) -> set:

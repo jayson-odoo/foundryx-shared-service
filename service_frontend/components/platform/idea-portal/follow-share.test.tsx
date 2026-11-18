@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PortalIdea } from '@/types/idea-portal';
+import { ApiError } from '@/lib/api-client';
 
 /** Lane FEEDBACK-SUBSCRIBE (AC-FS-9): Follow / Share on the item page and the
  * read-only share view whose every action goes through the phone step. The
@@ -148,6 +149,34 @@ describe('Follow / Share on the item page', () => {
     await userEvent.click(await within(dialog).findByRole('button', { name: 'Copy link' }));
     expect(await within(dialog).findByText(/Copy did not work/)).toBeInTheDocument();
     expect(within(dialog).getByLabelText('Share link')).toHaveValue('https://x.test/public/feedback/share/abc');
+  });
+
+  it('a test item (crew s4) offers neither Share nor Follow', () => {
+    mockPage({ isMine: true, isTest: true });
+    render(<IdeaPage ideaId="FB-0042" />);
+    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Follow' })).toBeNull();
+  });
+
+  it('a refused Share says why in plain words, with no Try again', async () => {
+    const p = mockPage();
+    p.shareUrl.mockRejectedValue(new ApiError('Test items cannot be shared.', 409));
+    render(<IdeaPage ideaId="FB-0042" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Share' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Share link' });
+    expect(await within(dialog).findByText('Test items cannot be shared.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Could not get the link/)).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('a failed Share (network / server) still offers Try again', async () => {
+    const p = mockPage();
+    p.shareUrl.mockRejectedValue(new ApiError('Internal Server Error', 500));
+    render(<IdeaPage ideaId="FB-0042" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Share' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Share link' });
+    expect(await within(dialog).findByText('Could not get the link.')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
   it('a staff / CRM viewer has Share but no Follow', () => {

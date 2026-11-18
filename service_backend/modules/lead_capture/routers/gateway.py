@@ -20,6 +20,7 @@ from ..gateway_auth import AuditedRoute, LeadGatewayKey, get_lead_gateway_key
 from ..services import (
     backfill_service,
     connect_service,
+    connect_session_service,
     delivery_service,
     field_service,
     form_service,
@@ -50,17 +51,31 @@ def connect_facebook(
     """Connect a Facebook Page, or reconnect it (same Page again = the same
     source, AC-64-29). The product's own door to the ONE connect function."""
     try:
+        token = _connect_token(db, key, body)
         row = connect_service.connect_facebook(
             db,
             key.tenant_id,
             page_id=body.pageId,
-            system_user_token=body.systemUserToken,
+            system_user_token=token,
             forms_mode=body.formsMode,
             actor=_actor(key),
         )
+    except connect_session_service.SessionError as exc:
+        raise _api(exc)
     except connect_service.ConnectError as exc:
         raise _api(exc)
     return read_service.source_item(row)
+
+
+def _connect_token(db: Session, key: LeadGatewayKey, body: schemas.ConnectFacebookRequest) -> str:
+    """Exactly one of ``systemUserToken`` / ``loginId`` (L-C)."""
+    if bool(body.systemUserToken) == bool(body.loginId):
+        raise connect_session_service.SessionError(
+            422, "invalid_token", "Send either systemUserToken or loginId."
+        )
+    if body.loginId:
+        return connect_session_service.login_token(db, key.tenant_id, body.loginId, key.key_id)
+    return body.systemUserToken or ""
 
 
 @router.get("/sources", response_model=schemas.SourceList)
@@ -292,3 +307,63 @@ def disconnect_source(
     except source_service.SourceError as exc:
         raise _api(exc)
     return Response(status_code=204)
+
+
+
+# ── lane L-C: connect sessions + Facebook login (a product's own wizard) ─────
+
+@router.post("/connect-sessions", response_model=schemas.ConnectSessionCreated, status_code=201)
+def create_connect_session(
+    body: schemas.ConnectSessionCreate,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.ConnectSessionCreated:
+    """A single-use hosted wizard URL, 10 minutes (AC-64-06)."""
+    row_key = connect_session_service.gateway_key(db, key.tenant_id, key.key_id)
+    if row_key is None:
+        raise ApiError(401, "invalid_api_key", "Missing, malformed, unknown or revoked key.")
+    try:
+        row, url = connect_session_service.create_session(
+            db, key.tenant_id, return_origin=body.returnOrigin, key=row_key, source_id=body.sourceId
+        )
+    except connect_session_service.SessionError as exc:
+        raise _api(exc)
+    except source_service.SourceError as exc:
+        raise _api(exc)
+    return schemas.ConnectSessionCreated(url=url, expiresAt=row.expires_at)
+
+
+@router.get("/channels", response_model=schemas.ChannelList)
+def list_channels(key: LeadGatewayKey = Depends(get_lead_gateway_key)) -> schemas.ChannelList:
+    return schemas.ChannelList(data=[schemas.Channel(**c) for c in connect_session_service.channels()])
+
+
+@router.get("/facebook/login-config", response_model=schemas.LoginConfig)
+def facebook_login_config(key: LeadGatewayKey = Depends(get_lead_gateway_key)) -> schemas.LoginConfig:
+    return schemas.LoginConfig(**connect_session_service.login_config())
+
+
+@router.post("/facebook/login", response_model=schemas.FacebookLogin, status_code=201)
+def facebook_login(
+    body: schemas.FacebookLoginRequest,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.FacebookLogin:
+    try:
+        out = connect_session_service.create_login(db, key.tenant_id, key.key_id, body.code, body.redirectUri)
+    except connect_session_service.SessionError as exc:
+        raise _api(exc)
+    return schemas.FacebookLogin(
+        loginId=out["loginId"], pages=[schemas.FacebookPage(**p) for p in out["pages"]], expiresAt=out["expiresAt"]
+    )
+
+
+@router.get("/facebook/logins/{login_id}/pages", response_model=schemas.FacebookPageList)
+def facebook_login_pages(
+    login_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.FacebookPageList:
+    try:
+        pages = connect_session_service.login_pages(db, key.tenant_id, login_id, key.key_id)
+    except connect_session_service.SessionError as exc:
+        raise _api(exc)
+    return schemas.FacebookPageList(data=[schemas.FacebookPage(**p) for p in pages])

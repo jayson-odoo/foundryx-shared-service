@@ -429,6 +429,7 @@ jobs:
             META_APP_ID=${{ secrets.META_APP_ID }}
             META_APP_SECRET=${{ secrets.META_APP_SECRET }}
             META_ES_CONFIG_ID=${{ secrets.META_ES_CONFIG_ID }}
+            LEAD_CAPTURE_LOGIN_CONFIG_ID=${{ secrets.LEAD_CAPTURE_LOGIN_CONFIG_ID }}
             META_GRAPH_VERSION=${{ vars.META_GRAPH_VERSION || 'v19.0' }}
             META_WEBHOOK_VERIFY_TOKEN=${{ secrets.META_WEBHOOK_VERIFY_TOKEN }}
             NEXT_PUBLIC_META_APP_ID=${{ secrets.NEXT_PUBLIC_META_APP_ID }}

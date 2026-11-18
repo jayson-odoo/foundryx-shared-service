@@ -242,6 +242,9 @@ class LcApiKey(LeadCaptureBase):
     created_at = _created()
     last_used_at = Column(UTCDateTime(), nullable=True)
     revoked_at = Column(UTCDateTime(), nullable=True)
+    # Origins a connect session may post back to (AC-64-06, migration 0005):
+    # ["https://crm.example.com", ...]; NULL or [] = no connect sessions.
+    allowed_origins_json = Column(_JSON, nullable=True)
 
 
 class LcApiAudit(LeadCaptureBase):
@@ -259,4 +262,43 @@ class LcApiAudit(LeadCaptureBase):
     method = Column(String(8), nullable=False)
     route = Column(String(200), nullable=False)
     status_code = Column(Integer, nullable=False)
+    created_at = _created()
+
+
+SESSION_KIND_WIZARD = "wizard"  # a hosted wizard URL (AC-64-06)
+SESSION_KIND_LOGIN = "login"  # a product's own Facebook login (gateway, no URL)
+
+
+class LcConnectSession(LeadCaptureBase):
+    """A hosted-wizard connect session (AC-64-06/07/20, migration 0005).
+
+    ``wizard``: made by ``POST /connect-sessions`` (gateway key) or by a staff
+    user; the URL carries a one-time secret whose sha256 is ``token_hash``.
+    Opening it (``redeem``) sets ``consumed_at`` once and hands out a scoped
+    ``lead_capture_embed`` token bound to this row.
+    ``login``: a product's own wizard exchanged a Facebook code through the
+    gateway; ``id`` is the opaque ``loginId`` it passes back on connect.
+
+    ``meta_encrypted`` (Fernet ``{"userToken", "dev"}``) holds the Facebook
+    token from the login step; it never leaves the server."""
+
+    __tablename__ = "lc_connect_session"
+    __table_args__ = (
+        Index("ix_lc_connect_session_tenant", "tenant_id"),
+        Index("ix_lc_connect_session_expires", "expires_at"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    kind = Column(String(16), nullable=False, default=SESSION_KIND_WIZARD)
+    key_id = Column(String, nullable=True)
+    user_id = Column(String, nullable=True)
+    return_origin = Column(String(255), nullable=True)
+    source_id = Column(String, nullable=True)  # a source this session works on
+    token_hash = Column(String(64), nullable=True, unique=True)
+    expires_at = Column(UTCDateTime(), nullable=False)
+    consumed_at = Column(UTCDateTime(), nullable=True)
+    finished_at = Column(UTCDateTime(), nullable=True)
+    meta_encrypted = Column(Text, nullable=True)
+    meta_expires_at = Column(UTCDateTime(), nullable=True)
     created_at = _created()
