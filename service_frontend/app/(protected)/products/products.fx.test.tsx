@@ -346,3 +346,80 @@ describe('list, switch on', () => {
     expect(onCancel).toHaveBeenCalled();
   });
 });
+
+describe('owner re-test: Tax steps without residue, Price right-aligned', () => {
+  const press = (name: 'Increase' | 'Decrease') => {
+    const button = screen.getByRole('button', { name });
+    fireEvent.pointerDown(button);
+    fireEvent.pointerUp(button);
+  };
+
+  it('a typed 6.5, then + and -, reads and saves exactly 6.51, 6.52, 6.51', async () => {
+    const onSaved = vi.fn();
+    render(<ProductFormDialog product={product()} kinds={KINDS} onClose={vi.fn()} onSaved={onSaved} />, {
+      wrapper: On,
+    });
+    const tax = screen.getByRole('spinbutton', { name: 'Tax %' });
+    fireEvent.change(tax, { target: { value: '6.5' } });
+    fireEvent.blur(tax);
+    expect(tax).toHaveValue('6.5');
+    press('Increase');
+    expect(tax).toHaveValue('6.51');
+    press('Increase');
+    expect(tax).toHaveValue('6.52');
+    press('Decrease');
+    expect(tax).toHaveValue('6.51');
+    fireEvent.click(screen.getByRole('button', { name: /^Save Barcode scanner/ }));
+    await waitFor(() => expect(svc.updateProduct).toHaveBeenCalled());
+    expect(svc.updateProduct.mock.calls[0][1].tax).toBe(6.51);
+  });
+
+  it('many presses across tenths stay exact', async () => {
+    render(<ProductFormDialog product={product({ tax: 0.25 })} kinds={KINDS} onClose={vi.fn()} onSaved={vi.fn()} />, {
+      wrapper: On,
+    });
+    const tax = screen.getByRole('spinbutton', { name: 'Tax %' });
+    const seen: string[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      press('Decrease');
+      seen.push((tax as HTMLInputElement).value);
+    }
+    expect(seen).toEqual(['0.24', '0.23', '0.22', '0.21', '0.2', '0.19', '0.18', '0.17', '0.16', '0.15']);
+  });
+
+  it('a stored 32-bit rate reads at 4 places, is sent untouched, and steps clean', async () => {
+    render(
+      <ProductFormDialog product={product({ tax: 6.510000228881836 })} kinds={KINDS} onClose={vi.fn()} onSaved={vi.fn()} />,
+      { wrapper: On },
+    );
+    const tax = screen.getByRole('spinbutton', { name: 'Tax %' });
+    expect(tax).toHaveValue('6.51');
+    fireEvent.focus(tax);
+    fireEvent.blur(tax);
+    fireEvent.click(screen.getByRole('button', { name: /^Save Barcode scanner/ }));
+    await waitFor(() => expect(svc.updateProduct).toHaveBeenCalledTimes(1));
+    // Untouched: the same value the switch-off dialog sends.
+    expect(svc.updateProduct.mock.calls[0][1].tax).toBe(6.510000228881836);
+    press('Increase');
+    expect(tax).toHaveValue('6.52');
+  });
+
+  it('Price is an end-aligned amount under the switch only', () => {
+    const handlers = { onCreate: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn() };
+    const on = renderHook(() => useProductsListConfig(handlers), { wrapper: On }).result.current;
+    expect(on.columns.find((c) => c.id === 'price')!.meta).toMatchObject({ fxAlign: 'end' });
+    expect(on.fx).toMatchObject({ columnKind: { active: 'status' }, cardLines: [['sku', 'price'], ['kind']] });
+    const off = renderHook(() => useProductsListConfig(handlers)).result.current;
+    expect(off.columns.find((c) => c.id === 'price')!.meta).toEqual({ headerTitle: 'Price' });
+  });
+
+  it('the page: Price header and cells end-aligned together', async () => {
+    svc.listProducts.mockResolvedValue({ data: [product()], total: 1, page: 0 });
+    const { container } = render(<ProductsPage />, { wrapper: On });
+    const scroller = () => container.querySelector('[data-slot="data-grid-scroller"]') as HTMLElement;
+    await waitFor(() => expect(within(scroller()).getByText('RM 189.00')).toBeInTheDocument());
+    expect(within(scroller()).getByText('RM 189.00').closest('td')!.className).toContain('text-end');
+    const th = Array.from(container.querySelectorAll('th')).find((el) => el.textContent?.trim() === 'Price')!;
+    expect(th.className).toContain('text-end');
+  });
+});

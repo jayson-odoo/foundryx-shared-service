@@ -26,16 +26,19 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
 /**
  * Foundryx UIUX switch choices (slice W1-PRODUCTS, ignored while off): Add
  * product is the red action; Edit and Delete as icon actions; Hold to Copy on
- * SKU and price; phone cards show price and status, then SKU and kind. The
- * price column gets no header amount range: the products list API filters
- * nothing but its search. Prices stay start-aligned: the list shell has no
- * way yet to end-align a column's header with its cells.
+ * SKU and price. Price is an amount: its header and cells are right-aligned
+ * together (`meta.fxAlign: 'end'`). Phone cards follow the playbook: the
+ * top line holds the product and its status, the next line its SKU with the
+ * price at the line's end, then the kind. The price column gets no header
+ * amount range: the products list API filters nothing but its search, and
+ * the status column gets no ticks for the same reason (no filter field).
  */
 const FX_PRODUCTS: FxListConfig<Product> = {
   mainActionId: 'create',
   iconFor: { edit: 'edit', delete: 'delete' },
   copyable: ['sku', 'price'],
-  cardLines: [['price', 'active'], ['sku', 'kind']],
+  columnKind: { active: 'status' },
+  cardLines: [['sku', 'price'], ['kind']],
   noun: 'products',
 };
 
@@ -158,7 +161,8 @@ export function useProductsListConfig(handlers: {
       {
         id: 'price',
         accessorFn: (row) => row.defaultPrice ?? 0,
-        meta: { headerTitle: 'Price' },
+        // An amount: right-aligned with its header under the switch (FX-13).
+        meta: fx ? { headerTitle: 'Price', fxAlign: 'end' } : { headerTitle: 'Price' },
         header: () => 'Price',
         cell: ({ row }) =>
           fx ? (
