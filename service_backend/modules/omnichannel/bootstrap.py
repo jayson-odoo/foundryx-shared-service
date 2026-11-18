@@ -563,6 +563,15 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS business_timezone VARCHAR"
                 )
             )
+            # S12 (2026-11-18) - per-number WhatsApp window opt-in, nullable
+            # (NULL = today). Module Alembic 0029 is the real fix for a
+            # Postgres-tracked deploy; this covers the `create_all` path.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS strict_number_window BOOLEAN"
+                )
+            )
             # Plan 33 S2 (respond.io migration, D-A6-3) - `migrated_from`
             # descriptive markers. `migration_refs` itself is a brand-new
             # table already created by `create_all` above (per-module Alembic
@@ -704,15 +713,36 @@ def install(engine: Engine, db: Session) -> None:
     if ERASE_PERMISSION in created:
         sweep_erase_grant(db)
         db.commit()
+    # Same one-shot shape for the partner-key permission (S6): an existing
+    # tenant's system Admin role that already holds api_keys.manage gets
+    # partner_keys.manage once, when this sync created the key.
+    if PARTNER_KEYS_PERMISSION in created:
+        sweep_partner_keys_grant(db)
+        db.commit()
 
 
 ERASE_PERMISSION = "contacts.erase"
 MANAGE_PERMISSION = "contacts.manage"
+PARTNER_KEYS_PERMISSION = "partner_keys.manage"
+API_KEYS_MANAGE_PERMISSION = "api_keys.manage"
 
 
 def sweep_erase_grant(db: Session) -> None:
     """Grant ``contacts.erase`` to every tenant's system Admin role that holds
     ``contacts.manage``. Idempotent; each row carries the role's own tenant_id.
+    No commit: the caller owns the transaction."""
+    _sweep_admin_grant(db, MANAGE_PERMISSION, ERASE_PERMISSION)
+
+
+def sweep_partner_keys_grant(db: Session) -> None:
+    """Grant ``partner_keys.manage`` to every tenant's system Admin role that
+    holds ``api_keys.manage``. Idempotent; no commit."""
+    _sweep_admin_grant(db, API_KEYS_MANAGE_PERMISSION, PARTNER_KEYS_PERMISSION)
+
+
+def _sweep_admin_grant(db: Session, holder_key: str, new_key: str) -> None:
+    """Grant ``new_key`` to every tenant's system Admin role that holds
+    ``holder_key``. Idempotent; each row carries the role's own tenant_id.
     No commit: the caller owns the transaction."""
     from sqlalchemy import select
 
@@ -722,29 +752,29 @@ def sweep_erase_grant(db: Session) -> None:
     ids = dict(
         db.execute(
             select(Permission.key, Permission.id).where(
-                Permission.key.in_([MANAGE_PERMISSION, ERASE_PERMISSION])
+                Permission.key.in_([holder_key, new_key])
             )
         ).all()
     )
-    manage_id, erase_id = ids.get(MANAGE_PERMISSION), ids.get(ERASE_PERMISSION)
-    if manage_id is None or erase_id is None:
+    holder_id, new_id = ids.get(holder_key), ids.get(new_key)
+    if holder_id is None or new_id is None:
         return
     holders = db.execute(
         select(Role.id, Role.tenant_id)
         .join(role_permissions, role_permissions.c.role_id == Role.id)
         .where(
-            role_permissions.c.permission_id == manage_id,
+            role_permissions.c.permission_id == holder_id,
             Role.name == "Admin",
             Role.is_system.is_(True),
         )
     ).all()
     already = set(
         db.execute(
-            select(role_permissions.c.role_id).where(role_permissions.c.permission_id == erase_id)
+            select(role_permissions.c.role_id).where(role_permissions.c.permission_id == new_id)
         ).scalars()
     )
     new = [
-        {"role_id": rid, "permission_id": erase_id, "tenant_id": tid}
+        {"role_id": rid, "permission_id": new_id, "tenant_id": tid}
         for rid, tid in holders
         if rid not in already
     ]

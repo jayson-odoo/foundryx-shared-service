@@ -774,6 +774,31 @@ class WorkspaceApiKey(OmniBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
+class PartnerApiKey(OmniBase):
+    """Partner API key (``fxp_live_...``), scoped to exactly ONE tenant.
+
+    Sits beside ``WorkspaceApiKey`` and never resolves through the workspace-key
+    dependency: it authenticates only ``/api/v1/omnichannel/partner/*``. Same
+    storage rules as the workspace key - the plaintext is shown once at mint,
+    only the SHA-256 ``key_hash`` and the 8-char ``key_prefix`` are stored.
+    ``allowed_return_origins`` is the exact-origin allow-list a hosted connect
+    session may return to (NULL = none allowed yet).
+    """
+
+    __tablename__ = "partner_api_keys"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    key_prefix = Column(String, nullable=False, index=True)  # 8 chars after "fxp_live_"
+    key_hash = Column(String, nullable=False)  # sha256 hex (64 chars)
+    allowed_return_origins = Column(JSON(none_as_null=True), nullable=True)
+    last_used_at = Column(UTCDateTime(), nullable=True)
+    revoked_at = Column(UTCDateTime(), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class WebhookEndpoint(OmniBase):
     """A consumer's webhook subscription (plan sprint-1/01 Slice 4, AC-01-22).
 
@@ -901,6 +926,13 @@ class OmnichannelSettings(OmniBase):
     # rationale). Shape: `{"mon": [{"from": "09:00", "to": "18:00"}], ...}`.
     business_hours_json = Column(JSON(none_as_null=True), nullable=True)
     business_timezone = Column(String, nullable=True)
+    # S12 (2026-11-18, decision D3) - per-number WhatsApp window enforcement,
+    # opt-in. True: free-form on a WhatsApp number needs THAT number's open
+    # window (`contact_channel_identities.window_expires_at`). NULL/False:
+    # today's contact-level `contacts.csw_expires_at`. A workspace row's NULL
+    # falls back to the tenant default row (`workspace_id` NULL). Read only by
+    # `messaging_policy` (via `MediaSettingsService.strict_number_window`).
+    strict_number_window = Column(Boolean, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False

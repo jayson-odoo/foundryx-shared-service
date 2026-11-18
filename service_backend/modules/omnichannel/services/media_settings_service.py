@@ -64,6 +64,23 @@ class MediaSettingsService:
             }
         return out
 
+    def strict_number_window(self, tenant_id: str, workspace_id: Optional[str]) -> bool:
+        """S12 (decision D3): is per-number WhatsApp window enforcement on for
+        this workspace? The workspace row's value, else the tenant default
+        row's, else False (today's contact-level window). Unlike the media caps
+        this falls back per column: a workspace row that only sets media caps
+        still inherits a tenant-wide opt-in."""
+        own = self._row(tenant_id, workspace_id) if workspace_id else None
+        if own is not None and own.strict_number_window is not None:
+            return bool(own.strict_number_window)
+        default = self._row(tenant_id, None)
+        return bool(default is not None and default.strict_number_window)
+
+    def get_strict_number_window(self, tenant_id: str, workspace_id: Optional[str]) -> Optional[bool]:
+        """The stored value of THIS row (null = not set here), for the settings read."""
+        row = self._row(tenant_id, workspace_id)
+        return row.strict_number_window if row is not None else None
+
     def get_overrides(self, tenant_id: str, workspace_id: Optional[str]) -> Dict[str, Optional[int]]:
         row = self._row(tenant_id, workspace_id)
         return {
@@ -93,6 +110,9 @@ class MediaSettingsService:
             if wire_key in overrides:
                 val = overrides[wire_key]
                 setattr(row, col, int(val) if val is not None else None)
+        if "strictNumberWindow" in overrides:  # S12: true/false, null clears
+            val = overrides["strictNumberWindow"]
+            row.strict_number_window = bool(val) if val is not None else None
         self.db.commit()
         self.db.refresh(row)
         return self.get_overrides(tenant_id, workspace_id)

@@ -1432,12 +1432,20 @@ class OmnichannelSettingsUpdate(ApiModel):
     audioMaxBytes: Optional[int] = None
     documentMaxBytes: Optional[int] = None
     stickerMaxBytes: Optional[int] = None
+    # S12 (2026-11-18): per-number WhatsApp window enforcement for this row
+    # (true/false; null clears = inherit the tenant default, else off).
+    # Omitted = unchanged, like every field here.
+    strictNumberWindow: Optional[bool] = None
 
 
 class OmnichannelSettingsResponse(ApiModel):
     workspaceId: Optional[str] = None
     overrides: dict  # {imageMaxBytes: int|null, ...}
     effective: dict  # {IMAGE: {maxBytes, ceilingBytes, acceptedMimes}, ...}
+    # S12 (2026-11-18), staff dashboard read only: this row's stored value
+    # (null = not set here) and the resolved value the send policy uses.
+    strictNumberWindow: Optional[bool] = None
+    strictNumberWindowEffective: bool = False
 
 
 # ── Business hours (plan sprint-4/31 S5, D-A5-13) ────────────────────────────
@@ -1482,6 +1490,44 @@ class ApiKeyCreateRequest(ApiModel):
 class ApiKeyMintResponse(ApiModel):
     key: ApiKeyItem
     fullKey: str  # shown ONCE at mint, never again
+
+
+# ── Partner keys (tenant-scoped `fxp_live_`, S6) ─────────────────────────────
+class PartnerKeyItem(ApiModel):
+    id: str
+    name: str
+    keyPrefix: str
+    maskedKey: str  # fxp_live_{prefix}••••
+    status: str  # ACTIVE | REVOKED
+    allowedReturnOrigins: List[str] = []
+    lastUsedAt: Optional[datetime] = None
+    revokedAt: Optional[datetime] = None
+    createdAt: datetime
+
+
+class PartnerKeyListResponse(ApiModel):
+    data: List[PartnerKeyItem]
+
+
+class PartnerKeyCreateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+    allowedReturnOrigins: Optional[List[str]] = None
+
+
+class PartnerKeyUpdateRequest(ApiModel):
+    allowedReturnOrigins: Optional[List[str]] = None
+
+
+class PartnerKeyMintResponse(ApiModel):
+    key: PartnerKeyItem
+    fullKey: str  # shown ONCE at mint, never again
+
+
+class PartnerMeResponse(ApiModel):
+    tenantId: str
+    tenantName: str
+    keyId: str
+    keyName: str
 
 
 # ── Public send API (respond.io-style; text/template in v1) ──────────────────
