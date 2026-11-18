@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 
 
 def main(argv=None) -> int:
@@ -28,12 +28,19 @@ def main(argv=None) -> int:
     import modules.autocount.services  # noqa: F401  (import order: avoids the runner/jobs cycle)
     from modules.autocount.doc_feed.constants import BACKFILL_FROM_DEFAULT, DOCUMENT_FEEDS
     from modules.autocount.doc_feed.probe import earliest_doc_day, floor_for
+    from modules.autocount.doc_feed.clock import myt_date
     from modules.autocount.doc_feed.runner import RunRefusal, resolve_vendor
+    from modules.autocount.doc_feed.vendor import DocFeedVendorError
     from modules.autocount.models import AcDocFeed
 
     default_floor = date.fromisoformat(BACKFILL_FROM_DEFAULT)
     from_day = date.fromisoformat(args.from_day)
     to_day = date.fromisoformat(args.to_day) if args.to_day else date.fromordinal(default_floor.toordinal() + 6)
+    today = myt_date(datetime.now(timezone.utc))
+    if to_day > today:
+        to_day = today
+    if from_day > to_day:
+        parser.error("--from must be on or before --to (and today)")
     db = SessionLocal()
     try:
         rows = db.query(AcDocFeed).filter(AcDocFeed.company_id == args.company).all()
@@ -54,7 +61,11 @@ def main(argv=None) -> int:
                 reads["n"] += 1
                 return _vendor.day_by_doc_date(_feed, day)
 
-            earliest = earliest_doc_day(read_day, from_day=from_day, to_day=to_day, stride=args.stride)
+            try:
+                earliest = earliest_doc_day(read_day, from_day=from_day, to_day=to_day, stride=args.stride)
+            except DocFeedVendorError as exc:
+                print(f"{feed} book={resolved.book}: vendor read failed ({exc.code}) after {reads['n']} reads")
+                continue
             floor = floor_for(earliest, default_floor=default_floor)
             found = earliest.strftime("%d/%m/%Y") if earliest else "none in range"
             print(
