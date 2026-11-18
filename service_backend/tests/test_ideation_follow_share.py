@@ -343,11 +343,70 @@ def test_ac_fs_01_contact_can_share_from_the_board(setup):
     assert res.json()["url"].rsplit("/", 1)[1] == _share_token(s, iid)
 
 
-def test_ac_fs_01_test_item_has_no_share_link(setup):
+def test_share_live_fix_console_filing_is_shareable_by_staff(setup):
+    """Owner 18 Nov: a Chatbot Console filing is a real item - it shares and
+    its link opens the read-only view (was a 404 "Feedback not found.")."""
     s = setup
     iid = _idea(s, 533, submitter_contact_id=_contact(s))
     _set(s, iid, is_test=True)
-    assert s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).status_code == 404
+    token = _share_token(s, iid)
+    res = s["client"].get(f"/portal/ideas/shared/{token}")
+    assert res.status_code == 200, res.text
+    assert res.json()["id"] == iid
+    assert s["client"].get(f"/portal/ideas/shared/{token}/comments").status_code == 200
+    assert s["client"].get(f"/portal/ideas/shared/{token}/activity").status_code == 200
+
+
+def test_share_live_fix_contact_shares_own_console_filing_from_the_board(setup):
+    s = setup
+    author = _contact(s)
+    iid = _idea(s, 537, submitter_contact_id=author)
+    _set(s, iid, is_test=True)
+    res = s["client"].post(f"/portal/ideas/{iid}/share", headers=_contact_session(s, author))
+    assert res.status_code == 200, res.text
+    token = res.json()["url"].rsplit("/", 1)[1]
+    assert s["client"].get(f"/portal/ideas/shared/{token}").status_code == 200
+
+
+def test_share_live_fix_share_view_opens_only_its_own_console_filing(setup):
+    """The share view of item A never reaches a different Console filing B."""
+    s = setup
+    a = _idea(s, 538, submitter_contact_id=_contact(s))
+    b = _idea(s, 539, submitter_contact_id=_contact(s))
+    _set(s, b, is_test=True)
+    token = _share_token(s, a)
+    res = s["client"].get(f"/portal/ideas/shared/{token}")
+    assert res.status_code == 200
+    assert b not in res.text
+
+
+def test_share_live_fix_link_opens_on_the_ss_frontend_for_a_crm_tenant(setup, monkeypatch):
+    """A tenant whose public links go to the CRM (template base) still gets a
+    share link on the shared-service frontend: only it has the share page
+    (``app/(public)/public/feedback/share/[token]``)."""
+    from app.config import settings
+    from modules.ideation.services import feedback_links
+
+    monkeypatch.setattr(
+        feedback_links, "tenant_public_link_base", lambda db, tid: "https://crm.example.test/portal/ideas/{token}"
+    )
+    monkeypatch.setattr(settings, "frontend_url", "https://ss.example.test/")
+    s = setup
+    iid = _idea(s, 540, submitter_contact_id=_contact(s))
+    url = s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).json()["url"]
+    assert url.startswith("https://ss.example.test/public/feedback/share/")
+    # The board link keeps the CRM host (unchanged).
+    assert feedback_links.board_base(None, "t").startswith("https://crm.example.test/feedback/board")
+
+
+def test_share_live_fix_plain_tenant_base_is_the_ss_frontend(setup, monkeypatch):
+    from modules.ideation.services import feedback_links
+
+    monkeypatch.setattr(feedback_links, "tenant_public_link_base", lambda db, tid: "https://ss.tenant.test/")
+    s = setup
+    iid = _idea(s, 541, submitter_contact_id=_contact(s))
+    url = s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).json()["url"]
+    assert url.startswith("https://ss.tenant.test/public/feedback/share/")
 
 
 def test_ac_fs_02_share_view_read_only_no_phones(setup):
