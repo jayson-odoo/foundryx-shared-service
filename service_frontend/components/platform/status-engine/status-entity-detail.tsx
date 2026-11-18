@@ -15,7 +15,10 @@ import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
 import { ResourceForm } from '@/components/platform/resource-form';
-import type { ResourceFormConfig } from '@/components/platform/resource-form/types';
+import type {
+  FxFormConfig,
+  ResourceFormConfig,
+} from '@/components/platform/resource-form/types';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { useStatusEntities, useStatusGraph } from '@/hooks/use-status-engine';
 import type { StatusEntity } from '@/types/status-engine';
@@ -29,6 +32,9 @@ export interface StatusEntityDetailProps {
   basePath: string;
   listLabel: string;
   initialEditing?: boolean;
+  /** Foundryx UIUX switch choices for this surface's record chrome (ignored
+   *  while off). The canvas itself is never changed by the switch. */
+  fx?: FxFormConfig<StatusEntity>;
 }
 
 export function StatusEntityDetail({
@@ -36,6 +42,7 @@ export function StatusEntityDetail({
   basePath,
   listLabel,
   initialEditing = false,
+  fx,
 }: StatusEntityDetailProps) {
   const { entities, loading: entitiesLoading } = useStatusEntities();
   const engine = useStatusGraph(entityType);
@@ -122,8 +129,9 @@ export function StatusEntityDetail({
         return true;
       },
       onCancel: () => layoutController.current?.discard(),
+      fx,
     };
-  }, [entity, engine, entityType, basePath, listLabel, initialEditing, layoutDirty]);
+  }, [entity, engine, entityType, basePath, listLabel, initialEditing, layoutDirty, fx]);
 
   const statuses = engine.graph?.statuses ?? [];
 
