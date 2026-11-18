@@ -306,3 +306,149 @@
   --color-foundryx-grey-900: var(--foundryx-grey-900);
   --color-foundryx-grey-950: var(--foundryx-grey-950);
 }
+
+/* ───────────── Foundryx UIUX switch - palettes (playbook-uiux.md) ─────────────
+   Every token below is named `--fx-*` and exists ONLY while the switch is on
+   (`data-fx="on"` on <html>, set from the `fx_uiux` cookie). With the switch
+   off none of these selectors match, so no existing variable or computed style
+   changes (css/fx-scope.inventory.test.ts pins that). Playbook 0.71.0 "Theme":
+   colours in OKLCH; Slate is the playbook's own table, the other five are exact
+   OKLCH equivalents of the reference draft's colours (hex kept in comments).
+   Light palettes: `data-fx-pal` (slate, sand, mint); dark palettes:
+   `data-fx-dpal` (midnight, graphite, forest), active under next-themes'
+   `.dark` class. The red action stays Foundryx red #CC3333 in every theme. */
+
+/* Light: Slate (default) + everything every palette shares */
+:root[data-fx='on'] {
+  --fx-shade-rgb: 15, 23, 42;
+  --fx-bg: oklch(0.97 0.006 255);
+  --fx-surface: oklch(1 0 0);
+  --fx-surface-2: oklch(0.985 0.004 255);
+  --fx-line: oklch(0.92 0.008 255);
+  --fx-line-2: oklch(0.86 0.012 255);
+  --fx-ink: oklch(0.28 0.03 260);
+  --fx-ink-2: oklch(0.45 0.03 260);
+  --fx-ink-3: oklch(0.54 0.025 260);
+  --fx-link: oklch(0.5 0.17 262);
+  --fx-link-bg: oklch(0.95 0.03 262);
+  --fx-act: #cc3333;
+  --fx-act-ink: #ffffff;
+  --fx-act-rgb: 204, 51, 51;
+  --fx-ok: oklch(0.55 0.13 150);
+  --fx-ok-bg: oklch(0.95 0.04 150);
+  --fx-ok-ink: oklch(0.42 0.1 150);
+  --fx-warn: oklch(0.6 0.15 50);
+  --fx-warn-bg: oklch(0.95 0.04 60);
+  --fx-warn-ink: oklch(0.46 0.12 50);
+  --fx-info-bg: oklch(0.95 0.03 262);
+  --fx-info-ink: oklch(0.42 0.12 262);
+  /* Status chips: neutral is a soft blue, not grey; done/active = the ok set,
+     warnings/overdue = the warn set; any other status keeps this lightness and
+     chroma with its own hue (oklch(0.95 0.025 H) on oklch(0.42 0.09 H), e.g.
+     Prospect at H 300). */
+  --fx-chip: oklch(0.95 0.025 262);
+  --fx-chip-ink: oklch(0.42 0.09 262);
+  --fx-toast-bg: oklch(0.279 0.037 260); /* #1E293B */
+  --fx-toast-ink: oklch(0.984 0.003 247.9); /* #F8FAFC */
+  --fx-toast-link: oklch(0.809 0.096 251.8); /* #93C5FD */
+  /* Side menu icons: one soft hue each, cycling 262, 300, 200, 150, 60, 340. */
+  --fx-menu-1: oklch(0.58 0.12 262);
+  --fx-menu-2: oklch(0.58 0.12 300);
+  --fx-menu-3: oklch(0.58 0.12 200);
+  --fx-menu-4: oklch(0.58 0.12 150);
+  --fx-menu-5: oklch(0.58 0.12 60);
+  --fx-menu-6: oklch(0.58 0.12 340);
+  --fx-shade: rgba(var(--fx-shade-rgb), 0.06);
+  --fx-lift: rgba(var(--fx-shade-rgb), 0.3);
+  --fx-scrim: rgba(var(--fx-shade-rgb), 0.45);
+}
+
+/* Light: Sand */
+:root[data-fx='on']:not(.dark)[data-fx-pal='sand'] {
+  --fx-bg: oklch(0.962 0.009 84.6); /* #F5F2EC */
+  --fx-surface-2: oklch(0.98 0.006 84.6); /* #FAF8F4 */
+  --fx-line: oklch(0.911 0.016 82.8); /* #E7E1D6 */
+  --fx-line-2: oklch(0.842 0.023 80.7); /* #D3CABB */
+  --fx-ink: oklch(0.268 0.006 34.3); /* #292524 */
+  --fx-ink-2: oklch(0.444 0.01 73.6); /* #57534E */
+  --fx-ink-3: oklch(0.536 0.013 63.2); /* #736C66 */
+  --fx-link: oklch(0.471 0.122 248.8); /* #0F5E9C */
+  --fx-link-bg: oklch(0.957 0.013 244.3); /* #EAF2F9 */
+  --fx-toast-bg: oklch(0.268 0.006 34.3); /* #292524 */
+}
+
+/* Light: Mint */
+:root[data-fx='on']:not(.dark)[data-fx-pal='mint'] {
+  --fx-bg: oklch(0.963 0.009 171.8); /* #EDF5F2 */
+  --fx-surface-2: oklch(0.981 0.006 170.5); /* #F5FAF8 */
+  --fx-line: oklch(0.912 0.018 170.1); /* #D7E6E0 */
+  --fx-line-2: oklch(0.852 0.025 170.9); /* #BFD4CC */
+  --fx-ink: oklch(0.286 0.035 177.4); /* #15302A */
+  --fx-ink-2: oklch(0.439 0.035 177.3); /* #3D5952 */
+  --fx-ink-3: oklch(0.543 0.037 179.4); /* #587770 */
+  --fx-link: oklch(0.511 0.086 186.4); /* #0F766E */
+  --fx-link-bg: oklch(0.951 0.018 179.3); /* #E3F3EF */
+  --fx-toast-bg: oklch(0.286 0.035 177.4); /* #15302A */
+}
+
+/* Dark: Midnight (default dark palette) */
+:root[data-fx='on'].dark {
+  --fx-shade-rgb: 0, 0, 0;
+  --fx-bg: oklch(0.183 0.031 263.4); /* #0B1220 */
+  --fx-surface: oklch(0.218 0.036 262.5); /* #111A2B */
+  --fx-surface-2: oklch(0.208 0.04 265.8); /* #0F172A */
+  --fx-line: oklch(0.284 0.038 261); /* #1F2A3D */
+  --fx-line-2: oklch(0.372 0.039 257.3); /* #334155 */
+  --fx-ink: oklch(0.929 0.013 255.5); /* #E2E8F0 */
+  --fx-ink-2: oklch(0.772 0.03 256.5); /* #A9B6C8 */
+  --fx-ink-3: oklch(0.688 0.035 256.8); /* #8D9CB1 */
+  --fx-link: oklch(0.809 0.096 251.8); /* #93C5FD */
+  --fx-link-bg: oklch(0.282 0.087 267.9); /* #172554 */
+  --fx-warn: oklch(0.758 0.159 55.9); /* #FB923C */
+  --fx-warn-bg: oklch(0.266 0.076 36.3); /* #431407 */
+  --fx-warn-ink: oklch(0.837 0.117 66.3); /* #FDBA74 */
+  --fx-ok: oklch(0.8 0.182 151.7); /* #4ADE80 */
+  --fx-ok-bg: oklch(0.266 0.063 152.9); /* #052E16 */
+  --fx-ok-ink: oklch(0.871 0.136 154.4); /* #86EFAC */
+  --fx-info-bg: oklch(0.282 0.087 267.9); /* #172554 */
+  --fx-info-ink: oklch(0.882 0.057 254.1); /* #BFDBFE */
+  --fx-toast-bg: oklch(0.929 0.013 255.5); /* #E2E8F0 */
+  --fx-toast-ink: oklch(0.208 0.04 265.8); /* #0F172A */
+  --fx-toast-link: oklch(0.488 0.217 264.4); /* #1D4ED8 */
+  --fx-chip: var(--fx-line);
+  --fx-chip-ink: var(--fx-ink-2);
+  --fx-shade: rgba(0, 0, 0, 0.35);
+  --fx-lift: rgba(0, 0, 0, 0.6);
+  --fx-scrim: rgba(0, 0, 0, 0.6);
+}
+
+/* Dark: Graphite */
+:root[data-fx='on'].dark[data-fx-dpal='graphite'] {
+  --fx-bg: oklch(0.183 0.004 286); /* #121214 */
+  --fx-surface: oklch(0.228 0.006 285.9); /* #1C1C1F */
+  --fx-surface-2: oklch(0.206 0.006 285.9); /* #17171A */
+  --fx-line: oklch(0.295 0.007 286); /* #2C2C30 */
+  --fx-line-2: oklch(0.362 0.009 286); /* #3D3D42 */
+  --fx-ink: oklch(0.944 0.003 286.3); /* #ECECEE */
+  --fx-ink-2: oklch(0.775 0.008 286.2); /* #B5B5BB */
+  --fx-ink-3: oklch(0.695 0.01 286.1); /* #9C9CA3 */
+  --fx-link: oklch(0.827 0.087 259.3); /* #A5C8FF */
+  --fx-link-bg: oklch(0.278 0.03 256.8); /* #1F2937 */
+  --fx-info-bg: oklch(0.278 0.03 256.8); /* #1F2937 */
+}
+
+/* Dark: Forest */
+:root[data-fx='on'].dark[data-fx-dpal='forest'] {
+  --fx-bg: oklch(0.185 0.016 173.8); /* #0B1512 */
+  --fx-surface: oklch(0.229 0.022 170); /* #12201B */
+  --fx-surface-2: oklch(0.206 0.018 169.9); /* #0F1A16 */
+  --fx-line: oklch(0.291 0.027 168.2); /* #1E3029 */
+  --fx-line-2: oklch(0.362 0.032 163.8); /* #2E4339 */
+  --fx-ink: oklch(0.939 0.014 169.2); /* #E2EEE9 */
+  --fx-ink-2: oklch(0.779 0.028 166.5); /* #A7BDB3 */
+  --fx-ink-3: oklch(0.693 0.032 167); /* #8AA398 */
+  --fx-link: oklch(0.807 0.088 178.1); /* #7DD3C0 */
+  --fx-link-bg: oklch(0.284 0.038 178.5); /* #12302A */
+  --fx-info-bg: oklch(0.284 0.038 178.5); /* #12302A */
+  --fx-info-ink: oklch(0.909 0.08 177); /* #A7F3E0 */
+}
