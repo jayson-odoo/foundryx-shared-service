@@ -6,10 +6,12 @@ import re
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
 from app.schemas.base import ApiModel
 from app.schemas.filters import FilterGroup
+
+from .services.payload_version import VersionedPayload
 
 # Foolproof-UI (user mandate): a colour picker on the frontend only ever emits
 # a hex triplet, never a token name or arbitrary CSS - reject anything else at
@@ -1770,7 +1772,7 @@ class RioMessageListResponse(BaseModel):
 
 
 # ── Consumer webhooks (plan sprint-1/01 Slice 4) ─────────────────────────────
-class WebhookEndpointItem(ApiModel):
+class WebhookEndpointItem(VersionedPayload, ApiModel):
     id: str
     tenantId: str
     workspaceId: str
@@ -1785,6 +1787,8 @@ class WebhookEndpointItem(ApiModel):
     disabledReason: Optional[str] = None
     createdAt: datetime
     updatedAt: datetime
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS).
+    payloadVersion: Optional[int] = None  # the version this endpoint's deliveries use
 
 
 class WebhookEndpointListResponse(ApiModel):
@@ -1805,12 +1809,14 @@ class WebhookEndpointCreateRequest(ApiModel):
     name: str
     url: str
     events: List[str]
+    payloadVersion: Optional[StrictInt] = None  # omitted = version 1, today's payloads
 
 
 class WebhookEndpointUpdateRequest(ApiModel):
     name: Optional[str] = None
     url: Optional[str] = None
     events: Optional[List[str]] = None
+    payloadVersion: Optional[StrictInt] = None  # omitted or null = unchanged
 
 
 class WebhookEndpointMintResponse(ApiModel):

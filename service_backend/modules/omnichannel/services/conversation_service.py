@@ -531,7 +531,10 @@ class ConversationService:
             # retry-dedup semantics are unaffected.
             event_suffix = uuid.uuid4().hex[:8]
             event_id = f"{c.id}:{int(c.updated_at.timestamp())}:{event_suffix}"
-            data = {"contact": item.model_dump(mode="json")}
+
+            def data():  # built per endpoint payload version, see `_fan_out`
+                return {"contact": item.model_dump(mode="json")}
+
             if channel is not None:
                 enqueue_event(self.db, channel, "contact.updated", event_id, data)
             else:
