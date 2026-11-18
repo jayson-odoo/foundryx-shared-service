@@ -231,8 +231,8 @@ export function useMigrationListConfig(): ResourceListConfig<MigrationJob> {
         noun: 'migrations',
         iconFor: MIGRATION_FX_ICONS,
         columnKind: { spaceLabel: 'text', workspaceName: 'text', mode: 'status' },
-        cardLines: [['spaceLabel', 'status'], ['workspaceName', 'progress'], ['failures']],
-        phoneHidden: ['contacts', 'messages', 'startedAt', 'finishedAt'],
+        cardLines: [['spaceLabel', 'status'], ['workspaceName', 'progress']],
+        phoneHidden: ['contacts', 'messages', 'failures', 'startedAt', 'finishedAt'],
       },
     };
   }, [actions, formatDateTime, router, fx]);

@@ -121,7 +121,7 @@ export function FxOriginsEditor({ origins, onSave }: FxOriginsEditorProps) {
       <CardContent className="py-1">
         <div className="flex flex-col gap-4 pb-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-            <FxField message={error} className="min-w-0 flex-1 pb-4 sm:pb-0">
+            <FxField message={error} className="mb-4 min-w-0 flex-1">
               <Input
                 placeholder="https://crm.acme.com"
                 value={draft}

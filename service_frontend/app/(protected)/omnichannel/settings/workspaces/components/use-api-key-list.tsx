@@ -290,8 +290,8 @@ export function useApiKeyList(
         compactStates: true,
         iconFor: { revoke: <Ban aria-hidden="true" className="size-[18px]" /> },
         columnKind: { status: 'status' },
-        cardLines: [['name', 'status'], ['key'], ['lastUsed', 'endpoints']],
-        phoneHidden: ['created'],
+        cardLines: [['name', 'status'], ['key']],
+        phoneHidden: ['lastUsed', 'endpoints', 'created'],
       },
     };
   }, [workspaceId, actions, onMint, formatDate, formatDateTime]);

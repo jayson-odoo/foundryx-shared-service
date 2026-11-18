@@ -154,7 +154,7 @@ export function FxMigrationJobDetail({ jobId }: { jobId: string }) {
   return (
     <Container width="fluid">
       <PageHeader
-        title={job.spaceLabel}
+        title={job.spaceLabel || 'Migration'}
         description={
           <StatusBadge
             status={job.status}

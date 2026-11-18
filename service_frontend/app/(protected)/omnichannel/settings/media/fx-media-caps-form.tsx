@@ -16,6 +16,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatMb, mbToBytes } from '@/lib/media-size';
 import { toast } from '@/lib/toast';
+import { cn } from '@/lib/utils';
 import { useOmnichannelSettings } from '@/hooks/use-omnichannel-settings';
 import type {
   OmnichannelSettings,
@@ -185,7 +186,6 @@ export function FxMediaCapsForm() {
                       ? 'Enter a size in MB, or leave it blank.'
                       : undefined
                   }
-                  className="pb-4"
                 >
                   <div data-fx-pulse-target={capTarget(cap.overrideKey)}>
                     <Input
@@ -210,7 +210,13 @@ export function FxMediaCapsForm() {
                     />
                   </div>
                 </FxField>
-                <p className="text-xs text-(--fx-ink-3)">
+                {/* The wrong-size message takes this line's place, so nothing moves. */}
+                <p
+                  className={cn(
+                    'text-xs text-(--fx-ink-3)',
+                    isWrong && 'invisible',
+                  )}
+                >
                   Up to {ceilingMb} MB
                 </p>
               </div>

@@ -184,8 +184,10 @@ export function useWorkspacesListConfig(): ResourceListConfig<Workspace> {
         noun: 'workspaces',
         iconFor: WORKSPACE_FX_ICONS,
         columnKind: { name: 'text', status: 'status', created: 'date' },
-        cardLines: [['name', 'status'], ['channels', 'members']],
-        phoneHidden: ['created'],
+        // Bare counts read as "0 0" on a card, so the phone card keeps the
+        // name and status only.
+        cardLines: [['name', 'status']],
+        phoneHidden: ['channels', 'members', 'created'],
       },
     };
   }, [actions, router, formatDate]);
