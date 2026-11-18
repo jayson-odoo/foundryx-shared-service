@@ -12,7 +12,7 @@ import { act, fireEvent, render as rtlRender, screen, within } from '@testing-li
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import { parityHtml as baseParityHtml } from '@/components/fx/__parity__/parity-utils';
-import { docCalls, docSearch, recorded } from './doc-mocks';
+import { docCalls, docSearch, migration, recorded } from './doc-mocks';
 import { share } from './fixtures';
 
 /** React 19's `_r_N_` ids renamed in order, so test order cannot shift them. */
@@ -113,33 +113,6 @@ async function settle(ms = 50) {
   });
 }
 
-export function migration(over: Record<string, unknown> = {}) {
-  const calls = docCalls;
-  return {
-    step: 'confirm',
-    form: {},
-    providers: [],
-    provider: { key: 's3', title: 'Amazon S3' },
-    onProviderChange: () => {},
-    validateConfigure: async () => true,
-    canAdvanceFromConfigure: true,
-    next: () => calls.push(['migration.next']),
-    back: () => calls.push(['migration.back']),
-    testing: false,
-    testResult: { ok: true, message: 'Wrote and read back a test object.' },
-    runTest: async () => calls.push(['migration.runTest']),
-    confirmValue: '',
-    setConfirmValue: (v: string) => calls.push(['migration.setConfirmValue', v]),
-    targetName: 'acme-files-2027',
-    canStart: false,
-    starting: false,
-    start: async () => {
-      calls.push(['migration.start']);
-      return { id: 'job-1' };
-    },
-    ...over,
-  };
-}
 
 beforeEach(() => {
   docCalls.length = 0;
