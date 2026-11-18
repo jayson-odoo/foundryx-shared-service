@@ -194,7 +194,9 @@ def feedback_base(db: Session, tenant_id: str) -> str:
     """Where the public feedback pages live for this tenant. A tenant
     ``public_link_base_url`` that is a TEMPLATE (``{token}``/``{ideaId}``)
     points at the Sorento CRM: ``{origin}/feedback``. A plain tenant base (or
-    none) is the shared-service frontend: ``{base}/public/feedback``."""
+    none) is the shared-service frontend: ``{base}/public/feedback``.
+    Pages the CRM does not frame (the share page) use ``ss_feedback_base``;
+    keep the two base rules in step."""
     tenant_base = tenant_public_link_base(db, tenant_id)
     if tenant_base and any(p in tenant_base for p in LINK_PLACEHOLDERS):
         parts = urlsplit(tenant_base)
