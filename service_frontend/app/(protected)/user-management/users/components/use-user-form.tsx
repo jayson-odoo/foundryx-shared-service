@@ -257,6 +257,16 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
       recordNav: creating
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Edit / Save user is
+      // the red action; the account actions sit in More (FX-22).
+      fx: creating
+        ? { mainActionId: 'save' }
+        : {
+            mainActionId: 'save',
+            fullLabel: (rows) => (rows[0]?.name ? `Save ${rows[0].name}` : ''),
+            iconFor: { 'send-invitation': 'send', trash: 'trash' },
+            moreActionIds: ['reset-password', 'resend-verification', 'impersonate'],
+          },
     };
   }, [
     isLoading,

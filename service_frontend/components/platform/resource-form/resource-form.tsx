@@ -28,9 +28,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
+import { ConfirmActionDialog } from '@/components/platform/resource-actions/confirm-action-dialog';
+import { runResourceAction } from '@/components/platform/resource-actions/run-action';
 import { RecordNav } from './record-nav';
 import { useFx } from '@/hooks/use-fx';
 import { FxDiscardDialog } from '@/components/fx/actions/confirm-dialog';
+import {
+  useRegisterMainAction,
+  useRegisterOtherActions,
+  type FxMainActionSpec,
+  type FxOtherActionSpec,
+} from '@/components/fx/actions/page-actions-context';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
 import type { ResourceFormConfig } from './types';
 
@@ -45,6 +53,13 @@ export interface ResourceFormProps<T> {
  * `termKey` use the engine's real singular instead (see below) and never hit
  * this path.
  */
+const NO_FX_OTHERS: FxOtherActionSpec[] = [];
+const NO_FX_IDS: string[] = [];
+
+function defaultEntityId<T>(row: T): string {
+  return String((row as { id?: unknown }).id ?? '');
+}
+
 function singularize(plural: string): string {
   if (/ies$/i.test(plural)) return plural.replace(/ies$/i, 'y');
   if (/(s|x|z|ch|sh)es$/i.test(plural)) return plural.replace(/es$/i, '');
@@ -74,6 +89,16 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const router = useRouter();
   const { getCurrentItem } = useMenu(pathname);
   const { label } = useTerminology();
+  const fx = useFx();
+  // Tabs shown at least once. With the Foundryx UIUX switch on they stay
+  // mounted (hidden) after that, so each keeps its state (FX-25).
+  const [visitedTabs, setVisitedTabs] = useState<string[]>(() =>
+    activeTab ? [activeTab] : [],
+  );
+  useEffect(() => {
+    if (!activeTab) return;
+    setVisitedTabs((prev) => (prev.includes(activeTab) ? prev : [...prev, activeTab]));
+  }, [activeTab]);
 
   // Verb + noun on the primary Save/Create button (AC-DLA-35: no bare
   // "Save"/"Submit"/"OK") - derived from the SAME sidebar entry PageHeader
@@ -238,8 +263,185 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const actionsNote =
     config.actionsNote ?? (primaryAction?.disabled ? primaryAction.reason : undefined);
 
+  function startDeferred(action: ResourceAction<T>, entityIds: string[]) {
+    // The label/entityType for THIS action reach the countdown via
+    // `derivedDeferred` above the moment `deferred.state` flips to
+    // `pending` (it re-derives from `config.actions` + the resulting
+    // `actionKey`) - no need to cache anything eagerly here.
+    const entityType = action.deferred!.entityType;
+    trackPendingEntities(entityIds);
+    // Fix round 1 item 5: mirror `action-menu.tsx`'s own try/catch - an
+    // unhandled park rejection here (a 409 "another action is already
+    // counting down") previously vanished silently, leaving the record
+    // dimmed with no countdown and no way to tell what happened.
+    deferred
+      .start(
+        action.deferred!.actionKey,
+        entityIds.map((id) => ({ entityType, entityId: id })),
+        action.deferred!.payload?.(config.actionRows),
+      )
+      .catch((error: unknown) => {
+        untrackPendingEntities(entityIds);
+        toast.error(error instanceof Error ? error.message : 'Could not start that action.');
+      });
+  }
+
+  // --- Foundryx UIUX switch only (FX-22, FX-25): the page's red action and
+  // its Other Actions come from `config.fx`, registered with the page header
+  // (which hides the red action while a dialog is open). Only a form whose
+  // config names a main action or a More list takes this path; every other
+  // form keeps the record card's own buttons and gear menu, as before.
+  const fxCfg = config.fx;
+  const fxMainId = fxCfg?.mainActionId;
+  const fxActions =
+    fx && !config.embedded && Boolean(fxMainId || fxCfg?.moreActionIds?.length);
+  const [fxConfirm, setFxConfirm] = useState<ResourceAction<T> | null>(null);
+  const formRuntime = {
+    reload: config.onReload ?? (() => {}),
+    backHref: backHref ?? undefined,
+  };
+  const runFormAction = (action: ResourceAction<T>) => {
+    if (action.confirm) {
+      setFxConfirm(action);
+      return;
+    }
+    if (action.deferred) {
+      startDeferred(action, config.actionRows.map(config.getEntityId ?? defaultEntityId));
+      return;
+    }
+    void runResourceAction(action, config.actionRows, formRuntime);
+  };
+  const runFormActionRef = useRef(runFormAction);
+  runFormActionRef.current = runFormAction;
+  const fxRunRef = useRef({ handleSave, setEditing });
+  fxRunRef.current = { handleSave, setEditing };
+
+  const rows = config.actionRows;
+  const fxVisible = useMemo(() => {
+    if (!fxActions) return [];
+    const shown = config.actions.filter(
+      (a) =>
+        a.surfaces.form &&
+        (!a.permission || can(a.permission)) &&
+        (a.isVisible ? a.isVisible(rows) : true),
+    );
+    // Destructive last, as in the gear menu.
+    return [
+      ...shown.filter((a) => a.tone !== 'destructive'),
+      ...shown.filter((a) => a.tone === 'destructive'),
+    ];
+  }, [fxActions, config.actions, rows, can]);
+
+  const fxFullLabel = fxCfg?.fullLabel;
+  const fxCreateOrSave = config.editable ? saveLabel : config.backLabel ? createLabel : saveLabel;
+  const fxMain = useMemo<FxMainActionSpec | null>(() => {
+    if (!fxActions || !fxMainId || deferredPending) return null;
+    const full = fxFullLabel ? fxFullLabel(rows) : undefined;
+    if (fxMainId === 'save') {
+      // The form's own primary: Save (or Create) while editing, Edit at rest.
+      if (editing) {
+        return {
+          id: 'save',
+          label: fxCreateOrSave,
+          fullLabel: full,
+          onClick: () => void fxRunRef.current.handleSave(),
+          working: saving,
+          blocked: config.saveDisabled ? { reason: 'A required field is still empty.' } : undefined,
+        };
+      }
+      if (!config.editable || !canEdit || primaryAction) return null;
+      return {
+        id: 'edit',
+        label: entityNoun ? `Edit ${entityNoun}` : 'Edit',
+        onClick: () => fxRunRef.current.setEditing(true),
+      };
+    }
+    if (editing) return null;
+    if (primaryAction && fxMainId === primaryAction.id) {
+      return {
+        id: primaryAction.id,
+        label: primaryAction.label,
+        fullLabel: full,
+        onClick: primaryAction.href
+          ? () => window.open(primaryAction.href, '_blank', 'noopener,noreferrer')
+          : () => void primaryAction.onRun?.(),
+        blocked: primaryAction.disabled
+          ? { reason: typeof primaryAction.reason === 'string' ? primaryAction.reason : '' }
+          : undefined,
+      };
+    }
+    const action = fxVisible.find((a) => a.id === fxMainId);
+    if (!action) return null;
+    const disabled = action.isDisabled ? action.isDisabled(rows) : false;
+    return {
+      id: action.id,
+      label: typeof action.label === 'function' ? action.label(rows) : action.label,
+      fullLabel: full,
+      onClick: () => runFormActionRef.current(action),
+      blocked: disabled ? { reason: action.fxDisabledReason?.(rows) ?? '' } : undefined,
+    };
+  }, [
+    fxActions,
+    fxMainId,
+    deferredPending,
+    fxFullLabel,
+    rows,
+    editing,
+    fxCreateOrSave,
+    saving,
+    config.saveDisabled,
+    config.editable,
+    canEdit,
+    primaryAction,
+    entityNoun,
+    fxVisible,
+  ]);
+  useRegisterMainAction(fxMain);
+
+  const fxIconFor = fxCfg?.iconFor;
+  const fxOthers = useMemo<FxOtherActionSpec[]>(() => {
+    if (!fxActions || editing || deferredPending) return NO_FX_OTHERS;
+    const edit: FxOtherActionSpec[] =
+      config.editable && canEdit && fxMainId !== 'save'
+        ? [
+            {
+              id: 'form-edit',
+              label: 'Edit',
+              icon: fxIconFor?.['form-edit'] ?? 'edit',
+              onClick: () => fxRunRef.current.setEditing(true),
+            },
+          ]
+        : [];
+    return [
+      ...edit,
+      ...fxVisible
+        .filter((a) => a.id !== fxMainId)
+        .map((a): FxOtherActionSpec => {
+          const Icon = a.icon;
+          const disabled = a.isDisabled ? a.isDisabled(rows) : false;
+          return {
+            id: a.id,
+            label: typeof a.label === 'function' ? a.label(rows) : a.label,
+            icon:
+              fxIconFor?.[a.id] ??
+              (Icon ? <Icon aria-hidden="true" className="size-[18px]" /> : 'more'),
+            onClick: () => runFormActionRef.current(a),
+            disabledReason: disabled
+              ? (a.fxDisabledReason?.(rows) ?? 'Not available for this record.')
+              : undefined,
+            tone: a.tone === 'destructive' ? 'delete' : undefined,
+          };
+        }),
+    ];
+  }, [fxActions, editing, deferredPending, config.editable, canEdit, fxMainId, fxIconFor, fxVisible, rows]);
+  useRegisterOtherActions(fxOthers, (fxActions && fxCfg?.moreActionIds) || NO_FX_IDS);
+
+  // The record card keeps only what the header does not now show.
+  const fxHideSave = fxActions && fxMainId === 'save';
+  const fxHidePrimary = fxActions && Boolean(primaryAction) && fxMainId === primaryAction?.id;
+
   const gear =
-    !editing && !deferredPending && menuActions.some((a) => a.surfaces.form) ? (
+    !fxActions && !editing && !deferredPending && menuActions.some((a) => a.surfaces.form) ? (
       <ActionMenu
         actions={menuActions}
         rows={config.actionRows}
@@ -250,28 +452,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         }}
         surface="form"
         trigger="gear"
-        onDeferredStart={(action, entityIds) => {
-          // The label/entityType for THIS action reach the countdown via
-          // `derivedDeferred` above the moment `deferred.state` flips to
-          // `pending` (it re-derives from `config.actions` + the resulting
-          // `actionKey`) - no need to cache anything eagerly here.
-          const entityType = action.deferred!.entityType;
-          trackPendingEntities(entityIds);
-          // Fix round 1 item 5: mirror `action-menu.tsx`'s own try/catch - an
-          // unhandled park rejection here (a 409 "another action is already
-          // counting down") previously vanished silently, leaving the record
-          // dimmed with no countdown and no way to tell what happened.
-          deferred
-            .start(
-              action.deferred!.actionKey,
-              entityIds.map((id) => ({ entityType, entityId: id })),
-              action.deferred!.payload?.(config.actionRows),
-            )
-            .catch((error: unknown) => {
-              untrackPendingEntities(entityIds);
-              toast.error(error instanceof Error ? error.message : 'Could not start that action.');
-            });
-        }}
+        onDeferredStart={startDeferred}
       />
     ) : null;
 
@@ -302,15 +483,40 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
       >
         Cancel
       </Button>
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={handleSave}
-        disabled={saving || config.saveDisabled}
-      >
-        {config.editable ? saveLabel : config.backLabel ? createLabel : saveLabel}
-      </Button>
+      {!fxHideSave && (
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={handleSave}
+          disabled={saving || config.saveDisabled}
+        >
+          {config.editable ? saveLabel : config.backLabel ? createLabel : saveLabel}
+        </Button>
+      )}
     </>
+  ) : fxActions ? (
+    // Switch on with page actions from config: Edit and the form actions are
+    // in the header; a CTA that is not the red action keeps its button.
+    primaryAction && !fxHidePrimary ? (
+      primaryAction.href ? (
+        <Button variant="outline" size="sm" asChild>
+          <a href={primaryAction.href} target="_blank" rel="noopener noreferrer">
+            {primaryAction.icon && <primaryAction.icon />}
+            {primaryAction.label}
+          </a>
+        </Button>
+      ) : (
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={primaryAction.disabled}
+          onClick={() => void primaryAction.onRun?.()}
+        >
+          {primaryAction.icon && <primaryAction.icon />}
+          {primaryAction.label}
+        </Button>
+      )
+    ) : null
   ) : primaryAction ? (
     <>
       {editBesidePrimary && (
@@ -509,12 +715,31 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
             );
           })}
         </TabsList>
-        {config.tabs.map((tab) => (
-          <TabsContent key={tab.id} value={tab.id} className="pt-2">
-            {tab.render({ editing })}
-          </TabsContent>
-        ))}
+        {config.tabs.map((tab) => {
+          // Switch on: a tab already shown stays mounted while hidden, so its
+          // state survives switching (FX-25). Off: as before.
+          const keep = fx && visitedTabs.includes(tab.id);
+          return (
+            <TabsContent
+              key={tab.id}
+              value={tab.id}
+              className="pt-2"
+              {...(keep ? { forceMount: true as const, hidden: activeTab !== tab.id } : {})}
+            >
+              {tab.render({ editing })}
+            </TabsContent>
+          );
+        })}
       </Tabs>
+
+      {fxActions && (
+        <ConfirmActionDialog
+          pending={fxConfirm}
+          rows={config.actionRows}
+          onClose={() => setFxConfirm(null)}
+          onConfirm={(action) => void runResourceAction(action, config.actionRows, formRuntime)}
+        />
+      )}
 
       <DiscardChangesDialog
         open={pendingAction !== null}
