@@ -8,6 +8,7 @@ JWT `require_module` gate - service-active is re-checked inside the dependency.
 """
 import json
 import re
+from datetime import datetime
 from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
@@ -52,6 +53,7 @@ from ..schemas import (
     PublicWorkflowUpdateRequest,
     PublicChannelListResponse,
     PublicTemplateListResponse,
+    PublicWebhookDeliveryListResponse,
     RioContactItem,
     RioContactListResponse,
     RioCursorPagination,
@@ -331,6 +333,14 @@ def list_contacts(
     assignee: str = Query(default="all", description="all|unassigned"),
     priority: Optional[str] = Query(default=None, description="LOW|MEDIUM|HIGH|URGENT"),
     search: Optional[str] = Query(default=None),
+    updated_since: Optional[datetime] = Query(
+        default=None, alias="updatedSince",
+        description="ISO 8601 instant; only contacts changed or messaged after it (no offset = UTC).",
+    ),
+    channel_id: Optional[str] = Query(
+        default=None, alias="channelId",
+        description="Only contacts with an identity on this channel of your workspace.",
+    ),
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
     fmt: str = Depends(wire_format),
@@ -341,10 +351,12 @@ def list_contacts(
     """List contacts (threads) in the workspace, filterable.
 
     Default (`?format=guide`) → `{data: ThreadItem[], total, page, pageSize}`.
-    `?format=rio` → respond.io `{items, pagination}` with cursor URLs."""
+    `?format=rio` → respond.io `{items, pagination}` with cursor URLs.
+    `updatedSince` / `channelId` (2026-11-18) are optional; absent = no filter."""
     items, total = PublicGatewayService(db).list_contacts(
         api_ws.tenant_id, api_ws.workspace_id,
         status=status, assignee=assignee, priority=priority, search=search,
+        updated_since=updated_since, channel_id=channel_id,
         page=page, page_size=page_size, fmt=fmt,
     )
     if fmt != FORMAT_RIO:
@@ -353,7 +365,8 @@ def list_contacts(
             version,
         )
     base = dict(status=status, assignee=assignee, priority=priority, search=search,
-                pageSize=page_size, format=FORMAT_RIO)
+                updatedSince=request.query_params.get("updatedSince") if updated_since else None,
+                channelId=channel_id, pageSize=page_size, format=FORMAT_RIO)
     has_next = (page + 1) * page_size < total
     pagination = RioCursorPagination(
         next=_page_url(request, **base, page=page + 1) if has_next else None,
@@ -801,6 +814,49 @@ def delete_webhook(
         raise _paused_by_staff() from exc
     except WebhookNotFound as exc:
         raise _endpoint_not_found() from exc
+
+
+_DELIVERY_STATUSES = ("PENDING", "SUCCESS", "FAILED")
+
+
+@router.get(
+    "/webhooks/{endpoint_id}/deliveries", response_model=PublicWebhookDeliveryListResponse
+)
+def list_webhook_deliveries(
+    endpoint_id: str,
+    delivery_status: Optional[str] = Query(
+        default=None, alias="status", description="PENDING|SUCCESS|FAILED"
+    ),
+    limit: int = Query(50, ge=1, le=200),
+    before: Optional[str] = Query(
+        default=None, description="A delivery id from the previous page (`nextBefore`)."
+    ),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWebhookDeliveryListResponse:
+    """Delivery history of one of your OWN endpoints, newest first (2026-11-18).
+    Another workspace's endpoint id is the same 404 as an unknown one. Never
+    returns the event body or the signing secret."""
+    from ..services.webhook_service import WebhookError, webhook_delivery_item
+
+    wanted = delivery_status.strip().upper() if delivery_status else None
+    if wanted is not None and wanted not in _DELIVERY_STATUSES:
+        raise ApiError(
+            422, "invalid_request",
+            f"Unknown status '{delivery_status}'. Use one of: {', '.join(_DELIVERY_STATUSES)}.",
+        )
+    _own_endpoint(db, api_ws, endpoint_id)
+    try:
+        rows = _webhook_service(db).list_deliveries(
+            api_ws.tenant_id, endpoint_id, limit, status=wanted, before_id=before
+        )
+    except WebhookError as exc:
+        raise _wh_guard(exc) from exc
+    # A full page may have older rows; a short page is the last one.
+    next_before = rows[-1].id if len(rows) == limit else None
+    return PublicWebhookDeliveryListResponse(
+        data=[webhook_delivery_item(r) for r in rows], nextBefore=next_before
+    )
 
 
 # ── Workflows (plan 38 gap 7) ────────────────────────────────────────────────
