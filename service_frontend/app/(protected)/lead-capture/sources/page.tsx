@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useLeadCaptureWizardLauncher } from '@/hooks/use-lead-capture-sources';
 import { useSourcesListConfig } from './components/use-sources-list-config';
@@ -15,7 +16,10 @@ export default function LeadCaptureSourcesPage() {
   return (
     <RequirePermission permission="lead_capture.view">
       <Container width="fluid">
-        <ResourceList key={version} config={config} />
+        {/* Create sits on the grid's toolbar row (standing rule): the page
+            owns the header, the list renders without its own. */}
+        <PageHeader title={config.pageTitle} />
+        <ResourceList key={version} config={config} hideHeader />
       </Container>
     </RequirePermission>
   );
