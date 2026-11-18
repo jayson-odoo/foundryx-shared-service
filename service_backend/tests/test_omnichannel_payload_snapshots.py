@@ -45,6 +45,20 @@ WA_FROM = "60123450001"
 SNAPSHOT_DIR = Path(__file__).resolve().parent / "fixtures" / "omnichannel_payload_snapshots"
 UPDATE = os.environ.get("UPDATE_PAYLOAD_SNAPSHOTS") == "1"
 
+# The event types that existed when these snapshots were captured: what an
+# existing endpoint can be subscribed to. A later, opt-in event type is not
+# part of version 1 (no existing endpoint lists it) and must be declared in
+# OPT_IN_SINCE_SNAPSHOT, never added to the scenario's subscription.
+V1_EVENT_TYPES = (
+    "message.inbound",
+    "message.outbound",
+    "message.status",
+    "contact.updated",
+    "message.reaction",
+    "contact.erased",
+)
+OPT_IN_SINCE_SNAPSHOT = {"channel.updated"}  # Track A S9
+
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _TS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?")
 _SECRET = re.compile(r"whsec_[A-Za-z0-9_-]+")
@@ -165,7 +179,7 @@ def run_scenario(client, session_factory, posted, extra_headers: Optional[dict] 
     # Webhook endpoint routes (create answers the item inside the mint response).
     created = api(
         "webhooks.create", "POST", "/webhooks", 201,
-        json={"name": "Snapshot", "url": HOOK, "events": list(EVENT_TYPES)},
+        json={"name": "Snapshot", "url": HOOK, "events": list(V1_EVENT_TYPES)},
     )
     eid = created.json()["endpoint"]["id"]
     api("webhooks.list", "GET", "/webhooks", 200)
@@ -253,7 +267,10 @@ def assert_matches_snapshots(out: Dict[str, str]) -> None:
 def test_every_event_type_has_a_snapshot(client, session_factory, posted):
     out = run_scenario(client, session_factory, posted)
     events = {name.split(".", 1)[1].rsplit(".", 1)[0] for name in out if name.startswith("webhook.")}
-    assert events == set(EVENT_TYPES)
+    assert events == set(V1_EVENT_TYPES)
+    # Every event type is either snapshotted or a declared opt-in addition.
+    assert set(EVENT_TYPES) == set(V1_EVENT_TYPES) | OPT_IN_SINCE_SNAPSHOT
+    assert tuple(e for e in EVENT_TYPES if e in V1_EVENT_TYPES) == V1_EVENT_TYPES
 
 
 def test_version_1_payloads_are_byte_identical(client, session_factory, posted):

@@ -1612,7 +1612,7 @@ class PublicTemplateListResponse(ApiModel):
     data: List[PublicTemplateItem]
 
 
-class PublicChannelItem(ApiModel):
+class PublicChannelItem(VersionedPayload, ApiModel):
     """One channel as the consumer API shows it: only what a consumer needs to
     map a `channelId` to a number. Deliberately NOT derived from `ChannelItem`
     (tenant/workspace ids, WABA / phone-number ids and widget keys stay
@@ -1626,6 +1626,10 @@ class PublicChannelItem(ApiModel):
     displayPhoneNumber: Optional[str] = None
     verifiedName: Optional[str] = None
     createdAt: datetime
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS):
+    # CONNECTED | NEEDS_RECONNECT | PAUSED | DISCONNECTED. `status` above
+    # keeps its four values.
+    connectionState: Optional[str] = None
 
 
 class PublicChannelListResponse(ApiModel):
