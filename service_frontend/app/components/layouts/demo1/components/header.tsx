@@ -30,6 +30,7 @@ import {
   DrawerTrigger,
 } from '@/components/ui/drawer';
 import { Container } from '@/components/common/container';
+import { ThemeButton } from '@/components/fx/theme/theme-button';
 import { ActivityTriggers } from '@/components/platform/document-drive';
 import { UserAvatar } from '@/components/platform/user-avatar';
 import { MegaMenu } from './mega-menu';
@@ -163,6 +164,9 @@ export function Header() {
                 only={mobileMode ? ['uploads', 'downloads'] : undefined}
                 compact={mobileMode}
               />
+              {/* Foundryx UIUX switch entry (playbook-uiux.md); on phones
+                  it lives in the user menu instead - no room left here. */}
+              {!mobileMode && <ThemeButton />}
               <NotificationsSheet
                 trigger={
                   <Button
