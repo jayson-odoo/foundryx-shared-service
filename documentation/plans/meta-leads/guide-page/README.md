@@ -12,7 +12,7 @@ Status: **mock v1, waiting for owner OK** (`mock-v1.html` in this folder). Nothi
   One Shared Service tenant = one partner app, so the partner name is configuration, not text in the page.
   Bare host = a generic "your app".
 - Hosts in code samples are built from the page's own origin (wizard URL) and the backend URL, never hard-coded.
-- Fake data only: `app.partner.example`, "Test Person", "Sunrise Homes (test)", `fxl_live_...`.
+- Fake data only: `app.partner.example`, "Test Person", "Sample Home Page", `fxl_live_...`.
 
 ## Element -> reused component map
 
