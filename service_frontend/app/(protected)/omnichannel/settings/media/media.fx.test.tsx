@@ -87,7 +87,7 @@ afterEach(() => resetPageActionsForTests());
 
 async function saveIn(on: boolean, values: Record<string, string>) {
   const view = render(<MediaCapsForm />, { wrapper: look(on) });
-  await screen.findAllByLabelText('Maximum size (MB)');
+  await screen.findAllByLabelText(/Maximum size \(MB\)/);
   for (const [key, value] of Object.entries(values)) {
     fireEvent.change(document.getElementById(`cap-${key}`)!, {
       target: { value },
@@ -98,10 +98,10 @@ async function saveIn(on: boolean, values: Record<string, string>) {
 }
 
 describe('the same save in both looks', () => {
-  it('sends the same caps, blanks as null and sizes capped at the ceiling', async () => {
+  it('sends the same caps, blanks as null and the ceiling as shown as the ceiling', async () => {
     const input = {
       imageMaxBytes: '3',
-      videoMaxBytes: '99',
+      videoMaxBytes: '16',
       documentMaxBytes: '',
     };
     (await saveIn(false, input)).unmount();
@@ -128,11 +128,39 @@ describe('the same save in both looks', () => {
     };
     expect(fxMediaPayload(MEDIA_SETTINGS_FIXTURE, values)).toEqual({
       invalid: ['imageMaxBytes', 'stickerMaxBytes'],
+      problems: { imageMaxBytes: 'not-a-size', stickerMaxBytes: 'not-a-size' },
     });
+  });
+
+  it('neither look saves a size above the ceiling as a smaller one (owner check)', async () => {
+    (await saveIn(false, { imageMaxBytes: '6' })).unmount();
+    await waitFor(() =>
+      expect(toasts.error).toHaveBeenCalledWith('Image can be at most 5 MB.'),
+    );
+    expect(writes()).toHaveLength(0);
+    await saveIn(true, { imageMaxBytes: '6' });
+    expect(await screen.findByText('Image can be at most 5 MB.')).toBeInTheDocument();
+    expect(writes()).toHaveLength(0);
+    expect(
+      fxMediaPayload(MEDIA_SETTINGS_FIXTURE, {
+        ...seedValues(MEDIA_SETTINGS_FIXTURE),
+        imageMaxBytes: '6',
+      }),
+    ).toEqual({ invalid: ['imageMaxBytes'], problems: { imageMaxBytes: 'too-large' } });
   });
 });
 
 describe('under the new look', () => {
+  it('names each size box by its card for screen readers', async () => {
+    render(<MediaCapsForm />, { wrapper: look(true) });
+    for (const name of ['Image', 'Video', 'Audio & voice notes', 'Document', 'Sticker']) {
+      expect(await screen.findByLabelText(`${name} Maximum size (MB)`)).toHaveAttribute(
+        'type',
+        'number',
+      );
+    }
+  });
+
   it('the red action is greyed with "Nothing changed yet." until a cap changes', async () => {
     render(<MediaCapsForm />, { wrapper: look(true) });
     expect(await screen.findByText('Nothing changed yet.')).toBeInTheDocument();
