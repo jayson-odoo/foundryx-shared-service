@@ -1189,6 +1189,8 @@ class PublicGatewayService:
                 messageType="TEMPLATE",
                 templateId=template_id,
                 templateVariables=(req.template.variables if req.template else None) or [],
+                templateHeaderVariables=(req.template.headerVariables if req.template else None),
+                templateButtonVariables=(req.template.buttonVariables if req.template else None),
                 replyToMessageId=reply_to,
             )
         elif msg_type.upper() in MEDIA_MESSAGE_TYPES:
@@ -1648,10 +1650,13 @@ class PublicGatewayService:
             q = q.filter(WhatsappTemplate.name.ilike(f"%{search.strip()}%"))
         if category and category.strip():
             q = q.filter(WhatsappTemplate.category == category.strip().upper())
+        from .template_send import analyze_template
+
         rows = q.order_by(WhatsappTemplate.name.asc()).all()
         out: list[PublicTemplateItem] = []
         for t in rows:
             body = template_body_text(t.components_json)
+            shape = analyze_template(t.components_json)
             out.append(
                 PublicTemplateItem(
                     id=t.id,
@@ -1660,6 +1665,9 @@ class PublicGatewayService:
                     category=t.category,
                     bodyText=body,
                     variableCount=template_variable_count(body),
+                    headerFormat=shape.header_format,
+                    headerVariableCount=shape.header_text_var_count,
+                    buttonVariableCount=shape.button_url_var_count,
                 )
             )
         return out

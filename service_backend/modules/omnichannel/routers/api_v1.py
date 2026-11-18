@@ -309,12 +309,13 @@ def list_templates(
     category: Optional[str] = Query(default=None, description="UTILITY|MARKETING|AUTHENTICATION"),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> PublicTemplateListResponse:
     items = PublicGatewayService(db).list_templates(
         api_ws.tenant_id, api_ws.workspace_id,
         channel_id=channel_id, search=search, category=category,
     )
-    return PublicTemplateListResponse(data=items)
+    return versioned(PublicTemplateListResponse(data=items), version)
 
 
 # ── Contacts (respond.io-style: {identifier} = phone:+60… | id:<uuid> | <uuid>) ──
