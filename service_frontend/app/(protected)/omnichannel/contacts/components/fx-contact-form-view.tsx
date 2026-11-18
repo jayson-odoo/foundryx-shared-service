@@ -38,6 +38,7 @@ import { cn } from '@/lib/utils';
 import { useCan } from '@/hooks/use-can';
 import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Container } from '@/components/common/container';
 import { FxDiscardDialog } from '@/components/fx/actions/confirm-dialog';
 import { FxOtherActions } from '@/components/fx/actions/other-actions';
 import {
@@ -161,87 +162,89 @@ export function FxContactRecord({
   );
 
   return (
-    <div className="flex flex-col gap-4" data-fx-contact-record="">
-      <PageHeader
-        crumbs={config.breadcrumb}
-        title={title}
-        description={
-          record.phone ? (
-            <span className="tabular-nums">
-              <FxHoldToCopy>{record.phone}</FxHoldToCopy>
-            </span>
-          ) : undefined
-        }
-        actions={
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <BackLink href={backHref} label={config.backLabel ?? 'Back'} />
-            {config.recordNav && !editing && (
-              <RecordNav
-                fetchAt={config.recordNav.fetchAt}
-                buildHref={config.recordNav.buildHref}
+    <Container width="fluid">
+      <div className="flex flex-col gap-4" data-fx-contact-record="">
+        <PageHeader
+          crumbs={config.breadcrumb}
+          title={title}
+          description={
+            record.phone ? (
+              <span className="tabular-nums">
+                <FxHoldToCopy>{record.phone}</FxHoldToCopy>
+              </span>
+            ) : undefined
+          }
+          actions={
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <BackLink href={backHref} label={config.backLabel ?? 'Back'} />
+              {config.recordNav && !editing && (
+                <RecordNav
+                  fetchAt={config.recordNav.fetchAt}
+                  buildHref={config.recordNav.buildHref}
+                />
+              )}
+              <FxOtherActions
+                actions={others}
+                moreIds={others.map((a) => a.id)}
               />
-            )}
-            <FxOtherActions
-              actions={others}
-              moreIds={others.map((a) => a.id)}
+            </div>
+          }
+        />
+
+        <div>
+          <ToggleGroup
+            type="single"
+            value={side}
+            onValueChange={show}
+            aria-label="Contact record view"
+            data-testid="fx-record-toggle"
+          >
+            <ToggleGroupItem value="details">Details</ToggleGroupItem>
+            <ToggleGroupItem value="conversation">Conversation</ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+
+        {mounted.details && (
+          <div
+            role="region"
+            aria-label="Details"
+            hidden={side !== 'details'}
+            data-fx-side="details"
+            className="animate-in fade-in duration-(--fx-t-open) ease-(--fx-ease-out)"
+          >
+            <ContactDetailsTab
+              contactId={record.id}
+              onEditingChange={onEditingChange}
             />
           </div>
-        }
-      />
-
-      <div>
-        <ToggleGroup
-          type="single"
-          value={side}
-          onValueChange={show}
-          aria-label="Contact record view"
-          data-testid="fx-record-toggle"
-        >
-          <ToggleGroupItem value="details">Details</ToggleGroupItem>
-          <ToggleGroupItem value="conversation">Conversation</ToggleGroupItem>
-        </ToggleGroup>
-      </div>
-
-      {mounted.details && (
-        <div
-          role="region"
-          aria-label="Details"
-          hidden={side !== 'details'}
-          data-fx-side="details"
-          className="animate-in fade-in duration-(--fx-t-open) ease-(--fx-ease-out)"
-        >
-          <ContactDetailsTab
-            contactId={record.id}
-            onEditingChange={onEditingChange}
-          />
-        </div>
-      )}
-      {mounted.conversation && (
-        <div
-          role="region"
-          aria-label="Conversation"
-          hidden={side !== 'conversation'}
-          data-fx-side="conversation"
-          className="animate-in fade-in duration-(--fx-t-open) ease-(--fx-ease-out)"
-        >
-          <div className="h-[calc(100dvh-320px)] min-h-[420px] overflow-hidden rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface)">
-            <ConversationDrawer contactId={record.id} compact />
+        )}
+        {mounted.conversation && (
+          <div
+            role="region"
+            aria-label="Conversation"
+            hidden={side !== 'conversation'}
+            data-fx-side="conversation"
+            className="animate-in fade-in duration-(--fx-t-open) ease-(--fx-ease-out)"
+          >
+            <div className="h-[calc(100dvh-320px)] min-h-[420px] overflow-hidden rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface)">
+              <ConversationDrawer contactId={record.id} compact />
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <ConfirmActionDialog
-        pending={erasing}
-        rows={[record]}
-        onClose={() => setErasing(null)}
-        onConfirm={(action) => {
-          void action.run?.([record], {
-            reload: config.onReload ?? (() => {}),
-            backHref,
-          });
-        }}
-      />
-    </div>
+        <ConfirmActionDialog
+          pending={erasing}
+          rows={[record]}
+          onClose={() => setErasing(null)}
+          onConfirm={(action) => {
+            void action.run?.([record], {
+              reload: config.onReload ?? (() => {}),
+              backHref,
+            });
+          }}
+        />
+      </div>
+    </Container>
   );
 }
 
@@ -317,56 +320,58 @@ export function FxNewContact({
   const details = config.tabs[0];
 
   return (
-    <div className="flex flex-col gap-4" data-fx-new-contact="">
-      <PageHeader
-        crumbs={config.breadcrumb}
-        title={typeof config.title === 'string' ? config.title : undefined}
-        description={config.subtitle}
-        guardNav={dirty ? guard : undefined}
-        actions={
-          <div className="flex items-center gap-2">
-            <BackLink
-              href={config.backHref}
-              label={config.backLabel ?? 'Back'}
-              onClick={(e) => {
-                if (!dirty) return;
-                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                e.preventDefault();
-                guard(() => router.push(config.backHref));
-              }}
-            />
-            <Button
-              type="button"
-              variant="fx-text"
-              size="sm"
-              onClick={() => guard(config.onCancel)}
-              disabled={working}
-            >
-              Cancel
-            </Button>
-          </div>
-        }
-      />
+    <Container width="fluid">
+      <div className="flex flex-col gap-4" data-fx-new-contact="">
+        <PageHeader
+          crumbs={config.breadcrumb}
+          title={typeof config.title === 'string' ? config.title : undefined}
+          description={config.subtitle}
+          guardNav={dirty ? guard : undefined}
+          actions={
+            <div className="flex items-center gap-2">
+              <BackLink
+                href={config.backHref}
+                label={config.backLabel ?? 'Back'}
+                onClick={(e) => {
+                  if (!dirty) return;
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  guard(() => router.push(config.backHref));
+                }}
+              />
+              <Button
+                type="button"
+                variant="fx-text"
+                size="sm"
+                onClick={() => guard(config.onCancel)}
+                disabled={working}
+              >
+                Cancel
+              </Button>
+            </div>
+          }
+        />
 
-      <section
-        aria-label="Details"
-        className={cn(
-          'flex flex-col gap-4 rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface) p-4 text-(--fx-ink) sm:p-5',
-        )}
-      >
-        <h2 className="text-base font-semibold">Details</h2>
-        {details?.render({ editing: true })}
-      </section>
+        <section
+          aria-label="Details"
+          className={cn(
+            'flex flex-col gap-4 rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface) p-4 text-(--fx-ink) sm:p-5',
+          )}
+        >
+          <h2 className="text-base font-semibold">Details</h2>
+          {details?.render({ editing: true })}
+        </section>
 
-      <FxDiscardDialog
-        open={pending !== null}
-        name={typedName || 'the new contact'}
-        onKeep={() => setPending(null)}
-        onDiscard={() => {
-          pending?.();
-          setPending(null);
-        }}
-      />
-    </div>
+        <FxDiscardDialog
+          open={pending !== null}
+          name={typedName || 'the new contact'}
+          onKeep={() => setPending(null)}
+          onDiscard={() => {
+            pending?.();
+            setPending(null);
+          }}
+        />
+      </div>
+    </Container>
   );
 }

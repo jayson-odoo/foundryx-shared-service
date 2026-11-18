@@ -64,14 +64,10 @@ function FxContactFormView({ contactId, workspaceId }: ContactFormViewProps) {
     );
   }
 
-  return (
-    <Container width="fluid">
-      {contactId ? (
-        <FxContactRecord config={config} />
-      ) : (
-        <FxNewContact config={config} form={form} />
-      )}
-    </Container>
+  return contactId ? (
+    <FxContactRecord config={config} />
+  ) : (
+    <FxNewContact config={config} form={form} />
   );
 }
 
