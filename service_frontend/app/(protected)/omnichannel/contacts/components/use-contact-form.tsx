@@ -102,6 +102,9 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
   );
   const eraseAction = useContactEraseAction('form', leaveAfterErase);
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const createDirty = createForm.formState.isDirty;
   const config = useMemo<ResourceFormConfig<ContactListItem> | null>(() => {
     if (isLoading || (!creating && notFound)) return null;
 
@@ -181,7 +184,7 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
         actionRows: [],
         editable: false,
         initialEditing: true,
-        isDirty: createForm.formState.isDirty,
+        isDirty: createDirty,
         onSave,
         onCancel: () => router.push(contactsListPath),
       } satisfies ResourceFormConfig<ContactListItem>;
@@ -232,6 +235,7 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
       },
     } satisfies ResourceFormConfig<ContactListItem>;
   }, [
+    createDirty,
     isLoading,
     creating,
     notFound,
