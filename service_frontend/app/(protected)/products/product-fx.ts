@@ -50,5 +50,10 @@ export function fxTaxStep(value: number): number {
   return Number.isInteger(value) ? 1 : 0.01;
 }
 
+/** The decimals a tax rate holds: the API stores it as Numeric(14, 4), so
+ *  the stepper shows, steps and sends it at 4 places at most and a stored
+ *  value with binary residue still reads as its rate. */
+export const FX_TAX_PRECISION = 4;
+
 export const FX_TAX_MIN = 0;
 export const FX_TAX_MAX = 100;

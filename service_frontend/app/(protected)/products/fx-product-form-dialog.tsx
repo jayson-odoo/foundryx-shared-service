@@ -32,6 +32,7 @@ import type { ProductFormDialogProps } from './product-form-dialog';
 import {
   FX_TAX_MAX,
   FX_TAX_MIN,
+  FX_TAX_PRECISION,
   fxCurrencyCodes,
   fxProductActionLabel,
   fxTaxStep,
@@ -148,6 +149,7 @@ export function FxProductFormDialog({ product, kinds, onClose, onSaved }: Produc
               min={FX_TAX_MIN}
               max={FX_TAX_MAX}
               step={fxTaxStep(taxValue)}
+              precision={FX_TAX_PRECISION}
               onChange={(n) => f.setTax(String(n))}
             />
           </div>
