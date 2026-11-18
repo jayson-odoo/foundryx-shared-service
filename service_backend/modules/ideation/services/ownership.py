@@ -23,7 +23,7 @@ from sqlalchemy import false, or_
 from sqlalchemy.orm import Query, Session
 
 from modules.omnichannel.models import Contact
-from modules.omnichannel.phone import digits_only
+from modules.omnichannel.phone import international_digits, local_digits_variant
 
 from ..models import Idea
 
@@ -33,10 +33,11 @@ _MIN_PHONE_DIGITS = 8
 
 
 def phone_digits(phone: Optional[str]) -> str:
-    """The normalized digits of ``phone`` (omnichannel's ONE ``digits_only``,
-    the same normalization behind ``Contact.phone_digits``), or ``""`` when it
-    is too short to be a real number. ``""`` is never a wildcard."""
-    digits = digits_only(phone)
+    """The normalized international digits of ``phone`` (omnichannel's ONE
+    ``international_digits``: formatting ignored, a local "0" number read with
+    the default calling code, lane FEEDBACK-SUBSCRIBE R5), or ``""`` when it is
+    too short to be a real number. ``""`` is never a wildcard."""
+    digits = international_digits(phone)
     return digits if len(digits) >= _MIN_PHONE_DIGITS else ""
 
 
@@ -48,9 +49,12 @@ def find_contacts_by_phone(db: Session, tenant_id: str, phone: Optional[str]) ->
     digits = phone_digits(phone)
     if not digits:
         return []
+    # The stored key is ``digits_only`` of the stored phone: match the
+    # international form, plus the local "0" form a legacy row may carry.
+    keys = {digits} | ({local_digits_variant(digits)} - {""})
     exact = (
         db.query(Contact)
-        .filter(Contact.tenant_id == tenant_id, Contact.phone_digits == digits)
+        .filter(Contact.tenant_id == tenant_id, Contact.phone_digits.in_(keys))
         .all()
     )
     legacy = [
@@ -62,7 +66,7 @@ def find_contacts_by_phone(db: Session, tenant_id: str, phone: Optional[str]) ->
             Contact.phone.isnot(None),
         )
         .all()
-        if digits_only(c.phone) == digits
+        if international_digits(c.phone) == digits
     ]
     return sorted(exact + legacy, key=lambda c: c.id)
 
