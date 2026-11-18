@@ -24,8 +24,19 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { SearchSelect } from '@/components/platform/search-select';
 import { dateKey, formatDmyDate } from '@/lib/datetime';
 import { cn } from '@/lib/utils';
+import { useFx } from '@/hooks/use-fx';
+import { FxDateRangePicker } from '@/components/fx/fields/fx-date-range-picker';
 
-export type DateRangePreset = 'last7' | 'last30' | 'thisMonth' | 'lastMonth' | 'custom';
+export type DateRangePreset =
+  | 'last7'
+  | 'last30'
+  | 'thisMonth'
+  | 'lastMonth'
+  | 'custom'
+  // Foundryx UIUX quick picks (only the switch-on picker offers them).
+  | 'today'
+  | 'thisWeek'
+  | 'thisYear';
 
 export interface DateRangeValue {
   preset: DateRangePreset;
@@ -136,7 +147,12 @@ function displayLabel(from: string, to: string): string {
   return from === to ? formatDmyDate(from) : `${formatDmyDate(from)} - ${formatDmyDate(to)}`;
 }
 
-export function DateRangePicker({ value, onChange, timeZone, className, minDate, maxDate }: DateRangePickerProps) {
+export function DateRangePicker(props: DateRangePickerProps) {
+  // Foundryx UIUX switch: the playbook range field while on; today's while off.
+  return useFx() ? <FxDateRangePicker {...props} /> : <DateRangePickerLegacy {...props} />;
+}
+
+function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, maxDate }: DateRangePickerProps) {
   const [open, setOpen] = useState(false);
   // Our own two-click anchor, rather than trusting react-day-picker's
   // built-in range-merge heuristic (which can hand back a COMPLETE-looking
