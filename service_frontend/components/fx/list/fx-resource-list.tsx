@@ -182,6 +182,8 @@ export function FxResourceList<T extends object>({
     defaultSegment: config.segments ? (config.defaultSegment ?? config.segments[0]?.id) : undefined,
     restoreFromCtx: restore,
     defaultPageSize: pageRows,
+    filterFields: config.filterFields,
+    timeZone,
   });
 
   const [rowMenu, setRowMenu] = useState<{ row: T; x: number; y: number; n: number } | null>(null);
@@ -494,7 +496,7 @@ export function FxResourceList<T extends object>({
   async function handleExport(columnIds: string[]) {
     if (!config.exporter) return;
     const ids = !allMatching && selectedIds.length ? selectedIds : undefined;
-    const csv = await config.exporter(list.query, columnIds, ids);
+    const csv = await config.exporter(list.serverQuery, columnIds, ids);
     downloadCsv(`${config.exportFilename ?? 'export'}.csv`, csv);
     setRowSelection({});
     setAllMatching(false);
