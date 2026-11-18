@@ -12,6 +12,8 @@ import {
   type TestConsumerSnapshot,
 } from '@/services/lead-capture-test-consumer-service';
 
+const SETTLE_MS = 7000;
+
 export interface TestConsumerMessage {
   type: string;
   sourceId?: string;
@@ -55,6 +57,11 @@ export function useLeadCaptureTestConsumer(): UseTestConsumer {
       if (data?.type === 'lead-capture:done' || data?.type === 'lead-capture:closed') {
         setLastMessage(data);
         void refresh();
+        // The pull API holds back a lead for its first seconds (it may still
+        // be committing): read again once the test lead has settled.
+        window.setTimeout(() => {
+          if (alive.current) void refresh();
+        }, SETTLE_MS);
       }
     };
     window.addEventListener('message', onMessage);

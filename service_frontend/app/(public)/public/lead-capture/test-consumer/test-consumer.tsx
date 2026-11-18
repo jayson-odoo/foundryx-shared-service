@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useLeadCaptureTestConsumer } from '@/hooks/use-lead-capture-test-consumer';
+import { SOURCE_STATUS_REGISTRY } from '@/app/(protected)/lead-capture/sources/components/source-status';
 
 function Value({ label, value }: { label: string; value: string }) {
   return (
@@ -49,7 +50,7 @@ export function TestConsumer() {
           {(snapshot?.sources ?? []).map((s) => (
             <div key={s.id} className="grid grid-cols-2 gap-2 rounded-lg border border-border p-3 sm:grid-cols-3">
               <Value label="Page" value={s.pageName ?? s.name} />
-              <Value label="Status" value={s.status} />
+              <Value label="Status" value={SOURCE_STATUS_REGISTRY[s.status]?.label ?? s.status} />
               <div className="col-span-2 flex items-end sm:col-span-1 sm:justify-end">
                 <Button type="button" variant="outline" size="sm" onClick={() => void connect(s.id)}>
                   Reconnect
