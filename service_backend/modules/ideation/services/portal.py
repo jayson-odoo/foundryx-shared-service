@@ -173,6 +173,10 @@ def _not_found() -> PortalError:
     return PortalError(404, "not_found", "Feedback not found.")
 
 
+TEST_NOT_SHAREABLE = "Test items cannot be shared."
+TEST_NOT_FOLLOWABLE = "Test items cannot be followed."
+
+
 def _forbidden() -> PortalError:
     return PortalError(403, "forbidden", "Only managers can change this.")
 
@@ -878,6 +882,8 @@ class IdeaPortalService:
             idea.tenant_id, idea.id, PORTAL_CONTENT_PREFIX
         )
         # Lane FEEDBACK-SUBSCRIBE: follower count + "Following" for this viewer.
+        # crew s4: the board hides Share / Follow on a test item.
+        out["isTest"] = bool(idea.is_test)
         out["followerCount"] = followers.follower_count(self.db, self.p.tenant_id, idea.id)
         out["following"] = self.p.kind == KIND_CONTACT and followers.is_following(
             self.db, self.p.tenant_id, idea.id, self._my_voter_ids()
@@ -900,7 +906,7 @@ class IdeaPortalService:
             raise _forbidden()
         idea = self._resolve(idea_id, follow_merge=True)
         if idea.is_test:
-            raise _not_found()
+            raise PortalError(409, "test_item", TEST_NOT_FOLLOWABLE)
         return idea
 
     def _follow_state(self, idea: Idea) -> Dict[str, Any]:
@@ -947,8 +953,8 @@ class IdeaPortalService:
             raise _forbidden()
         idea = self._resolve(idea_id, follow_merge=True)
         row = get_or_create_share_link(self.db, idea, self._history_actor())
-        if row is None:
-            raise _not_found()
+        if row is None:  # a test item (the only refusal): say why
+            raise PortalError(409, "test_item", TEST_NOT_SHAREABLE)
         self.db.commit()
         return {"url": share_url(self.db, row)}
 

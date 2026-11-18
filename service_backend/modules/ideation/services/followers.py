@@ -71,8 +71,10 @@ def follow(
     """Idempotent: an existing row is kept (returns False). 422 when the
     contact is not in the idea's tenant; 404 for a test item. True when a row
     was added."""
-    if idea.tenant_id != tenant_id or idea.is_test:
+    if idea.tenant_id != tenant_id:
         raise FollowError(404, "not_found", "Feedback not found.")
+    if idea.is_test:
+        raise FollowError(409, "test_item", "Test items cannot be followed.")
     contact = (
         db.query(Contact.id)
         .filter(Contact.id == contact_id, Contact.tenant_id == tenant_id)

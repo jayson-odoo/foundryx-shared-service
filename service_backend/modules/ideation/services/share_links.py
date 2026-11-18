@@ -120,13 +120,21 @@ def resolve_share(db: Session, token: str) -> Optional[Tuple[IdeaShareLink, Idea
 # ── operator idea page (staff) ────────────────────────────────────────────────
 
 
+class ShareRefusedTestItem(Exception):
+    """A test item: refused in plain words, never as "not found"."""
+
+    message = "Test items cannot be shared."
+
+
 def staff_share_url(db: Session, tenant_id: str, idea_id: str, actor: HistoryActor) -> Optional[str]:
     """The item's share link (minted on first use), ``None`` when the idea is
-    not in the tenant or is a test item. Commits."""
+    not in the tenant; ``ShareRefusedTestItem`` for a test item. Commits."""
     idea = db.query(Idea).filter(Idea.id == idea_id, Idea.tenant_id == tenant_id).first()
-    row = get_or_create_share_link(db, idea, actor) if idea is not None else None
-    if row is None:
+    if idea is None:
         return None
+    row = get_or_create_share_link(db, idea, actor)
+    if row is None:
+        raise ShareRefusedTestItem()
     db.commit()
     return share_url(db, row)
 
