@@ -110,7 +110,6 @@ The owner said the mocks need no major change.
 
 Each is still with the owner; the build uses the default shown until answered.
 
-- **Q-TOP:** keep Chat and Apps in the top bar beside the one Jobs button (the mock removed them). Default: one Jobs button; Notifications, Chat and Apps stay as icons.
 - **Q-PLACE:** where the switch lives while off. Default: a Theme icon button in the top bar, as mocked (phones: the user menu, see above).
 - **Q-PHONE:** inbox on phones as browser-style tabs (mock) or one pane at a time with a back button. Default: browser-style tabs, as mocked.
 - **Q-24H:** a closed WhatsApp window shows a warning strip with "Choose template" or the inline template picker (mock). Default: the warning strip with "Choose template".
@@ -118,9 +117,13 @@ Each is still with the owner; the build uses the default shown until answered.
 - **Q-SEND:** add "ask first, press and hold" before a broadcast sends. Default: no; it sends at once, as today.
 - **Q-TPL:** "template sends" means sending a WhatsApp template in a conversation, or submitting a template for approval. Default: only the broadcast done page until clarified.
 - **Q-WL:** may tenant users see the label "Foundryx UIUX (0.71.0)", and does the red action stay #CC3333 for branded tenants. Default: the label shows as built (one constant in `lib/fx/version.ts`, easy to rename) and the red action stays #CC3333.
-- **Q-QT:** build the Clipboard, Quick Tool and right-click tool now. Default: not built until asked.
 
 Also in place as build defaults, still open with the owner: the switch and theme are per browser (Q-SYNC); sign-in, public portal and embedded pages stay outside the switch (Q-SCOPE); fx CSS stays in the four sanctioned CSS files (Q-CSS); Advanced settings are per browser (Q-ADV).
+
+Decided since:
+
+- **Q-TOP (decided by the owner):** one Jobs button replaces Uploads, Imports, Jobs and Downloads in the top bar; Notifications, Chat and Apps stay beside it as icon buttons (the mock had removed Chat and Apps), and so does the Theme button (phones: the Theme row in the user menu).
+- **Q-QT (decided by the owner):** the Clipboard, Quick Tool and right-click tool are not built.
 
 ## Fields (slice F4)
 
@@ -132,6 +135,19 @@ Built defaults for the field rules, each kept in one place so it is easy to chan
 - **Money:** "RM" only when the currency is MYR; every other currency shows its ISO code, whatever the tenant default (Q-CUR default; `FX_HOME_CURRENCY` in `service_frontend/lib/money.ts`). `formatMoney` is unchanged; `formatMoneyFx` is the new formatter.
 - **Secret fields:** the show/hide eye is reachable by Tab and carries `aria-pressed` while the switch is on (today it is skipped by Tab).
 - **The bare `Select`** (a few screens) gets the playbook look only; it does not switch to the phone's own picker on touch, because its options are not known to the field.
+
+## Shell (slice F5)
+
+Built defaults for the side panel, top bar and banners:
+
+- **Side panel:** the icon rail is max(64px, 5% width) and opens to SS's own 280px panel width. It opens on hover or keyboard focus, waits for the "Wait before it folds to icons" setting (0.3 s), then slides shut over 0.65 s; the slide stays under reduced motion, as the playbook says. The pin is remembered per browser. Icons take the six side-menu hues in menu order. The menu and its gating (permissions, modules, platform entries) are exactly the legacy panel's. Touch screens at desktop width get no hover opening: a tap on an icon goes straight to its page.
+- **No safe triangle:** SS's side panel has no flyout submenus (its groups open in place) and every other submenu is a Radix menu with its own pointer grace area, so no safe-zone code was built and the "Show the submenu safe zone" setting stays hidden.
+- **Top bar:** the mega menu stays on wider screens, so no way to a page is lost. The search box opens SS's existing search; cross-record search is a separate feature. SS has no branch picker, so only the search box moves into the page header on merge. Search fades into the header over 0.2 s (the playbook's hover step) rather than 0.25 s, which is not one of its timing steps.
+- **Phones:** the page header scrolls away under the frozen top bar (it is frozen only on wider screens). Condensed, the bar's icon buttons and the avatar fold into one menu button.
+- **One Jobs place:** until slice W3-JOBS builds the playbook's single Jobs list, the Jobs sheet shows SS's four existing lists (Uploads, Imports, Jobs, Downloads) as tabs; whatever opened one of the old drawers now opens the sheet on that tab. The badge is the number of uploads, imports, jobs and downloads still running.
+- **Impersonation banner:** a system banner in the warn set, "Viewing as <name>. Anything you create or change is still recorded under your own account.", with "Stop viewing as <name>"; "Hide banner" stays (agreed difference 17) and folds it to a pill as today.
+- **Lost connection:** the system banner "Reconnecting. New messages may be late." shows after 5 s without the live connection (owner choice) and leaves once it is back (`useConnectionBanner`).
+- **Blocked area:** a thin warn strip at the top of the blocked part, one line and one text button (`FxBlockedArea`, gap audit item 7).
 
 ## Final confirmation
 
