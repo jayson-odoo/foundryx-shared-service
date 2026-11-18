@@ -1,10 +1,21 @@
-import { ReactNode, Suspense } from 'react';
+import { HTMLAttributes, ReactNode, Suspense } from 'react';
 import { Metadata } from 'next';
 import { Inter, Poppins } from 'next/font/google';
+import { cookies } from 'next/headers';
 import { getRequestBranding, themeCssHref } from '@/lib/branding-ssr';
+import {
+  FX_COOKIE,
+  FX_FONTS_HREF,
+  FX_FONTS_LINK_ATTR,
+  FX_THEME_COOKIE,
+  fxHtmlAttributes,
+  isFxOnValue,
+  parseFxTheme,
+} from '@/lib/fx/cookies';
 import { cn } from '@/lib/utils';
 import { AuthProvider } from '@/providers/auth-provider';
 import { BrandingProvider } from '@/providers/branding-provider';
+import { FxProvider } from '@/providers/fx-provider';
 import { I18nProvider } from '@/providers/i18n-provider';
 import { ModulesProvider } from '@/providers/modules-provider';
 import { QueryProvider } from '@/providers/query-provider';
@@ -60,8 +71,28 @@ export default async function RootLayout({
   // tenant values win ties. Unbranded/unreachable = harmless empty CSS.
   const { slug, branding } = await getRequestBranding();
 
+  // Foundryx UIUX switch (playbook-uiux.md): read per browser from the
+  // `fx_uiux` cookie so the first paint already matches. No cookie = off, and
+  // off adds nothing: no `<html>` attribute, no `<head>` link, no DOM.
+  const cookieStore = await cookies();
+  const fx = isFxOnValue(cookieStore.get(FX_COOKIE)?.value);
+  const fxTheme = parseFxTheme(cookieStore.get(FX_THEME_COOKIE)?.value);
+  const fxHtml = fxHtmlAttributes(
+    fx,
+    fxTheme,
+  ) as HTMLAttributes<HTMLHtmlElement>;
+
   return (
-    <html className="h-full" suppressHydrationWarning>
+    <html className="h-full" suppressHydrationWarning {...fxHtml}>
+      {fx && (
+        <head>
+          <link
+            rel="stylesheet"
+            href={FX_FONTS_HREF}
+            {...{ [FX_FONTS_LINK_ATTR]: '' }}
+          />
+        </head>
+      )}
       <body
         className={cn(
           'antialiased flex h-full text-base text-foreground bg-background',
@@ -73,24 +104,26 @@ export default async function RootLayout({
         {branding?.isBranded && (
           <link rel="stylesheet" href={themeCssHref(slug, branding.version)} />
         )}
-        <QueryProvider>
-          <AuthProvider>
-            <SettingsProvider>
-              <ThemeProvider>
-                <BrandingProvider>
-                  <I18nProvider>
-                    <TooltipsProvider>
-                      <ModulesProvider>
-                        <Suspense>{children}</Suspense>
-                        <Toaster />
-                      </ModulesProvider>
-                    </TooltipsProvider>
-                  </I18nProvider>
-                </BrandingProvider>
-              </ThemeProvider>
-            </SettingsProvider>
-          </AuthProvider>
-        </QueryProvider>
+        <FxProvider initial={fx} initialTheme={fxTheme}>
+          <QueryProvider>
+            <AuthProvider>
+              <SettingsProvider>
+                <ThemeProvider>
+                  <BrandingProvider>
+                    <I18nProvider>
+                      <TooltipsProvider>
+                        <ModulesProvider>
+                          <Suspense>{children}</Suspense>
+                          <Toaster />
+                        </ModulesProvider>
+                      </TooltipsProvider>
+                    </I18nProvider>
+                  </BrandingProvider>
+                </ThemeProvider>
+              </SettingsProvider>
+            </AuthProvider>
+          </QueryProvider>
+        </FxProvider>
       </body>
     </html>
   );
