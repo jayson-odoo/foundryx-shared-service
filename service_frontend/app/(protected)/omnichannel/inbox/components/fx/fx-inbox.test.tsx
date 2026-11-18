@@ -603,7 +603,7 @@ describe('phones: browser-style tabs', () => {
 });
 
 describe('lost connection', () => {
-  it('shows the banner only after 5 s without the feed, then refetches once back', async () => {
+  it('shows the banner only after 5 s without the feed, then clears it once back', async () => {
     renderPage(true);
     await screen.findByTestId('thread-row-cnt-001');
     await waitFor(() => expect(service.connection).not.toBeNull());
@@ -619,10 +619,11 @@ describe('lost connection', () => {
     act(() => service.connection?.(true));
     act(() => vi.advanceTimersByTime(1000)); // the bar slides away
     expect(screen.queryByText(FX_CONNECTION_BANNER_TEXT)).toBeNull();
+    // Fetched once for what it missed (the list hook's resume), not twice.
     expect(service.listThreads.mock.calls.length).toBe(before + 1);
   });
 
-  it('a short drop that fixes itself shows nothing and fetches nothing', async () => {
+  it('a short drop that fixes itself shows no banner and fetches once for what it missed', async () => {
     renderPage(true);
     await screen.findByTestId('thread-row-cnt-001');
     await waitFor(() => expect(service.connection).not.toBeNull());
@@ -633,7 +634,8 @@ describe('lost connection', () => {
     act(() => service.connection?.(true));
     act(() => vi.advanceTimersByTime(5000));
     expect(screen.queryByText(FX_CONNECTION_BANNER_TEXT)).toBeNull();
-    expect(service.listThreads.mock.calls.length).toBe(before);
+    // Live updates may have been missed even in a short drop.
+    expect(service.listThreads.mock.calls.length).toBe(before + 1);
   });
 
   it('switch off: never a banner', async () => {

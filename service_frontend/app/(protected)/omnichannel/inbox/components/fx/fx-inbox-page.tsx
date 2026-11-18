@@ -18,7 +18,7 @@
  * Everything else is the legacy page's own state (`useInboxPage`): the same
  * workspace, filters, list requests, live feed, `?thread=` and Back.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import type { ConversationThread } from '@/types/omnichannel';
 import { cn } from '@/lib/utils';
 import type { ConversationFilters } from '@/hooks/use-conversations';
@@ -75,13 +75,9 @@ export function FxInboxPage() {
     openThread,
   } = useInboxPage();
 
-  // Lost connection: the banner after 5 s; a refetch once it is back.
-  const bannerShowing = useConnectionBanner(isConnected);
-  const wasShowing = useRef(false);
-  useEffect(() => {
-    if (wasShowing.current && !bannerShowing) reload();
-    wasShowing.current = bannerShowing;
-  }, [bannerShowing, reload]);
+  // Lost connection: the banner after 5 s. The list fetches again by itself
+  // whenever the feed is back after a drop (useConversations, both looks).
+  useConnectionBanner(isConnected);
 
   // Phone tabs: opening a conversation shows its tab; closing it (Back)
   // returns to the list. Choosing a tab only switches what is shown.
