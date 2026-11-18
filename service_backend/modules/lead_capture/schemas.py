@@ -388,6 +388,7 @@ class WizardDone(ApiModel):
     testLeadAt: Optional[datetime] = None
     testLeadFormName: Optional[str] = None
     waitingForRealLead: bool
+    signedInAs: Optional[str] = None
 
 
 # ── lane L-C: staff Sources + Leads lists (AC-64-05/53) ─────────────────────

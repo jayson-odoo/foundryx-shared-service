@@ -136,6 +136,8 @@ export interface WizardDone {
   testLeadAt: string | null;
   testLeadFormName: string | null;
   waitingForRealLead: boolean;
+  /** Google sign-in (plan 68): the Google account that signed in. */
+  signedInAs?: string | null;
 }
 
 /** postMessage contract to the opener (AC-64-08). */

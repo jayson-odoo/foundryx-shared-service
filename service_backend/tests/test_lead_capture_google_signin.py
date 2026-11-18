@@ -369,3 +369,11 @@ def test_gateway_login_id_is_tenant_and_key_scoped(client, lc, google):
         headers={"Authorization": f"Bearer {b_key}"},
     )
     assert res.status_code == 409 and res.json()["error"]["code"] == "LOGIN_REQUIRED"
+
+
+def test_done_screen_names_who_signed_in_with_google(client, lc, google):
+    wiz = _wiz(client)
+    _signin(client, wiz)
+    client.post(f"{BASE}/google/connect", json={"accountId": ACCOUNT, "formIds": [FORM_A]}, headers=wiz)
+    done = client.post(f"{BASE}/finish", headers=wiz).json()
+    assert done["signedInAs"] == "person@example.com"
