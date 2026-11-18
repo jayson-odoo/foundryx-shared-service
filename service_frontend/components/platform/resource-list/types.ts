@@ -163,6 +163,13 @@ export type ResourceAction<T> =
           rows: T[],
           park: (extraPayload?: Record<string, unknown>) => Promise<void>,
         ) => boolean;
+        /**
+         * Foundryx UIUX switch only (FX-03): the record's name for a
+         * one-record countdown, "Deleting Barcode scanner in 10 s". Without
+         * it (or when it returns nothing) the countdown keeps "Deleting in
+         * 10 s". Ignored with the switch off.
+         */
+        fxName?: (rows: T[]) => string | undefined;
       };
       run?: undefined;
     });

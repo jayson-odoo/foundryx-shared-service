@@ -199,7 +199,11 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
     if (!matched) return null;
     const label =
       typeof matched.label === 'function' ? matched.label(config.actionRows) : matched.label;
-    return { label, entityType: matched.deferred?.entityType ?? '' };
+    return {
+      label,
+      entityType: matched.deferred?.entityType ?? '',
+      fxName: matched.deferred?.fxName?.(config.actionRows),
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- config.actions/actionRows are stable per render pass; re-run only when the pending action itself changes
   }, [deferredPending?.actionKey]);
 
@@ -276,6 +280,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const primary = deferredPending ? (
     <DeferredCountdown
       verb={derivedDeferred ? presentContinuous(derivedDeferred.label) : 'Working'}
+      fxName={derivedDeferred?.fxName}
       commitAt={deferredPending.commitAt}
       windowSeconds={deferredPending.windowSeconds}
       onCancel={() => {

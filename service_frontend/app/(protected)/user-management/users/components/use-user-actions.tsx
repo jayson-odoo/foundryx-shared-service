@@ -115,7 +115,12 @@ export function useUserActions(): ResourceAction<User>[] {
         // dialog, no `run` (the registered `users.trash` handler commits it
         // server-side); a bulk trash parks ONE row per user behind one
         // countdown.
-        deferred: { actionKey: 'users.trash', entityType: 'user' },
+        // Switch on only: the one-user countdown names them (FX-03).
+        deferred: {
+          actionKey: 'users.trash',
+          entityType: 'user',
+          fxName: (rows) => rows[0]?.name || undefined,
+        },
       },
       {
         id: 'restore',

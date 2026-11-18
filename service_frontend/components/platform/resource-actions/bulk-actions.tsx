@@ -179,6 +179,10 @@ export function useBulkActionRunner<T>({
           windowSeconds,
           count: parkedIds.length > 1 ? parkedIds.length : undefined,
           noun: entityNoun(entityType, parkedIds.length),
+          fxName:
+            parkedIds.length === 1
+              ? action.deferred.fxName?.(rows.filter((_, i) => parkedIds.includes(entityIds[i])))
+              : undefined,
           onCancel: () => {
             void deferred.cancel();
             untrackPendingEntities(parkedIds);
