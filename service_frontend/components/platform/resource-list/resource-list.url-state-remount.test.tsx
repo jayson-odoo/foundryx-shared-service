@@ -141,4 +141,38 @@ describe('ResourceList URL state survives a remount', () => {
     });
     expect(await screen.findByPlaceholderText('Search records')).toHaveValue('');
   });
+
+  it('a click on the sidebar link of this same list (Next drops ctx from the URL, no remount) writes ctx back', async () => {
+    // Crew pass f39cccdf: Next's same-path navigation replaced the URL without
+    // ctx while the mounted list kept its state; a reload then showed the
+    // default list. The router never knew ctx, so its search params do NOT
+    // change: only the address bar does, a moment after the click.
+    const user = userEvent.setup();
+    render(
+      <>
+        <a
+          href="/records"
+          onClick={(e) => {
+            e.preventDefault();
+            setTimeout(() => realReplaceState({ __NA: true }, '', '/records'), 30);
+          }}
+        >
+          Records link
+        </a>
+        <ResourceList config={config()} hideHeader restoreFromCtx />
+      </>,
+    );
+    const search = await screen.findByPlaceholderText('Search records');
+    await user.clear(search);
+    await user.type(search, 'kept');
+    await waitFor(() => expect(decodeListQuery(new URLSearchParams(window.location.search).get('ctx'))?.search).toBe('kept'));
+    const before = routerSearch;
+
+    await user.click(screen.getByText('Records link'));
+    await waitFor(() => expect(window.location.search).toBe(''), { timeout: 200 }).catch(() => {});
+
+    await waitFor(() => expect(decodeListQuery(new URLSearchParams(window.location.search).get('ctx'))?.search).toBe('kept'));
+    expect(routerSearch).toBe(before);
+    expect(screen.getByPlaceholderText('Search records')).toHaveValue('kept');
+  });
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, useSortable } from '@dnd-kit/sortable';
@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { buildListNav, encodeListQuery } from '@/lib/list-context';
-import { writeListUrlState } from '@/lib/list-url-state';
+import { keepListCtxOnSamePathClick, writeListUrlState } from '@/lib/list-url-state';
 import { cn } from '@/lib/utils';
 import { useCan } from '@/hooks/use-can';
 import { useResourceList } from '@/hooks/use-resource-list';
@@ -180,6 +180,13 @@ export function ResourceList<T extends object>({
     if (!urlState) return;
     writeListUrlState(viewKey, encodeListQuery(list.query));
   }, [urlState, viewKey, list.query]);
+  // Its own sidebar link (same path) drops `ctx` without a remount: put it back.
+  const currentCtx = useRef('');
+  currentCtx.current = encodeListQuery(list.query);
+  useEffect(() => {
+    if (!urlState) return;
+    return keepListCtxOnSamePathClick(viewKey, () => currentCtx.current);
+  }, [urlState, viewKey]);
 
   // Mirror the current ad-hoc filter tree out to the parent page (opt-in,
   // plan 26 "Save as segment") - purely additive, no behavior change for

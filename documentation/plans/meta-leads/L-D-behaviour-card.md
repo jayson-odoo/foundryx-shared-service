@@ -119,3 +119,9 @@ revoke/remove through the core grace-window engine.
   last write (`lib/list-url-state.ts`, per `viewKey`, only while the address bar on this path still shows it), so
   both hold: no lost click, and Pull only -> Push keeps the current search / sort / filter.
 
+## Round 9 (crew-pass f39cccdf NOT READY)
+- A click on the sidebar link of the list you are on: Next replaces the URL without `ctx` and keeps the list mounted
+  (its search params do not change, the router never knew `ctx`). The shared list now watches a same-path link click
+  for up to 3 s and writes its current `ctx` back once Next has replaced the URL (`keepListCtxOnSamePathClick`). One
+  fix for every `urlState` list (Lead Capture Keys / Delivery / Form maps, AutoCount Calls).
+
