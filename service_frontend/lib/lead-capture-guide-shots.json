@@ -10,6 +10,7 @@
       "file": "media/lead-capture-guide/channel.png",
       "width": 760,
       "height": 720,
+      "visibleHeight": 394,
       "box": {
         "x": 86,
         "y": 253,
@@ -21,6 +22,7 @@
       "file": "media/lead-capture-guide/signin.png",
       "width": 760,
       "height": 720,
+      "visibleHeight": 404,
       "box": {
         "x": 86,
         "y": 299,
@@ -32,6 +34,7 @@
       "file": "media/lead-capture-guide/page.png",
       "width": 760,
       "height": 720,
+      "visibleHeight": 496,
       "box": {
         "x": 86,
         "y": 391,
@@ -43,6 +46,7 @@
       "file": "media/lead-capture-guide/forms.png",
       "width": 760,
       "height": 720,
+      "visibleHeight": 556,
       "box": {
         "x": 86,
         "y": 451,
@@ -54,6 +58,7 @@
       "file": "media/lead-capture-guide/fields.png",
       "width": 760,
       "height": 720,
+      "visibleHeight": 720,
       "box": {
         "x": 86,
         "y": 615,
@@ -65,6 +70,7 @@
       "file": "media/lead-capture-guide/test.png",
       "width": 760,
       "height": 720,
+      "visibleHeight": 588,
       "box": {
         "x": 86,
         "y": 483,
@@ -76,6 +82,7 @@
       "file": "media/lead-capture-guide/finish.png",
       "width": 760,
       "height": 720,
+      "visibleHeight": 572,
       "box": {
         "x": 69,
         "y": 484,
@@ -87,6 +94,7 @@
       "file": "media/lead-capture-guide/done.png",
       "width": 760,
       "height": 720,
+      "visibleHeight": 470,
       "box": {
         "x": 69,
         "y": 383,

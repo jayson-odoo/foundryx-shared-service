@@ -13,21 +13,25 @@ export interface CodeSampleProps {
 export function CodeSample({ code, testId }: CodeSampleProps) {
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   return (
-    <div data-testid={testId} className="relative grid min-w-0 grid-cols-[minmax(0,1fr)] rounded-lg border border-border bg-muted">
-      <pre className="overflow-x-auto p-3 pe-24 font-mono text-xs leading-relaxed text-foreground">
+    <div
+      data-testid={testId}
+      className="grid min-w-0 grid-cols-[minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-muted"
+    >
+      <div className="flex justify-end border-b border-border px-2 py-1.5">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-label={isCopied ? 'Copied' : 'Copy'}
+          onClick={() => copyToClipboard(code)}
+        >
+          {isCopied ? <Check aria-hidden /> : <Copy aria-hidden />}
+          {isCopied ? 'Copied' : 'Copy'}
+        </Button>
+      </div>
+      <pre className="overflow-x-auto p-3 font-mono text-xs leading-relaxed text-foreground">
         <code>{code}</code>
       </pre>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="absolute end-2 top-2"
-        aria-label={isCopied ? 'Copied' : 'Copy'}
-        onClick={() => copyToClipboard(code)}
-      >
-        {isCopied ? <Check aria-hidden /> : <Copy aria-hidden />}
-        {isCopied ? 'Copied' : 'Copy'}
-      </Button>
     </div>
   );
 }

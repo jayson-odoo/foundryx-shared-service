@@ -159,8 +159,11 @@ shot() {
   [[ "$box" == "null" || -z "$box" ]] && { echo "Button not found: $label" >&2; exit 1; }
   sleep 0.4
   ab screenshot "$STAGE/$key.png" >/dev/null
-  printf '{"key":"%s","file":"media/lead-capture-guide/%s.png","width":%d,"height":%d,"box":%s}\n' \
-    "$key" "$key" "$WIDTH" "$HEIGHT" "$box" >> "$STEPS_JSON"
+  # Where the wizard's content ends: the guide shows the shot down to there.
+  local bottom
+  bottom="$(ab eval "String(Math.min($HEIGHT, Math.ceil(document.querySelector('main section').getBoundingClientRect().bottom) + 28))" | tail -n 1 | tr -d '"')"
+  printf '{"key":"%s","file":"media/lead-capture-guide/%s.png","width":%d,"height":%d,"visibleHeight":%d,"box":%s}\n' \
+    "$key" "$key" "$WIDTH" "$HEIGHT" "$bottom" "$box" >> "$STEPS_JSON"
   caption "$3"
   sleep "${STEP_PAUSE:-2.2}"
 }

@@ -46,6 +46,8 @@ interface Shot {
   file: string;
   width: number;
   height: number;
+  /** The shot is shown down to here (the wizard's content end). */
+  visibleHeight?: number;
   box: ShotBox | null;
 }
 
@@ -96,6 +98,10 @@ function Mono({ children }: GuideTextProps) {
   return <code className="rounded bg-muted px-1 font-mono text-xs text-foreground">{children}</code>;
 }
 
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function pct(part: number, whole: number): string {
   return `${((part / whole) * 100).toFixed(2)}%`;
 }
@@ -103,15 +109,19 @@ function pct(part: number, whole: number): string {
 function StepShot({ step, number }: StepShotProps) {
   const shot = step.shot ? SHOTS[step.shot] : undefined;
   if (!shot) return null;
+  const visible = Math.min(shot.visibleHeight ?? shot.height, shot.height);
   return (
     <div className="relative border-b border-border bg-muted p-3">
-      <div className="relative overflow-hidden rounded-md border border-border">
+      <div
+        className="relative overflow-hidden rounded-md border border-border bg-background"
+        style={{ aspectRatio: `${shot.width} / ${visible}` }}
+      >
         <Image
           src={`/${shot.file}`}
           alt={`${step.title}: ${step.click}`}
           width={shot.width}
           height={shot.height}
-          className="h-auto w-full"
+          className="absolute start-0 top-0 h-auto w-full max-w-none"
           sizes="(max-width: 640px) 100vw, 460px"
         />
         {shot.box ? (
@@ -120,9 +130,9 @@ function StepShot({ step, number }: StepShotProps) {
             className="pointer-events-none absolute rounded-md ring-4 ring-primary"
             style={{
               left: pct(shot.box.x, shot.width),
-              top: pct(shot.box.y, shot.height),
+              top: pct(shot.box.y, visible),
               width: pct(shot.box.width, shot.width),
-              height: pct(shot.box.height, shot.height),
+              height: pct(shot.box.height, visible),
             }}
           >
             <span className="absolute -start-3 -top-3 flex size-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground ring-2 ring-background">
@@ -172,7 +182,7 @@ export function LeadCaptureGuide({ partnerName, apiBase, branding }: LeadCapture
           {[
             'Someone fills in a lead form on a Facebook ad.',
             'Facebook sends it to the Lead Capture service within seconds, which reads and keeps the answers.',
-            `${partner} collects the lead: every minute by a scheduled job, or at once by an optional push.`,
+            `${capitalize(partner)} collects the lead: every minute by a scheduled job, or at once by an optional push.`,
           ].map((text, i) => (
             <li key={text} className="flex gap-3 rounded-xl border border-border bg-card p-4">
               <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
