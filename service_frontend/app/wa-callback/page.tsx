@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useFxControls } from '@/hooks/use-fx';
 
 /**
  * WhatsApp Embedded Signup OAuth callback (self-hosted redirect flow).
@@ -12,7 +13,11 @@ import { useEffect, useState } from 'react';
  * URI in the Meta app.
  */
 export default function WaCallbackPage() {
-  const [message, setMessage] = useState('Completing your WhatsApp connection…');
+  // Foundryx UIUX: this page stays outside the switch's components (global
+  // look only), so only its words follow the switch; the message posted to
+  // the opener never changes.
+  const fx = Boolean(useFxControls()?.on);
+  const [message, setMessage] = useState(fx ? 'Finishing your WhatsApp connection.' : 'Completing your WhatsApp connection…');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -24,7 +29,7 @@ export default function WaCallbackPage() {
 
     if (window.opener) {
       window.opener.postMessage(payload, window.location.origin);
-      setMessage('Done - you can close this window.');
+      setMessage(fx ? 'Done. You can close this window.' : 'Done - you can close this window.');
       // Give the message a tick to flush before the window disappears.
       window.setTimeout(() => window.close(), 300);
     } else {
@@ -34,9 +39,17 @@ export default function WaCallbackPage() {
         sessionStorage.setItem('fx_wa_code', code);
         window.location.replace('/omnichannel/settings/channels?wa_connected=1');
       } else {
-        setMessage(error || 'Signup cancelled. You can close this window.');
+        setMessage(
+          fx
+            ? error
+              ? `${error} You can close this window.`
+              : 'Connection cancelled. You can close this window.'
+            : error || 'Signup cancelled. You can close this window.',
+        );
       }
     }
+    // Runs once, when the window opens; the switch cannot change meanwhile.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
