@@ -204,7 +204,7 @@ function FxPageHeader({
       {hasActions && (
         <div
           data-fx-header-actions=""
-          className="ms-auto flex flex-nowrap items-start gap-2"
+          className="ms-auto flex flex-wrap items-start justify-end gap-2"
         >
           {actions && <div className="flex items-center gap-2">{actions}</div>}
           {page.others.length > 0 && (
