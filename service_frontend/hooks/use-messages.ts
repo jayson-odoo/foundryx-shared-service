@@ -181,7 +181,27 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     },
     [contactId],
   );
-  useConversationSocket(thread?.workspaceId, onEvent);
+  // Back after a drop: fetch the open conversation again for whatever
+  // arrived meanwhile, merged in place (no blank-out, no lost live message).
+  const resync = useCallback(() => {
+    const id = activeContactIdRef.current;
+    if (!id) return;
+    const seq = ++fetchSeq.current;
+    Promise.all([conversationService.getThread(id), conversationService.listMessages(id)])
+      .then(([t, msgs]) => {
+        if (seq !== fetchSeq.current) return;
+        setThread(t);
+        setMessages((prev) => {
+          const restIds = new Set(msgs.map((m) => m.id));
+          const extra = prev.filter((m) => !restIds.has(m.id));
+          return extra.length === 0 ? msgs : [...msgs, ...extra];
+        });
+      })
+      .catch(() => {
+        // The next live event or the next resume tries again.
+      });
+  }, []);
+  useConversationSocket(thread?.workspaceId, onEvent, undefined, resync);
 
   // F11 (round-3 codex triage) - the SAME staleness race `commitThreadIfActive`
   // (below) already guards against for thread-level fields, applied to the

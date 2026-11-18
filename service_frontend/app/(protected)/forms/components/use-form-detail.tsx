@@ -231,6 +231,9 @@ export function useFormDetail(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<FormDetail> | null>(() => {
     if (!isNew && !record) return null;
     return {
@@ -338,7 +341,7 @@ export function useFormDetail(
       editable: true,
       editPermission: 'forms.manage',
       initialEditing: isNew ? true : initialEditing,
-      isDirty: docDirty || flowDirty || form.formState.isDirty,
+      isDirty: docDirty || flowDirty || formDirty,
       onSave,
       onCancel,
       onReload: formId ? () => void refresh(formId) : undefined,
@@ -347,6 +350,7 @@ export function useFormDetail(
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
+    formDirty,
     actions,
     busy,
     canManage,
