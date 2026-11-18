@@ -23,6 +23,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { SearchSelectOption, SearchSelectProps } from '@/components/platform/search-select/search-select';
 import { FX_FIELD, FX_MENU, FX_MENU_ROW } from './classes';
+import { FxFieldContext, useFxControlName } from './fx-field-context';
 import {
   FX_MENU_LIMIT,
   FxHighlight,
@@ -54,6 +55,7 @@ export function FxSearchSelect({
   disabled = false,
   className,
   ariaLabel,
+  id,
   allowCustom = false,
   customLabel,
   onQueryChange,
@@ -63,6 +65,9 @@ export function FxSearchSelect({
 }: SearchSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  // Named by its own ariaLabel, else the labelled FxField around it, else a
+  // label pointing at its id, and only last by what it asks for.
+  const naming = useFxControlName({ id, ariaLabel, placeholder });
   const sendQuery = usePausedQuery(onQueryChange);
   const typedRef = useRef('');
   const sendRef = useRef(sendQuery);
@@ -117,7 +122,7 @@ export function FxSearchSelect({
           type="button"
           role="combobox"
           aria-expanded={open}
-          aria-label={ariaLabel}
+          {...naming}
           disabled={disabled}
           data-fx-field=""
           title={selected || (allowCustom && value) ? triggerLabel : undefined}
@@ -138,6 +143,7 @@ export function FxSearchSelect({
         className={cn(FX_MENU, 'w-auto min-w-(--radix-popover-trigger-width) max-w-[min(32rem,calc(100vw-2rem))] p-0')}
         align="start"
       >
+        <FxFieldContext.Provider value={null}>
         <Command shouldFilter={false} className={FX_MENU_COMMAND}>
           <CommandInput
             placeholder={searchPlaceholder}
@@ -207,6 +213,7 @@ export function FxSearchSelect({
             )}
           </CommandList>
         </Command>
+        </FxFieldContext.Provider>
       </PopoverContent>
     </Popover>
   );
