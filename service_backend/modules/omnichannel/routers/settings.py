@@ -25,6 +25,8 @@ def _response(svc: MediaSettingsService, tenant_id: str, workspace_id: Optional[
         workspaceId=workspace_id,
         overrides=svc.get_overrides(tenant_id, workspace_id),
         effective=svc.effective(tenant_id, workspace_id),
+        strictNumberWindow=svc.get_strict_number_window(tenant_id, workspace_id),
+        strictNumberWindowEffective=svc.strict_number_window(tenant_id, workspace_id),
     )
 
 
