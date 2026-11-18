@@ -17,9 +17,13 @@ import { integrationService } from '@/services/integration-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { FilterFieldDef } from '@/types/resource';
 import type { Connection, IntegrationProvider } from '@/types/integration';
+import { useFx } from '@/hooks/use-fx';
+import { useCan } from '@/hooks/use-can';
+import { CircleCheck, HardDriveDownload, PlugZap, Unplug } from 'lucide-react';
 import { CONNECTION_STATUS_REGISTRY } from './connection-status';
 import { useConnectionActions } from './use-connection-actions';
-import { connectionFormPath, connectionNewPath } from './paths';
+import { connectionFormHref, connectionFormPath, connectionNewPath } from './paths';
+import { FxConnectionCard } from './fx-connection-card';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -52,7 +56,25 @@ const STATIC_FILTER_FIELDS: FilterFieldDef[] = [
   { field: 'created', label: 'Created', type: 'date' },
 ];
 
-export function useConnectionsListConfig(): ResourceListConfig<Connection> {
+/** Every connection type's name, for the new look's cards. */
+export const FX_TYPE_LABELS: Record<string, string> = {
+  ...TYPE_LABELS,
+  payment: 'Payment',
+  consumer: 'Consumer',
+  calendar: 'Calendar',
+  meeting_bot: 'Meeting bot',
+  migration: 'Migration',
+};
+
+export interface UseConnectionsListConfigOptions {
+  /** Foundryx UIUX switch only: called after a Disconnect or another
+   *  grace-window action commits (the page refreshes its service cards). */
+  onFxChanged?: () => void;
+}
+
+export function useConnectionsListConfig({
+  onFxChanged,
+}: UseConnectionsListConfigOptions = {}): ResourceListConfig<Connection> {
   // Session-tz formatters (plan sprint-2/05) - never the tz-blind lib/format.
   const { formatDate, formatDateTime } = useDatetime();
   const router = useRouter();
@@ -83,7 +105,7 @@ export function useConnectionsListConfig(): ResourceListConfig<Connection> {
     [providers],
   );
 
-  return useMemo<ResourceListConfig<Connection>>(() => {
+  const config = useMemo<ResourceListConfig<Connection>>(() => {
     const columns: ColumnDef<Connection>[] = [
       {
         id: 'select',
@@ -261,4 +283,54 @@ export function useConnectionsListConfig(): ResourceListConfig<Connection> {
       onCreate: () => router.push(connectionNewPath),
     };
   }, [actions, router, filterFields, providerTitle]);
+
+  // Foundryx UIUX switch only (gap audit 12, "Connected services"): each
+  // connection is a card (icon, provider, status chip, when last tested,
+  // Reconnect when it needs attention); Connect sits on the page's service
+  // cards instead of the list. The same fetcher, filters, actions and export.
+  const fx = useFx();
+  const { can } = useCan();
+  const canManage = can('integrations.manage');
+  const providerIcon = useMemo(() => {
+    const map = new Map(providers.map((p) => [p.provider, p.icon]));
+    return (key: string) => map.get(key) ?? null;
+  }, [providers]);
+  return useMemo<ResourceListConfig<Connection>>(
+    () =>
+      fx
+        ? {
+            ...config,
+            cardRender: (c: Connection) => (
+              <FxConnectionCard
+                connection={c}
+                providerTitle={providerTitle(c.provider)}
+                providerIcon={providerIcon(c.provider)}
+                typeLabel={FX_TYPE_LABELS[c.type] ?? c.type}
+                canReconnect={canManage}
+                onReconnect={(row) => router.push(connectionFormHref(row.id, { edit: true }))}
+              />
+            ),
+            defaultView: 'card',
+            onCreate: undefined,
+            createLabel: undefined,
+            createPermission: undefined,
+            onDeferredCommitted: onFxChanged ? () => onFxChanged() : undefined,
+            fx: {
+              noun: 'integrations',
+              columnKind: { status: 'status' },
+              phoneHidden: ['lastError', 'created'],
+              iconFor: FX_ICONS_FOR,
+            },
+          }
+        : config,
+    [fx, config, canManage, router, providerTitle, providerIcon, onFxChanged],
+  );
 }
+
+const FX_ICONS_FOR = {
+  edit: 'edit',
+  test: <PlugZap aria-hidden="true" className="size-[18px]" />,
+  'set-active': <CircleCheck aria-hidden="true" className="size-[18px]" />,
+  'migrate-storage': <HardDriveDownload aria-hidden="true" className="size-[18px]" />,
+  disconnect: <Unplug aria-hidden="true" className="size-[18px]" />,
+} as const;
