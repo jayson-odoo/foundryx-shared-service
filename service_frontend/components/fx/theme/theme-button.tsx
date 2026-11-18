@@ -14,6 +14,7 @@
  * (components/fx/__parity__/parity-utils.ts). Both render nothing outside the
  * switch provider or inside `<FxOff>`.
  */
+import { useState } from 'react';
 import { Palette } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useFxControls } from '@/hooks/use-fx';
@@ -53,9 +54,10 @@ const TITLE_CLASS = 'mb-3 text-sm font-semibold';
 
 export function ThemeButton() {
   const fx = useFxControls();
+  const [open, setOpen] = useState(false);
   if (!fx) return null;
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
@@ -79,7 +81,7 @@ export function ThemeButton() {
         className={panelClass(fx.on)}
       >
         <p className={TITLE_CLASS}>Theme</p>
-        <ThemePanel />
+        <ThemePanel onAdvanced={() => setOpen(false)} />
       </PopoverContent>
     </Popover>
   );
@@ -116,7 +118,7 @@ export function ThemeDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className={cn('max-w-sm', fx.on && SEE_THROUGH)}>
         <DialogTitle className={TITLE_CLASS}>Theme</DialogTitle>
-        <ThemePanel />
+        <ThemePanel onAdvanced={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );

@@ -5,10 +5,8 @@ import { Globe, Moon, Settings } from 'lucide-react';
 import { signOut, useSession } from 'next-auth/react';
 import { useTheme } from 'next-themes';
 import { useLanguage } from '@/providers/i18n-provider';
-import { ThemeDialog, ThemeMenuItem } from '@/components/fx/theme/theme-button';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { UserAvatar } from '@/components/platform/user-avatar';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +20,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
+import { AdvancedSettings } from '@/components/fx/settings/advanced-panel';
+import { ThemeDialog, ThemeMenuItem } from '@/components/fx/theme/theme-button';
+import { UserAvatar } from '@/components/platform/user-avatar';
 
 export function UserDropdownMenu({ trigger }: { trigger: ReactNode }) {
   const { data: session } = useSession();
@@ -158,6 +159,9 @@ export function UserDropdownMenu({ trigger }: { trigger: ReactNode }) {
       </DropdownMenuContent>
       {/* Root renders no DOM: the dialog outlives the closed menu content. */}
       <ThemeDialog open={fxThemeOpen} onOpenChange={setFxThemeOpen} />
+      {/* The floating Advanced settings panel, opened from the Theme panel on
+          every width; renders nothing until opened. */}
+      <AdvancedSettings />
     </DropdownMenu>
   );
 }

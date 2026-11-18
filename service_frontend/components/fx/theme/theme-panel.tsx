@@ -10,8 +10,8 @@
  * next-themes' own setting, shared with the user menu's Dark Mode switch.
  * Palette, font and size are saved per browser (`fx_theme` cookie).
  *
- * The "Advanced settings" link (shown only while on) arrives with the
- * Advanced settings panel; until then there is nothing for it to open.
+ * Under the master switch, an "Advanced settings" link (shown only while on)
+ * opens the floating Advanced settings panel (`components/fx/settings`).
  */
 import { useId, useState } from 'react';
 import { useTheme } from 'next-themes';
@@ -31,6 +31,7 @@ import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Slider, SliderThumb } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { openFxAdvanced } from '@/components/fx/settings/advanced-open';
 
 type Mode = 'light' | 'dark' | 'system';
 
@@ -148,7 +149,7 @@ function PaletteCards<P extends FxLightPalette | FxDarkPalette>({
 
 /** The master switch row: "Foundryx UIUX (0.71.0)", the version a little
  *  smaller, regular weight and lower contrast, as part of the label. */
-function MasterSwitch({
+export function MasterSwitch({
   on,
   onChange,
 }: {
@@ -169,7 +170,13 @@ function MasterSwitch({
   );
 }
 
-export function ThemePanel() {
+export interface ThemePanelProps {
+  /** Called as the Advanced settings link opens the panel, so the popover or
+   *  dialog holding this panel can close. */
+  onAdvanced?: () => void;
+}
+
+export function ThemePanel({ onAdvanced }: ThemePanelProps = {}) {
   const fx = useFxControls();
   const { theme: rawMode, setTheme: setMode } = useTheme();
   const [draftScale, setDraftScale] = useState<number | null>(null);
@@ -299,8 +306,21 @@ export function ThemePanel() {
         </span>
       </section>
 
-      <div className="border-t border-(--fx-line) pt-3">
+      <div className="flex flex-col gap-2 border-t border-(--fx-line) pt-3">
         <MasterSwitch on onChange={fx.setOn} />
+        <button
+          type="button"
+          onClick={() => {
+            onAdvanced?.();
+            openFxAdvanced();
+          }}
+          className={cn(
+            PRESSED_CLASS,
+            'self-start rounded-(--fx-r-s) text-sm font-semibold text-(--fx-link) hover:underline',
+          )}
+        >
+          Advanced settings
+        </button>
       </div>
     </div>
   );
