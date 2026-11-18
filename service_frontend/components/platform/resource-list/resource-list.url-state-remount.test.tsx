@@ -3,12 +3,14 @@
  * same page (Lead Capture Delivery: Pull only, then "Push to my system")
  * restored the PAGE-LOAD search / sort / filter instead of the current ones.
  *
- * Cause: the list wrote its state with `history.replaceState(history.state, ...)`.
- * Next's patched `replaceState` treats a state carrying its own `__NA` marker
- * as the router's own call and does NOT update `useSearchParams()`, so the
- * remount's restore read the page-load `ctx`. The stand-in below applies the
- * same rule as Next (`app-router.js`): a write without `__NA` updates the
- * search params the next mount reads.
+ * Cause: Next's `useSearchParams()` never sees the list's own writes (they
+ * carry Next's `__NA` marker, so Next treats them as its own). Writing with a
+ * null state instead (9a7a7a34) made Next run a router RESTORE on every list
+ * write, which discards a click navigation still loading (crew pass 9a7a7a34).
+ * So: the list keeps writing as the router's own entry, and a remount restores
+ * from the list's own last write. The stand-in below applies Next's rule
+ * (`app-router.js`): a write without `__NA` updates the router's search params
+ * (and would dispatch a restore).
  */
 import type { ColumnDef } from '@tanstack/react-table';
 import { act, render, screen, waitFor } from '@testing-library/react';
@@ -19,6 +21,7 @@ import { ResourceList } from './resource-list';
 import type { ResourceListConfig } from './types';
 
 let routerSearch = new URLSearchParams();
+let routerRestores = 0;
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), prefetch: vi.fn(), replace: vi.fn() })),
@@ -44,7 +47,8 @@ interface Row {
   name: string;
 }
 
-const fetcher = vi.fn(async () => ({ data: [{ id: 'r1', name: 'Alpha' }], total: 1, page: 0 }));
+const fetcher = vi.fn();
+const oneRow = async () => ({ data: [{ id: 'r1', name: 'Alpha' }], total: 1, page: 0 });
 
 function config(): ResourceListConfig<Row> {
   const columns: ColumnDef<Row>[] = [{ id: 'name', header: 'Name', cell: ({ row }) => row.original.name }];
@@ -64,9 +68,12 @@ function config(): ResourceListConfig<Row> {
 }
 
 const realReplaceState = window.history.replaceState.bind(window.history);
+let replaceSpy: { mockRestore: () => void } | null = null;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fetcher.mockImplementation(oneRow);
+  routerRestores = 0;
   const loadQuery = { page: 0, pageSize: 25, search: 'old', sort: null, filter: null, statusView: 'active' as const };
   const ctx = encodeListQuery(loadQuery);
   routerSearch = new URLSearchParams({ ctx });
@@ -74,15 +81,18 @@ beforeEach(() => {
   realReplaceState({ __NA: true }, '', `/records?ctx=${encodeURIComponent(ctx)}`);
   // Next's rule: a write carrying `__NA` is the router's own; any other write
   // updates what `useSearchParams()` returns.
-  vi.spyOn(window.history, 'replaceState').mockImplementation((data, unused, url) => {
+  replaceSpy = vi.spyOn(window.history, 'replaceState').mockImplementation((data, unused, url) => {
     const marker = (data as { __NA?: boolean } | null)?.__NA;
-    if (!marker && url) routerSearch = new URL(String(url), window.location.href).searchParams;
+    if (!marker && url) {
+      routerRestores += 1; // Next: ACTION_RESTORE, which drops a pending navigation
+      routerSearch = new URL(String(url), window.location.href).searchParams;
+    }
     realReplaceState({ ...(data as object), __NA: true }, unused, url);
   });
 });
 
 afterEach(() => {
-  vi.restoreAllMocks();
+  replaceSpy?.mockRestore();
 });
 
 describe('ResourceList URL state survives a remount', () => {
@@ -103,5 +113,32 @@ describe('ResourceList URL state survives a remount', () => {
       render(<ResourceList config={config()} hideHeader restoreFromCtx />);
     });
     expect(await screen.findByPlaceholderText('Search records')).toHaveValue('new');
+  });
+
+  it("the list's own address-bar writes never run a router restore (a pending click is never dropped)", async () => {
+    const user = userEvent.setup();
+    render(<ResourceList config={config()} hideHeader restoreFromCtx />);
+    const search = await screen.findByPlaceholderText('Search records');
+    await user.clear(search);
+    await user.type(search, 'abc');
+    await waitFor(() => expect(decodeListQuery(new URLSearchParams(window.location.search).get('ctx'))?.search).toBe('abc'));
+    expect(routerRestores).toBe(0);
+  });
+
+  it('a different list mounting while the address bar still holds this one (navigation in flight) does not take its state', async () => {
+    const user = userEvent.setup();
+    const first = render(<ResourceList config={config()} hideHeader restoreFromCtx />);
+    const search = await screen.findByPlaceholderText('Search records');
+    await user.clear(search);
+    await user.type(search, 'mine');
+    await waitFor(() => expect(decodeListQuery(new URLSearchParams(window.location.search).get('ctx'))?.search).toBe('mine'));
+    first.unmount();
+    // The next page's list renders before the address bar moves: the router
+    // already knows the NEW url (no ctx).
+    routerSearch = new URLSearchParams();
+    await act(async () => {
+      render(<ResourceList config={{ ...config(), viewKey: 'other.list' }} hideHeader restoreFromCtx />);
+    });
+    expect(await screen.findByPlaceholderText('Search records')).toHaveValue('');
   });
 });

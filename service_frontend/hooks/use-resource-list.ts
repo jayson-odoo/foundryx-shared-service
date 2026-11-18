@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { FilterGroup, ListQuery, ListResult, SortState, StatusView } from '@/types/resource';
 import { decodeListQuery } from '@/lib/list-context';
+import { liveListCtx } from '@/lib/list-url-state';
 import { useDebounce } from './use-debounce';
 
 export interface UseResourceListOptions<T> {
@@ -25,6 +26,12 @@ export interface UseResourceListOptions<T> {
    * exactly this reason.
    */
   restoreFromCtx?: boolean;
+  /**
+   * The list's own key (its `viewKey`): a remount on the same page restores
+   * from this list's last address-bar write (`lib/list-url-state.ts`), not
+   * from the router's page-load snapshot.
+   */
+  listKey?: string;
 }
 
 export interface UseResourceListResult<T> {
@@ -80,12 +87,13 @@ export function useResourceList<T>({
   defaultSort = null,
   defaultSegment,
   restoreFromCtx = false,
+  listKey,
 }: UseResourceListOptions<T>): UseResourceListResult<T> {
   const searchParams = useSearchParams();
   // Lazy initializer runs exactly once, at mount - the whole point (a later
   // `ctx` change from record-nav stepping must never re-seed this list).
   const [restored] = useState<ListQuery | null>(() =>
-    restoreFromCtx ? decodeListQuery(searchParams.get('ctx')) : null,
+    restoreFromCtx ? decodeListQuery(liveListCtx(listKey) ?? searchParams.get('ctx')) : null,
   );
 
   const [page, setPage] = useState(restored?.page ?? 0);

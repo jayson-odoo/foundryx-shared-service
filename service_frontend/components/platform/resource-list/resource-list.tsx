@@ -25,6 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { buildListNav, encodeListQuery } from '@/lib/list-context';
+import { writeListUrlState } from '@/lib/list-url-state';
 import { cn } from '@/lib/utils';
 import { useCan } from '@/hooks/use-can';
 import { useResourceList } from '@/hooks/use-resource-list';
@@ -155,6 +156,7 @@ export function ResourceList<T extends object>({
       ? (config.defaultSegment ?? config.segments[0]?.id)
       : undefined,
     restoreFromCtx: restoreFromCtx ?? !hideHeader,
+    listKey: config.viewKey,
   });
   const prefs = useViewPreferences(config.viewKey);
   // Right-click (long-press on touch) on a row opens that row's actions at
@@ -170,18 +172,14 @@ export function ResourceList<T extends object>({
 
   // Opt-in (config.urlState): mirror the live query into the address bar's
   // `ctx` so reload / a shared link restores the exact view.
+  // Written as the router's own entry (no router action, so a click that is
+  // still loading is never dropped) and remembered for a remount (#259).
   const urlState = config.urlState;
+  const viewKey = config.viewKey;
   useEffect(() => {
-    if (!urlState || typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    url.searchParams.set('ctx', encodeListQuery(list.query));
-    // `null`, never `window.history.state`: Next's patched replaceState skips
-    // syncing `useSearchParams()` for a state that carries its own `__NA`
-    // marker, so a later remount of this list (same page) restored the
-    // PAGE-LOAD ctx instead of the current one (#259). Next copies its own
-    // history internals onto the new entry itself.
-    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
-  }, [urlState, list.query]);
+    if (!urlState) return;
+    writeListUrlState(viewKey, encodeListQuery(list.query));
+  }, [urlState, viewKey, list.query]);
 
   // Mirror the current ad-hoc filter tree out to the parent page (opt-in,
   // plan 26 "Save as segment") - purely additive, no behavior change for

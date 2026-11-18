@@ -113,3 +113,9 @@ revoke/remove through the core grace-window engine.
   `history.replaceState(history.state, ...)`, which Next's router does not sync to `useSearchParams()`; it now writes
   with `null`, as the rest of the app does.
 
+## Round 8 (crew-pass 9a7a7a34 NOT READY)
+- Writing the list state with `replaceState(null, ...)` made Next run a router restore, which discards a click that is
+  still loading. Back to writing as the router's own entry (no router action); a remount restores from the list's own
+  last write (`lib/list-url-state.ts`, per `viewKey`, only while the address bar on this path still shows it), so
+  both hold: no lost click, and Pull only -> Push keeps the current search / sort / filter.
+
