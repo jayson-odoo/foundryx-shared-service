@@ -44,9 +44,19 @@ ROW_KEYS = (
 class WriteRefusal(Exception):
     """A request the builders refuse; ``code`` is stable, the text is operator-safe."""
 
-    def __init__(self, code: str, message: str = "") -> None:
+    def __init__(self, code: str, message: str = "", *, plain: bool = False) -> None:
+        """``plain``: ``message`` is the user-facing reason as is (no code prefix)."""
         self.code = code
-        super().__init__(f"{code}: {message}" if message else code)
+        super().__init__(message if plain and message else (f"{code}: {message}" if message else code))
+
+
+def on_spo_message(spo_ref: Optional[str] = None) -> str:
+    """The plain reason for ``ROW_ON_SPO`` (the CRM shows it as is): one text for the operations, the
+    batch link and the single-line primitives."""
+    where = f"shipping purchase order {spo_ref}" if spo_ref else "a shipping purchase order"
+    that = "that shipping purchase order" if spo_ref else "the shipping purchase order"
+    return (f"This purchase order line is on {where}, so the change was not made. "
+            f"Remove it from {that} first, then try again.")
 
 
 def _dec(value: Any) -> Decimal:
@@ -173,7 +183,7 @@ def _deleted(row: Doc) -> Doc:
 
 def _refuse_on_spo(spo_ref: Optional[str]) -> None:
     if spo_ref:
-        raise WriteRefusal("ROW_ON_SPO", f"row is referenced by {spo_ref}; unlink it there first")
+        raise WriteRefusal("ROW_ON_SPO", on_spo_message(spo_ref), plain=True)
 
 
 MAX_QTY = Decimal(1_000_000_000)
@@ -932,6 +942,42 @@ def verify_cancel(kind_name: str, after: Doc) -> Verdict:
     if after.get("Cancelled") == "T":
         return Verdict(DONE)
     return Verdict(MISMATCH, "CANCEL_IGNORED")
+
+
+def change_landed(
+    kind_name: str, primitive: str, before: Doc, after: Doc, *, header_changes: Mapping[str, Any] = {},
+    line_changes: Sequence[Mapping[str, Any]] = (), line: Optional[Mapping[str, Any]] = None,
+    dtl_key: Optional[int] = None,
+) -> Tuple[bool, Optional[int]]:
+    """AUTOCOUNT-STRANDED-OPS-B: did THIS write's own change reach AutoCount? ``(landed, new DtlKey)``. Unlike
+    the verifiers it never judges the rest of the document (another person may have edited it since):
+    an edit's asked values read back as asked, an added line reads back among the new rows, a deleted line is
+    gone, a cancel reads cancelled. Unknown primitive -> not landed."""
+    kind_of(kind_name)
+    if primitive == "edit_doc":
+        if any(not _same(after.get(k), v) for k, v in header_changes.items()):
+            return False, None
+        for change in line_changes:
+            row = _row_by_key(after, change.get("DtlKey"))
+            if row is None or any(not _same(row.get(k), v) for k, v in change.items()
+                                  if k != "DtlKey" and k not in UNREADABLE_ROW_KEYS):
+                return False, None
+        return True, None
+    if primitive == "add_line":
+        sent = line or {}
+        known = {r.get("DtlKey") for r in before.get("Details") or []}
+        for row in after.get("Details") or []:
+            if row.get("DtlKey") in known:
+                continue
+            relaxed = _relax_transfer(sent, row) if sent.get("FromDocDtlKey") else sent
+            if _same_line(relaxed, row) and not _link_code(kind_name, sent, row):
+                return True, row.get("DtlKey")
+        return False, None
+    if primitive == "delete_line":
+        return _row_by_key(before, dtl_key) is not None and _row_by_key(after, dtl_key) is None, None
+    if primitive == "cancel_doc":
+        return after.get("Cancelled") == "T", None
+    return False, None
 
 
 def verify_add_line(kind_name: str, before: Doc, line: Mapping[str, Any], after: Doc) -> Verdict:

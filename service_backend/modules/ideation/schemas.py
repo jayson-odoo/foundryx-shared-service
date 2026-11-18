@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -231,6 +231,8 @@ class IdeaCommentOut(ApiModel):
     # Set on a survivor's read of a merged child's comment (plan 20, AC-20-14);
     # such a row is read-only on the survivor (canEdit/canDelete false).
     fromIdea: Optional[IdeaSourceOut] = None
+    # Files attached to this comment (empty on a deleted placeholder).
+    attachments: List[IdeaAttachmentOut] = []
 
 
 # NUL and the other C0 controls, except newline and tab (AC-19-36), and lone
@@ -249,11 +251,11 @@ def _clean_parent_id(value: Optional[str]) -> Optional[str]:
         raise ValueError("parentId must be a comment id.")
 
 
-def _clean_comment_body(value: str, limit: int) -> str:
+def _clean_comment_body(value: str, limit: int, allow_empty: bool = False) -> str:
     if _CONTROL_CHARS.search(value or ""):
         raise ValueError("Comment contains unsupported characters.")
     cleaned = (value or "").strip()
-    if not cleaned:
+    if not cleaned and not allow_empty:
         raise ValueError("Comment cannot be empty.")
     if len(cleaned) > limit:
         raise ValueError(f"Comment is too long (max {limit} characters).")
@@ -261,8 +263,12 @@ def _clean_comment_body(value: str, limit: int) -> str:
 
 
 class IdeaCommentCreate(ApiModel):
-    """Operator / embed comment create: body stripped, 1..5000 chars."""
+    """Operator / embed / portal comment create: body stripped, 1..5000 chars.
+    An empty body is allowed only with ``hasAttachments`` (the files follow in
+    separate uploads, lane FEEDBACK-ATTACH-IMAGE)."""
 
+    # Declared before ``body`` so the body validator can read it.
+    hasAttachments: bool = False
     body: str
     parentId: Optional[str] = None
 
@@ -273,8 +279,8 @@ class IdeaCommentCreate(ApiModel):
 
     @field_validator("body")
     @classmethod
-    def _body(cls, v: str) -> str:
-        return _clean_comment_body(v, 5000)
+    def _body(cls, v: str, info: ValidationInfo) -> str:
+        return _clean_comment_body(v, 5000, allow_empty=bool(info.data.get("hasAttachments")))
 
 
 class IdeaCommentEdit(ApiModel):
@@ -862,6 +868,27 @@ class PortalSessionOut(ApiModel):
     principal: PortalPrincipalOut
 
 
+class SharePhoneIn(ApiModel):
+    """The phone a share-link visitor types (lane FEEDBACK-SUBSCRIBE)."""
+
+    phone: str = Field(min_length=1, max_length=40)
+
+
+class SharePhoneVerifyIn(SharePhoneIn):
+    code: str = Field(min_length=1, max_length=12)
+
+
+class SharePhoneSentOut(ApiModel):
+    sent: bool
+
+
+class SharePhoneSessionOut(PortalSessionOut):
+    """Proven: the visitor's own contact session + their personal board link
+    opening this item."""
+
+    boardUrl: Optional[str] = None
+
+
 class PortalEmbedSessionIn(ApiModel):
     token: str = Field(min_length=1, max_length=4096)
 
@@ -940,6 +967,58 @@ class PortalIdeaOut(PortalCardOut):
     portalHidden: Optional[bool] = None
     # The changelog note (Q3).
     note: Optional[str] = None
+    # Lane FEEDBACK-SUBSCRIBE: how many contacts follow it, and whether THIS
+    # viewer (a contact: submitter or follower) gets its WhatsApp updates.
+    followerCount: int = 0
+    following: bool = False
+    # A test item (crew s4): Share and Follow are hidden; the API refuses both
+    # in plain words.
+    isTest: bool = False
+    # Report-level files only (comment files ride their comment). Omitted for a
+    # dealer on an item they did not file (WITHHELD_DETAIL_KEYS).
+    attachments: Optional[List[IdeaAttachmentOut]] = None
+
+
+class PortalFollowOut(ApiModel):
+    """Follow / unfollow result (lane FEEDBACK-SUBSCRIBE)."""
+
+    following: bool
+    followerCount: int
+
+
+class ShareLinkOut(ApiModel):
+    """An item's read-only share link (lane FEEDBACK-SUBSCRIBE)."""
+
+    url: str
+
+
+class IdeaHistoryOut(ApiModel):
+    """One row of a feedback item's History tab (display text, never ids)."""
+
+    id: str
+    at: Optional[str] = None
+    who: Optional[str] = None
+    onBehalfOf: Optional[str] = None
+    action: str
+    # ``from`` is a Python keyword: the wire key is set through the alias.
+    from_: Optional[str] = Field(default=None, alias="from")
+    to: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class IdeaFollowerIn(ApiModel):
+    contactId: str
+
+
+class IdeaFollowerOut(ApiModel):
+    """A follower on the operator idea page (staff only)."""
+
+    contactId: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    addedByStaff: bool = False
+    createdAt: Optional[datetime] = None
 
 
 class PortalVoteOut(ApiModel):

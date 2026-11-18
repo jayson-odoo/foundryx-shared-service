@@ -225,6 +225,58 @@ def test_json_rewrite_value_checked_and_only_keys(db, isolated_locations):
 # ── AC-10-07: drift test - every *_key column is registered ────────────────────
 
 
+# *_key columns that are NOT tenant-storage keys (never `conn:<id>:<raw>`), each
+# with its reason. A genuine storage key hiding here is a stranded asset: the
+# gate exists to force "register it or justify the exclusion".
+NOT_STORAGE_KEYS = {
+    # AutoCount ERP document / detail identifiers and idempotency keys.
+    **{(t, c): "AutoCount ERP document id" for t, c in [
+        ("ac_api_call_log", "doc_key"), ("ac_doc_feed_issue", "doc_key"),
+        ("ac_doc_feed_ledger", "doc_key"), ("ac_doc_lookup_hint", "doc_key"),
+        ("ac_po_so_link", "po_dtl_key"), ("ac_po_so_link", "so_dtl_key"),
+        ("ac_so_row_index", "so_doc_key"), ("ac_so_row_index", "so_dtl_key"),
+        ("ac_spo_po_link", "po_dtl_key"), ("ac_spo_po_link", "spo_dtl_key"),
+        ("ac_write_action", "doc_key"), ("ac_write_action", "dtl_key"),
+        ("ac_write_operation", "doc_key"), ("ac_write_operation", "dtl_key"),
+        ("ac_write_operation", "idempotency_key"),
+    ]},
+    ("ideas", "intake_definition_key"): "identifier of an intake definition",
+    ("lc_source", "source_key"): "lead-source identifier",
+    ("meetings", "dedupe_key"): "meeting de-duplication hash",
+    # Written by the bot worker as a worker-host path / artefact reference
+    # (LocalArtifacts.key_of), never through tenant StorageService.
+    # Local mode: a path on the worker host; S3 mode: a raw key in the tenant
+    # bucket WITHOUT the ``conn:<id>:`` prefix, so the storage migration (which
+    # rewrites ``conn:`` keys only) could not move it even if registered.
+    # Nothing reads it today; carrying the connection id = backlog BL-SS-370.
+    ("meetings", "screenshot_key"): "worker artefact key without a conn: prefix (backlog BL-SS-370)",
+}
+
+
+def _module_metadatas(*seed):
+    """Core + every module Base that declares tables (modules/*/db.py), so a
+    module's *_key column cannot slip past the gate by living outside Base."""
+    import importlib
+    import inspect
+    import pkgutil
+
+    import modules
+    from sqlalchemy import MetaData
+
+    found = list(seed)
+    for info in pkgutil.iter_modules(modules.__path__):
+        try:
+            db_mod = importlib.import_module(f"modules.{info.name}.db")
+            importlib.import_module(f"modules.{info.name}.models")
+        except ImportError:
+            continue
+        for _, obj in inspect.getmembers(db_mod):
+            md = getattr(obj, "metadata", None)
+            if isinstance(md, MetaData) and md not in found:
+                found.append(md)
+    return found
+
+
 def test_no_unregistered_storage_key_columns(db):
     """Hard CI gate: a *_key storage column without a StorageKeyLocation fails."""
     from app.database import Base
@@ -236,9 +288,9 @@ def test_no_unregistered_storage_key_columns(db):
     ensure_core_locations()
     register_engine_entities()  # idempotent - registers conversation_messages.media_key
 
-    found = all_key_columns([Base.metadata, OmniBase.metadata])
+    found = all_key_columns(_module_metadatas(Base.metadata, OmniBase.metadata))
     registered = registered_scalar_columns()
-    unregistered = found - registered
+    unregistered = found - registered - set(NOT_STORAGE_KEYS)
     assert not unregistered, f"Unregistered storage-key columns: {sorted(unregistered)}"
 
     # Sanity: the reflection actually found the known scalar columns.

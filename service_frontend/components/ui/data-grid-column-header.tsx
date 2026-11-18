@@ -248,9 +248,10 @@ function DataGridColumnHeader<TData, TValue>({
                             checked={col.getIsVisible()}
                             onSelect={(event) => event.preventDefault()}
                             onCheckedChange={(value) => col.toggleVisibility(!!value)}
-                            className="capitalize"
+                            
                           >
-                            {col.columnDef.meta?.headerTitle || col.id}
+                            {/* Only the first letter is raised: a label keeps its own casing ("Added by"), a bare id still reads as a word. */}
+                <span className="inline-block first-letter:uppercase">{col.columnDef.meta?.headerTitle || col.id}</span>
                           </DropdownMenuCheckboxItem>
                         );
                       })}

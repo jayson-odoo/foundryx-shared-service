@@ -598,6 +598,19 @@ function dataGridBodyRowClass<TData>(
   );
 }
 
+/** The row's right-click handler, or undefined (browser menu) when the grid
+ * has no row actions to offer. */
+function rowContextMenu<TData>(
+  handler: ((row: TData, event: React.MouseEvent) => void) | undefined,
+  row: TData,
+): ((event: React.MouseEvent) => void) | undefined {
+  if (!handler) return undefined;
+  return (event) => {
+    event.preventDefault();
+    handler(row, event);
+  };
+}
+
 function DataGridTableBodyRow<TData>({
   children,
   row,
@@ -635,6 +648,7 @@ function DataGridTableBodyRow<TData>({
       data-row-id={row.id}
       data-state={table.options.enableRowSelection && row.getIsSelected() ? 'selected' : undefined}
       onClick={() => props.onRowClick && props.onRowClick(row.original)}
+      onContextMenu={rowContextMenu(props.onRowContextMenu, row.original)}
       className={dataGridBodyRowClass(props, table.options.enableRowSelection ?? false, false)}
     >
       {children}
@@ -695,6 +709,7 @@ function LinkableDataGridTableBodyRow<TData>({
         if (fromOwnRowControl(event.target)) return;
         open(event.metaKey || event.ctrlKey || event.shiftKey);
       }}
+      onContextMenu={rowContextMenu(props.onRowContextMenu, row.original)}
       onAuxClick={(event) => {
         if (event.button !== 1) return;
         if (fromOwnRowControl(event.target)) return;

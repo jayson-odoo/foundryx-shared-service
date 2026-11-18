@@ -78,4 +78,33 @@ describe('useCopyToClipboard', () => {
     expect(result.current.error).toBe(false);
     expect(result.current.isCopied).toBe(true);
   });
+
+  // Crew pass 70e96f2b: on a plain-HTTP page (not a secure context) the
+  // browser has NO navigator.clipboard - the hook used to throw a TypeError
+  // and show nothing. It now copies through a hidden textarea instead.
+  it('copies without navigator.clipboard (insecure page) through the legacy copy', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    const exec = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', { value: exec, configurable: true });
+    const { result } = renderHook(() => useCopyToClipboard({ timeout: 1000 }));
+    await act(async () => {
+      result.current.copyToClipboard('hello');
+      await Promise.resolve();
+    });
+    expect(exec).toHaveBeenCalledWith('copy');
+    expect(result.current.isCopied).toBe(true);
+    expect(result.current.error).toBe(false);
+  });
+
+  it('shows the error state, never throws, when no copy method works', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    Object.defineProperty(document, 'execCommand', { value: vi.fn().mockReturnValue(false), configurable: true });
+    const { result } = renderHook(() => useCopyToClipboard({ timeout: 1000 }));
+    await act(async () => {
+      expect(() => result.current.copyToClipboard('hello')).not.toThrow();
+      await Promise.resolve();
+    });
+    expect(result.current.isCopied).toBe(false);
+    expect(result.current.error).toBe(true);
+  });
 });
