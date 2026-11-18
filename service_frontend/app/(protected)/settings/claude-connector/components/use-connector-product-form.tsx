@@ -150,6 +150,9 @@ export function useConnectorProductForm(
     [router],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<ConnectorProductSettings> | null>(() => {
     if (isLoading || notFound || loadError) return null;
     const title = creating ? 'New product' : (settings?.fields.displayName.value ?? productKey ?? '');
@@ -197,7 +200,7 @@ export function useConnectorProductForm(
       editable: !creating,
       editPermission: 'connector.settings',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel: () => {
         if (creating) {
@@ -207,7 +210,7 @@ export function useConnectorProductForm(
         if (settings) form.reset(productFormValues(settings));
       },
     };
-  }, [isLoading, notFound, loadError, creating, settings, productKey, form, actions, initialEditing, onSave, router]);
+  }, [formDirty, isLoading, notFound, loadError, creating, settings, productKey, form, actions, initialEditing, onSave, router]);
 
   return { config, form, isLoading, notFound, loadError, retry: () => setAttempt((n) => n + 1) };
 }
