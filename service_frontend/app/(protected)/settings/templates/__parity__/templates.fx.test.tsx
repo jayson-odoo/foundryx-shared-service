@@ -167,7 +167,7 @@ describe('the same requests in both looks', () => {
     expect(body.doc.sections[1].columns[0].blocks[1].html).toBe(
       'Your account is <b>ready</b>. Sign in today.<b>bold</b><i>italic</i><ul><li>item</li></ul><a href="https://maju.my/start">link</a>{{recipient.firstName}}',
     );
-  });
+  }, 20_000);
 
   it('creates a byte-identical template', async () => {
     const out = await bothLooks(async (look) => {

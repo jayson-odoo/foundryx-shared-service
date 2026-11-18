@@ -29,7 +29,7 @@ export function writeCalls(): unknown[][] {
   return calls.filter((c) => WRITE_CALLS.has(String(c[0])));
 }
 
-/** React 19's `_r_N_` ids renamed in order, and timings masked. */
+/** React 19's `_r_N_` ids renamed in order, and timings and mid-animation styles masked. */
 export function parityHtml(root: Element): string {
   const seen = new Map<string, string>();
   return baseParityHtml(root)
@@ -37,7 +37,10 @@ export function parityHtml(root: Element): string {
       if (!seen.has(id)) seen.set(id, `_rid${seen.size}_`);
       return seen.get(id) as string;
     })
-    .replace(/(animation|transition)-duration:\s*[0-9.]+m?s/g, '$1-duration: <t>');
+    .replace(/(animation|transition)-duration:\s*[0-9.]+m?s/g, '$1-duration: <t>')
+    // Radix sets a tab's animation style only when it catches the animation
+    // mid-way, so whether the attribute is filled is timing, not markup.
+    .replace(/style="(animation-duration: <t>;)?"/g, 'style="<anim>"');
 }
 
 export async function settle(ms = 50): Promise<void> {
