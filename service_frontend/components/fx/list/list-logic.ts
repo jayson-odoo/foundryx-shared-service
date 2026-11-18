@@ -293,20 +293,22 @@ export function fxShowingText(pageIndex: number, pageSize: number, total: number
 }
 
 /**
- * The columns a phone card shows as its status on the top line (FX-13):
- * those whose header filter is status ticks, and those the page declares
- * `columnKind: 'status'`, whether or not they have a filter field.
+ * The columns a phone card shows as its status on the top line (FX-13).
+ * When the page declares its status column (`columnKind: 'status'`), only
+ * the declared ones: a dropdown filter alone (Roles, Teams) is not a status.
+ * With nothing declared, the columns whose header filter is status ticks.
  */
 export function fxStatusColumnIds(
   kinds: Record<string, string | null>,
   declared: Record<string, FxColumnKind> | undefined,
 ): Set<string> {
-  return new Set([
-    ...Object.entries(kinds)
+  const declaredIds = Object.entries(declared ?? {})
+    .filter(([, kind]) => kind === 'status')
+    .map(([id]) => id);
+  if (declaredIds.length > 0) return new Set(declaredIds);
+  return new Set(
+    Object.entries(kinds)
       .filter(([, kind]) => kind === 'status')
       .map(([id]) => id),
-    ...Object.entries(declared ?? {})
-      .filter(([, kind]) => kind === 'status')
-      .map(([id]) => id),
-  ]);
+  );
 }

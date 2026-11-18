@@ -96,6 +96,9 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<RoleListItem> | null>(() => {
     if (isLoading || notFound) return null;
 
@@ -172,7 +175,7 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
       editable: !creating,
       editPermission: 'roles.update',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: creating
@@ -180,6 +183,7 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
+    formDirty,
     isLoading,
     notFound,
     creating,

@@ -138,6 +138,9 @@ export function useAgentForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<AiAgent> | null>(() => {
     if (!isNew && !agent) return null;
     return {
@@ -173,7 +176,7 @@ export function useAgentForm(
       editable: true,
       editPermission: 'ai_agents.manage',
       initialEditing: isNew ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: isNew
@@ -181,6 +184,7 @@ export function useAgentForm(
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
+    formDirty,
     actions,
     agent,
     connections,

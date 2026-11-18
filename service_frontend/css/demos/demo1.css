@@ -618,6 +618,12 @@
   transition: top var(--fx-t-layout) var(--fx-ease-in-out);
 }
 
+/* A list's frozen header row glides with the page header on the same curve,
+   so no gap opens between them for the rows to show through mid-glide. */
+:root[data-fx='on'] [data-fx-list-head] {
+  transition-timing-function: var(--fx-ease-in-out);
+}
+
 :root[data-fx='on'] body:has(.fx-topbar[data-merged]) [data-fx-header] {
   top: var(--fx-head-top);
 }
@@ -643,6 +649,47 @@
 
 :root[data-fx='on'] [data-fx-header-merge] > .fx-search-box {
   animation: fx-drop-in var(--fx-t-hover) var(--fx-ease-out) var(--fx-t-layout) both;
+}
+
+/* Merged, the search takes only the room the title, crumbs and actions leave:
+   the title column keeps at least its longest word (a crumb never runs under
+   the search), the search narrows from its full width, and with no room left
+   it folds to its icon. One line, nothing overlaps. */
+:root[data-fx='on'] [data-fx-header]:has(> [data-fx-header-merge] > .fx-search-box) {
+  flex-wrap: nowrap;
+}
+
+:root[data-fx='on'] [data-fx-header]:has(> [data-fx-header-merge] > .fx-search-box) > :first-child {
+  flex: 0 1 auto;
+  min-width: min-content;
+}
+
+:root[data-fx='on'] [data-fx-header-merge]:has(> .fx-search-box) {
+  flex: 1 1 0;
+  min-width: 2.25rem;
+  justify-content: flex-end;
+  container: fx-merge / inline-size;
+}
+
+:root[data-fx='on'] [data-fx-header-merge] > .fx-search-box {
+  justify-content: flex-end;
+}
+
+:root[data-fx='on'] [data-fx-header-merge] > .fx-search-box button {
+  width: 100%;
+  max-width: 16rem;
+}
+
+@container fx-merge (max-width: 8rem) {
+  :root[data-fx='on'] [data-fx-header-merge] > .fx-search-box button {
+    width: 2.25rem;
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  :root[data-fx='on'] [data-fx-header-merge] > .fx-search-box button > span {
+    display: none;
+  }
 }
 
 /* A page change puts everything straight back, with no replay. */
