@@ -45,7 +45,7 @@ ISSUE_RETRYABLE = "retryable"
 ISSUE_FAILED = "failed"
 
 # ── backfill (Q6) ────────────────────────────────────────────────────────────
-BACKFILL_FROM_DEFAULT = "2023-01-01"
+BACKFILL_FROM_DEFAULT = "2019-01-01"
 BACKFILL_STATUS_RUNNING = "running"
 BACKFILL_STATUS_STOPPING = "stopping"
 BACKFILL_STATUS_STOPPED = "stopped"
