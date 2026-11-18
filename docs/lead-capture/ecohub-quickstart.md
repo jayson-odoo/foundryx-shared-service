@@ -27,6 +27,11 @@ page is the short path: which call backs which screen, with real payloads.
 | Source History tab | `GET /sources/{id}/history` |
 | Disconnect | `DELETE /sources/{id}` |
 | Live refresh of the list | webhook event `source.updated` |
+| Keys (create, list, revoke) | `GET /keys`, `POST /keys`, `DELETE /keys/{id}` |
+| Delivery (receivers, test push, pull only) | `GET /webhooks`, `POST /webhooks`, `POST /webhooks/{id}/test`, `DELETE /webhooks/{id}` |
+
+Keys, Delivery and the Fields screen (field list + per-form map) are written up screen by screen, with the states to
+show, in `docs/lead-capture/ecohub-quickstart-screens.md`.
 
 ## 1. Sources list and health
 

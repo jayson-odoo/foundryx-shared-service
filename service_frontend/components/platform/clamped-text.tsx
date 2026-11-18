@@ -21,9 +21,9 @@ const CLAMP: Record<number, string> = {
   // overflows to the right, which a vertical line-clamp never shows (crew
   // pass 70e96f2b).
   1: 'truncate',
-  2: 'line-clamp-2',
-  3: 'line-clamp-3',
-  4: 'line-clamp-4',
+  2: 'line-clamp-2 break-words',
+  3: 'line-clamp-3 break-words',
+  4: 'line-clamp-4 break-words',
 };
 
 export function ClampedText({ text, lines = 3, className }: ClampedTextProps) {
@@ -61,7 +61,7 @@ export function ClampedText({ text, lines = 3, className }: ClampedTextProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{paragraph}</TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-xs whitespace-pre-wrap">
+      <TooltipContent side="bottom" align="start" className="max-w-xs whitespace-pre-wrap break-words">
         {text}
       </TooltipContent>
     </Tooltip>

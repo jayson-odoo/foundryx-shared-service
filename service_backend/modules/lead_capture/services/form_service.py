@@ -65,7 +65,7 @@ def _meta_error(exc: MetaLeadError) -> FormError:
 def _check_form_id(form_id: str) -> str:
     form_id = (form_id or "").strip()
     if not _FORM_ID_RE.fullmatch(form_id):
-        raise FormError(422, "invalid_form_id", "Enter the Instant Form id (digits only).")
+        raise FormError(422, "invalid_form_id", "Enter the Instant Form ID (digits only).")
     return form_id
 
 

@@ -67,8 +67,26 @@ def set_fields(db: Session, tenant_id: str, items: List[Dict[str, Any]]) -> List
         clean.append(LcConsumerField(tenant_id=tenant_id, key=key, label=label or key, type=typ, sort=n))
     db.query(LcConsumerField).filter(LcConsumerField.tenant_id == tenant_id).delete()
     db.add_all(clean)
+    db.flush()
+    _prune_field_maps(db, tenant_id, {k for k, _t in targets(db, tenant_id)})
     db.commit()
     return list_fields(db, tenant_id)
+
+
+def _prune_field_maps(db: Session, tenant_id: str, allowed: set) -> None:
+    """Drop map entries whose target is no longer one of the product's fields,
+    so a map never points at a removed field (the lead would silently lose that
+    answer). A form left with no entry loses its map. Same transaction as the
+    field list change."""
+    for source in db.query(LcSource).filter(LcSource.tenant_id == tenant_id).all():
+        current = source.field_map_json or {}
+        pruned = {}
+        for form_id, mapping in current.items():
+            kept = {q: t for q, t in (mapping or {}).items() if t in allowed}
+            if kept:
+                pruned[form_id] = kept
+        if pruned != current:
+            source.field_map_json = pruned  # a fresh dict: in-place JSON edits are not tracked
 
 
 def _source(db: Session, tenant_id: str, source_id: str) -> LcSource:

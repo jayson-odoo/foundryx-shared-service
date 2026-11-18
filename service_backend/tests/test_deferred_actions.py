@@ -962,3 +962,25 @@ def test_teams_delete_blocked_by_reference_guard_fails_with_message(client, sess
     assert "conversations" in cur["lastOutcome"]["errorText"]
     # Never deleted - the reference guard blocked the commit.
     assert client.get(f"/teams/{team['id']}", headers=h).status_code == 200
+
+
+def test_a_gone_target_message_never_carries_its_id(db):
+    """Crew pass on #259: the park refusal for a missing record is shown to the
+    user as-is, so it is plain words (the action's own, or a generic line),
+    never the entity type and id."""
+    import uuid as _uuid
+
+    from app.deferred_actions.registry import _REGISTRY
+    from app.deferred_actions.service import PendingActionService, TargetNotFound
+    from app.models import DEFAULT_TENANT_ID, User
+
+    admin = db.query(User).filter(User.tenant_id == DEFAULT_TENANT_ID).first()
+    gone = str(_uuid.uuid4())
+    action_def = _REGISTRY["users.trash"]
+    with pytest.raises(TargetNotFound) as exc:
+        PendingActionService(db).park(
+            tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+            action_key=action_def.key, entity_type=action_def.entity_type, entity_id=gone, payload=None,
+        )
+    assert gone not in str(exc.value)
+    assert action_def.entity_type not in str(exc.value)

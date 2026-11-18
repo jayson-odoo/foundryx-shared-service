@@ -24,6 +24,7 @@ from ..services import (
     delivery_service,
     field_service,
     form_service,
+    key_service,
     read_service,
     source_service,
 )
@@ -98,6 +99,34 @@ def put_settings(
     return read_service.settings_item(db, key.tenant_id)
 
 
+@router.get("/keys", response_model=schemas.KeyList)
+def list_keys(key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)) -> schemas.KeyList:
+    return schemas.KeyList(data=[read_service.key_item(r) for r in key_service.list_keys(db, key.tenant_id)])
+
+
+@router.post("/keys", response_model=schemas.KeyCreated, status_code=201)
+def create_key(
+    body: schemas.KeyCreate,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.KeyCreated:
+    row, full_key = key_service.issue(db, key.tenant_id, name=body.name, created_by=None)
+    return schemas.KeyCreated(**read_service.key_item(row).model_dump(), key=full_key)
+
+
+@router.delete("/keys/{key_id}", status_code=204)
+def revoke_key(
+    key_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> Response:
+    try:
+        key_service.revoke(db, key.tenant_id, key_id, calling_key_id=key.key_id)
+    except key_service.KeyNotFound:
+        raise ApiError(404, "key_not_found", "Key not found.") from None
+    except key_service.KeyInUse:
+        raise ApiError(409, "key_in_use", "This request uses that key. Revoke it with another key.") from None
+    return Response(status_code=204)
+
+
 @router.get("/webhooks", response_model=schemas.WebhookList)
 def list_webhooks(key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)) -> schemas.WebhookList:
     rows = delivery_service.list_endpoints(db, key.tenant_id)
@@ -126,6 +155,17 @@ def delete_webhook(
     except delivery_service.DeliveryError as exc:
         raise _api(exc)
     return Response(status_code=204)
+
+
+@router.post("/webhooks/{endpoint_id}/test", response_model=schemas.DeliveryItem, status_code=202)
+def test_webhook(
+    endpoint_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.DeliveryItem:
+    try:
+        row = delivery_service.send_test_push(db, key.tenant_id, endpoint_id)
+    except delivery_service.DeliveryError as exc:
+        raise _api(exc)
+    return read_service.delivery_item(row)
 
 
 @router.get("/leads", response_model=schemas.LeadPage)
