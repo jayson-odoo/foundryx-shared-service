@@ -39,7 +39,6 @@ import type { InboxViewRailProps } from '../inbox-view-rail';
 import { entryToOption, useInboxViewRail } from '../use-inbox-view-rail';
 
 const ENTRY = cn(
-  PRESSED_CLASS,
   'flex min-h-9 w-full min-w-0 items-center rounded-(--fx-r-m) px-2.5 text-start text-sm text-(--fx-ink-2)',
   'transition-[translate,background-color] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-0.5 hover:bg-(--fx-surface-2) motion-reduce:hover:translate-y-0',
 );
@@ -67,7 +66,12 @@ function RailButton({
       type="button"
       onClick={onClick}
       aria-current={on ? 'true' : undefined}
-      className={cn(ENTRY, nested && 'min-h-8 ps-6 text-xs', on && ENTRY_ON)}
+      className={cn(
+        PRESSED_CLASS,
+        ENTRY,
+        nested && 'min-h-8 ps-6 text-xs',
+        on && ENTRY_ON,
+      )}
       data-testid={`rail-${railKey}`}
     >
       <span className="truncate">{children}</span>
@@ -301,7 +305,12 @@ export function FxInboxViewRail({
                     type="button"
                     onClick={() => select(e)}
                     aria-current={on ? 'true' : undefined}
-                    className={cn(ENTRY, mayManage && 'pe-10', on && ENTRY_ON)}
+                    className={cn(
+                      PRESSED_CLASS,
+                      ENTRY,
+                      mayManage && 'pe-10',
+                      on && ENTRY_ON,
+                    )}
                     data-testid={`rail-view-${e.viewId}`}
                   >
                     <span className="truncate">{e.label}</span>

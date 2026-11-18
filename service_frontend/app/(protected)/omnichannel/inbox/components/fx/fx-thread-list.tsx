@@ -64,7 +64,6 @@ export function fxInboxFiltered(filters: ConversationFilters): boolean {
 }
 
 const TEXT_BUTTON = cn(
-  PRESSED_CLASS,
   'rounded-(--fx-r-m) px-2 py-1 text-sm font-semibold text-(--fx-link) transition-[translate] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-px',
 );
 
@@ -98,7 +97,7 @@ function ThreadRow({
       className={cn(
         PRESSED_CLASS,
         'relative flex w-full items-start gap-3 border-b border-(--fx-line) p-3 text-start transition-[translate,box-shadow,background-color] duration-(--fx-t-hover) ease-(--fx-ease-out)',
-        'hover:z-1 hover:-translate-y-px hover:bg-(--fx-surface) hover:shadow-[0_4px_10px_var(--fx-shade)] motion-reduce:hover:translate-y-0',
+        'hover:-translate-y-px hover:bg-(--fx-surface) hover:shadow-[0_4px_10px_var(--fx-shade)] motion-reduce:hover:translate-y-0',
         selected && 'bg-(--fx-link-bg) hover:bg-(--fx-link-bg)',
       )}
       data-testid={`thread-row-${t.id}`}
@@ -233,7 +232,7 @@ export function FxThreadList({
 
   const showLatest = () => {
     release();
-    scrollerRef.current?.scrollTo({ top: 0 });
+    if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
   };
 
   let body: ReactNode;
@@ -263,7 +262,11 @@ export function FxThreadList({
           Couldn&apos;t load the conversations.
         </p>
         {onRetry && (
-          <button type="button" onClick={onRetry} className={TEXT_BUTTON}>
+          <button
+            type="button"
+            onClick={onRetry}
+            className={cn(PRESSED_CLASS, TEXT_BUTTON)}
+          >
             Try again
           </button>
         )}
@@ -288,7 +291,7 @@ export function FxThreadList({
               <button
                 type="button"
                 onClick={onClearFilters}
-                className={TEXT_BUTTON}
+                className={cn(PRESSED_CLASS, TEXT_BUTTON)}
                 data-testid="thread-list-clear"
               >
                 Clear filters
@@ -326,10 +329,6 @@ export function FxThreadList({
     >
       <div className="border-b border-(--fx-line) p-2.5">
         <div className="relative">
-          <Search
-            className="pointer-events-none absolute start-2.5 top-1/2 z-1 size-4 -translate-y-1/2 text-(--fx-ink-3)"
-            aria-hidden="true"
-          />
           <Input
             className="ps-8"
             placeholder="Search conversations"
@@ -337,6 +336,10 @@ export function FxThreadList({
             value={filters.search}
             onChange={(e) => setFilters({ search: e.target.value })}
             data-testid="thread-search"
+          />
+          <Search
+            className="pointer-events-none absolute start-2.5 top-1/2 size-4 -translate-y-1/2 text-(--fx-ink-3)"
+            aria-hidden="true"
           />
         </div>
       </div>
@@ -354,7 +357,7 @@ export function FxThreadList({
         data-testid="thread-list-scroller"
       >
         {waiting > 0 && (
-          <div className="pointer-events-none sticky top-2 z-2 flex h-0 justify-center">
+          <div className="pointer-events-none sticky top-2 z-(--fx-z-pop) flex h-0 justify-center">
             <button
               type="button"
               onClick={showLatest}
