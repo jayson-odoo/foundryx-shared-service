@@ -339,9 +339,14 @@ export function FxConversationDrawer({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   const [newBelow, setNewBelow] = useState(false);
-  const seen = useRef<{ contactId: string | null; count: number }>({
+  const seen = useRef<{
+    contactId: string | null;
+    count: number;
+    tab: string;
+  }>({
     contactId: null,
     count: 0,
+    tab,
   });
 
   const toBottom = useCallback(
@@ -374,10 +379,11 @@ export function FxConversationDrawer({
   useEffect(() => {
     const count = visibleMessages.length;
     const before = seen.current;
-    seen.current = { contactId, count };
+    seen.current = { contactId, count, tab };
     // Jumping between search matches or to a linked message owns the scroll.
     if (activeSearch || focusMsgId) return;
-    if (before.contactId !== contactId) {
+    // A new thread, or coming back from Activities: start at the newest.
+    if (before.contactId !== contactId || before.tab !== tab) {
       atBottomRef.current = true;
       setNewBelow(false);
       toBottom(false);
@@ -388,7 +394,7 @@ export function FxConversationDrawer({
     const own = last?.senderType === 'AGENT' && last.id.startsWith('temp-');
     if (atBottomRef.current || own || before.count === 0) toBottom(false);
     else setNewBelow(true);
-  }, [visibleMessages, contactId, activeSearch, focusMsgId, toBottom]);
+  }, [visibleMessages, contactId, tab, activeSearch, focusMsgId, toBottom]);
 
   // ── States before a thread shows ─────────────────────────────────────────
   if (!contactId || erased) {

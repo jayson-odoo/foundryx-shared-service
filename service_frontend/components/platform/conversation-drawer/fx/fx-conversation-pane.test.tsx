@@ -511,6 +511,20 @@ describe('"New messages" pill', () => {
     expect(screen.queryByTestId('new-messages-pill')).not.toBeInTheDocument();
     expect(scroller.scrollTop).toBe(2000);
   });
+
+  it('coming back from Activities starts at the newest message', async () => {
+    render(
+      <On>
+        <ConversationDrawer contactId="cnt-1" />
+      </On>,
+    );
+    const scroller = await screen.findByTestId('thread-scroller');
+    scrollTo(scroller, 0);
+    await userEvent.click(screen.getByRole('tab', { name: 'Activities' }));
+    scrollTo(scroller, 0);
+    await userEvent.click(screen.getByRole('tab', { name: 'Messages' }));
+    expect(scroller.scrollTop).toBe(2000);
+  });
 });
 
 const TEMPLATES: WhatsAppTemplate[] = [
