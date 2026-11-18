@@ -26,7 +26,7 @@ import { FormRow } from '@/components/platform/resource-form';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { AttachmentDrop } from './attachment-drop';
-import { IdeaAttachmentPreviewDialog } from './idea-attachment-preview-dialog';
+import { IdeaAttachmentPreviewDialog } from '@/components/platform/attachment-preview/idea-attachment-preview-dialog';
 import { IdeaComments } from './idea-comments';
 import {
   IDEA_SOURCE_LABEL,
@@ -78,7 +78,7 @@ function DetailsFields({ form, editing, creating, idea, products }: DetailsTabPr
   // iframe has no operator session, so the "Merged into" link must resolve
   // to `/embed/feedback/<id>`, never the bare operator path.
   const { paths } = useIdeationRuntime();
-  const { formatDateTime } = useDatetime();
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
 
   return (
     <Card>

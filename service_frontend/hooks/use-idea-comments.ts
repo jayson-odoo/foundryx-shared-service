@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { IdeaComment, IdeaCommentThread } from '@/types/ideation';
+import type { IdeaAttachment, IdeaComment, IdeaCommentThread } from '@/types/ideation';
 import { toast } from '@/lib/toast';
+import { uploadInOrder, type CommentPostResult, type FailedUpload } from '@/lib/upload-files';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { countLiveComments, groupCommentThreads } from './idea-comment-threads';
 
@@ -12,9 +13,15 @@ export interface UseIdeaComments {
   count: number;
   loading: boolean;
   error: string | null;
-  add: (body: string, parentId?: string) => Promise<void>;
+  /** `files` are uploaded onto the new comment (the body may then be empty). */
+  /** `null` = the post itself failed (already toasted): the caller keeps the draft. */
+  add: (body: string, parentId?: string, files?: File[]) => Promise<CommentPostResult | null | undefined>;
+  /** Retry only the files that failed against a comment that already exists. */
+  retryUploads: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
   edit: (commentId: string, body: string) => Promise<void>;
   remove: (commentId: string) => Promise<void>;
+  /** Bytes of an uploaded file (auth-gated route), for thumbnails + preview. */
+  fetchContent?: (attachment: IdeaAttachment) => Promise<Blob>;
 }
 
 const messageOf = (e: unknown, fallback: string): string =>
@@ -70,12 +77,40 @@ export function useIdeaComments(ideaId: string): UseIdeaComments {
   );
 
   const add = useCallback(
-    (body: string, parentId?: string) =>
-      mutate(
-        () => service.addComment?.(ideaId, body, parentId),
-        'Could not post the comment.',
-      ),
-    [mutate, service, ideaId],
+    async (body: string, parentId?: string, files: File[] = []) => {
+      let result: CommentPostResult | null | undefined;
+      try {
+        if (!service.addComment) return undefined;
+        const created =
+          files.length > 0 && !body
+            ? await service.addComment(ideaId, body, parentId, true)
+            : await service.addComment(ideaId, body, parentId);
+        const upload = service.uploadAttachment?.bind(service);
+        // The comment exists either way: report what did not upload.
+        const failed =
+          files.length > 0 && upload
+            ? await uploadInOrder(files, (file) => upload(ideaId, file, created.id))
+            : [];
+        result = { commentId: created.id, failed };
+      } catch (e) {
+        toast.error(messageOf(e, 'Could not post the comment.'));
+        result = null;
+      }
+      await load();
+      return result;
+    },
+    [load, service, ideaId],
+  );
+  const retryUploads = useCallback(
+    async (commentId: string, files: File[]) => {
+      const upload = service.uploadAttachment?.bind(service);
+      const failed = upload
+        ? await uploadInOrder(files, (file) => upload(ideaId, file, commentId))
+        : files.map((file) => ({ file, reason: `${file.name} did not upload` }));
+      await load();
+      return failed;
+    },
+    [load, service, ideaId],
   );
   const edit = useCallback(
     (commentId: string, body: string) =>
@@ -97,5 +132,13 @@ export function useIdeaComments(ideaId: string): UseIdeaComments {
   const threads = useMemo(() => groupCommentThreads(comments), [comments]);
   const count = useMemo(() => countLiveComments(comments), [comments]);
 
-  return { threads, count, loading, error, add, edit, remove };
+  const fetchContent = useMemo(
+    () =>
+      service.fetchAttachment
+        ? (a: IdeaAttachment) => service.fetchAttachment!(a.contentPath ?? '')
+        : undefined,
+    [service],
+  );
+
+  return { threads, count, loading, error, add, retryUploads, edit, remove, fetchContent };
 }

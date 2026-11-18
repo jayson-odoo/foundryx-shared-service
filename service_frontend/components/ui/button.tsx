@@ -24,6 +24,17 @@ const buttonVariants = cva(
         dim: 'text-muted-foreground hover:text-foreground data-[state=open]:text-foreground',
         foreground: '',
         inverse: '',
+        // Foundryx UIUX switch only (playbook-uiux.md): used by components/fx,
+        // which render only while the switch is on. Colours, shape and hover;
+        // the fx component sets its own size.
+        'fx-main':
+          'bg-(--fx-act) text-(--fx-act-ink) rounded-(--fx-r-pill) font-semibold shadow-[0_2px_8px_rgba(var(--fx-act-rgb),0.22)] hover:shadow-[0_10px_26px_rgba(var(--fx-act-rgb),0.4)] focus-visible:ring-0 focus-visible:ring-offset-0 aria-disabled:cursor-not-allowed aria-disabled:opacity-45 aria-disabled:shadow-none',
+        'fx-icon':
+          'rounded-(--fx-r-pill) border border-(--fx-line-2) bg-(--fx-surface) text-(--fx-ink-2) transition-[translate,transform,scale,color,background-color,border-color,box-shadow] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-0.5 hover:border-(--fx-ink-3) hover:text-(--fx-ink) hover:shadow-[0_4px_12px_var(--fx-shade)] in-data-[fx-lift=off]:hover:translate-y-0 focus-visible:ring-0 focus-visible:ring-offset-0 aria-disabled:cursor-not-allowed aria-disabled:opacity-45',
+        'fx-text':
+          'bg-transparent text-(--fx-link) font-semibold transition-[translate,transform,scale,color,text-shadow] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-0.5 hover:[text-shadow:0_4px_10px_rgba(var(--fx-shade-rgb),0.18)] in-data-[fx-lift=off]:hover:translate-y-0 focus-visible:ring-0 focus-visible:ring-offset-0',
+        'fx-quiet':
+          'rounded-(--fx-r-pill) border border-(--fx-line-2) bg-(--fx-surface) text-(--fx-ink-2) font-semibold transition-[translate,transform,scale,color,background-color,border-color,box-shadow] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-0.5 hover:border-(--fx-ink-3) hover:text-(--fx-ink) hover:shadow-[0_4px_12px_var(--fx-shade)] in-data-[fx-lift=off]:hover:translate-y-0 focus-visible:ring-0 focus-visible:ring-offset-0',
       },
       appearance: {
         default: '',

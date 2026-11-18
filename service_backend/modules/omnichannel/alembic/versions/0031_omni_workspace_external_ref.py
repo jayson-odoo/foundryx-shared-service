@@ -11,14 +11,14 @@ no backfill is needed (no workspace ever had a partner organisation id).
 Idempotent (IF NOT EXISTS), same style as the `create_schema_and_tables`
 mirror. Revision id <= 32 chars.
 
-Revision ID: 0028_omni_workspace_external_ref
-Revises: 0027_omni_partner_api_keys
+Revision ID: 0031_omni_workspace_external_ref
+Revises: 0030_omni_delivery_history_ix
 Create Date: 2026-11-18
 """
 from alembic import op
 
-revision = "0028_omni_workspace_external_ref"
-down_revision = "0027_omni_partner_api_keys"
+revision = "0031_omni_workspace_external_ref"
+down_revision = "0030_omni_delivery_history_ix"
 branch_labels = None
 depends_on = None
 

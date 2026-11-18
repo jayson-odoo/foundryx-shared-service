@@ -6,10 +6,12 @@ import re
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
 from app.schemas.base import ApiModel
 from app.schemas.filters import FilterGroup
+
+from .services.payload_version import VersionedPayload
 
 # Foolproof-UI (user mandate): a colour picker on the frontend only ever emits
 # a hex triplet, never a token name or arbitrary CSS - reject anything else at
@@ -633,6 +635,17 @@ class LifecycleMoveRequest(ApiModel):
 
 
 # ── Conversations (plan 05) ──────────────────────────────────────────────────
+class MessageSenderItem(ApiModel):
+    """Who sent a message (payload version 2 `MessageItem.sender`).
+    `type`: CUSTOMER | AGENT | SYSTEM | API | WORKFLOW | BROADCAST."""
+
+    type: str
+    externalId: Optional[str] = None
+    displayName: Optional[str] = None
+    avatarUrl: Optional[str] = None
+    userId: Optional[str] = None
+
+
 class ReplyRefItem(ApiModel):
     id: str
     body: Optional[str] = None
@@ -649,7 +662,7 @@ class MessagePricingItem(ApiModel):
     type: Optional[str] = None
 
 
-class MessageItem(ApiModel):
+class MessageItem(VersionedPayload, ApiModel):
     id: str
     contactId: str
     channelId: Optional[str] = None
@@ -693,9 +706,25 @@ class MessageItem(ApiModel):
     pricing: Optional[MessagePricingItem] = None
     replyTo: Optional[ReplyRefItem] = None
     createdAt: datetime
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS).
+    # `senderName` / `senderAvatarUrl` / `senderType` above are unchanged.
+    sender: Optional[MessageSenderItem] = None
 
 
-class ThreadItem(ApiModel):
+class ChannelWindowItem(ApiModel):
+    """One contact-channel identity's messaging window, as an API-key sender
+    sees it (payload version 2, `messaging_policy.window_state`).
+    `allowedSendTypes`: `["ANY"]` | `["TEMPLATE"]` | `[]` (nothing sendable)."""
+
+    channelId: str
+    channelType: str
+    windowOpen: bool
+    windowExpiresAt: Optional[datetime] = None
+    humanAgentExpiresAt: Optional[datetime] = None
+    allowedSendTypes: List[str] = []
+
+
+class ThreadItem(VersionedPayload, ApiModel):
     id: str  # contact id - the contact IS the thread
     tenantId: str
     workspaceId: str
@@ -755,6 +784,15 @@ class ThreadItem(ApiModel):
     # Current lifecycle stage; null until S2 registers the scoped status entity.
     lifecycle: Optional[ContactLifecycleSummary] = None
     createdAt: datetime
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS).
+    # The window of the thread's current `channelId`, computed for an API-key
+    # sender (automation: `actor_is_human=False`); `windows` = one entry per
+    # channel identity of the contact (per WhatsApp number). `cswExpiresAt` /
+    # `windowExpiresAt` above are unchanged.
+    windowOpen: Optional[bool] = None
+    allowedSendTypes: Optional[List[str]] = None  # ["ANY"] | ["TEMPLATE"] | []
+    windowReason: Optional[str] = None  # OPEN | CLOSED | HUMAN_AGENT_ONLY | NO_WINDOW
+    windows: Optional[List[ChannelWindowItem]] = None
 
 
 class ThreadListResponse(ApiModel):
@@ -1394,12 +1432,20 @@ class OmnichannelSettingsUpdate(ApiModel):
     audioMaxBytes: Optional[int] = None
     documentMaxBytes: Optional[int] = None
     stickerMaxBytes: Optional[int] = None
+    # S12 (2026-11-18): per-number WhatsApp window enforcement for this row
+    # (true/false; null clears = inherit the tenant default, else off).
+    # Omitted = unchanged, like every field here.
+    strictNumberWindow: Optional[bool] = None
 
 
 class OmnichannelSettingsResponse(ApiModel):
     workspaceId: Optional[str] = None
     overrides: dict  # {imageMaxBytes: int|null, ...}
     effective: dict  # {IMAGE: {maxBytes, ceilingBytes, acceptedMimes}, ...}
+    # S12 (2026-11-18), staff dashboard read only: this row's stored value
+    # (null = not set here) and the resolved value the send policy uses.
+    strictNumberWindow: Optional[bool] = None
+    strictNumberWindowEffective: bool = False
 
 
 # ── Business hours (plan sprint-4/31 S5, D-A5-13) ────────────────────────────
@@ -1493,12 +1539,68 @@ class PublicTemplateBody(ApiModel):
     id: Optional[str] = None  # our template id (from GET /templates)
     name: Optional[str] = None  # OR the Meta template name
     variables: Optional[List[str]] = None
+    # Track A S4 (optional): TEXT-header {{n}} values and dynamic URL-button
+    # values, in order; see `headerVariableCount` / `buttonVariableCount`.
+    headerVariables: Optional[List[str]] = None
+    buttonVariables: Optional[List[str]] = None
 
 
 class PublicMediaBody(ApiModel):
     url: Optional[str] = None  # fetched + re-uploaded (never passed to Meta as a bare link)
     caption: Optional[str] = None
     filename: Optional[str] = None
+
+
+_SENDER_EXTERNAL_ID = re.compile(r"[A-Za-z0-9._:@-]{1,128}")
+
+
+class PublicSenderAttribution(ApiModel):
+    """Who on the consumer's side wrote a public send (Track A S3). Stored on
+    the message only; the customer never sees it and the send stays an API
+    send (`senderId` stays `apikey:<id>`)."""
+
+    externalId: str
+    displayName: str
+    avatarUrl: Optional[str] = None
+
+    @field_validator("externalId")
+    @classmethod
+    def _external_id(cls, v: str) -> str:
+        if not _SENDER_EXTERNAL_ID.fullmatch(v):
+            raise ValueError("externalId must be 1-128 characters of A-Z a-z 0-9 . _ : @ -")
+        return v
+
+    @field_validator("displayName")
+    @classmethod
+    def _display_name(cls, v: str) -> str:
+        v = v.strip()
+        if not 1 <= len(v) <= 120:
+            raise ValueError("displayName must be 1-120 characters after trimming")
+        return v
+
+    @field_validator("avatarUrl")
+    @classmethod
+    def _avatar_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(v)
+        if (
+            len(v) > 2048
+            or parts.scheme != "https"
+            or not parts.netloc
+            or any(ch.isspace() for ch in v)
+        ):
+            raise ValueError("avatarUrl must be an https URL of at most 2048 characters")
+        return v
+
+    def stored(self) -> Dict[str, str]:
+        """The `metadata_json["senderAttribution"]` value."""
+        out = {"externalId": self.externalId, "displayName": self.displayName}
+        if self.avatarUrl:
+            out["avatarUrl"] = self.avatarUrl
+        return out
 
 
 class PublicReactionBody(ApiModel):
@@ -1528,6 +1630,9 @@ class PublicSendRequest(ApiModel):
     reaction: Optional[PublicReactionBody] = None
     # Quote one of OUR durable message ids (plan 38 gap 4).
     replyToMessageId: Optional[str] = None
+    # Optional consumer-side author of this send (Track A S3); stored on the
+    # message, returned as `sender` at payload version 2. Not used on a reaction.
+    sender: Optional[PublicSenderAttribution] = None
 
 
 class PublicSendResponse(ApiModel):
@@ -1536,20 +1641,24 @@ class PublicSendResponse(ApiModel):
     idempotencyReplay: bool = False
 
 
-class PublicTemplateItem(ApiModel):
+class PublicTemplateItem(VersionedPayload, ApiModel):
     id: str
     name: str
     language: Optional[str] = None
     category: Optional[str] = None
     bodyText: str
     variableCount: int
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS).
+    headerFormat: Optional[str] = None  # null | TEXT | IMAGE | VIDEO | DOCUMENT
+    headerVariableCount: Optional[int] = None  # TEXT-header {{n}} count
+    buttonVariableCount: Optional[int] = None  # dynamic URL-button count
 
 
 class PublicTemplateListResponse(ApiModel):
     data: List[PublicTemplateItem]
 
 
-class PublicChannelItem(ApiModel):
+class PublicChannelItem(VersionedPayload, ApiModel):
     """One channel as the consumer API shows it: only what a consumer needs to
     map a `channelId` to a number. Deliberately NOT derived from `ChannelItem`
     (tenant/workspace ids, WABA / phone-number ids and widget keys stay
@@ -1563,6 +1672,10 @@ class PublicChannelItem(ApiModel):
     displayPhoneNumber: Optional[str] = None
     verifiedName: Optional[str] = None
     createdAt: datetime
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS):
+    # CONNECTED | NEEDS_RECONNECT | PAUSED | DISCONNECTED. `status` above
+    # keeps its four values.
+    connectionState: Optional[str] = None
 
 
 class PublicChannelListResponse(ApiModel):
@@ -1602,13 +1715,15 @@ class PartnerWorkspaceListResponse(ApiModel):
     pageSize: int
 
 
-class PublicMessageListResponse(ApiModel):
+class PublicMessageListResponse(VersionedPayload, ApiModel):
     """A contact's message history for the consumer API - full-fidelity
     ``MessageItem`` (every message type). ``nextBefore`` = pass back as
     ``before`` to page further into history (null when the page is the oldest)."""
     contactId: str
     data: List[MessageItem]
     nextBefore: Optional[str] = None
+    # Payload version 2 and up only: the window of the contact's current channel.
+    window: Optional[ChannelWindowItem] = None
 
 
 class PublicContactListResponse(ApiModel):
@@ -1841,7 +1956,7 @@ class RioMessageListResponse(BaseModel):
 
 
 # ── Consumer webhooks (plan sprint-1/01 Slice 4) ─────────────────────────────
-class WebhookEndpointItem(ApiModel):
+class WebhookEndpointItem(VersionedPayload, ApiModel):
     id: str
     tenantId: str
     workspaceId: str
@@ -1856,6 +1971,8 @@ class WebhookEndpointItem(ApiModel):
     disabledReason: Optional[str] = None
     createdAt: datetime
     updatedAt: datetime
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS).
+    payloadVersion: Optional[int] = None  # the version this endpoint's deliveries use
 
 
 class WebhookEndpointListResponse(ApiModel):
@@ -1876,12 +1993,14 @@ class WebhookEndpointCreateRequest(ApiModel):
     name: str
     url: str
     events: List[str]
+    payloadVersion: Optional[StrictInt] = None  # omitted = version 1, today's payloads
 
 
 class WebhookEndpointUpdateRequest(ApiModel):
     name: Optional[str] = None
     url: Optional[str] = None
     events: Optional[List[str]] = None
+    payloadVersion: Optional[StrictInt] = None  # omitted or null = unchanged
 
 
 class WebhookEndpointMintResponse(ApiModel):
@@ -1909,6 +2028,15 @@ class WebhookDeliveryItem(ApiModel):
 
 class WebhookDeliveryListResponse(ApiModel):
     data: List[WebhookDeliveryItem]
+
+
+class PublicWebhookDeliveryListResponse(ApiModel):
+    """`GET /api/v1/omnichannel/webhooks/{id}/deliveries` (2026-11-18). Same
+    item as the staff log (no payload body, no secret); ``nextBefore`` is the
+    ``before`` value for the next older page, null on the last page."""
+
+    data: List[WebhookDeliveryItem]
+    nextBefore: Optional[str] = None
 
 
 # ── Template management (plan 07) ─────────────────────────────────────────────

@@ -5,8 +5,15 @@ import { cn } from '@/lib/utils';
 import { buttonVariants } from '@/components/ui/button';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { DayPicker } from 'react-day-picker';
+import { useFx } from '@/hooks/use-fx';
+import { FxCalendar } from '@/components/fx/fields/fx-calendar';
 
-function Calendar({ className, classNames, showOutsideDays = true, ...props }: React.ComponentProps<typeof DayPicker>) {
+// Foundryx UIUX switch: the playbook calendar while on; today's while off.
+function Calendar(props: React.ComponentProps<typeof DayPicker>) {
+  return useFx() ? <FxCalendar {...props} /> : <CalendarLegacy {...props} />;
+}
+
+function CalendarLegacy({ className, classNames, showOutsideDays = true, ...props }: React.ComponentProps<typeof DayPicker>) {
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}

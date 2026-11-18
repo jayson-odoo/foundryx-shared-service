@@ -59,6 +59,7 @@ from .message_service import (
     template_variable_count,
 )
 from . import event_service, idempotency, messaging_policy, statuses
+from . import payload_version as pv
 
 if TYPE_CHECKING:  # forward ref used in a signature below
     from ..schemas import ThreadItem
@@ -141,6 +142,64 @@ def _digits(value: str) -> str:
 def _epoch(dt) -> Optional[int]:
     """Aware-UTC datetime → epoch seconds (respond.io wire format)."""
     return int(dt.timestamp()) if dt else None
+
+
+def _window_refusal(
+    err: ApiError, contact: Optional["Contact"], channel_id: Optional[str], reason: str
+) -> ApiError:
+    """Mark a window refusal with its target so a version 2 caller's body can
+    carry `details` (`PublicGatewayService._add_refusal_details`)."""
+    err.window_refusal = (contact, channel_id, reason)
+    return err
+
+
+def _attribution(sender) -> Optional[dict]:
+    """`metadata_extra` for a send that names its consumer-side author
+    (Track A S3); None leaves the send exactly as before."""
+    return {"senderAttribution": sender.stored()} if sender is not None else None
+
+
+def _is_provider_id(value: Optional[str], c: Channel) -> bool:
+    """On a WhatsApp channel, a display field that holds (or is built from)
+    the provider's number id, because details were not available at connect,
+    is not shown. Short, blank or missing ids change nothing."""
+    if c.channel_type != "WHATSAPP" or not value:
+        return False
+    pid = (c.phone_number_id or "").strip()
+    return len(pid) >= 6 and pid in value
+
+
+def connection_state(channel: Channel, status_key: str) -> str:
+    """Payload version 2 `connectionState`, derived from what the channel
+    already stores (the `status` values are never extended): disconnected
+    (trashed) -> DISCONNECTED; the token check's ERROR -> NEEDS_RECONNECT;
+    paused (inactive) -> PAUSED; else CONNECTED."""
+    if channel.is_trashed:
+        return "DISCONNECTED"
+    if status_key == "ERROR":
+        return "NEEDS_RECONNECT"
+    if not channel.is_active:
+        return "PAUSED"
+    return "CONNECTED"
+
+
+def _public_channel_item(c: Channel, smap, default_id: Optional[str]) -> PublicChannelItem:
+    # A missing status row reads ACTIVE only for an active channel.
+    status = smap.get(c.status_id) or ("ACTIVE" if c.is_active else "INACTIVE")
+    return PublicChannelItem(
+        id=c.id,
+        channelType=c.channel_type,
+        name="WhatsApp channel" if _is_provider_id(c.name, c) else c.name,
+        status=status,
+        isActive=c.is_active,
+        isDefault=c.id == default_id,
+        displayPhoneNumber=(
+            None if _is_provider_id(c.display_phone_number, c) else c.display_phone_number
+        ),
+        verifiedName=None if _is_provider_id(c.verified_name, c) else c.verified_name,
+        createdAt=c.created_at,
+        connectionState=connection_state(c, status),
+    )
 
 
 def _iso_z(dt) -> Optional[str]:
@@ -334,7 +393,13 @@ class PublicGatewayService:
         ).with_retry_after(client_retry_after(retry_after))
 
     @staticmethod
-    def _map_send_rejected(exc: "SendRejected", *, default_code: str = "send_rejected") -> ApiError:
+    def _map_send_rejected(
+        exc: "SendRejected",
+        *,
+        default_code: str = "send_rejected",
+        contact: Optional[Contact] = None,
+        channel_id: Optional[str] = None,
+    ) -> ApiError:
         """`SendRejected.code` (plan 32 / A7a, AC-CHN-55) → the gateway's
         structured error. WhatsApp's `csw_window_closed` is checked FIRST and
         by both code and the legacy message string (belt and suspenders - a
@@ -347,9 +412,15 @@ class PublicGatewayService:
         actionable difference between them (an API key can never send with
         the tag either way)."""
         if exc.code == "csw_window_closed" or exc.message == CSW_CLOSED_MESSAGE:
-            return ApiError(409, "csw_window_closed", exc.message)
+            return _window_refusal(
+                ApiError(409, "csw_window_closed", exc.message),
+                contact, channel_id, "csw_window_closed",
+            )
         if exc.code in ("messaging_window_closed", "automation_outside_window"):
-            return ApiError(409, "messaging_window_closed", exc.message)
+            return _window_refusal(
+                ApiError(409, "messaging_window_closed", exc.message),
+                contact, channel_id, exc.code,
+            )
         if exc.code == "channel_not_available_for_contact":
             return ApiError(422, "channel_not_available_for_contact", exc.message)
         return ApiError(422, default_code, exc.message)
@@ -585,6 +656,28 @@ class PublicGatewayService:
         users = self._users_by_id(tenant_id, [thread.assignedUserId])
         return self._rio_contact(thread=thread, users=users)
 
+    def contact_window(self, tenant_id: str, contact_id: str):
+        """The window of a contact's current channel (payload version 2
+        `window` on the message history), the same values as the version 2
+        `ThreadItem`; None when the contact has no channel yet."""
+        from ..schemas import ChannelWindowItem
+        from .conversation_service import ConversationService
+
+        contact = self.contacts.get_by_id(contact_id, tenant_id)
+        if contact is None:
+            return None
+        thread = ConversationService(self.db).thread_item(contact)
+        if not thread.channelId:
+            return None
+        return ChannelWindowItem(
+            channelId=thread.channelId,
+            channelType=thread.channelType,
+            windowOpen=thread.windowOpen,
+            windowExpiresAt=thread.windowExpiresAt,
+            humanAgentExpiresAt=thread.humanAgentExpiresAt,
+            allowedSendTypes=thread.allowedSendTypes or [],
+        )
+
     def list_contacts(
         self,
         tenant_id: str,
@@ -594,15 +687,30 @@ class PublicGatewayService:
         assignee: str = "all",
         priority: Optional[str] = None,
         search: Optional[str] = None,
+        updated_since: Optional[datetime] = None,
+        channel_id: Optional[str] = None,
         page: int = 0,
         page_size: int = 50,
         fmt: str = FORMAT_GUIDE,
     ):
         """Returns ``(items, total)`` - ``ThreadItem``s by default, ``RioContactItem``s
         when ``fmt='rio'``. Filtering/pagination reuse the inbox's ``list_threads``
-        (offset-based); the router turns page/total into the documented envelope."""
+        (offset-based); the router turns page/total into the documented envelope.
+
+        ``updated_since`` (naive = UTC) keeps contacts changed or messaged after
+        it; ``channel_id`` keeps contacts with an identity on that channel. A
+        channel outside the workspace is the uniform ``404 channel_not_found``
+        that ``GET /templates?channelId=`` gives. Neither set = today's query."""
         from .conversation_service import ConversationService
 
+        filters = {}
+        if channel_id:
+            self._workspace_channel_any_state(tenant_id, workspace_id, channel_id)
+            filters["channel_ids"] = [channel_id]
+        if updated_since is not None:
+            if updated_since.tzinfo is None:
+                updated_since = updated_since.replace(tzinfo=timezone.utc)
+            filters["updated_since"] = updated_since
         items, total = ConversationService(self.db).list_threads(
             tenant_id,
             workspace_id=workspace_id,
@@ -612,6 +720,7 @@ class PublicGatewayService:
             search=search,
             page=page,
             page_size=page_size,
+            **filters,
         )
         if fmt != FORMAT_RIO:
             return items, total
@@ -1026,8 +1135,10 @@ class PublicGatewayService:
         key_id: str,
         req: PublicSendRequest,
         idempotency_key: Optional[str],
+        version: int = pv.V1,
     ) -> Tuple[str, bool]:
-        """Returns (our_message_id, was_idempotency_replay)."""
+        """Returns (our_message_id, was_idempotency_replay). ``version`` = the
+        caller's payload version (refusal ``details`` from version 2)."""
         store = idempotency.get_store()
         reservation = None
         if idempotency_key:
@@ -1047,13 +1158,46 @@ class PublicGatewayService:
         self.messages.stored_message_id = None
         try:
             message_id = self._do_send(tenant_id, workspace_id, key_id, req)
-        except Exception:
+        except Exception as exc:
             self._settle_reservation_on_error(store, workspace_id, idempotency_key, reservation)
+            self._add_refusal_details(exc, tenant_id, version)
             raise
 
         if reservation is not None and reservation.existing is None:
             store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
         return message_id, False
+
+    def _add_refusal_details(self, exc: Exception, tenant_id: str, version: int) -> None:
+        """Payload version 2 only: a window refusal (409 `csw_window_closed` /
+        `messaging_window_closed`) gains `details {channelId, windowExpiresAt,
+        allowedSendTypes, reason}` for the refused channel. Status, `code` and
+        message never change; a version 1 caller gets today's exact body.
+        `reason` is the policy refusal (`automation_outside_window` = inside
+        the Messenger/Instagram human-agent window, which an API key can never
+        use)."""
+        target = getattr(exc, "window_refusal", None)
+        if target is None or not isinstance(exc, ApiError):
+            return
+        if not pv.visible("WindowRefusal", "details", version):
+            return
+        contact, channel_id, reason = target
+        details = {"channelId": channel_id, "windowExpiresAt": None, "allowedSendTypes": None, "reason": reason}
+        try:
+            if contact is not None and channel_id:
+                channel = (
+                    self.db.query(Channel)
+                    .filter(Channel.id == channel_id, Channel.tenant_id == tenant_id)
+                    .first()
+                )
+                identity = self.contacts.find_identity_for_channel(contact.id, channel_id, tenant_id)
+                state = messaging_policy.window_state(
+                    identity, channel.channel_type if channel else "WHATSAPP", actor_is_human=False
+                )
+                details["windowExpiresAt"] = _iso_z(state.window_expires_at)
+                details["allowedSendTypes"] = list(state.allowed_send_types)
+        except Exception:  # noqa: BLE001 - details are a hint; the refusal itself must stand
+            logger.exception("window refusal details failed")
+        exc.details = details
 
     def _settle_reservation_on_error(
         self, store, workspace_id: str, idempotency_key: Optional[str], reservation
@@ -1104,6 +1248,8 @@ class PublicGatewayService:
                 messageType="TEMPLATE",
                 templateId=template_id,
                 templateVariables=(req.template.variables if req.template else None) or [],
+                templateHeaderVariables=(req.template.headerVariables if req.template else None),
+                templateButtonVariables=(req.template.buttonVariables if req.template else None),
                 replyToMessageId=reply_to,
             )
         elif msg_type.upper() in MEDIA_MESSAGE_TYPES:
@@ -1126,7 +1272,10 @@ class PublicGatewayService:
                     if channel.channel_type == "WHATSAPP"
                     else "messaging_window_closed"
                 )
-                raise ApiError(409, code, messaging_policy.closed_window_message(channel.channel_type))
+                raise _window_refusal(
+                    ApiError(409, code, messaging_policy.closed_window_message(channel.channel_type)),
+                    contact, channel.id, code,
+                )
             # The slot covers the URL lookup, the fetch and the store.
             with _FETCH_GATE.slot(tenant_id):
                 content = self._fetch_url(req.media.url)
@@ -1141,6 +1290,7 @@ class PublicGatewayService:
                     to=req.to,
                     channel=channel,
                     reply_to_message_id=reply_to,
+                    sender=req.sender,
                 )
         elif msg_type in ("interactive", "location", "contacts"):
             return self._send_structured(
@@ -1163,9 +1313,10 @@ class PublicGatewayService:
             item = self.messages.send_message(
                 contact.id, tenant_id, actor, payload, actor_is_human=False,
                 channel_id_override=self._override_for(channel),
+                metadata_extra=_attribution(req.sender),
             )
         except SendRejected as exc:
-            raise self._map_send_rejected(exc) from exc
+            raise self._map_send_rejected(exc, contact=contact, channel_id=channel.id) from exc
         return item.id
 
     def _fetch_url(self, url: str) -> bytes:
@@ -1267,6 +1418,7 @@ class PublicGatewayService:
         to: str,
         channel: Optional[Channel] = None,
         reply_to_message_id: Optional[str] = None,
+        sender=None,
     ) -> str:
         # Callers pass the resolved channel; `None` resolves the implicit one
         # (refused when it would be a guess).
@@ -1286,11 +1438,12 @@ class PublicGatewayService:
                 actor_is_human=False,
                 channel_id_override=self._override_for(channel),
                 reply_to_message_id=reply_to_message_id,
+                metadata_extra=_attribution(sender),
             )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         except SendRejected as exc:
-            raise self._map_send_rejected(exc) from exc
+            raise self._map_send_rejected(exc, contact=contact, channel_id=channel.id) from exc
         return item.id
 
     # ── Structured send (interactive / location / contacts) ───────────────────
@@ -1345,6 +1498,7 @@ class PublicGatewayService:
                         actor_is_human=False,
                         channel_id_override=self._override_for(channel),
                         reply_to_message_id=reply_to_message_id,
+                        metadata_extra=_attribution(req.sender),
                     )
             elif msg_type == "location":
                 if not req.location:
@@ -1353,6 +1507,7 @@ class PublicGatewayService:
                     contact.id, tenant_id, actor, defn=dict(req.location), actor_is_human=False,
                     channel_id_override=self._override_for(channel),
                     reply_to_message_id=reply_to_message_id,
+                    metadata_extra=_attribution(req.sender),
                 )
             else:  # contacts
                 if not req.contacts:
@@ -1361,11 +1516,14 @@ class PublicGatewayService:
                     contact.id, tenant_id, actor, defn={"contacts": req.contacts},
                     actor_is_human=False, channel_id_override=self._override_for(channel),
                     reply_to_message_id=reply_to_message_id,
+                    metadata_extra=_attribution(req.sender),
                 )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         except SendRejected as exc:
-            raise self._map_send_rejected(exc, default_code="invalid_request") from exc
+            raise self._map_send_rejected(
+                exc, default_code="invalid_request", contact=contact, channel_id=channel.id
+            ) from exc
         return item.id
 
     # ── Reaction send (targets OUR durable id - AC-12-21) ─────────────────────
@@ -1391,7 +1549,9 @@ class PublicGatewayService:
         except MetaRateLimited as exc:
             raise self._meta_rate_limited(exc.retry_after) from exc
         except SendRejected as exc:
-            raise self._map_send_rejected(exc, default_code="invalid_request") from exc
+            raise self._map_send_rejected(
+                exc, default_code="invalid_request", contact=contact, channel_id=target.channel_id
+            ) from exc
         return target.id
 
     # ── Multipart media send (file part) ──────────────────────────────────────
@@ -1409,6 +1569,8 @@ class PublicGatewayService:
         idempotency_key: Optional[str],
         channel_id: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
+        version: int = pv.V1,
+        sender=None,
     ) -> Tuple[str, bool]:
         """Gateway multipart media send (plan 12 AC-12-10). Same idempotency
         semantics as the JSON ``send`` path. ``channel_id`` (plan 32 / A7a S6)
@@ -1448,9 +1610,11 @@ class PublicGatewayService:
                 to=to,
                 channel=channel,
                 reply_to_message_id=reply_to,
+                sender=sender,
             )
-        except Exception:
+        except Exception as exc:
             self._settle_reservation_on_error(store, workspace_id, idempotency_key, reservation)
+            self._add_refusal_details(exc, tenant_id, version)
             raise
         if reservation is not None and reservation.existing is None:
             store.finalize(workspace_id, idempotency_key, message_id, reservation.token)
@@ -1468,45 +1632,45 @@ class PublicGatewayService:
         rows = ChannelRepository(self.db).list_by_workspace(
             workspace_id, tenant_id, oldest_first=True
         )
+        default_id = self._default_channel_id(tenant_id, workspace_id)
+        smap = statuses.id_to_key_map(self.db, tenant_id)
+        return [_public_channel_item(c, smap, default_id) for c in rows]
+
+    def _default_channel_id(self, tenant_id: str, workspace_id: str) -> Optional[str]:
         try:
-            default_id: Optional[str] = self._workspace_channel(tenant_id, workspace_id).id
+            return self._workspace_channel(tenant_id, workspace_id).id
         except ApiError as exc:
             if exc.code not in ("no_active_channel", "channel_required"):
                 raise
-            default_id = None
-        smap = statuses.id_to_key_map(self.db, tenant_id)
+            return None
 
-        def _is_provider_id(value: Optional[str], c: Channel) -> bool:
-            # On a WhatsApp channel, a display field that holds (or is built
-            # from) the provider's number id, because details were not available
-            # at connect, is not shown. Short, blank or missing ids change nothing.
-            if c.channel_type != "WHATSAPP" or not value:
-                return False
-            pid = (c.phone_number_id or "").strip()
-            return len(pid) >= 6 and pid in value
-
-        def _status(c: Channel) -> str:
-            # A missing status row reads ACTIVE only for an active channel.
-            return smap.get(c.status_id) or ("ACTIVE" if c.is_active else "INACTIVE")
-
-        return [
-            PublicChannelItem(
-                id=c.id,
-                channelType=c.channel_type,
-                name="WhatsApp channel" if _is_provider_id(c.name, c) else c.name,
-                status=_status(c),
-                isActive=c.is_active,
-                isDefault=c.id == default_id,
-                displayPhoneNumber=(
-                    None if _is_provider_id(c.display_phone_number, c) else c.display_phone_number
-                ),
-                verifiedName=None if _is_provider_id(c.verified_name, c) else c.verified_name,
-                createdAt=c.created_at,
-            )
-            for c in rows
-        ]
+    def public_channel_item(self, channel: Channel) -> PublicChannelItem:
+        """One channel in the `GET /channels` shape, trashed or not (the
+        `channel.updated` event body)."""
+        default_id = self._default_channel_id(channel.tenant_id, channel.workspace_id)
+        smap = statuses.id_to_key_map(self.db, channel.tenant_id)
+        return _public_channel_item(channel, smap, default_id)
 
     # ── Templates (read-only mirror) ─────────────────────────────────────────
+    def _workspace_channel_any_state(
+        self, tenant_id: str, workspace_id: str, channel_id: str
+    ) -> Channel:
+        """A non-trashed channel of this workspace, active or not (a read filter
+        may target a paused number). Else the uniform 404 of the template read."""
+        channel = (
+            self.db.query(Channel)
+            .filter(
+                Channel.id == channel_id,
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id == workspace_id,
+                Channel.is_trashed.is_(False),
+            )
+            .first()
+        )
+        if channel is None:
+            raise ApiError(404, "channel_not_found", "Channel not found for this workspace.")
+        return channel
+
     def list_templates(
         self,
         tenant_id: str,
@@ -1522,18 +1686,7 @@ class PublicGatewayService:
         workspace/tenant is a uniform 404. ``search`` filters by name substring
         (case-insensitive); ``category`` filters by Meta category (UTILITY|…)."""
         if channel_id:
-            channel = (
-                self.db.query(Channel)
-                .filter(
-                    Channel.id == channel_id,
-                    Channel.tenant_id == tenant_id,
-                    Channel.workspace_id == workspace_id,
-                    Channel.is_trashed.is_(False),
-                )
-                .first()
-            )
-            if channel is None:
-                raise ApiError(404, "channel_not_found", "Channel not found for this workspace.")
+            channel = self._workspace_channel_any_state(tenant_id, workspace_id, channel_id)
         else:
             channel = self._workspace_channel(tenant_id, workspace_id)
         q = self.db.query(WhatsappTemplate).filter(
@@ -1545,10 +1698,13 @@ class PublicGatewayService:
             q = q.filter(WhatsappTemplate.name.ilike(f"%{search.strip()}%"))
         if category and category.strip():
             q = q.filter(WhatsappTemplate.category == category.strip().upper())
+        from .template_send import analyze_template
+
         rows = q.order_by(WhatsappTemplate.name.asc()).all()
         out: list[PublicTemplateItem] = []
         for t in rows:
             body = template_body_text(t.components_json)
+            shape = analyze_template(t.components_json)
             out.append(
                 PublicTemplateItem(
                     id=t.id,
@@ -1557,6 +1713,9 @@ class PublicGatewayService:
                     category=t.category,
                     bodyText=body,
                     variableCount=template_variable_count(body),
+                    headerFormat=shape.header_format,
+                    headerVariableCount=shape.header_text_var_count,
+                    buttonVariableCount=shape.button_url_var_count,
                 )
             )
         return out

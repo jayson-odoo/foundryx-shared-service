@@ -614,6 +614,7 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
         channel_id_override: Optional[str] = None,
+        metadata_extra: Optional[Dict[str, Any]] = None,
     ) -> MessageItem:
         """Sniff-gate + cap-check + store an outbound media blob, create a QUEUED
         row and dispatch the async upload-by-id send (AC-12-02/03/10). Raises
@@ -646,6 +647,8 @@ class MessageService:
         if meta_send:
             metadata = dict(metadata or {})
             metadata["metaSend"] = meta_send
+        if metadata_extra:
+            metadata = {**(metadata or {}), **metadata_extra}
 
         from app.services.storage import storage_for_tenant
 
@@ -698,6 +701,7 @@ class MessageService:
         sub_kind: Optional[str] = None,
         actor_is_human: bool = False,
         channel_id_override: Optional[str] = None,
+        metadata_extra: Optional[Dict[str, Any]] = None,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
@@ -720,6 +724,8 @@ class MessageService:
         if meta_send:
             metadata = dict(metadata or {})
             metadata["metaSend"] = meta_send
+        if metadata_extra:
+            metadata = {**(metadata or {}), **metadata_extra}
         now = datetime.now(timezone.utc)
         sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
         row = ConversationMessage(
@@ -760,6 +766,7 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
         channel_id_override: Optional[str] = None,
+        metadata_extra: Optional[Dict[str, Any]] = None,
     ) -> MessageItem:
         from .structured import StructuredError, header_media_kind, validate_interactive
 
@@ -814,6 +821,7 @@ class MessageService:
             sub_kind=defn.get("kind"),
             actor_is_human=actor_is_human,
             channel_id_override=channel_id_override,
+            metadata_extra=metadata_extra,
         )
 
     def send_location(
@@ -827,6 +835,7 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
         channel_id_override: Optional[str] = None,
+        metadata_extra: Optional[Dict[str, Any]] = None,
     ) -> MessageItem:
         from .structured import StructuredError, validate_location
 
@@ -846,6 +855,7 @@ class MessageService:
             external_agent_id=external_agent_id,
             actor_is_human=actor_is_human,
             channel_id_override=channel_id_override,
+            metadata_extra=metadata_extra,
         )
 
     def send_contacts(
@@ -859,6 +869,7 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
         channel_id_override: Optional[str] = None,
+        metadata_extra: Optional[Dict[str, Any]] = None,
     ) -> MessageItem:
         from .structured import StructuredError, validate_contacts
 
@@ -878,6 +889,7 @@ class MessageService:
             external_agent_id=external_agent_id,
             actor_is_human=actor_is_human,
             channel_id_override=channel_id_override,
+            metadata_extra=metadata_extra,
         )
 
     # ── Reactions (plan 12 Slice 3 - AC-12-19/20/21) ────────────────────────

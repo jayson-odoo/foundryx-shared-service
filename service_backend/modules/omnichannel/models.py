@@ -847,6 +847,9 @@ class WebhookEndpoint(OmniBase):
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # Payload version of this endpoint's deliveries; NULL = version 1, the
+    # payloads as they were before versioning (services/payload_version.py).
+    payload_version = Column(Integer, nullable=True)
 
 
 class WorkflowOwner(OmniBase):
@@ -895,6 +898,10 @@ class WebhookDelivery(OmniBase):
 
     __table_args__ = (
         Index("ix_webhook_deliveries_due", "status", "next_attempt_at"),
+        # Delivery history newest first for one endpoint (the key-callable
+        # `GET /api/v1/omnichannel/webhooks/{id}/deliveries`). Built
+        # CONCURRENTLY by `0030_omni_delivery_history_ix`.
+        Index("ix_webhook_deliveries_endpoint_created", "endpoint_id", "created_at"),
     )
 
 
@@ -939,6 +946,13 @@ class OmnichannelSettings(OmniBase):
     # rationale). Shape: `{"mon": [{"from": "09:00", "to": "18:00"}], ...}`.
     business_hours_json = Column(JSON(none_as_null=True), nullable=True)
     business_timezone = Column(String, nullable=True)
+    # S12 (2026-11-18, decision D3) - per-number WhatsApp window enforcement,
+    # opt-in. True: free-form on a WhatsApp number needs THAT number's open
+    # window (`contact_channel_identities.window_expires_at`). NULL/False:
+    # today's contact-level `contacts.csw_expires_at`. A workspace row's NULL
+    # falls back to the tenant default row (`workspace_id` NULL). Read only by
+    # `messaging_policy` (via `MediaSettingsService.strict_number_window`).
+    strict_number_window = Column(Boolean, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
