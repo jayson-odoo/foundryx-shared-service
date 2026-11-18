@@ -252,8 +252,10 @@ export function useBroadcastsListConfig(workspaceId: string | null): ResourceLis
         },
         columnKind: { status: 'status' },
         copyable: ['name', 'channel'],
-        phoneHidden: ['labels', 'audience', 'counts', 'createdBy', 'createdAt'],
-        cardLines: [['name', 'status'], ['channel', 'recipients'], ['scheduledAt']],
+        // A bare count reads as nothing on a phone card, so the counts stay
+        // in the table and on the broadcast's own page.
+        phoneHidden: ['labels', 'audience', 'recipients', 'counts', 'createdBy', 'createdAt'],
+        cardLines: [['name', 'status'], ['channel'], ['scheduledAt']],
         noun: 'broadcasts',
       },
     };
