@@ -168,10 +168,10 @@ export const ideationEmbedService: IdeaService &
     return apiFetch<IdeaComment[]>(`${embedIdea(ideaId)}/comments`);
   },
 
-  addComment(ideaId: string, body: string, parentId?: string): Promise<IdeaComment> {
+  addComment(ideaId: string, body: string, parentId?: string, hasAttachments?: boolean): Promise<IdeaComment> {
     return apiFetch<IdeaComment>(`${embedIdea(ideaId)}/comments`, {
       method: 'POST',
-      body: JSON.stringify(parentId ? { body, parentId } : { body }),
+      body: JSON.stringify({ body, ...(parentId ? { parentId } : {}), ...(hasAttachments ? { hasAttachments: true } : {}) }),
     });
   },
 
@@ -227,9 +227,10 @@ export const ideationEmbedService: IdeaService &
     return apiFetch<Idea[]>(`${embedIdea(id)}/merged`);
   },
 
-  uploadAttachment(id: string, file: File): Promise<IdeaAttachment> {
+  uploadAttachment(id: string, file: File, commentId?: string): Promise<IdeaAttachment> {
     const body = new FormData();
     body.append('file', file);
+    if (commentId) body.append('commentId', commentId);
     return apiFetch<IdeaAttachment>(`${embedIdea(id)}/attachments`, { method: 'POST', body });
   },
 

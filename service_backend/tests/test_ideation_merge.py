@@ -809,8 +809,13 @@ def test_migration_0012_head_and_revision_length():
         mod2 = importlib.util.module_from_spec(spec2)
         spec2.loader.exec_module(mod2)
         all_revisions.add(mod2.revision)
-        if mod2.down_revision:
-            down_revisions.add(mod2.down_revision)
+        # A merge revision (e.g. 0026_ideation_merge_heads) names a TUPLE of
+        # parents; each one is somebody's down_revision.
+        parents = mod2.down_revision
+        if isinstance(parents, (tuple, list)):
+            down_revisions.update(parents)
+        elif parents:
+            down_revisions.add(parents)
     true_heads = all_revisions - down_revisions
     assert len(true_heads) == 1, f"expected a single ideation migration head, found {true_heads}"
     # 0013 (attachment upload) and 0014 (BR build) follow 0012; exactly one head.

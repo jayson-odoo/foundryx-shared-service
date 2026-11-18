@@ -819,8 +819,9 @@ def test_sender_on_multipart_and_structured_sends(client, session_factory, spy):
     {"externalId": "x", "displayName": "A", "avatarUrl": "https://" + "a" * 2050},
     "Aisyah",
 ])
-def test_invalid_sender_is_a_typed_422_and_nothing_is_sent(client, session_factory, spy, sender):
+def test_invalid_sender_is_a_typed_422_at_version_2_and_nothing_is_sent(client, session_factory, spy, sender):
     hdr, _, _ = _open_contact(client, session_factory, "+60123450054")
+    hdr = {**hdr, HEADER: "2"}
     res = client.post(
         f"{BASE}/messages", json={"to": "+60123450054", "type": "text", "text": {"body": "x"}, "sender": sender}, headers=hdr,
     )
@@ -829,6 +830,33 @@ def test_invalid_sender_is_a_typed_422_and_nothing_is_sent(client, session_facto
     res = client.post(f"{BASE}/messages", headers=hdr, data={"payload": payload}, files={"file": ("a.png", PNG, "image/png")})
     _assert_invalid_request(res)
     assert spy.calls == []
+
+
+@pytest.mark.parametrize("sender", [
+    {"displayName": "A"},
+    {"externalId": "bad id", "displayName": "A"},
+    {"externalId": "x", "displayName": "A", "avatarUrl": "http://cdn.example.com/a.png"},
+    "Aisyah",
+    ["not", "an", "object"],
+    42,
+])
+@pytest.mark.parametrize("header", [{}, {HEADER: "1"}])
+def test_malformed_sender_is_ignored_for_version_1_callers(client, session_factory, spy, sender, header):
+    """Version 1 callers never get a new 422 from `sender`. origin/main has no
+    `sender` field, so the unknown key is ignored and the send answers 202 with
+    nothing attributed; this must stay true for JSON and multipart alike."""
+    hdr, _, _ = _open_contact(client, session_factory, "+60123450055")
+    hdr = {**hdr, **header}
+    res = client.post(
+        f"{BASE}/messages", json={"to": "+60123450055", "type": "text", "text": {"body": "x"}, "sender": sender}, headers=hdr,
+    )
+    assert res.status_code == 202, res.text
+    assert set(res.json()) == {"id", "status", "idempotencyReplay"} and res.json()["status"] == "queued"
+    assert "senderAttribution" not in _row(session_factory, res.json()["id"])["meta"]
+    payload = json.dumps({"to": "+60123450055", "type": "image", "sender": sender})
+    res = client.post(f"{BASE}/messages", headers=hdr, data={"payload": payload}, files={"file": ("a.png", PNG, "image/png")})
+    assert res.status_code == 202, res.text
+    assert "senderAttribution" not in _row(session_factory, res.json()["id"])["meta"]
 
 
 def test_sender_types_for_customer_note_workflow_and_agent():

@@ -27,6 +27,15 @@ on:
         description: "Deploy this sha even if it is not main's head (rollback)"
         type: boolean
         default: false
+      skip_tests:
+        # SS-DEPLOY-SKIP-TESTS (owner 14 Nov: zero hosted minutes where
+        # possible). Tick to skip the six CI gate jobs on this release - but
+        # ONLY when this exact sha already has a green run of every one of
+        # them (normally main's push CI). The ci-green-check job verifies
+        # that via the GitHub API and refuses the release otherwise.
+        description: "Skip the tests (only if this exact sha already passed CI)"
+        type: boolean
+        default: false
 
 env:
   # Override IMAGE_REPO / RELEASE_TAG via repo Variables if your Docker Hub
@@ -53,6 +62,9 @@ jobs:
   # own docstring for exactly which directories it checks).
   check-migration-heads:
     name: Single alembic head per module (fast gate)
+    # SS-DEPLOY-SKIP-TESTS: a skip_tests release skips this gate (ci-green-check
+    # proves the sha already passed it); every other event runs it as before.
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +73,9 @@ jobs:
 
   lint-conventions:
     name: Lint conventions (no emdash, brand spelling)
+    # SS-DEPLOY-SKIP-TESTS: a skip_tests release skips this gate (ci-green-check
+    # proves the sha already passed it); every other event runs it as before.
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -104,6 +119,9 @@ jobs:
 
   validate-backend:
     name: Validate backend (import + pytest collect)
+    # SS-DEPLOY-SKIP-TESTS: a skip_tests release skips this gate (ci-green-check
+    # proves the sha already passed it); every other event runs it as before.
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -141,6 +159,9 @@ jobs:
 
   validate-frontend:
     name: Validate frontend (next build)
+    # SS-DEPLOY-SKIP-TESTS: a skip_tests release skips this gate (ci-green-check
+    # proves the sha already passed it); every other event runs it as before.
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -160,11 +181,15 @@ jobs:
 
   test-backend:
     name: Test backend (pytest)
+    # SS-DEPLOY-SKIP-TESTS: a skip_tests release skips this gate (ci-green-check
+    # proves the sha already passed it); every other event runs it as before.
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_tests
     runs-on: ubuntu-latest
-    # The suite runs under pytest-xdist here (PR #77): measured 3m26s at
-    # `-n 4` locally, and the hosted runner has 4 cores - 30 min is a wide
-    # margin, not a target.
-    timeout-minutes: 30
+    # The suite runs under pytest-xdist here (PR #77) on the 4-core hosted
+    # runner. It grew to 23-26 min by Nov 2026 and runs were being cancelled
+    # at the old 30 min cap (SS-CI-TIMEOUT); the slowest tests were fixed and
+    # 45 min leaves headroom. Check `--durations` before raising this again.
+    timeout-minutes: 45
     env:
       # Conftest builds its own in-memory SQLite DB per test and disables the
       # email dispatcher / startup orphan sweep, so nothing here ever opens a
@@ -207,6 +232,9 @@ jobs:
 
   test-frontend:
     name: Test frontend (lint + vitest)
+    # SS-DEPLOY-SKIP-TESTS: a skip_tests release skips this gate (ci-green-check
+    # proves the sha already passed it); every other event runs it as before.
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -233,10 +261,31 @@ jobs:
         working-directory: service_frontend
         run: npm test -- --run --minWorkers=2 --maxWorkers=2 --testTimeout=20000
 
+  # SS-DEPLOY-SKIP-TESTS: runs only on a skip_tests release, in place of the
+  # six gates above. Passes only when this exact sha already has a green run
+  # of every gate (newest attempt, skipped runs ignored); otherwise it fails
+  # fast with the reason and build-and-deploy never starts.
+  ci-green-check:
+    name: Skip tests only if this sha already passed CI
+    if: github.event_name == 'workflow_dispatch' && inputs.skip_tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require a green CI run on this exact sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/deploy_ci_green_guard.sh "${{ github.sha }}"
+
   build-and-deploy:
     name: Build, push, deploy (blue/green)
     needs:
       [
+        ci-green-check,
         check-migration-heads,
         lint-conventions,
         validate-backend,
@@ -249,7 +298,21 @@ jobs:
     # this job runs ONLY on workflow_dispatch (Actions > Run workflow on main),
     # which crew uses to cut one release over many merges. The head guard
     # below still refuses a non-head sha unless force_sha is ticked.
-    if: github.event_name == 'workflow_dispatch'
+    #
+    # SS-DEPLOY-SKIP-TESTS: `!cancelled()` keeps this job from auto-skipping
+    # when the gates it needs were skipped on purpose; the explicit results
+    # below are then the whole gate. Normal release: all six gates green.
+    # skip_tests release: the six are skipped and ci-green-check must be green.
+    if: >-
+      github.event_name == 'workflow_dispatch' && !cancelled() && (
+      (inputs.skip_tests && needs.ci-green-check.result == 'success') ||
+      (!inputs.skip_tests &&
+      needs.check-migration-heads.result == 'success' &&
+      needs.lint-conventions.result == 'success' &&
+      needs.validate-backend.result == 'success' &&
+      needs.validate-frontend.result == 'success' &&
+      needs.test-backend.result == 'success' &&
+      needs.test-frontend.result == 'success'))
     # ONE prod deploy at a time. Two main pushes a minute apart used to run two
     # blue/green deploys at once (both read the same .active_color and brought
     # up the same standby colour). Queue, never cancel: cancelling a run
@@ -467,6 +530,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       [
+        ci-green-check,
         check-migration-heads,
         lint-conventions,
         validate-backend,
@@ -501,6 +565,8 @@ jobs:
             else
               echo "subject=✅ Foundryx main CI passed (CI only, not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
             fi
+          elif [ "${{ needs.ci-green-check.result }}" = "failure" ]; then
+            echo "subject=❌ Foundryx EMS release refused, skip_tests but this sha has no green CI run (not deployed) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           elif [ "${{ needs.build-and-deploy.result }}" = "success" ] && [ "${{ needs.build-and-deploy.outputs.skipped }}" = "true" ]; then
             echo "subject=⏭️ Foundryx EMS release skipped, sha is not main head (re-run on main, or force_sha) (${GITHUB_REF_NAME})" >> "$GITHUB_OUTPUT"
           elif [ "${{ needs.build-and-deploy.result }}" = "success" ]; then

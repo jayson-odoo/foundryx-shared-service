@@ -223,10 +223,12 @@ async def send_message(
             try:
                 sender = PublicSenderAttribution.model_validate(payload_obj["sender"])
             except ValidationError as exc:
-                errors = exc.errors(include_url=False, include_context=False)
-                for e in errors:
-                    e["loc"] = ("payload", "sender", *e.get("loc", ()))
-                raise RequestValidationError(errors) from None
+                if version != payload_version.V1:
+                    errors = exc.errors(include_url=False, include_context=False)
+                    for e in errors:
+                        e["loc"] = ("payload", "sender", *e.get("loc", ()))
+                    raise RequestValidationError(errors) from None
+                # Version 1: a malformed `sender` is ignored, as before it existed.
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
@@ -258,8 +260,20 @@ async def send_message(
             raise RequestValidationError(
                 [{"type": "dict_type", "loc": ("body",), "msg": "Input should be an object", "input": None}]
             )
+        v1_sender = None
+        if version == payload_version.V1 and "sender" in body:
+            # Version 1 callers never get a new 422 from `sender`: a malformed
+            # one is dropped (the send goes through as it did before the key
+            # existed); a well-formed one is kept as attribution.
+            try:
+                v1_sender = PublicSenderAttribution.model_validate(body["sender"])
+            except ValidationError:
+                v1_sender = None
+            body = {k: v for k, v in body.items() if k != "sender"}
         try:
             payload = PublicSendRequest(**body)
+            if v1_sender is not None:
+                payload.sender = v1_sender
         except ValidationError as exc:
             errors = exc.errors(include_url=False, include_context=False)
             if any(tuple(e.get("loc", ())[:2]) == ("media", "url") for e in errors):

@@ -699,3 +699,17 @@ describe('useIdeaForm - Delete is gated on ideation.triage.manage (AC-19-50)', (
     expect(offered.map((a) => a.id)).toEqual([]);
   });
 });
+
+describe('useIdeaForm - History tab (owner standing rule, crew pass c4572865)', () => {
+  it('the operator record has a History tab; the embed has none', async () => {
+    const service = fakeService();
+    const { result } = renderHook(() => useIdeaForm('idea-1', false), { wrapper: wrapper(service) });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(tabOf(result, 'history')).toBeTruthy();
+
+    const embed = renderHook(() => useIdeaForm('idea-1', false), { wrapper: embedWrapper(fakeService()) });
+    await waitFor(() => expect(embed.result.current.isLoading).toBe(false));
+    const ids = (embed.result.current.config?.tabs as unknown as TabDef[]).map((t) => t.id);
+    expect(ids).not.toContain('history');
+  });
+});

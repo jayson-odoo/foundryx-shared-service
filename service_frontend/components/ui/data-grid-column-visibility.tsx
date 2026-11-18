@@ -21,12 +21,13 @@ function DataGridColumnVisibility<TData>({ table, trigger }: { table: Table<TDat
             return (
               <DropdownMenuCheckboxItem
                 key={column.id}
-                className="capitalize"
+                
                 checked={column.getIsVisible()}
                 onSelect={(event) => event.preventDefault()}
                 onCheckedChange={(value) => column.toggleVisibility(!!value)}
               >
-                {column.columnDef.meta?.headerTitle || column.id}
+                {/* Only the first letter is raised: a label keeps its own casing ("Added by"), a bare id still reads as a word. */}
+                <span className="inline-block first-letter:uppercase">{column.columnDef.meta?.headerTitle || column.id}</span>
               </DropdownMenuCheckboxItem>
             );
           })}
