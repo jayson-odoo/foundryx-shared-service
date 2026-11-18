@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, useSortable } from '@dnd-kit/sortable';
@@ -180,13 +180,12 @@ export function ResourceList<T extends object>({
     if (!urlState) return;
     writeListUrlState(viewKey, encodeListQuery(list.query));
   }, [urlState, viewKey, list.query]);
-  // Its own sidebar link (same path) drops `ctx` without a remount: put it back.
-  const currentCtx = useRef('');
-  currentCtx.current = encodeListQuery(list.query);
+  // Its own sidebar link (same path) would drop `ctx` without a remount:
+  // that click is kept from navigating (no timing involved).
   useEffect(() => {
     if (!urlState) return;
-    return keepListCtxOnSamePathClick(viewKey, () => currentCtx.current);
-  }, [urlState, viewKey]);
+    return keepListCtxOnSamePathClick();
+  }, [urlState]);
 
   // Mirror the current ad-hoc filter tree out to the parent page (opt-in,
   // plan 26 "Save as segment") - purely additive, no behavior change for

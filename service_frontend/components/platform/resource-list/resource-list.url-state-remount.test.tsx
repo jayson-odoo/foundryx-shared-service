@@ -142,37 +142,55 @@ describe('ResourceList URL state survives a remount', () => {
     expect(await screen.findByPlaceholderText('Search records')).toHaveValue('');
   });
 
-  it('a click on the sidebar link of this same list (Next drops ctx from the URL, no remount) writes ctx back', async () => {
-    // Crew pass f39cccdf: Next's same-path navigation replaced the URL without
-    // ctx while the mounted list kept its state; a reload then showed the
-    // default list. The router never knew ctx, so its search params do NOT
-    // change: only the address bar does, a moment after the click.
-    const user = userEvent.setup();
-    render(
-      <>
-        <a
-          href="/records"
-          onClick={(e) => {
-            e.preventDefault();
-            setTimeout(() => realReplaceState({ __NA: true }, '', '/records'), 30);
-          }}
-        >
-          Records link
-        </a>
-        <ResourceList config={config()} hideHeader restoreFromCtx />
-      </>,
-    );
-    const search = await screen.findByPlaceholderText('Search records');
-    await user.clear(search);
-    await user.type(search, 'kept');
-    await waitFor(() => expect(decodeListQuery(new URLSearchParams(window.location.search).get('ctx'))?.search).toBe('kept'));
-    const before = routerSearch;
+  it(
+    'a click on the sidebar link of this same list keeps ctx, even when the route takes longer than 3 s',
+    async () => {
+      // Crew pass f39cccdf / c33ff4f2: Next's same-path navigation replaced the
+      // URL without ctx while the list stayed mounted; the 3 s watch missed a
+      // route that landed later (slow copies, phones). The "link" below acts as
+      // Next's Link: its own onClick runs, then it navigates unless the click
+      // was already default-prevented; the route lands 3.5 s later.
+      const user = userEvent.setup();
+      const ownOnClick = vi.fn();
+      render(
+        <>
+          <a
+            href="/records"
+            onClick={(e) => {
+              ownOnClick();
+              if (e.defaultPrevented) return;
+              e.preventDefault();
+              setTimeout(() => realReplaceState({ __NA: true }, '', '/records'), 3500);
+            }}
+          >
+            Records link
+          </a>
+          <a href="/other" onClick={(e) => e.preventDefault()}>
+            Other link
+          </a>
+          <ResourceList config={config()} hideHeader restoreFromCtx />
+        </>,
+      );
+      const search = await screen.findByPlaceholderText('Search records');
+      await user.clear(search);
+      await user.type(search, 'kept');
+      await waitFor(() =>
+        expect(decodeListQuery(new URLSearchParams(window.location.search).get('ctx'))?.search).toBe('kept'),
+      );
 
-    await user.click(screen.getByText('Records link'));
-    await waitFor(() => expect(window.location.search).toBe(''), { timeout: 200 }).catch(() => {});
+      await user.click(screen.getByText('Records link'));
+      expect(ownOnClick).toHaveBeenCalledTimes(1); // the link's own handlers still run
+      await new Promise((r) => setTimeout(r, 3800));
 
-    await waitFor(() => expect(decodeListQuery(new URLSearchParams(window.location.search).get('ctx'))?.search).toBe('kept'));
-    expect(routerSearch).toBe(before);
-    expect(screen.getByPlaceholderText('Search records')).toHaveValue('kept');
-  });
+      expect(decodeListQuery(new URLSearchParams(window.location.search).get('ctx'))?.search).toBe('kept');
+      expect(screen.getByPlaceholderText('Search records')).toHaveValue('kept');
+
+      // A link to another page is never touched.
+      const other = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+      const spy = vi.spyOn(other, 'preventDefault');
+      screen.getByText('Other link').dispatchEvent(other);
+      expect(spy).toHaveBeenCalledTimes(1); // only its own handler
+    },
+    10000,
+  );
 });

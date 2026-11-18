@@ -35,45 +35,30 @@ export function liveListCtx(listKey: string | undefined): string | null {
   return new URLSearchParams(window.location.search).get('ctx') === written.ctx ? written.ctx : null;
 }
 
-/** How long after a same-path link click the list watches the address bar. */
-const SAME_PATH_WATCH_MS = 3000;
-const SAME_PATH_POLL_MS = 50;
-
 /**
- * Crew pass f39cccdf (#259): a click on the link of the page you are on (its
- * sidebar entry) makes Next replace the URL without `ctx` and keep the list
- * mounted. The router never knew `ctx`, so nothing in React changes: the list
- * would keep its state while the address bar lost it (a reload then showed the
- * default list). After such a click, write the list's current `ctx` back once
- * Next has replaced the URL. Returns the cleanup.
+ * Crew passes f39cccdf / c33ff4f2 (#259): a click on the link of the page you
+ * are on (its sidebar entry) makes Next replace the URL without `ctx` while the
+ * list stays mounted, so a reload showed the default list. Watching for the URL
+ * change afterwards depends on how fast the route answers. Instead, cancel that
+ * click's default in the capture phase: Next's Link still runs the link's own
+ * onClick (e.g. closing the mobile sidebar), then skips its navigation because
+ * the event is already default-prevented (`next/dist/client/app-dir/link.js`).
+ * The URL never loses `ctx`, whatever the route timing. Only a plain left click
+ * on a same-origin link to this exact path without its own `ctx` is affected.
+ * Returns the cleanup.
  */
-export function keepListCtxOnSamePathClick(listKey: string, currentCtx: () => string): () => void {
+export function keepListCtxOnSamePathClick(): () => void {
   if (typeof window === 'undefined') return () => {};
-  let timer: ReturnType<typeof setInterval> | null = null;
-  const stop = () => {
-    if (timer !== null) clearInterval(timer);
-    timer = null;
-  };
   const onClick = (event: MouseEvent) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const anchor = (event.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
-    if (!anchor || (anchor.target && anchor.target !== '_self')) return;
+    if (!anchor || (anchor.target && anchor.target !== '_self') || anchor.hasAttribute('download')) return;
     const to = new URL(anchor.href, window.location.href);
-    const path = window.location.pathname;
-    if (to.origin !== window.location.origin || to.pathname !== path || to.searchParams.has('ctx')) return;
-    stop();
-    const startedAt = Date.now();
-    timer = setInterval(() => {
-      if (window.location.pathname !== path || Date.now() - startedAt > SAME_PATH_WATCH_MS) {
-        stop();
-        return;
-      }
-      if (!new URLSearchParams(window.location.search).get('ctx')) writeListUrlState(listKey, currentCtx());
-    }, SAME_PATH_POLL_MS);
+    if (to.origin !== window.location.origin || to.pathname !== window.location.pathname) return;
+    if (to.searchParams.has('ctx') || to.hash) return;
+    event.preventDefault();
   };
   document.addEventListener('click', onClick, true);
-  return () => {
-    document.removeEventListener('click', onClick, true);
-    stop();
-  };
+  return () => document.removeEventListener('click', onClick, true);
 }

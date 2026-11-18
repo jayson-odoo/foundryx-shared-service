@@ -125,3 +125,9 @@ revoke/remove through the core grace-window engine.
   for up to 3 s and writes its current `ctx` back once Next has replaced the URL (`keepListCtxOnSamePathClick`). One
   fix for every `urlState` list (Lead Capture Keys / Delivery / Form maps, AutoCount Calls).
 
+## Round 10 (crew-pass c33ff4f2 NOT READY: the 3 s watch missed a slower route)
+- No timing any more: a mounted list that writes its state to the address bar cancels the default of a plain click
+  on a link to its own path (no `ctx` of its own) in the capture phase. Next's Link still runs the link's own
+  onClick, then skips its navigation because the event is already default-prevented, so the URL never loses `ctx`
+  whatever the route timing. Links to other pages, modified clicks, new tabs and downloads are untouched.
+
