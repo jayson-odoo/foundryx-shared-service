@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import type { ListQuery } from '@/types/resource';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
-import type { FxAnyIconName } from '@/components/fx/icons';
+import type { FxIconRef } from '@/components/fx/icons';
 
 /**
  * Foundryx UIUX switch only (playbook-uiux.md, build plan 1.3): the page-level
@@ -15,8 +15,9 @@ export interface FxFormConfig<T> {
   mainActionId?: string;
   /** The red action's full label on hover and focus, from the record. */
   fullLabel?: (rows: T[]) => string;
-  /** The icon each Other Action shows, by action id (one icon per meaning). */
-  iconFor?: Record<string, FxAnyIconName>;
+  /** The icon each Other Action shows, by action id (one icon per meaning):
+   *  a meaning's name, or a drawn icon node. */
+  iconFor?: Record<string, FxIconRef>;
   /** Action ids that always sit in the More menu. */
   moreActionIds?: string[];
   /** Field ids whose values Hold to Copy copies (F3b). */

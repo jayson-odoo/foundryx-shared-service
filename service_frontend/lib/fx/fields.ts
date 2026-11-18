@@ -104,16 +104,66 @@ export function passwordStrength(password: string): PasswordStrength {
   return { level, label: LABELS[level], missing };
 }
 
-/** The value a step lands on: clamped to [min, max] and on the step grid from min. */
-export function snapToStep(value: number, min: number, max: number, step: number): number {
-  if (!(step > 0)) return Math.min(max, Math.max(min, value));
-  const steps = Math.round((value - min) / step);
-  const snapped = min + steps * step;
-  const decimals = (String(step).split('.')[1] ?? '').length;
-  return Math.min(max, Math.max(min, Number(snapped.toFixed(decimals))));
+/** A typed value kept inside [min, max], as typed otherwise (FX-12). */
+export function clampValue(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
-/** A stepper's next value: one step up or down, clamped. */
+/** Where the step grid starts: min, or 0 when there is no min. */
+function gridOrigin(min: number): number {
+  return Number.isFinite(min) ? min : 0;
+}
+
+/**
+ * How many decimals a number is written with: 0.01 has 2, 6.5 has 1, 1e-7
+ * has 7. Used to keep a stepped value at the precision of its step.
+ */
+export function decimalsOf(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  const [mantissa, exponent] = String(n).toLowerCase().split('e');
+  const fraction = (mantissa.split('.')[1] ?? '').length;
+  return Math.max(0, fraction - Number(exponent ?? 0));
+}
+
+/**
+ * `value` rounded to `decimals` places, half away from zero, with no binary
+ * residue left over (6.509999999999 and 6.510000228881836 both give 6.51).
+ */
+export function roundTo(value: number, decimals: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(decimals)) return value;
+  const d = Math.min(15, Math.max(0, Math.trunc(decimals)));
+  const sign = value < 0 ? -1 : 1;
+  const shifted = Number(`${Math.abs(value)}e${d}`);
+  const rounded = Number.isFinite(shifted)
+    ? Number(`${Math.round(shifted)}e-${d}`)
+    : Number(Math.abs(value).toFixed(d));
+  return sign * rounded || 0;
+}
+
+/** The decimals a stepped value keeps: those of the step and of the grid's start. */
+function stepDecimals(min: number, step: number): number {
+  return Math.max(decimalsOf(step), decimalsOf(gridOrigin(min)));
+}
+
+/** The value a step lands on: clamped to [min, max] and on the step grid from min. */
+export function snapToStep(value: number, min: number, max: number, step: number): number {
+  if (!(step > 0)) return clampValue(value, min, max);
+  const origin = gridOrigin(min);
+  const steps = Math.round((value - origin) / step);
+  return clampValue(roundTo(origin + steps * step, stepDecimals(min, step)), min, max);
+}
+
+/**
+ * A stepper's next value: one step up or down, clamped. A value between two
+ * steps (typed, FX-12) moves to the next step in that direction, the way a
+ * browser number field does: 6.5 goes up to 7 and down to 6.
+ */
 export function stepValue(value: number, direction: 1 | -1, min: number, max: number, step: number): number {
-  return snapToStep(value + direction * step, min, max, step);
+  if (!(step > 0)) return clampValue(value, min, max);
+  const position = (value - gridOrigin(min)) / step;
+  if (Math.abs(position - Math.round(position)) < 1e-9) {
+    return snapToStep(gridOrigin(min) + (Math.round(position) + direction) * step, min, max, step);
+  }
+  const next = direction > 0 ? Math.ceil(position) : Math.floor(position);
+  return snapToStep(gridOrigin(min) + next * step, min, max, step);
 }

@@ -24,7 +24,7 @@ import {
 } from '@/components/platform/resource-actions/bulk-actions';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
 import { FxIconAction } from '@/components/fx/actions/icon-action';
-import type { FxAnyIconName } from '@/components/fx/icons';
+import type { FxIconRef } from '@/components/fx/icons';
 import { fxCount, fxSelectedText } from './fx-words';
 
 export interface FxSelectionBarProps<T> extends BulkActionsProps<T> {
@@ -37,7 +37,7 @@ export interface FxSelectionBarProps<T> extends BulkActionsProps<T> {
   onSelectAll: () => void;
   onClear: () => void;
   onExport?: () => void;
-  iconFor?: Record<string, FxAnyIconName>;
+  iconFor?: Record<string, FxIconRef>;
   /** Phones: a floating bar at the lower edge. */
   floating?: boolean;
 }

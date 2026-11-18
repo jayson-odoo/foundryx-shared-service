@@ -291,3 +291,22 @@ export function fxShowingText(pageIndex: number, pageSize: number, total: number
   const last = Math.min(total, (pageIndex + 1) * pageSize);
   return `Showing ${count(first)}-${count(last)} of ${count(total)}`;
 }
+
+/**
+ * The columns a phone card shows as its status on the top line (FX-13):
+ * those whose header filter is status ticks, and those the page declares
+ * `columnKind: 'status'`, whether or not they have a filter field.
+ */
+export function fxStatusColumnIds(
+  kinds: Record<string, string | null>,
+  declared: Record<string, FxColumnKind> | undefined,
+): Set<string> {
+  return new Set([
+    ...Object.entries(kinds)
+      .filter(([, kind]) => kind === 'status')
+      .map(([id]) => id),
+    ...Object.entries(declared ?? {})
+      .filter(([, kind]) => kind === 'status')
+      .map(([id]) => id),
+  ]);
+}

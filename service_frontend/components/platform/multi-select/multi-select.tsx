@@ -44,6 +44,13 @@ export interface MultiSelectProps {
    * instead of forking a parallel multi-select component.
    */
   onQueryChange?: (query: string) => void;
+  /**
+   * Foundryx UIUX switch only (FX-19): the field's accessible name. Pass
+   * `id` instead when a visible `<Label htmlFor>` names it. Ignored with
+   * the switch off.
+   */
+  ariaLabel?: string;
+  id?: string;
 }
 
 /**

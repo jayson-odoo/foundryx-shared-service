@@ -207,6 +207,7 @@ export function ActionMenu<T>({
           windowSeconds,
           count: parkedIds.length > 1 ? parkedIds.length : undefined,
           noun: parkedIds.length > 1 ? entityNoun(entityType, parkedIds.length) : undefined,
+          fxName: parkedIds.length === 1 ? action.deferred.fxName?.(rows) : undefined,
           onCancel: () => {
             void deferred.cancel();
             untrackPendingEntities(parkedIds);

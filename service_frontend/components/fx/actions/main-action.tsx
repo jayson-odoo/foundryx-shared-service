@@ -9,6 +9,8 @@
  * - Short label at rest; on hover or keyboard focus it widens to the left and
  *   shows the full action ("Record RM 2,500.00 from Client E"). Touch screens
  *   keep the short label (no hover). Screen readers always get the full label.
+ *   The full label only fades in once the button has finished widening, and
+ *   leaves at once, so it is never seen cut off mid-way (FX-20).
  * - Blocked: greyed, its reason right-aligned under it in light red, and
  *   pointing at or clicking it pulses the thing it waits for.
  * - Working: a spinner replaces the arrow; the label and width stay and a
@@ -154,7 +156,7 @@ export function FxMainAction({
           className={cn(
             'relative inline-block h-[1.5em] overflow-hidden whitespace-nowrap leading-normal tabular-nums',
             widths &&
-              'w-(--fx-w0) transition-[width] duration-(--fx-t-open) ease-(--fx-ease-out)',
+              'w-(--fx-w0) transition-[width] duration-(--fx-t-hover) ease-(--fx-ease-out)',
             widths &&
               reveal &&
               'group-hover/act:w-(--fx-w1) group-focus-visible/act:w-(--fx-w1)',
@@ -184,10 +186,13 @@ export function FxMainAction({
               ref={l1}
               aria-hidden="true"
               data-fx-decor=""
+              data-fx-full-label=""
               className={cn(
-                'absolute start-0 top-0 inline-block translate-y-[70%] opacity-0 transition-[translate,opacity] duration-(--fx-t-open) ease-(--fx-ease-out)',
+                // Hidden at once on leave; on reveal it waits for the width
+                // (same timing step) before it glides in.
+                'absolute start-0 top-0 inline-block translate-y-[70%] opacity-0 transition-none ease-(--fx-ease-out)',
                 reveal &&
-                  'group-hover/act:translate-y-0 group-hover/act:opacity-100 group-focus-visible/act:translate-y-0 group-focus-visible/act:opacity-100',
+                  'group-hover/act:translate-y-0 group-hover/act:opacity-100 group-hover/act:transition-[translate,opacity] group-hover/act:duration-(--fx-t-hover) group-hover/act:delay-(--fx-t-hover) group-focus-visible/act:translate-y-0 group-focus-visible/act:opacity-100 group-focus-visible/act:transition-[translate,opacity] group-focus-visible/act:duration-(--fx-t-hover) group-focus-visible/act:delay-(--fx-t-hover)',
               )}
             >
               {full}

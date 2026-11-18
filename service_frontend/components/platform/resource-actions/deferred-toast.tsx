@@ -10,6 +10,8 @@ export interface DeferredToastInput {
   windowSeconds: number;
   count?: number;
   noun?: string;
+  /** Foundryx UIUX switch only: the one record's name (FX-03). */
+  fxName?: string;
   onCancel: () => void;
 }
 
@@ -24,7 +26,7 @@ export interface DeferredToastInput {
  * Foundryx UIUX switch is on; the legacy countdown ignores it.
  */
 export function deferredToast(input: DeferredToastInput): string | number {
-  const { id, verb, commitAt, windowSeconds, count, noun, onCancel } = input;
+  const { id, verb, commitAt, windowSeconds, count, noun, fxName, onCancel } = input;
   return toast.custom(
     () => (
       <DeferredCountdown
@@ -33,6 +35,7 @@ export function deferredToast(input: DeferredToastInput): string | number {
         windowSeconds={windowSeconds}
         count={count}
         noun={noun}
+        fxName={fxName}
         onCancel={onCancel}
         className="w-full shadow-lg"
         fxSurface="toast"

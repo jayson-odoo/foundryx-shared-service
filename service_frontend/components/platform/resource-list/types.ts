@@ -23,6 +23,12 @@ declare module '@tanstack/react-table' {
   interface ColumnMeta<TData extends RowData, TValue> {
     /** When false, the column can't be drag-reordered (e.g. select, actions). */
     reorderable?: boolean;
+    /**
+     * Foundryx UIUX switch only (FX-13): `'end'` right-aligns the column's
+     * header and cells together (amounts). Ignored with the switch off and on
+     * phone cards.
+     */
+    fxAlign?: 'start' | 'end';
   }
 }
 
@@ -163,6 +169,13 @@ export type ResourceAction<T> =
           rows: T[],
           park: (extraPayload?: Record<string, unknown>) => Promise<void>,
         ) => boolean;
+        /**
+         * Foundryx UIUX switch only (FX-03): the record's name for a
+         * one-record countdown, "Deleting Barcode scanner in 10 s". Without
+         * it (or when it returns nothing) the countdown keeps "Deleting in
+         * 10 s". Ignored with the switch off.
+         */
+        fxName?: (rows: T[]) => string | undefined;
       };
       run?: undefined;
     });
@@ -186,15 +199,18 @@ export interface FxListConfig<T> {
   /** The red action's full label on hover and focus, from the ticked rows
    *  (or none): "Send 3 reminders for RM 18,200.00". */
   fullLabel?: (rows: T[]) => string;
-  /** The icon each Other Action shows, by action id (one icon per meaning). */
-  iconFor?: Record<string, import('@/components/fx/icons').FxAnyIconName>;
+  /** The icon each Other Action shows, by action id (one icon per meaning):
+   *  a meaning's name, or a drawn icon node. */
+  iconFor?: Record<string, import('@/components/fx/icons').FxIconRef>;
   /** Action ids that always sit in the More menu. */
   moreActionIds?: string[];
   /** Column ids whose values Hold to Copy copies (F3b). */
   copyable?: string[];
   /** Column ids dropped from phone cards (F3b). */
   phoneHidden?: string[];
-  /** Header search and filter kind per column id (F3a). */
+  /** Header search and filter kind per column id (F3a). A `'status'` column
+   *  also takes the phone card's top line, with or without a filter field
+   *  (FX-13). */
   columnKind?: Record<string, FxColumnKind>;
   /** Phone card lines (F3b): column ids per line, in order. */
   cardLines?: string[][];
@@ -202,6 +218,14 @@ export interface FxListConfig<T> {
    *  empty, nothing-matches and couldn't-load words (F3b). Default: the
    *  page title in lower case, else "records". */
   noun?: string;
+  /** A list rendered without its own header (`hideHeader`) hands its Create
+   *  to the page header as the red action only when this is set (FX-17).
+   *  A list with its own header always does. */
+  createInPageHeader?: boolean;
+  /** The smaller empty, nothing-matches and couldn't-load words, for a list
+   *  inside a card or a record's tab (FX-17). `embeddedListConfig` sets it;
+   *  every other list shows the full size. */
+  compactStates?: boolean;
 }
 
 export interface ExportColumn {
