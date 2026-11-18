@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { PageHeader } from '@/components/platform/page-header';
+import { useFx } from '@/hooks/use-fx';
+import { FxLogRetentionForm } from '../components/fx-log-retention-form';
 
 /**
  * Developer Logs retention settings (sprint-4/12 Slice 3, AC-DLC-21/23) - the
@@ -85,12 +87,16 @@ function LogRetentionForm() {
   );
 }
 
+function RetentionForm() {
+  return useFx() ? <FxLogRetentionForm /> : <LogRetentionForm />;
+}
+
 export default function DeveloperLogSettingsPage() {
   return (
     <RequirePermission permission="integration_logs.manage">
       <Container width="fluid">
         <PageHeader description="How long integration activity is kept before it is automatically pruned." />
-        <LogRetentionForm />
+        <RetentionForm />
       </Container>
     </RequirePermission>
   );
