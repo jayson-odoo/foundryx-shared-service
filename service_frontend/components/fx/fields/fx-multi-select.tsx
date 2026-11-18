@@ -37,6 +37,8 @@ export function FxMultiSelect({
   className,
   disabled = false,
   onQueryChange,
+  ariaLabel,
+  id,
 }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -60,6 +62,10 @@ export function FxMultiSelect({
         <button
           type="button"
           role="combobox"
+          id={id}
+          // Named by its label (`id` + `<Label htmlFor>`) or `ariaLabel`
+          // (FX-19); with neither, by what it asks for.
+          aria-label={ariaLabel ?? (id ? undefined : placeholder)}
           aria-expanded={open}
           disabled={disabled}
           data-fx-field=""
