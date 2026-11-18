@@ -10,7 +10,6 @@
  *   it (`parseInt`), so the number shown is the number sent, never a float.
  * - The missing running-number message sits under the format field without
  *   moving anything.
- * - The red action names what it saves: "Save Invoice numbering".
  */
 import { useState } from 'react';
 import {
@@ -124,7 +123,7 @@ export function FxNumberEditDialog({ item, onClose, onSave }: NumberEditDialogPr
           </Button>
           <div className="relative">
             <Button onClick={() => void handleSave()} disabled={!valid || saving}>
-              {saving ? 'Saving…' : `Save ${item.label} numbering`}
+              {saving ? 'Saving…' : 'Save numbering'}
             </Button>
             <FxFieldMessage className="end-0 start-auto w-max max-w-64 text-end">{error}</FxFieldMessage>
           </div>

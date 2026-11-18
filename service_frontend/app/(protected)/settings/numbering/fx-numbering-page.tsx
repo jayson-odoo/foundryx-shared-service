@@ -46,7 +46,7 @@ export function FxNumberingPage() {
     setEditing(null);
     runtime.current?.reload();
     toast.fxDone({
-      what: `${label} numbering saved`,
+      what: `Numbering saved for ${label}`,
       howMany: nextValChanged ? `next number ${nextVal}` : undefined,
       byWhom,
     });

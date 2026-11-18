@@ -215,7 +215,7 @@ describe('Numbering: the same edit in both looks', () => {
       body: JSON.stringify({ nextVal: 100 }),
     });
     expect(toasts.fxDone.mock.calls[0][0]).toMatchObject({
-      what: 'Invoice numbering saved',
+      what: 'Numbering saved for Invoice',
       howMany: 'next number 100',
     });
     expect(toasts.fxDone.mock.calls[0][0].undo).toBeUndefined();
