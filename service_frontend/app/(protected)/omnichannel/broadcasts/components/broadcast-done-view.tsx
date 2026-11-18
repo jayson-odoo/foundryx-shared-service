@@ -12,12 +12,15 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { Check, LoaderCircleIcon } from 'lucide-react';
-import { Container } from '@/components/common/container';
-import { PageHeader } from '@/components/platform/page-header';
-import { useRegisterMainAction, type FxMainActionSpec } from '@/components/fx/actions/page-actions-context';
+import type { Broadcast } from '@/types/omnichannel';
 import { useBroadcast } from '@/hooks/use-broadcast';
 import { useDatetime } from '@/hooks/use-datetime';
-import type { Broadcast } from '@/types/omnichannel';
+import { Container } from '@/components/common/container';
+import {
+  useRegisterMainAction,
+  type FxMainActionSpec,
+} from '@/components/fx/actions/page-actions-context';
+import { PageHeader } from '@/components/platform/page-header';
 import type { BroadcastDoneEntry } from './broadcast-done-store';
 import { contactsCount } from './fx-broadcast-actions';
 import { broadcastsListPath } from './paths';
@@ -36,7 +39,8 @@ export function broadcastDoneLines(
   format: { dateTime: (iso: string) => string; time: (iso: string) => string },
 ): BroadcastDoneLines {
   const scheduled = entry.mode === 'schedule';
-  const howMany = broadcast.counts.total > 0 ? broadcast.counts.total : entry.audienceCount;
+  const howMany =
+    broadcast.counts.total > 0 ? broadcast.counts.total : entry.audienceCount;
   const to = howMany !== null ? ` to ${contactsCount(howMany)}` : '';
   const when = scheduled
     ? `Scheduled for ${format.dateTime(broadcast.scheduledAt ?? entry.pressedAt)}`
@@ -60,7 +64,12 @@ export interface BroadcastDoneViewProps {
   onViewDelivery: () => void;
 }
 
-export function BroadcastDoneView({ workspaceId, broadcastId, entry, onViewDelivery }: BroadcastDoneViewProps) {
+export function BroadcastDoneView({
+  workspaceId,
+  broadcastId,
+  entry,
+  onViewDelivery,
+}: BroadcastDoneViewProps) {
   const { broadcast, loading } = useBroadcast(workspaceId, broadcastId);
   const { formatDateTime, formatTime } = useDatetime();
 
@@ -82,13 +91,19 @@ export function BroadcastDoneView({ workspaceId, broadcastId, entry, onViewDeliv
     return (
       <Container width="fluid">
         <div className="flex items-center justify-center py-24 text-(--fx-ink-3)">
-          <LoaderCircleIcon className="size-6 animate-spin" aria-hidden="true" />
+          <LoaderCircleIcon
+            className="size-6 animate-spin"
+            aria-hidden="true"
+          />
         </div>
       </Container>
     );
   }
 
-  const lines = broadcastDoneLines(broadcast, entry, { dateTime: formatDateTime, time: formatTime });
+  const lines = broadcastDoneLines(broadcast, entry, {
+    dateTime: formatDateTime,
+    time: formatTime,
+  });
 
   return (
     <Container width="fluid">
@@ -108,7 +123,9 @@ export function BroadcastDoneView({ workspaceId, broadcastId, entry, onViewDeliv
           <span className="grid size-14 place-items-center rounded-full bg-(--fx-ok-bg) text-(--fx-ok)">
             <Check className="size-6" strokeWidth={2.5} aria-hidden="true" />
           </span>
-          <h2 className="break-words text-xl font-bold text-(--fx-ink)">{lines.headline}</h2>
+          <h2 className="break-words text-xl font-bold text-(--fx-ink)">
+            {lines.headline}
+          </h2>
           <p className="m-0 text-(--fx-ink-2)">{lines.detail}</p>
           <p className="m-0 rounded-(--fx-r-m) bg-(--fx-info-bg) px-3.5 py-2.5 text-sm text-(--fx-info-ink)">
             {lines.loop}

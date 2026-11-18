@@ -6,14 +6,32 @@
  * same input.
  */
 import type { ReactElement } from 'react';
-import { act, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render as rtlRender,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SettingsProvider } from '@/providers/settings-provider';
-import { FxProvider } from '@/providers/fx-provider';
-import { FX_DEFAULT_THEME } from '@/lib/fx/cookies';
-import { resetPageActionsForTests } from '@/components/fx/actions/page-actions-context';
 import type { Broadcast, Channel, WhatsAppTemplate } from '@/types/omnichannel';
-import { EMPTY_BROADCAST_FORM_VALUES, type BroadcastFormValues } from '../components/broadcast-schema';
+import { zonedTimeToUtc } from '@/lib/datetime';
+import { FX_DEFAULT_THEME } from '@/lib/fx/cookies';
+import { FxProvider } from '@/providers/fx-provider';
+import { SettingsProvider } from '@/providers/settings-provider';
+import { resetPageActionsForTests } from '@/components/fx/actions/page-actions-context';
+import BroadcastFormPage from '../[id]/page';
+import {
+  clearBroadcastDone,
+  peekBroadcastDone,
+  setBroadcastDone,
+} from '../components/broadcast-done-store';
+import { broadcastDoneLines } from '../components/broadcast-done-view';
+import {
+  EMPTY_BROADCAST_FORM_VALUES,
+  type BroadcastFormValues,
+} from '../components/broadcast-schema';
 import {
   BC_PULSE,
   broadcastBlocked,
@@ -24,9 +42,8 @@ import {
   splitScheduledAt,
   timeOptions,
 } from '../components/fx-broadcast-actions';
-import { broadcastDoneLines } from '../components/broadcast-done-view';
-import { clearBroadcastDone, peekBroadcastDone, setBroadcastDone } from '../components/broadcast-done-store';
-import { zonedTimeToUtc } from '@/lib/datetime';
+// Imported after the mocks.
+import NewBroadcastPage from '../new/page';
 
 const h = vi.hoisted(() => ({
   calls: [] as unknown[],
@@ -35,7 +52,11 @@ const h = vi.hoisted(() => ({
   search: new URLSearchParams(),
   pathname: '/omnichannel/broadcasts/new',
   broadcast: null as unknown,
-  permissions: new Set<string>(['broadcasts.read', 'broadcasts.manage', 'broadcasts.send']),
+  permissions: new Set<string>([
+    'broadcasts.read',
+    'broadcasts.manage',
+    'broadcasts.send',
+  ]),
 }));
 
 const rec =
@@ -46,10 +67,12 @@ const rec =
   };
 
 vi.mock('@/lib/toast', () => {
-  const t = (kind: string) => (...args: unknown[]) => {
-    h.calls.push([`toast.${kind}`, ...args]);
-    return 'toast-id';
-  };
+  const t =
+    (kind: string) =>
+    (...args: unknown[]) => {
+      h.calls.push([`toast.${kind}`, ...args]);
+      return 'toast-id';
+    };
   return {
     toast: {
       success: t('success'),
@@ -81,13 +104,19 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('next-auth/react', () => ({
   useSession: () => ({
-    data: { user: { name: 'Kay Tan', timezone: 'Asia/Kuala_Lumpur', permissions: [] } },
+    data: {
+      user: { name: 'Kay Tan', timezone: 'Asia/Kuala_Lumpur', permissions: [] },
+    },
     status: 'authenticated',
   }),
 }));
 
 vi.mock('@/hooks/use-can', () => ({
-  useCan: () => ({ can: (key: string) => h.permissions.has(key), ready: true, permissions: h.permissions }),
+  useCan: () => ({
+    can: (key: string) => h.permissions.has(key),
+    ready: true,
+    permissions: h.permissions,
+  }),
 }));
 
 vi.mock('@/hooks/use-terminology', () => ({
@@ -109,7 +138,11 @@ vi.mock('@/hooks/use-conversation-socket', () => ({
 }));
 
 vi.mock('@/hooks/use-deferred-action', () => ({
-  useDeferredAction: () => ({ state: { status: 'idle' }, start: vi.fn(), cancel: vi.fn() }),
+  useDeferredAction: () => ({
+    state: { status: 'idle' },
+    start: vi.fn(),
+    cancel: vi.fn(),
+  }),
 }));
 
 vi.mock('@/hooks/use-contact-segments', () => ({
@@ -119,13 +152,21 @@ vi.mock('@/hooks/use-contact-segments', () => ({
     reload: vi.fn(),
   }),
 }));
-vi.mock('@/hooks/use-contact-tags', () => ({ useContactTags: () => ({ tags: [], loading: false }) }));
-vi.mock('@/hooks/use-contact-fields', () => ({ useContactFields: () => ({ fields: [], loading: false }) }));
+vi.mock('@/hooks/use-contact-tags', () => ({
+  useContactTags: () => ({ tags: [], loading: false }),
+}));
+vi.mock('@/hooks/use-contact-fields', () => ({
+  useContactFields: () => ({ fields: [], loading: false }),
+}));
 vi.mock('@/hooks/use-contact-lifecycle-stages', () => ({
   useContactLifecycleStages: () => ({ stages: [], loading: false }),
 }));
-vi.mock('@/hooks/use-workspace-members', () => ({ useWorkspaceMembers: () => ({ members: [], loading: false }) }));
-vi.mock('@/hooks/use-channel-type-options', () => ({ useChannelTypeOptions: () => [] }));
+vi.mock('@/hooks/use-workspace-members', () => ({
+  useWorkspaceMembers: () => ({ members: [], loading: false }),
+}));
+vi.mock('@/hooks/use-channel-type-options', () => ({
+  useChannelTypeOptions: () => [],
+}));
 vi.mock('@/hooks/use-contact-picker', () => ({
   useContactPicker: () => ({
     query: '',
@@ -196,11 +237,21 @@ function broadcastRow(overrides: Partial<Broadcast> = {}): Broadcast {
     labels: ['promo'],
     channelId: 'chn-1',
     channelName: 'Maju Sales WhatsApp',
-    audience: { kind: 'segment', segmentId: 'seg-1', segmentName: 'VIP customers', filter: null, contactIds: null },
+    audience: {
+      kind: 'segment',
+      segmentId: 'seg-1',
+      segmentName: 'VIP customers',
+      filter: null,
+      contactIds: null,
+    },
     templateId: 'tpl-1',
     templateName: 'promo_nov_2026',
     templateLanguage: 'en',
-    bindings: { header: [], body: [{ source: 'contactField', field: 'firstName', fallback: 'there' }], buttons: [] },
+    bindings: {
+      header: [],
+      body: [{ source: 'contactField', field: 'firstName', fallback: 'there' }],
+      buttons: [],
+    },
     status: 'DRAFT',
     statusLabel: 'Draft',
     scheduledAt: null,
@@ -263,18 +314,16 @@ vi.mock('@/services/whatsapp-template-service', () => ({
           language: 'en',
           category: 'MARKETING',
           header: null,
-          body: { text: 'Hi {{1}}, our November promo is on.', examples: ['Alex'] },
+          body: {
+            text: 'Hi {{1}}, our November promo is on.',
+            examples: ['Alex'],
+          },
           footer: null,
           buttons: [],
         },
       }),
   },
 }));
-
-
-// Imported after the mocks.
-import NewBroadcastPage from '../new/page';
-import BroadcastFormPage from '../[id]/page';
 
 void rec;
 
@@ -299,7 +348,9 @@ async function pick(combobox: string, option: string) {
 }
 
 function nameInput(): HTMLInputElement {
-  return (screen.getByText('Name *').parentElement as HTMLElement).querySelector('input') as HTMLInputElement;
+  return (
+    screen.getByText('Name *').parentElement as HTMLElement
+  ).querySelector('input') as HTMLInputElement;
 }
 
 async function fillNewBroadcast() {
@@ -307,17 +358,29 @@ async function fillNewBroadcast() {
   await pick('Segment', 'VIP customers');
   await pick('Channel', 'Maju Sales WhatsApp');
   await pick('Template', 'promo_nov_2026 (en)');
-  fireEvent.change(screen.getByTestId('broadcast-binding-body-0-fallback'), { target: { value: 'there' } });
+  fireEvent.change(screen.getByTestId('broadcast-binding-body-0-fallback'), {
+    target: { value: 'there' },
+  });
   await settle();
 }
 
 /** The requests that reached the backend (broadcast service calls only). */
 function requests(): unknown[] {
-  return JSON.parse(JSON.stringify(h.calls.filter((c) => String((c as unknown[])[0]).startsWith('broadcast.') && (c as unknown[])[0] !== 'broadcast.get')));
+  return JSON.parse(
+    JSON.stringify(
+      h.calls.filter(
+        (c) =>
+          String((c as unknown[])[0]).startsWith('broadcast.') &&
+          (c as unknown[])[0] !== 'broadcast.get',
+      ),
+    ),
+  );
 }
 
 function mainAction(): HTMLButtonElement {
-  return document.querySelector('[data-fx-main-action] button') as HTMLButtonElement;
+  return document.querySelector(
+    '[data-fx-main-action] button',
+  ) as HTMLButtonElement;
 }
 
 beforeEach(() => {
@@ -327,7 +390,11 @@ beforeEach(() => {
   h.pathname = '/omnichannel/broadcasts/new';
   h.params = { id: 'bc-1' };
   h.broadcast = null;
-  h.permissions = new Set(['broadcasts.read', 'broadcasts.manage', 'broadcasts.send']);
+  h.permissions = new Set([
+    'broadcasts.read',
+    'broadcasts.manage',
+    'broadcasts.send',
+  ]);
 });
 
 afterEach(() => {
@@ -346,31 +413,70 @@ function values(over: Partial<BroadcastFormValues> = {}): BroadcastFormValues {
     channelId: 'chn-1',
     audience: { kind: 'segment', segmentId: 'seg-1' },
     templateId: 'tpl-1',
-    bindings: { header: [], body: [{ source: 'contactField', field: 'firstName', fallback: 'there' }], buttons: [] },
+    bindings: {
+      header: [],
+      body: [{ source: 'contactField', field: 'firstName', fallback: 'there' }],
+      buttons: [],
+    },
     ...over,
   };
 }
 
 describe('red action labels', () => {
   it('names the send now with the count and the template', () => {
-    expect(broadcastMainLabels({ mode: 'now', audienceCount: 23, templateName: 'promo_nov_2026', when: '' })).toEqual({
+    expect(
+      broadcastMainLabels({
+        mode: 'now',
+        audienceCount: 23,
+        templateName: 'promo_nov_2026',
+        when: '',
+      }),
+    ).toEqual({
       label: 'Send now',
       fullLabel: 'Send now to 23 contacts with promo_nov_2026',
     });
-    expect(broadcastMainLabels({ mode: 'now', audienceCount: 1, templateName: 'promo_nov_2026', when: '' }).fullLabel).toBe(
-      'Send now to 1 contact with promo_nov_2026',
-    );
+    expect(
+      broadcastMainLabels({
+        mode: 'now',
+        audienceCount: 1,
+        templateName: 'promo_nov_2026',
+        when: '',
+      }).fullLabel,
+    ).toBe('Send now to 1 contact with promo_nov_2026');
   });
 
   it('names the schedule with the template, count and time', () => {
     expect(
-      broadcastMainLabels({ mode: 'schedule', audienceCount: 23, templateName: 'promo_nov_2026', when: '20 Mar 2031, 2:30 pm' }),
-    ).toEqual({ label: 'Schedule broadcast', fullLabel: 'Schedule promo_nov_2026 to 23 contacts for 20 Mar 2031, 2:30 pm' });
+      broadcastMainLabels({
+        mode: 'schedule',
+        audienceCount: 23,
+        templateName: 'promo_nov_2026',
+        when: '20 Mar 2031, 2:30 pm',
+      }),
+    ).toEqual({
+      label: 'Schedule broadcast',
+      fullLabel:
+        'Schedule promo_nov_2026 to 23 contacts for 20 Mar 2031, 2:30 pm',
+    });
   });
 
   it('keeps the short label while the count, template or time is unknown', () => {
-    expect(broadcastMainLabels({ mode: 'now', audienceCount: null, templateName: 'x', when: '' }).fullLabel).toBeUndefined();
-    expect(broadcastMainLabels({ mode: 'schedule', audienceCount: 3, templateName: 'x', when: '' }).fullLabel).toBeUndefined();
+    expect(
+      broadcastMainLabels({
+        mode: 'now',
+        audienceCount: null,
+        templateName: 'x',
+        when: '',
+      }).fullLabel,
+    ).toBeUndefined();
+    expect(
+      broadcastMainLabels({
+        mode: 'schedule',
+        audienceCount: 3,
+        templateName: 'x',
+        when: '',
+      }).fullLabel,
+    ).toBeUndefined();
     expect(contactsCount(1240)).toBe('1,240 contacts');
   });
 });
@@ -378,29 +484,82 @@ describe('red action labels', () => {
 describe('blocked reason and pulse target', () => {
   const none = { date: null, time: null };
   it('goes in the order the form reads', () => {
-    expect(broadcastBlocked({ ...EMPTY_BROADCAST_FORM_VALUES }, none)).toEqual({ reason: 'Name the broadcast.', pulseTarget: BC_PULSE.name });
-    expect(broadcastBlocked(values({ name: 'x'.repeat(201) }), none)?.pulseTarget).toBe(BC_PULSE.name);
-    expect(broadcastBlocked(values({ audience: { kind: 'segment' } }), none)).toEqual({ reason: 'Pick who gets it.', pulseTarget: BC_PULSE.audience });
-    expect(broadcastBlocked(values({ audience: { kind: 'contacts', contactIds: [] } }), none)?.pulseTarget).toBe(BC_PULSE.audience);
-    expect(broadcastBlocked(values({ channelId: '', templateId: '' }), none)).toEqual({ reason: 'Pick a channel.', pulseTarget: BC_PULSE.channel });
-    expect(broadcastBlocked(values({ templateId: '' }), none)).toEqual({ reason: 'Pick a template.', pulseTarget: BC_PULSE.template });
+    expect(broadcastBlocked({ ...EMPTY_BROADCAST_FORM_VALUES }, none)).toEqual({
+      reason: 'Name the broadcast.',
+      pulseTarget: BC_PULSE.name,
+    });
     expect(
-      broadcastBlocked(values({ bindings: { header: [], body: [{ source: 'contactField', field: 'firstName', fallback: '' }], buttons: [] } }), none),
-    ).toEqual({ reason: 'Fill in every template value.', pulseTarget: BC_PULSE.bindings });
+      broadcastBlocked(values({ name: 'x'.repeat(201) }), none)?.pulseTarget,
+    ).toBe(BC_PULSE.name);
+    expect(
+      broadcastBlocked(values({ audience: { kind: 'segment' } }), none),
+    ).toEqual({ reason: 'Pick who gets it.', pulseTarget: BC_PULSE.audience });
+    expect(
+      broadcastBlocked(
+        values({ audience: { kind: 'contacts', contactIds: [] } }),
+        none,
+      )?.pulseTarget,
+    ).toBe(BC_PULSE.audience);
+    expect(
+      broadcastBlocked(values({ channelId: '', templateId: '' }), none),
+    ).toEqual({ reason: 'Pick a channel.', pulseTarget: BC_PULSE.channel });
+    expect(broadcastBlocked(values({ templateId: '' }), none)).toEqual({
+      reason: 'Pick a template.',
+      pulseTarget: BC_PULSE.template,
+    });
+    expect(
+      broadcastBlocked(
+        values({
+          bindings: {
+            header: [],
+            body: [
+              { source: 'contactField', field: 'firstName', fallback: '' },
+            ],
+            buttons: [],
+          },
+        }),
+        none,
+      ),
+    ).toEqual({
+      reason: 'Fill in every template value.',
+      pulseTarget: BC_PULSE.bindings,
+    });
   });
 
   it('names the missing date, the missing time or a past time', () => {
     const sched = values({ scheduleMode: 'schedule', scheduledAt: null });
-    expect(broadcastBlocked(sched, none)).toEqual({ reason: 'Pick a date to send.', pulseTarget: BC_PULSE.date });
-    expect(broadcastBlocked(sched, { date: '2031-03-20', time: null })).toEqual({ reason: 'Pick a time to send.', pulseTarget: BC_PULSE.time });
+    expect(broadcastBlocked(sched, none)).toEqual({
+      reason: 'Pick a date to send.',
+      pulseTarget: BC_PULSE.date,
+    });
+    expect(broadcastBlocked(sched, { date: '2031-03-20', time: null })).toEqual(
+      { reason: 'Pick a time to send.', pulseTarget: BC_PULSE.time },
+    );
     expect(
-      broadcastBlocked(values({ scheduleMode: 'schedule', scheduledAt: '2020-01-01T00:00:00.000Z' }), { date: '2020-01-01', time: '08:00' }),
-    ).toEqual({ reason: 'Pick a time in the future.', pulseTarget: BC_PULSE.time });
+      broadcastBlocked(
+        values({
+          scheduleMode: 'schedule',
+          scheduledAt: '2020-01-01T00:00:00.000Z',
+        }),
+        { date: '2020-01-01', time: '08:00' },
+      ),
+    ).toEqual({
+      reason: 'Pick a time in the future.',
+      pulseTarget: BC_PULSE.time,
+    });
   });
 
   it('is not blocked exactly when the switch-off form allows Send', () => {
     expect(broadcastBlocked(values(), none)).toBeUndefined();
-    expect(broadcastBlocked(values({ scheduleMode: 'schedule', scheduledAt: '2031-03-20T06:30:00.000Z' }), { date: '2031-03-20', time: '14:30' })).toBeUndefined();
+    expect(
+      broadcastBlocked(
+        values({
+          scheduleMode: 'schedule',
+          scheduledAt: '2031-03-20T06:30:00.000Z',
+        }),
+        { date: '2031-03-20', time: '14:30' },
+      ),
+    ).toBeUndefined();
   });
 });
 
@@ -412,45 +571,84 @@ describe('schedule date and time', () => {
     const opts = timeOptions(null);
     expect(opts).toHaveLength(48);
     expect(opts[29]).toEqual({ label: '2:30 pm', value: '14:30' });
-    expect(timeOptions('10:17').some((o) => o.value === '10:17' && o.label === '10:17 am')).toBe(true);
+    expect(
+      timeOptions('10:17').some(
+        (o) => o.value === '10:17' && o.label === '10:17 am',
+      ),
+    ).toBe(true);
   });
 
   it('turns a picked day and time into the same instant the switch-off field sends', () => {
     const fx = joinScheduledAt({ date: '2031-03-20', time: '14:30' }, TZ);
-    const legacy = (zonedTimeToUtc('2031-03-20T14:30', TZ) as Date).toISOString();
+    const legacy = (
+      zonedTimeToUtc('2031-03-20T14:30', TZ) as Date
+    ).toISOString();
     expect(fx).toBe(legacy);
     expect(fx).toBe('2031-03-20T06:30:00.000Z');
     expect(joinScheduledAt({ date: '2031-03-20', time: null }, TZ)).toBeNull();
-    expect(splitScheduledAt('2031-03-20T06:30:00.000Z', TZ)).toEqual({ date: '2031-03-20', time: '14:30' });
+    expect(splitScheduledAt('2031-03-20T06:30:00.000Z', TZ)).toEqual({
+      date: '2031-03-20',
+      time: '14:30',
+    });
     expect(splitScheduledAt(null, TZ)).toEqual({ date: null, time: null });
   });
 });
 
 describe('done page words', () => {
-  const fmt = { dateTime: (iso: string) => `DT(${iso})`, time: (iso: string) => `T(${iso})` };
+  const fmt = {
+    dateTime: (iso: string) => `DT(${iso})`,
+    time: (iso: string) => `T(${iso})`,
+  };
   it('says what went out, to how many, by whom and when (send now)', () => {
     const lines = broadcastDoneLines(
-      broadcastRow({ status: 'SENDING', startedAt: '2026-11-18T06:14:00Z', counts: { total: 23, sent: 0, delivered: 0, read: 0, failed: 0, skipped: 0 } }),
-      { mode: 'now', byWhom: 'Kay Tan', audienceCount: 20, pressedAt: '2026-11-18T06:13:59Z' },
+      broadcastRow({
+        status: 'SENDING',
+        startedAt: '2026-11-18T06:14:00Z',
+        counts: {
+          total: 23,
+          sent: 0,
+          delivered: 0,
+          read: 0,
+          failed: 0,
+          skipped: 0,
+        },
+      }),
+      {
+        mode: 'now',
+        byWhom: 'Kay Tan',
+        audienceCount: 20,
+        pressedAt: '2026-11-18T06:13:59Z',
+      },
       fmt,
     );
     expect(lines).toEqual({
       title: 'Broadcast sending',
       headline: '“November promo” is going to 23 contacts',
-      detail: 'Started at T(2026-11-18T06:14:00Z) on Maju Sales WhatsApp with the promo_nov_2026 template, by Kay Tan.',
+      detail:
+        'Started at T(2026-11-18T06:14:00Z) on Maju Sales WhatsApp with the promo_nov_2026 template, by Kay Tan.',
       loop: 'Delivery counts update on the broadcast’s page as they come in.',
     });
   });
 
   it('uses the count shown at send time before recipients exist (schedule)', () => {
     const lines = broadcastDoneLines(
-      broadcastRow({ status: 'SCHEDULED', scheduledAt: '2031-03-20T06:30:00Z' }),
-      { mode: 'schedule', byWhom: null, audienceCount: 23, pressedAt: '2026-11-18T06:13:59Z' },
+      broadcastRow({
+        status: 'SCHEDULED',
+        scheduledAt: '2031-03-20T06:30:00Z',
+      }),
+      {
+        mode: 'schedule',
+        byWhom: null,
+        audienceCount: 23,
+        pressedAt: '2026-11-18T06:13:59Z',
+      },
       fmt,
     );
     expect(lines.title).toBe('Broadcast scheduled');
     expect(lines.headline).toBe('“November promo” goes to 23 contacts');
-    expect(lines.detail).toBe('Scheduled for DT(2031-03-20T06:30:00Z) on Maju Sales WhatsApp with the promo_nov_2026 template.');
+    expect(lines.detail).toBe(
+      'Scheduled for DT(2031-03-20T06:30:00Z) on Maju Sales WhatsApp with the promo_nov_2026 template.',
+    );
   });
 });
 
@@ -462,16 +660,28 @@ describe('new broadcast with the switch on', () => {
     expect(mainAction().getAttribute('aria-disabled')).toBe('true');
     expect(screen.getByText('Name the broadcast.')).toBeTruthy();
     // No Send buttons at the bottom of the page.
-    expect(screen.queryByRole('button', { name: 'Send test message' })).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Send test message' }),
+    ).toBeNull();
     fireEvent.click(mainAction());
-    expect(document.querySelector(`[data-fx-pulse-target="${BC_PULSE.name}"]`)?.hasAttribute('data-fx-pulsing')).toBe(true);
-    expect(h.calls.filter((c) => (c as unknown[])[0] === 'broadcast.send')).toHaveLength(0);
+    expect(
+      document
+        .querySelector(`[data-fx-pulse-target="${BC_PULSE.name}"]`)
+        ?.hasAttribute('data-fx-pulsing'),
+    ).toBe(true);
+    expect(
+      h.calls.filter((c) => (c as unknown[])[0] === 'broadcast.send'),
+    ).toHaveLength(0);
 
     fireEvent.change(nameInput(), { target: { value: 'November promo' } });
     await settle();
     expect(screen.getByText('Pick who gets it.')).toBeTruthy();
     fireEvent.click(mainAction());
-    expect(document.querySelector(`[data-fx-pulse-target="${BC_PULSE.audience}"]`)?.hasAttribute('data-fx-pulsing')).toBe(true);
+    expect(
+      document
+        .querySelector(`[data-fx-pulse-target="${BC_PULSE.audience}"]`)
+        ?.hasAttribute('data-fx-pulsing'),
+    ).toBe(true);
   });
 
   it('names the send in full once the form is complete, and the icon actions', async () => {
@@ -479,10 +689,18 @@ describe('new broadcast with the switch on', () => {
     await settle();
     await fillNewBroadcast();
     expect(mainAction().getAttribute('aria-disabled')).toBeNull();
-    expect(mainAction().getAttribute('aria-label')).toBe('Send now to 23 contacts with promo_nov_2026');
+    expect(mainAction().getAttribute('aria-label')).toBe(
+      'Send now to 23 contacts with promo_nov_2026',
+    );
     expect(screen.getByRole('button', { name: 'Save as draft' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Send a test message' }).getAttribute('aria-disabled')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Discard changes' })).toBeTruthy();
+    expect(
+      screen
+        .getByRole('button', { name: 'Send a test message' })
+        .getAttribute('aria-disabled'),
+    ).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Discard changes' }),
+    ).toBeTruthy();
   });
 
   it('greys Send a test message until a channel and template are picked, and hides the red action without send permission', async () => {
@@ -490,7 +708,9 @@ describe('new broadcast with the switch on', () => {
     render(<NewBroadcastPage />, true);
     await settle();
     expect(document.querySelector('[data-fx-main-action]')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Send a test message' })).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Send a test message' }),
+    ).toBeNull();
     resetPageActionsForTests();
   });
 
@@ -502,7 +722,9 @@ describe('new broadcast with the switch on', () => {
     await settle();
     expect(mainAction().textContent).toContain('Schedule broadcast');
     expect(screen.getByText('Pick a date to send.')).toBeTruthy();
-    expect(document.querySelector('[data-fx-zone-line]')?.textContent).toContain('GMT+8');
+    expect(
+      document.querySelector('[data-fx-zone-line]')?.textContent,
+    ).toContain('GMT+8');
     const date = screen.getByLabelText('Date');
     fireEvent.change(date, { target: { value: '20 Mar 2031' } });
     fireEvent.blur(date);
@@ -510,7 +732,9 @@ describe('new broadcast with the switch on', () => {
     expect((date as HTMLInputElement).value).toBe('20 Mar 2031');
     expect(screen.getByText('Pick a time to send.')).toBeTruthy();
     await pick('Time', '2:30 pm');
-    expect(mainAction().getAttribute('aria-label')).toBe('Schedule promo_nov_2026 to 23 contacts for 20 Mar 2031, 2:30 pm');
+    expect(mainAction().getAttribute('aria-label')).toBe(
+      'Schedule promo_nov_2026 to 23 contacts for 20 Mar 2031, 2:30 pm',
+    );
   });
 
   it('discards in a single click through the discard dialog', async () => {
@@ -520,8 +744,12 @@ describe('new broadcast with the switch on', () => {
     await settle();
     fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
     const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText('Discard changes to November promo?')).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Discard changes' }));
+    expect(
+      within(dialog).getByText('Discard changes to November promo?'),
+    ).toBeTruthy();
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Discard changes' }),
+    );
     await settle();
     expect(h.push).toHaveBeenCalledWith('/omnichannel/broadcasts');
   });
@@ -537,7 +765,10 @@ describe('new broadcast with the switch on', () => {
 });
 
 describe('both looks send the same requests for the same input', () => {
-  async function run(fx: boolean, act1: () => Promise<void>): Promise<unknown[]> {
+  async function run(
+    fx: boolean,
+    act1: () => Promise<void>,
+  ): Promise<unknown[]> {
     h.calls.length = 0;
     const view = render(<NewBroadcastPage />, fx);
     await settle();
@@ -565,9 +796,13 @@ describe('both looks send the same requests for the same input', () => {
     const off = await run(false, async () => {
       fireEvent.click(screen.getByRole('radio', { name: 'Schedule for' }));
       await settle();
-      fireEvent.change(screen.getByLabelText('Scheduled for'), { target: { value: '2031-03-20T14:30' } });
+      fireEvent.change(screen.getByLabelText('Scheduled for'), {
+        target: { value: '2031-03-20T14:30' },
+      });
       await settle();
-      fireEvent.click(screen.getByRole('button', { name: 'Schedule broadcast' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Schedule broadcast' }),
+      );
     });
     const on = await run(true, async () => {
       fireEvent.click(screen.getByRole('radio', { name: 'Schedule for' }));
@@ -597,13 +832,17 @@ describe('both looks send the same requests for the same input', () => {
 
   it('Send a test message', async () => {
     const off = await run(false, async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Send test message' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Send test message' }),
+      );
       await settle();
       await pick('Test-send contact', 'Aisyah Rahman (+60 12-345 6789)');
       fireEvent.click(screen.getByRole('button', { name: 'Send test' }));
     });
     const on = await run(true, async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Send a test message' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Send a test message' }),
+      );
       await settle();
       await pick('Test-send contact', 'Aisyah Rahman (+60 12-345 6789)');
       fireEvent.click(screen.getByRole('button', { name: 'Send test' }));
@@ -619,34 +858,70 @@ describe('done page after a send with the switch on', () => {
     await settle();
     await fillNewBroadcast();
     fireEvent.click(mainAction());
-    await waitFor(() => expect(h.push).toHaveBeenCalledWith('/omnichannel/broadcasts/bc-new'));
-    expect(h.calls.some((c) => String((c as unknown[])[0]).startsWith('toast.'))).toBe(false);
-    expect(peekBroadcastDone('bc-new')).toMatchObject({ mode: 'now', byWhom: 'Kay Tan', audienceCount: 23 });
+    await waitFor(() =>
+      expect(h.push).toHaveBeenCalledWith('/omnichannel/broadcasts/bc-new'),
+    );
+    expect(
+      h.calls.some((c) => String((c as unknown[])[0]).startsWith('toast.')),
+    ).toBe(false);
+    expect(peekBroadcastDone('bc-new')).toMatchObject({
+      mode: 'now',
+      byWhom: 'Kay Tan',
+      audienceCount: 23,
+    });
     view.unmount();
     resetPageActionsForTests();
 
     h.params = { id: 'bc-new' };
     h.pathname = '/omnichannel/broadcasts/bc-new';
-    h.broadcast = broadcastRow({ id: 'bc-new', status: 'SENDING', statusLabel: 'Sending', startedAt: '2026-11-18T06:14:00Z' });
+    h.broadcast = broadcastRow({
+      id: 'bc-new',
+      status: 'SENDING',
+      statusLabel: 'Sending',
+      startedAt: '2026-11-18T06:14:00Z',
+    });
     render(<BroadcastFormPage />, true);
     await settle();
-    expect(screen.getByText('“November promo” is going to 23 contacts')).toBeTruthy();
-    expect(screen.getByText(/on Maju Sales WhatsApp with the promo_nov_2026 template, by Kay Tan\./)).toBeTruthy();
+    expect(
+      screen.getByText('“November promo” is going to 23 contacts'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        /on Maju Sales WhatsApp with the promo_nov_2026 template, by Kay Tan\./,
+      ),
+    ).toBeTruthy();
     expect(screen.getByText(/2:14 pm/)).toBeTruthy();
-    expect(screen.getByText('Delivery counts update on the broadcast’s page as they come in.')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Back to broadcasts' }).getAttribute('href')).toBe('/omnichannel/broadcasts');
-    expect(mainAction().getAttribute('aria-label')).toBe('View delivery of November promo');
+    expect(
+      screen.getByText(
+        'Delivery counts update on the broadcast’s page as they come in.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByRole('link', { name: 'Back to broadcasts' })
+        .getAttribute('href'),
+    ).toBe('/omnichannel/broadcasts');
+    expect(mainAction().getAttribute('aria-label')).toBe(
+      'View delivery of November promo',
+    );
     // A reload would open the ordinary page: the record is used once.
     expect(peekBroadcastDone('bc-new')).toBeNull();
 
     fireEvent.click(mainAction());
     await settle();
-    expect(screen.queryByText('“November promo” is going to 23 contacts')).toBeNull();
+    expect(
+      screen.queryByText('“November promo” is going to 23 contacts'),
+    ).toBeNull();
     expect(screen.getByRole('tab', { name: /Recipients/ })).toBeTruthy();
   });
 
   it('never shows the done page with the switch off', async () => {
-    setBroadcastDone('bc-1', { mode: 'now', byWhom: 'Kay Tan', audienceCount: 23, pressedAt: '2026-11-18T06:13:59Z' });
+    setBroadcastDone('bc-1', {
+      mode: 'now',
+      byWhom: 'Kay Tan',
+      audienceCount: 23,
+      pressedAt: '2026-11-18T06:13:59Z',
+    });
     h.pathname = '/omnichannel/broadcasts/bc-1';
     h.broadcast = broadcastRow({ status: 'SENDING', statusLabel: 'Sending' });
     render(<BroadcastFormPage />, false);

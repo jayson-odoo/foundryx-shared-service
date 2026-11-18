@@ -21,20 +21,28 @@ import { useRouter } from 'next/navigation';
 import { FlaskConical, Save } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { useWatch } from 'react-hook-form';
-import { Container } from '@/components/common/container';
-import { Form } from '@/components/ui/form';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { PageHeader } from '@/components/platform/page-header';
-import { SearchSelect } from '@/components/platform/search-select';
-import { FxIconAction } from '@/components/fx/actions/icon-action';
-import { FxDiscardDialog } from '@/components/fx/actions/confirm-dialog';
-import { useHideMainAction, useRegisterMainAction, type FxMainActionSpec } from '@/components/fx/actions/page-actions-context';
-import { FxDateField, FxField, FxZoneLine } from '@/components/fx/fields';
+import type { Broadcast } from '@/types/omnichannel';
+import { dateKey } from '@/lib/datetime';
 import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
-import { dateKey } from '@/lib/datetime';
-import type { Broadcast } from '@/types/omnichannel';
-import { useBroadcastForm } from './use-broadcast-form';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Form } from '@/components/ui/form';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Container } from '@/components/common/container';
+import { FxDiscardDialog } from '@/components/fx/actions/confirm-dialog';
+import { FxIconAction } from '@/components/fx/actions/icon-action';
+import {
+  useHideMainAction,
+  useRegisterMainAction,
+  type FxMainActionSpec,
+} from '@/components/fx/actions/page-actions-context';
+import { FxDateField, FxField, FxZoneLine } from '@/components/fx/fields';
+import { PageHeader } from '@/components/platform/page-header';
+import { SearchSelect } from '@/components/platform/search-select';
+import { AudienceSection } from './audience-section';
+import { BindingEditor } from './binding-editor';
+import { bindingSlotErrors } from './binding-slot-errors';
+import { setBroadcastDone } from './broadcast-done-store';
 import {
   ChannelSection,
   DetailsSection,
@@ -44,12 +52,6 @@ import {
   useActiveChannels,
   useApprovedTemplates,
 } from './broadcast-form-sections';
-import { AudienceSection } from './audience-section';
-import { BindingEditor } from './binding-editor';
-import { bindingSlotErrors } from './binding-slot-errors';
-import { useAudiencePreview } from './use-audience-preview';
-import { setBroadcastDone } from './broadcast-done-store';
-import { broadcastFormPath, broadcastsListPath } from './paths';
 import type { BroadcastFormValues } from './broadcast-schema';
 import {
   BC_PULSE,
@@ -60,6 +62,9 @@ import {
   timeOptions,
   type ScheduleParts,
 } from './fx-broadcast-actions';
+import { broadcastFormPath, broadcastsListPath } from './paths';
+import { useAudiencePreview } from './use-audience-preview';
+import { useBroadcastForm } from './use-broadcast-form';
 
 /** Schedule: Send now | Schedule for, then a typed date, a time list and the zone. */
 function FxScheduleSection({
@@ -77,57 +82,66 @@ function FxScheduleSection({
 }) {
   const today = dateKey(new Date(), { timeZone }) ?? undefined;
   return (
-    <section className="flex flex-col gap-4 rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface) p-5">
-      <h2 className="text-base font-bold text-(--fx-ink)">Schedule</h2>
-      <ToggleGroup
-        type="single"
-        value={scheduleMode}
-        onValueChange={(v) => {
-          if (v === 'now' || v === 'schedule') onMode(v);
-        }}
-        aria-label="When to send"
-        className="self-start"
-      >
-        <ToggleGroupItem value="now">Send now</ToggleGroupItem>
-        <ToggleGroupItem value="schedule">Schedule for</ToggleGroupItem>
-      </ToggleGroup>
-      {scheduleMode === 'schedule' && (
-        <div className="flex flex-col gap-2">
-          <div className="grid max-w-[520px] gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="bc-schedule-date" className="text-sm font-semibold text-(--fx-ink-2)">
-                Date
-              </label>
-              <div data-fx-pulse-target={BC_PULSE.date}>
-                <FxDateField
-                  id="bc-schedule-date"
-                  value={parts.date}
-                  onChange={(date) => onParts({ ...parts, date })}
-                  timeZone={timeZone}
-                  minDate={today}
-                  placeholder="20 Nov 2026"
-                />
-              </div>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <span className="text-sm font-semibold text-(--fx-ink-2)">Time</span>
-              <FxField>
-                <div data-fx-pulse-target={BC_PULSE.time}>
-                  <SearchSelect
-                    options={timeOptions(parts.time)}
-                    value={parts.time}
-                    onChange={(time) => onParts({ ...parts, time })}
-                    ariaLabel="Time"
-                    className="w-full"
+    <Card>
+      <CardHeader>
+        <CardTitle>Schedule</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 py-4">
+        <ToggleGroup
+          type="single"
+          value={scheduleMode}
+          onValueChange={(v) => {
+            if (v === 'now' || v === 'schedule') onMode(v);
+          }}
+          aria-label="When to send"
+          className="self-start"
+        >
+          <ToggleGroupItem value="now">Send now</ToggleGroupItem>
+          <ToggleGroupItem value="schedule">Schedule for</ToggleGroupItem>
+        </ToggleGroup>
+        {scheduleMode === 'schedule' && (
+          <div className="flex flex-col gap-2">
+            <div className="grid max-w-[520px] gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <label
+                  htmlFor="bc-schedule-date"
+                  className="text-sm font-semibold text-(--fx-ink-2)"
+                >
+                  Date
+                </label>
+                <div data-fx-pulse-target={BC_PULSE.date}>
+                  <FxDateField
+                    id="bc-schedule-date"
+                    value={parts.date}
+                    onChange={(date) => onParts({ ...parts, date })}
+                    timeZone={timeZone}
+                    minDate={today}
+                    placeholder="20 Nov 2026"
                   />
                 </div>
-              </FxField>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-semibold text-(--fx-ink-2)">
+                  Time
+                </span>
+                <FxField>
+                  <div data-fx-pulse-target={BC_PULSE.time}>
+                    <SearchSelect
+                      options={timeOptions(parts.time)}
+                      value={parts.time}
+                      onChange={(time) => onParts({ ...parts, time })}
+                      ariaLabel="Time"
+                      className="w-full"
+                    />
+                  </div>
+                </FxField>
+              </div>
             </div>
+            <FxZoneLine />
           </div>
-          <FxZoneLine />
-        </div>
-      )}
-    </section>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -154,12 +168,8 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
     [byWhom, router],
   );
   const hookOptions = useMemo(() => ({ onSent }), [onSent]);
-  const { config, form, ensureDraftId, sendOrSchedule, sending } = useBroadcastForm(
-    workspaceId,
-    undefined,
-    true,
-    hookOptions,
-  );
+  const { config, form, ensureDraftId, sendOrSchedule, sending } =
+    useBroadcastForm(workspaceId, undefined, true, hookOptions);
   const { control, setValue, formState } = form;
   const { can } = useCan();
   const canSend = can('broadcasts.send');
@@ -168,9 +178,15 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
   const name = useWatch({ control, name: 'name' }) ?? '';
   const labels = useWatch({ control, name: 'labels' }) ?? [];
   const channelId = useWatch({ control, name: 'channelId' }) ?? '';
-  const audience = useWatch({ control, name: 'audience' }) ?? { kind: 'segment' as const };
+  const audience = useWatch({ control, name: 'audience' }) ?? {
+    kind: 'segment' as const,
+  };
   const templateId = useWatch({ control, name: 'templateId' }) ?? '';
-  const bindings = useWatch({ control, name: 'bindings' }) ?? { header: [], body: [], buttons: [] };
+  const bindings = useWatch({ control, name: 'bindings' }) ?? {
+    header: [],
+    body: [],
+    buttons: [],
+  };
   const scheduleMode = useWatch({ control, name: 'scheduleMode' }) ?? 'now';
   const scheduledAt = useWatch({ control, name: 'scheduledAt' }) ?? null;
 
@@ -180,7 +196,9 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
   const selectedTemplate = templates.find((t) => t.id === templateId) ?? null;
   const { count: audienceCount } = useAudiencePreview(workspaceId, audience);
 
-  const [parts, setParts] = useState<ScheduleParts>(() => splitScheduledAt(scheduledAt, timeZone));
+  const [parts, setParts] = useState<ScheduleParts>(() =>
+    splitScheduledAt(scheduledAt, timeZone),
+  );
   const [testOpen, setTestOpen] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -213,7 +231,10 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
     mode: scheduleMode,
     audienceCount,
     templateName: selectedTemplate?.name ?? '',
-    when: scheduleMode === 'schedule' && scheduledAt ? formatDateTime(scheduledAt) : '',
+    when:
+      scheduleMode === 'schedule' && scheduledAt
+        ? formatDateTime(scheduledAt)
+        : '',
   });
   const blockedReason = blocked?.reason;
   const blockedTarget = blocked?.pulseTarget;
@@ -225,7 +246,9 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
             id: 'broadcast-send',
             label,
             fullLabel,
-            blocked: blockedReason ? { reason: blockedReason, pulseTarget: blockedTarget } : undefined,
+            blocked: blockedReason
+              ? { reason: blockedReason, pulseTarget: blockedTarget }
+              : undefined,
             working: sending,
             onClick: () => {
               audienceAtSend.current = audienceCount;
@@ -233,13 +256,29 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
             },
           }
         : null,
-    [canSend, label, fullLabel, blockedReason, blockedTarget, sending, audienceCount, sendOrSchedule],
+    [
+      canSend,
+      label,
+      fullLabel,
+      blockedReason,
+      blockedTarget,
+      sending,
+      audienceCount,
+      sendOrSchedule,
+    ],
   );
   useRegisterMainAction(mainAction);
 
-  const setSchedule = (mode: BroadcastFormValues['scheduleMode'], next: ScheduleParts) => {
+  const setSchedule = (
+    mode: BroadcastFormValues['scheduleMode'],
+    next: ScheduleParts,
+  ) => {
     setValue('scheduleMode', mode, { shouldDirty: true });
-    setValue('scheduledAt', mode === 'schedule' ? joinScheduledAt(next, timeZone) : null, { shouldDirty: true });
+    setValue(
+      'scheduledAt',
+      mode === 'schedule' ? joinScheduledAt(next, timeZone) : null,
+      { shouldDirty: true },
+    );
   };
 
   const saveDraft = async () => {
@@ -266,7 +305,10 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
       }
     : undefined;
 
-  const testReason = !channelId || !templateId ? 'Pick a channel and a template first.' : undefined;
+  const testReason =
+    !channelId || !templateId
+      ? 'Pick a channel and a template first.'
+      : undefined;
 
   return (
     <Container width="fluid">
@@ -294,12 +336,24 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
                   <FxIconAction
                     label="Send a test message"
                     icon="send"
-                    iconNode={<FlaskConical className="size-[18px]" aria-hidden="true" />}
-                    disabledReason={testReason ?? (sending ? 'Sending the broadcast.' : undefined)}
+                    iconNode={
+                      <FlaskConical
+                        className="size-[18px]"
+                        aria-hidden="true"
+                      />
+                    }
+                    disabledReason={
+                      testReason ??
+                      (sending ? 'Sending the broadcast.' : undefined)
+                    }
                     onClick={() => setTestOpen(true)}
                   />
                 )}
-                <FxIconAction label="Discard changes" icon="discard" onClick={discard} />
+                <FxIconAction
+                  label="Discard changes"
+                  icon="discard"
+                  onClick={discard}
+                />
               </>
             }
           />
@@ -309,8 +363,12 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
               name={name}
               labels={labels}
               editing
-              onNameChange={(v) => setValue('name', v, { shouldDirty: true, shouldTouch: true })}
-              onLabelsChange={(v) => setValue('labels', v, { shouldDirty: true })}
+              onNameChange={(v) =>
+                setValue('name', v, { shouldDirty: true, shouldTouch: true })
+              }
+              onLabelsChange={(v) =>
+                setValue('labels', v, { shouldDirty: true })
+              }
               error={formState.errors.name?.message}
               pulseTarget={BC_PULSE.name}
             />
@@ -319,7 +377,9 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
               workspaceId={workspaceId}
               editing
               value={audience}
-              onChange={(next) => setValue('audience', next, { shouldDirty: true })}
+              onChange={(next) =>
+                setValue('audience', next, { shouldDirty: true })
+              }
               pulseTarget={BC_PULSE.audience}
             />
 
@@ -331,64 +391,101 @@ export function FxBroadcastFormView({ workspaceId }: FxBroadcastFormViewProps) {
                 setValue('channelId', next, { shouldDirty: true });
                 // Changing the channel clears the template and its bindings (AC-BRD-06).
                 setValue('templateId', '', { shouldDirty: true });
-                setValue('bindings', { header: [], body: [], buttons: [] }, { shouldDirty: true });
+                setValue(
+                  'bindings',
+                  { header: [], body: [], buttons: [] },
+                  { shouldDirty: true },
+                );
               }}
               error={formState.errors.channelId?.message}
               pulseTarget={BC_PULSE.channel}
             />
 
-            <section className="flex flex-col gap-3 rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface) p-5">
-              <h2 className="text-base font-bold text-(--fx-ink)">Message</h2>
-              <MessageSectionHeader
-                templates={templates}
-                templateId={templateId}
-                editing
-                pulseTarget={BC_PULSE.template}
-                onChange={(next) => {
-                  const tpl = templates.find((t) => t.id === next);
-                  setValue('templateId', next, { shouldDirty: true });
-                  setValue(
-                    'bindings',
-                    {
-                      header: Array.from({ length: tpl?.headerVariableCount ?? 0 }, () => ({
-                        source: 'contactField' as const,
-                        field: 'firstName',
-                        fallback: '',
-                      })),
-                      body: Array.from({ length: tpl?.variableCount ?? 0 }, () => ({
-                        source: 'contactField' as const,
-                        field: 'firstName',
-                        fallback: '',
-                      })),
-                      buttons: Array.from({ length: tpl?.buttonVariableCount ?? 0 }, () => ({
-                        source: 'static' as const,
-                        text: '',
-                      })),
-                    },
-                    { shouldDirty: true },
-                  );
-                }}
-                error={formState.errors.templateId?.message}
-              />
-              {selectedTemplate && (
-                <div data-fx-pulse-target={BC_PULSE.bindings}>
-                  <BindingEditor
-                    channelId={channelId}
-                    template={selectedTemplate}
-                    editing
-                    header={bindings.header}
-                    body={bindings.body}
-                    buttons={bindings.buttons}
-                    onChangeHeader={(next) => setValue('bindings.header', next, { shouldDirty: true })}
-                    onChangeBody={(next) => setValue('bindings.body', next, { shouldDirty: true })}
-                    onChangeButtons={(next) => setValue('bindings.buttons', next, { shouldDirty: true })}
-                    headerErrors={bindingSlotErrors(formState.errors, 'header', bindings.header.length)}
-                    bodyErrors={bindingSlotErrors(formState.errors, 'body', bindings.body.length)}
-                    buttonsErrors={bindingSlotErrors(formState.errors, 'buttons', bindings.buttons.length)}
-                  />
-                </div>
-              )}
-            </section>
+            <Card>
+              <CardHeader>
+                <CardTitle>Message</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3 py-4">
+                <MessageSectionHeader
+                  templates={templates}
+                  templateId={templateId}
+                  editing
+                  pulseTarget={BC_PULSE.template}
+                  onChange={(next) => {
+                    const tpl = templates.find((t) => t.id === next);
+                    setValue('templateId', next, { shouldDirty: true });
+                    setValue(
+                      'bindings',
+                      {
+                        header: Array.from(
+                          { length: tpl?.headerVariableCount ?? 0 },
+                          () => ({
+                            source: 'contactField' as const,
+                            field: 'firstName',
+                            fallback: '',
+                          }),
+                        ),
+                        body: Array.from(
+                          { length: tpl?.variableCount ?? 0 },
+                          () => ({
+                            source: 'contactField' as const,
+                            field: 'firstName',
+                            fallback: '',
+                          }),
+                        ),
+                        buttons: Array.from(
+                          { length: tpl?.buttonVariableCount ?? 0 },
+                          () => ({
+                            source: 'static' as const,
+                            text: '',
+                          }),
+                        ),
+                      },
+                      { shouldDirty: true },
+                    );
+                  }}
+                  error={formState.errors.templateId?.message}
+                />
+                {selectedTemplate && (
+                  <div data-fx-pulse-target={BC_PULSE.bindings}>
+                    <BindingEditor
+                      channelId={channelId}
+                      template={selectedTemplate}
+                      editing
+                      header={bindings.header}
+                      body={bindings.body}
+                      buttons={bindings.buttons}
+                      onChangeHeader={(next) =>
+                        setValue('bindings.header', next, { shouldDirty: true })
+                      }
+                      onChangeBody={(next) =>
+                        setValue('bindings.body', next, { shouldDirty: true })
+                      }
+                      onChangeButtons={(next) =>
+                        setValue('bindings.buttons', next, {
+                          shouldDirty: true,
+                        })
+                      }
+                      headerErrors={bindingSlotErrors(
+                        formState.errors,
+                        'header',
+                        bindings.header.length,
+                      )}
+                      bodyErrors={bindingSlotErrors(
+                        formState.errors,
+                        'body',
+                        bindings.body.length,
+                      )}
+                      buttonsErrors={bindingSlotErrors(
+                        formState.errors,
+                        'buttons',
+                        bindings.buttons.length,
+                      )}
+                    />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
             <FxScheduleSection
               scheduleMode={scheduleMode}

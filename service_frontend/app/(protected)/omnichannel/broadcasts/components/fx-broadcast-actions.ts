@@ -9,7 +9,10 @@
  */
 import { utcToZonedInputValue, zonedTimeToUtc } from '@/lib/datetime';
 import type { FxBlocked } from '@/components/fx/actions/page-actions-context';
-import { broadcastFormSchema, type BroadcastFormValues } from './broadcast-schema';
+import {
+  broadcastFormSchema,
+  type BroadcastFormValues,
+} from './broadcast-schema';
 
 /** `data-fx-pulse-target` names of the fields the red action can wait for. */
 export const BC_PULSE = {
@@ -30,7 +33,8 @@ export function contactsCount(n: number): string {
 /** The time list: every half hour of the day, as "HH:MM". */
 export const HALF_HOURS: string[] = Array.from(
   { length: 48 },
-  (_, i) => `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`,
+  (_, i) =>
+    `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`,
 );
 
 /** "14:30" -> "2:30 pm" (12-hour clock). */
@@ -42,8 +46,13 @@ export function fxClockLabel(hhmm: string): string {
 }
 
 /** The time list's options, keeping a saved time that is not on the half hour. */
-export function timeOptions(current: string | null): { label: string; value: string }[] {
-  const values = current && !HALF_HOURS.includes(current) ? [...HALF_HOURS, current].sort() : HALF_HOURS;
+export function timeOptions(
+  current: string | null,
+): { label: string; value: string }[] {
+  const values =
+    current && !HALF_HOURS.includes(current)
+      ? [...HALF_HOURS, current].sort()
+      : HALF_HOURS;
   return values.map((value) => ({ label: fxClockLabel(value), value }));
 }
 
@@ -55,7 +64,10 @@ export interface ScheduleParts {
 }
 
 /** A stored instant -> the day and time a person picked, in `timeZone`. */
-export function splitScheduledAt(iso: string | null, timeZone: string): ScheduleParts {
+export function splitScheduledAt(
+  iso: string | null,
+  timeZone: string,
+): ScheduleParts {
   const local = utcToZonedInputValue(iso, timeZone);
   if (!local) return { date: null, time: null };
   const [date, time] = local.split('T');
@@ -65,7 +77,10 @@ export function splitScheduledAt(iso: string | null, timeZone: string): Schedule
 /** The day and time a person picked, in `timeZone` -> the instant sent to the
  *  backend. The same conversion the switch-off `datetime-local` field uses,
  *  so the same pick sends the same `scheduledAt`. */
-export function joinScheduledAt(parts: ScheduleParts, timeZone: string): string | null {
+export function joinScheduledAt(
+  parts: ScheduleParts,
+  timeZone: string,
+): string | null {
   if (!parts.date || !parts.time) return null;
   const utc = zonedTimeToUtc(`${parts.date}T${parts.time}`, timeZone);
   return utc ? utc.toISOString() : null;
@@ -76,25 +91,43 @@ export function joinScheduledAt(parts: ScheduleParts, timeZone: string): string 
  * Audience, Channel, Message, Schedule), with the field to pulse. Undefined
  * when it can go.
  */
-export function broadcastBlocked(values: BroadcastFormValues, schedule: ScheduleParts): FxBlocked | undefined {
+export function broadcastBlocked(
+  values: BroadcastFormValues,
+  schedule: ScheduleParts,
+): FxBlocked | undefined {
   const parsed = broadcastFormSchema.safeParse(values);
   if (parsed.success) return undefined;
-  const failed = new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? '')));
+  const failed = new Set(
+    parsed.error.issues.map((issue) => String(issue.path[0] ?? '')),
+  );
   if (failed.has('name')) {
     return values.name.trim()
-      ? { reason: 'Shorten the name to 200 characters.', pulseTarget: BC_PULSE.name }
+      ? {
+          reason: 'Shorten the name to 200 characters.',
+          pulseTarget: BC_PULSE.name,
+        }
       : { reason: 'Name the broadcast.', pulseTarget: BC_PULSE.name };
   }
-  if (failed.has('audience')) return { reason: 'Pick who gets it.', pulseTarget: BC_PULSE.audience };
-  if (failed.has('channelId')) return { reason: 'Pick a channel.', pulseTarget: BC_PULSE.channel };
-  if (failed.has('templateId')) return { reason: 'Pick a template.', pulseTarget: BC_PULSE.template };
-  if (failed.has('bindings')) return { reason: 'Fill in every template value.', pulseTarget: BC_PULSE.bindings };
+  if (failed.has('audience'))
+    return { reason: 'Pick who gets it.', pulseTarget: BC_PULSE.audience };
+  if (failed.has('channelId'))
+    return { reason: 'Pick a channel.', pulseTarget: BC_PULSE.channel };
+  if (failed.has('templateId'))
+    return { reason: 'Pick a template.', pulseTarget: BC_PULSE.template };
+  if (failed.has('bindings'))
+    return {
+      reason: 'Fill in every template value.',
+      pulseTarget: BC_PULSE.bindings,
+    };
   if (failed.has('scheduledAt')) {
-    if (!schedule.date) return { reason: 'Pick a date to send.', pulseTarget: BC_PULSE.date };
-    if (!schedule.time) return { reason: 'Pick a time to send.', pulseTarget: BC_PULSE.time };
+    if (!schedule.date)
+      return { reason: 'Pick a date to send.', pulseTarget: BC_PULSE.date };
+    if (!schedule.time)
+      return { reason: 'Pick a time to send.', pulseTarget: BC_PULSE.time };
     return { reason: 'Pick a time in the future.', pulseTarget: BC_PULSE.time };
   }
-  if (failed.has('labels')) return { reason: 'Remove the empty label.', pulseTarget: BC_PULSE.name };
+  if (failed.has('labels'))
+    return { reason: 'Remove the empty label.', pulseTarget: BC_PULSE.name };
   return { reason: 'Fix the highlighted fields.' };
 }
 
@@ -113,7 +146,9 @@ export function broadcastMainLabels(input: {
   if (mode === 'now') {
     return {
       label: 'Send now',
-      fullLabel: known ? `Send now to ${contactsCount(audienceCount as number)} with ${templateName}` : undefined,
+      fullLabel: known
+        ? `Send now to ${contactsCount(audienceCount as number)} with ${templateName}`
+        : undefined,
     };
   }
   return {
