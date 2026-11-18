@@ -1,6 +1,7 @@
 /**
  * Foundation follow-up from the first page wave, actions side: the icon set
- * and drawn icons (FX-21), the page header's More list (FX-16).
+ * and drawn icons (FX-21), the page header's More list (FX-16), the red action's
+ * hover (FX-20).
  */
 import type { ReactNode } from 'react';
 import { render, screen } from '@testing-library/react';
@@ -8,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FX_DEFAULT_THEME } from '@/lib/fx/cookies';
 import { FxProvider } from '@/providers/fx-provider';
 import { FX_ICONS, FxIcon } from '@/components/fx/icons';
+import { FxMainAction } from './main-action';
 import { FxOtherActions } from './other-actions';
 import { PageHeader } from '@/components/platform/page-header';
 import {
@@ -122,5 +124,22 @@ describe('FX-16 the page header honours the More list', () => {
     );
     expect(screen.getByRole('button', { name: 'Manage segments' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'More' })).toBeNull();
+  });
+});
+
+describe('FX-20 the red action never shows its full label cut off', () => {
+  it('the full label waits for the widening and leaves at once', () => {
+    render(
+      <On>
+        <FxMainAction label="Add product" fullLabel="Add Barcode scanner at RM 189.00" />
+      </On>,
+    );
+    const full = document.querySelector<HTMLElement>('[data-fx-full-label]')!;
+    // The slot widens over one timing step (measured widths, so not in a
+    // test DOM); the full label only starts after that same step, with no
+    // transition back (it is gone before the slot narrows).
+    expect(full.className).toContain('group-hover/act:delay-(--fx-t-hover)');
+    expect(full.className).toContain('group-focus-visible/act:delay-(--fx-t-hover)');
+    expect(full.className.split(' ')).toContain('transition-none');
   });
 });
