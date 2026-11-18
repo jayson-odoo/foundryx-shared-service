@@ -580,32 +580,6 @@ class IdeaPortalService:
         real one for the link). "Own" = the ``_owned_q`` contact rule (the
         link's contact + same-phone siblings), never by name; staff and CRM
         sessions never see a test item."""
-        if self.p.kind == KIND_SHARE:
-            # A share link opens its own item even when it is a Console filing
-            # (owner 18 Nov: a real item, shareable - FEEDBACK-SHARE-LIVE-FIX).
-            # A link minted on a merged child opens its survivor (same lane).
-            from ..models import IdeaShareLink
-
-            link = (
-                self.db.query(IdeaShareLink.idea_id)
-                .filter(
-                    IdeaShareLink.id == self.p.subject,
-                    IdeaShareLink.tenant_id == self.p.tenant_id,
-                    IdeaShareLink.revoked_at.is_(None),
-                )
-                .first()
-            )
-            if link is None:
-                return Idea.is_test.is_(False)
-            ids = {link.idea_id}
-            survivor = (
-                self.db.query(Idea.merged_into_id)
-                .filter(Idea.id == link.idea_id, Idea.tenant_id == self.p.tenant_id)
-                .scalar()
-            )
-            if survivor:
-                ids.add(survivor)
-            return or_(Idea.is_test.is_(False), Idea.id.in_(ids))
         if not allow_own or self.p.kind != KIND_CONTACT:
             return Idea.is_test.is_(False)
         return or_(

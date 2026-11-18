@@ -10,10 +10,9 @@ write). Contract: ``documentation/plans/ideation/feedback-subscribe-behaviour-ca
   staff "Stop sharing" (``revoked_at``); the next Share mints a fresh token;
 - the token lookup is the only cross-tenant read (the token IS the
   credential); the idea is then resolved WITH the row's own ``tenant_id``;
-- a Chatbot Console filing (``is_test``) is a real item and is shared like
-  any other (owner 18 Nov, lane FEEDBACK-SHARE-LIVE-FIX);
+- test items are never shared;
 - the link opens on the shared-service frontend (``ss_feedback_base``): the
-  product's CRM has no share page.
+  product's CRM has no share page (lane FEEDBACK-SHARE-LIVE-FIX).
 Writes flush; the caller commits.
 """
 import secrets
@@ -49,7 +48,10 @@ def get_or_create_share_link(
     db: Session, idea: Idea, actor: Optional[HistoryActor] = None
 ) -> Optional[IdeaShareLink]:
     """The item's live share link, minted on first use (recorded in the item's
-    History as "Share link created" by ``actor``). Flush only."""
+    History as "Share link created" by ``actor``). ``None`` for a test item
+    (never shared). Flush only."""
+    if idea.is_test:
+        return None
     row = _live(db, idea.tenant_id, idea.id)
     if row is not None:
         return row
@@ -98,7 +100,7 @@ def stop_sharing(db: Session, tenant_id: str, idea_id: str) -> int:
 
 def resolve_share(db: Session, token: str) -> Optional[Tuple[IdeaShareLink, Idea]]:
     """``(link, idea)`` for a live share token, else ``None`` (malformed,
-    unknown, cancelled, or an idea no longer in the link's
+    unknown, cancelled, a test item, or an idea no longer in the link's
     tenant)."""
     if not LINK_TOKEN_RE.fullmatch(token or ""):
         return None
@@ -110,7 +112,7 @@ def resolve_share(db: Session, token: str) -> Optional[Tuple[IdeaShareLink, Idea
         .filter(Idea.id == row.idea_id, Idea.tenant_id == row.tenant_id)
         .first()
     )
-    if idea is None:
+    if idea is None or idea.is_test:
         return None
     return row, idea
 
@@ -120,7 +122,7 @@ def resolve_share(db: Session, token: str) -> Optional[Tuple[IdeaShareLink, Idea
 
 def staff_share_url(db: Session, tenant_id: str, idea_id: str, actor: HistoryActor) -> Optional[str]:
     """The item's share link (minted on first use), ``None`` when the idea is
-    not in the tenant. Commits."""
+    not in the tenant or is a test item. Commits."""
     idea = db.query(Idea).filter(Idea.id == idea_id, Idea.tenant_id == tenant_id).first()
     row = get_or_create_share_link(db, idea, actor) if idea is not None else None
     if row is None:

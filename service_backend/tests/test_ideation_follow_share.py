@@ -343,72 +343,17 @@ def test_ac_fs_01_contact_can_share_from_the_board(setup):
     assert res.json()["url"].rsplit("/", 1)[1] == _share_token(s, iid)
 
 
-def test_share_live_fix_console_filing_is_shareable_by_staff(setup):
-    """Owner 18 Nov: a Chatbot Console filing is a real item - it shares and
-    its link opens the read-only view (was a 404 "Feedback not found.")."""
+def test_ac_fs_01_test_item_has_no_share_link(setup):
     s = setup
     iid = _idea(s, 533, submitter_contact_id=_contact(s))
     _set(s, iid, is_test=True)
-    token = _share_token(s, iid)
-    res = s["client"].get(f"/portal/ideas/shared/{token}")
-    assert res.status_code == 200, res.text
-    assert res.json()["id"] == iid
-    assert s["client"].get(f"/portal/ideas/shared/{token}/comments").status_code == 200
-    assert s["client"].get(f"/portal/ideas/shared/{token}/activity").status_code == 200
-
-
-def test_share_live_fix_contact_shares_own_console_filing_from_the_board(setup):
-    s = setup
-    author = _contact(s)
-    iid = _idea(s, 537, submitter_contact_id=author)
-    _set(s, iid, is_test=True)
-    res = s["client"].post(f"/portal/ideas/{iid}/share", headers=_contact_session(s, author))
-    assert res.status_code == 200, res.text
-    token = res.json()["url"].rsplit("/", 1)[1]
-    assert s["client"].get(f"/portal/ideas/shared/{token}").status_code == 200
-
-
-def test_share_live_fix_share_principal_reaches_only_its_own_console_filing(setup):
-    """The share principal's test-item allowance covers ITS item only: a
-    different Console filing B stays out, and a cancelled link opens nothing."""
-    from modules.ideation.services.portal import IdeaPortalService, PortalError, share_principal
-
-    s = setup
-    a = _idea(s, 538, submitter_contact_id=_contact(s))
-    b = _idea(s, 539, submitter_contact_id=_contact(s))
-    _set(s, a, is_test=True)
-    _set(s, b, is_test=True)
-    token = _share_token(s, a)
-    db = s["factory"]()
-    try:
-        p, idea_id = share_principal(db, token)
-        svc = IdeaPortalService(db, p)
-        assert svc._resolve(idea_id, follow_merge=True).id == a
-        with pytest.raises(PortalError):
-            svc._resolve(b, follow_merge=True)
-    finally:
-        db.close()
-    assert s["client"].delete(f"/ideation/ideas/{a}/share-link", headers=s["h"]).status_code == 204
-    assert s["client"].get(f"/portal/ideas/shared/{token}").status_code == 404
-
-
-def test_share_live_fix_merged_console_child_link_opens_the_survivor(setup):
-    s = setup
-    survivor = _idea(s, 542, submitter_contact_id=_contact(s))
-    child = _idea(s, 543, submitter_contact_id=_contact(s))
-    _set(s, survivor, is_test=True)
-    _set(s, child, is_test=True)
-    token = _share_token(s, child)
-    _set(s, child, merged_into_id=survivor)
-    res = s["client"].get(f"/portal/ideas/shared/{token}")
-    assert res.status_code == 200, res.text
-    assert res.json()["id"] == survivor
+    assert s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).status_code == 404
 
 
 def test_share_live_fix_link_opens_on_the_ss_frontend_for_a_crm_tenant(setup, monkeypatch):
     """A tenant whose public links go to the CRM (template base) still gets a
     share link on the shared-service frontend: only it has the share page
-    (``app/(public)/public/feedback/share/[token]``)."""
+    (``app/(public)/public/feedback/share/[token]``). Board links keep the CRM."""
     from app.config import settings
     from modules.ideation.services import feedback_links
 
@@ -420,7 +365,10 @@ def test_share_live_fix_link_opens_on_the_ss_frontend_for_a_crm_tenant(setup, mo
     iid = _idea(s, 540, submitter_contact_id=_contact(s))
     url = s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).json()["url"]
     assert url.startswith("https://ss.example.test/public/feedback/share/")
-    # The board link keeps the CRM host (unchanged).
+    author = _contact(s)
+    iid2 = _idea(s, 542, submitter_contact_id=author)
+    res = s["client"].post(f"/portal/ideas/{iid2}/share", headers=_contact_session(s, author))
+    assert res.json()["url"].startswith("https://ss.example.test/public/feedback/share/")
     assert feedback_links.board_base(None, "t").startswith("https://crm.example.test/feedback/board")
 
 
