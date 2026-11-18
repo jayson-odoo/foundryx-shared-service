@@ -17,4 +17,4 @@ export const DELIVERY_STATUS_REGISTRY: StatusRegistry<DeliveryStatus> = {
   FAILED: { label: 'Failed', tone: 'destructive' },
 };
 
-export const PLATFORM_LABELS: Record<string, string> = { facebook: 'Facebook' };
+export const PLATFORM_LABELS: Record<string, string> = { facebook: 'Facebook', google: 'Google Ads' };
