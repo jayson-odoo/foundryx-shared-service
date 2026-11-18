@@ -207,6 +207,21 @@ describe('FX-13 amounts and status', () => {
     expect(card.textContent).not.toContain('State :');
   });
 
+  it('an end-aligned amount closes its phone card line', async () => {
+    phoneWidth();
+    render(
+      <On>
+        <ResourceList
+          config={makeConfig({ fx: { columnKind: { state: 'status' }, cardLines: [['name', 'price']] } })}
+        />
+      </On>,
+    );
+    const amount = (await screen.findAllByText('RM 189.00')).find((el) => el.closest('li'))!;
+    const box = amount.closest('span.min-w-0')!;
+    expect(box.className).toContain('ms-auto');
+    expect(box.className).toContain('text-end');
+  });
+
   it('status columns (pure)', () => {
     expect(Array.from(fxStatusColumnIds({ a: 'status', b: 'text' }, { c: 'status', d: 'date' }))).toEqual([
       'a',
