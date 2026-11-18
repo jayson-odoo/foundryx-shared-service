@@ -6,7 +6,8 @@ field or error code ships with a change to this file in the same pull request.
 Status: release 1. Sources: Facebook Page Instant Forms. Events sent: `lead.created` and `source.updated` (added
 17 Nov 2026). Connect sessions (the hosted wizard) and the Facebook login API for your own wizard: section 7
 (added 17 Nov 2026, lane L-C). Instagram, the `lead.updated` event and the duplicate rule arrive in later releases
-and will be added here first.
+and will be added here first. Google Ads lead form sources (URL + key the customer pastes into Google Ads): section
+8 (added 18 Nov 2026, release 2).
 
 Everything is per product (one Shared Service tenant per consuming CRM): its own key, its own endpoints and signing
 secrets, its own lead field list and field maps. Two CRMs reading the same Facebook Page each receive the lead in
@@ -91,6 +92,8 @@ Every gateway error has one shape:
 | GET | `/fields` | - | `{"data": [Field], "isDefault"}` |
 | PUT | `/fields` | `[Field]` (replaces the list; `[]` = defaults) | `{"data": [Field], "isDefault"}` |
 | POST | `/sources/facebook` | `{"pageId", "systemUserToken" or "loginId", "formsMode": "all"}` | `201` `Source` (connect, or reconnect: same Page again = same source) |
+| POST | `/sources/google` | - | `201` `{"source": Source, "url", "key"}` (section 8; the key is shown only here) |
+| POST | `/sources/{id}/rotate-key` | - | `{"url", "key"}` (section 8; the old key stops at once) |
 | POST | `/connect-sessions` | `{"returnOrigin", "sourceId"?}` | `201` `{"url", "expiresAt"}` (section 7) |
 | GET | `/channels` | - | `{"data": [Channel]}` (section 7) |
 | GET | `/facebook/login-config` | - | `LoginConfig` (section 7) |
@@ -526,7 +529,8 @@ the hosted wizard is the reference UI).
 
 4. The wizard runs on its own scoped token (30 minutes; it can do the wizard's steps for this session's source and
    nothing else; every other route answers 401). It shows your tenant's name and logo (Shared Service > Settings >
-   Branding), never the platform's. Steps: Channel (Facebook) -> Sign in -> Page -> Forms -> Fields -> Test -> Done.
+   Branding), never the platform's. Steps: Channel (Facebook) -> Sign in -> Page -> Forms -> Fields -> Test -> Done;
+   Channel (Google Ads) -> Copy (URL + key) -> Test -> Fields -> Done (section 8).
 5. When the person finishes or closes it, the wizard posts ONE message to `window.opener` with `targetOrigin` =
    your `returnOrigin` (never `*`), then closes:
 
@@ -541,7 +545,7 @@ the hosted wizard is the reference UI).
 
 | Step | Call |
 |---|---|
-| Channel | `GET /channels` -> `{"data": [{"key": "facebook", "label": "Facebook", "setup": "automatic"}]}`; only channels set up on this server are listed |
+| Channel | `GET /channels` -> `{"data": [{"key": "facebook", "label": "Facebook", "setup": "automatic"}, {"key": "google", "label": "Google Ads", "setup": "guided"}]}`; Facebook is listed only when it is set up on this server; Google Ads (guided, section 8) always |
 | Sign in | `GET /facebook/login-config` -> `{"available", "simulated", "appId", "configId", "graphVersion", "scopes"}`. Open Facebook Login for Business with `appId` + `configId` (`response_type=code`, your registered redirect URI). Then `POST /facebook/login {"code", "redirectUri"}` -> `{"loginId", "pages": [{"id", "name"}], "expiresAt"}`. The Facebook token stays on the server; `loginId` is opaque, works for 30 minutes, for this key only. `simulated: true` = no Meta app on this server (development): any non-empty `code` works and two sample Pages come back |
 | Page | Pick from `pages` (one Page = choose it for the person). `GET /facebook/logins/{loginId}/pages` lists them again |
 | Connect | `POST /sources/facebook {"pageId", "loginId", "formsMode": "all"}` -> `201 Source` (`WAITING_FOR_TEST`). `409 PAGE_IN_USE`: the Page belongs to another product |
@@ -564,7 +568,45 @@ Error screens your wizard should have (the hosted one's wording, plain words onl
 The hosted page calls `/public/lead-capture/*` with its scoped token; you never call these with a key:
 `POST /connect/redeem {"token": "<secret>"}` (once; `410 SESSION_EXPIRED` after), `GET /wizard/context`,
 `POST /wizard/facebook/login`, `GET /wizard/facebook/pages`, `POST /wizard/facebook/connect {"pageId"}`,
+`POST /wizard/google/source` (`201 {"source", "url", "key"}`; again in the same session = same source, new key),
 `GET /wizard/sources/{id}`, `GET|PUT /wizard/sources/{id}/forms`, `GET /wizard/fields`,
 `GET /wizard/sources/{id}/forms/{formId}/questions`, `PUT /wizard/sources/{id}/field-map`,
 `POST /wizard/sources/{id}/test-lead`, `GET /wizard/sources/{id}/test-lead` (newest test lead: the Test step passes on a NEW one), `POST /wizard/finish`.
 
+## 8. Google Ads lead form sources (guided)
+
+Google Ads sends each lead form submission to a webhook URL with a key the advertiser types into the form
+("Lead delivery option" > webhook integration; Google's guide:
+https://support.google.com/google-ads/answer/9423234, body format:
+https://developers.google.com/google-ads/webhook/docs/implementation).
+
+1. `POST /sources/google` answers `{"source", "url", "key"}`. Show the `url` and `key` to your customer with copy
+   buttons. The key is shown only in this answer; lost = rotate it.
+2. The customer pastes both into the Google Ads lead form and presses "Send test data".
+3. Google POSTs to the `url`. A test lead (`is_test: true`) arrives as a normal `lead.created` with
+   `isTest: true` and `platform: "google"`; the source moves to `LIVE`. A real lead before any test lead also moves
+   it to `LIVE`.
+4. Field map, `needsMapping`, the pull and the push work exactly as for Facebook. Google's standard columns
+   (`FULL_NAME`, `FIRST_NAME`, `LAST_NAME`, `EMAIL`, `WORK_EMAIL`, `PHONE_NUMBER`, `WORK_PHONE`) fill your name /
+   email / phone fields; any other column goes to notes until mapped. A question's key is Google's `column_id`, or
+   its `column_name` when Google sends none.
+5. `POST /sources/{id}/rotate-key` gives a new key; the old one is refused from that moment and the `url` stays.
+   Your customer pastes the new key into Google Ads. History shows `key_rotated`.
+6. The Fields step for a Google form: `GET /sources/{id}/forms/{formId}/questions` lists the columns of the newest
+   lead Google sent for that form, with Google's labels (`[]` until the first lead). The `formId` comes from the
+   lead (`GET /leads` or the push).
+
+A Google lead's `pageId` is `null`; `formId` is Google's form id; `attribution` holds `formId`, `campaignId`,
+`adgroupId`, `creativeId` and `gclid` (each `null` when Google sends none). Google re-sending the same `lead_id`
+stores nothing new. `DELETE /sources/{id}` disconnects it: Google's next POST is refused (`410`) and nothing is
+stored.
+
+What the inbound URL answers Google (for reference; Google is the only caller):
+
+| Case | Answer |
+|---|---|
+| Right key | `200 {}` |
+| Wrong or missing key, or an unknown URL | `403 invalid_key` (same either way); repeated from one IP: `429 rate_limited` |
+| Disconnected source | `410 source_disconnected` |
+| Lead Capture off for the tenant | `403 service_not_enabled` |
+| Not JSON, no `lead_id` | `400 invalid_body`; over 64 KB: `413 invalid_body` |

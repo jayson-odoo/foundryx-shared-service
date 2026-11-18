@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
+import { copyText } from '@/lib/clipboard';
 import { launchMetaOAuth } from '@/lib/embedded-signup';
 import { postToOpener } from '@/lib/lead-capture-post-message';
 import {
@@ -29,11 +30,15 @@ import type {
   WizardFormList,
   WizardQuestionList,
   WizardSource,
+  WizardTestLead,
 } from '@/types/lead-capture-wizard';
 
 const STORAGE_KEY = 'lead-capture-wizard';
 const POLL_MS = 3000;
 const POLL_LIMIT = 40; // two minutes
+/** Google sends "Send test data" when the person presses it in Google Ads:
+ * wait longer, then offer Check again. */
+const GOOGLE_POLL_LIMIT = 200; // ten minutes
 
 interface StoredGrant {
   token: string;
@@ -83,6 +88,13 @@ export interface UseLeadCaptureWizard {
   /** The source as the server last answered (saved field maps). */
   source: WizardSource | null;
   chooseChannel: (key: string) => void;
+  /** Google: make (or re-key) this session's source and show its URL + key. */
+  showGuided: () => Promise<void>;
+  copyGuided: (which: 'url' | 'key') => Promise<void>;
+  /** Google: URL + key copied; wait for Google's test data. */
+  confirmCopy: () => Promise<void>;
+  /** Google: wait again after the wait ran out. */
+  waitForGoogleTest: () => Promise<void>;
   signIn: () => Promise<void>;
   pickPage: (pageId: string) => void;
   connectPage: () => Promise<void>;
@@ -120,6 +132,9 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
   const [testWaiting, setTestWaiting] = useState(false);
   const [done, setDone] = useState<WizardDone | null>(null);
   const opened = useRef(false);
+  /** Google: the newest test lead when the URL + key were shown. A test lead
+   * Google sends after that (even before Continue) passes the Test step. */
+  const googleBaseline = useRef<string | null | undefined>(undefined);
   const pollTimer = useRef<number | null>(null);
   /** False once the wizard closed, unmounted or its session ended: a poll
    * in flight checks it after every await and stops. */
@@ -155,7 +170,11 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
         if (ctx.source) {
           setSource(ctx.source);
           // Reopened for an existing source (Reconnect / Map fields).
-          setState((s) => ({ ...s, channel: ctx.source?.platform ?? 'facebook' }));
+          setState((s) => ({
+            ...s,
+            channel: ctx.source?.platform ?? 'facebook',
+            sourceId: ctx.source?.platform === 'google' ? (ctx.source?.id ?? null) : s.sourceId,
+          }));
         }
         setPhase('ready');
       } catch {
@@ -197,9 +216,47 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
   );
 
   // ── steps ────────────────────────────────────────────────────────────────
-  const chooseChannel = useCallback((key: string) => {
-    setState((s) => ({ ...s, channel: key }));
-  }, []);
+  const showGuided = useCallback(
+    () =>
+      run('copy', async (t) => {
+        const made = await svc.googleSource(t);
+        try {
+          googleBaseline.current = (await svc.lastTestLead(t, made.source.id)).leadId;
+        } catch {
+          googleBaseline.current = undefined; // read again at Continue; never blocks the URL + key
+        }
+        setSource(made.source);
+        setState((s) => ({
+          ...s,
+          sourceId: made.source.id,
+          guided: { url: made.url, key: made.key },
+          copiedUrl: false,
+          copiedKey: false,
+        }));
+      }),
+    [run],
+  );
+
+  const chooseChannel = useCallback(
+    (key: string) => {
+      setState((s) => ({ ...s, channel: key }));
+      if (key === 'google' && !state.guided) void showGuided();
+    },
+    [showGuided, state.guided],
+  );
+
+  const copyGuided = useCallback(
+    async (which: 'url' | 'key') => {
+      const value = which === 'url' ? state.guided?.url : state.guided?.key;
+      if (!value) return;
+      if (!(await copyText(value))) {
+        setProblem({ screen: 'generic', message: 'Copy did not work. Select the text and copy it.' });
+        return;
+      }
+      setState((s) => (which === 'url' ? { ...s, copiedUrl: true } : { ...s, copiedKey: true }));
+    },
+    [state.guided],
+  );
 
   const signIn = useCallback(
     () =>
@@ -323,6 +380,19 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     [mapFormId, run, state.sourceId],
   );
 
+  /** What a newly arrived test lead does: Facebook = Test passed; Google =
+   * Test passed AND the Fields step opens on that lead's form. */
+  const arrive = useCallback(async (t: string, sourceId: string, latest: WizardTestLead) => {
+    if (state.channel === 'google' && latest.formId) {
+      const [consumer, list] = await Promise.all([svc.fields(t), svc.questions(t, sourceId, latest.formId)]);
+      setFields(consumer);
+      setQuestions(list);
+      setMapFormId(latest.formId);
+      setTestFormId(latest.formId);
+    }
+    setState((s) => ({ ...s, testPassed: true }));
+  }, [state.channel]);
+
   /** Wait for a test lead NEWER than `baseline` (a reconnected source is
    * LIVE already, so its status proves nothing). */
   const poll = useCallback((t: string, sourceId: string, baseline: string | null, left: number) => {
@@ -334,7 +404,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
         if (latest.leadId && latest.leadId !== baseline) {
           polling.current = false;
           setTestWaiting(false);
-          setState((s) => ({ ...s, testPassed: true }));
+          await arrive(t, sourceId, latest);
           return;
         }
       } catch {
@@ -348,7 +418,27 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
       }
       poll(t, sourceId, baseline, left - 1);
     }, POLL_MS);
-  }, []);
+  }, [arrive]);
+
+  const waitForGoogleTest = useCallback(
+    () =>
+      run('test', async (t) => {
+        if (!state.sourceId) return;
+        const baseline =
+          googleBaseline.current !== undefined
+            ? googleBaseline.current
+            : (await svc.lastTestLead(t, state.sourceId)).leadId;
+        polling.current = true;
+        setTestWaiting(true);
+        poll(t, state.sourceId, baseline, GOOGLE_POLL_LIMIT);
+      }),
+    [poll, run, state.sourceId],
+  );
+
+  const confirmCopy = useCallback(async () => {
+    setState((s) => ({ ...s, copyConfirmed: true }));
+    await waitForGoogleTest();
+  }, [waitForGoogleTest]);
 
   const sendTestLead = useCallback(
     () =>
@@ -358,14 +448,14 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
         await svc.sendTestLead(t, state.sourceId, testFormId);
         const latest = await svc.lastTestLead(t, state.sourceId);
         if (latest.leadId && latest.leadId !== baseline) {
-          setState((s) => ({ ...s, testPassed: true }));
+          await arrive(t, state.sourceId, latest);
           return;
         }
         polling.current = true;
         setTestWaiting(true);
         poll(t, state.sourceId, baseline, POLL_LIMIT);
       }),
-    [poll, run, state.sourceId, testFormId],
+    [arrive, poll, run, state.sourceId, testFormId],
   );
 
   const returnOrigin = context?.returnOrigin ?? null;
@@ -408,6 +498,10 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
       done,
       source,
       chooseChannel,
+      showGuided,
+      copyGuided,
+      confirmCopy,
+      waitForGoogleTest,
       signIn,
       pickPage,
       connectPage,
@@ -424,7 +518,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     }),
     [
       phase, context, state, busy, problem, forms, fields, questions, mapFormId, testFormId, testWaiting, done, source,
-      chooseChannel, signIn, pickPage, connectPage, setFormsChoice, saveForms, reloadForms, chooseMapForm,
+      chooseChannel, showGuided, copyGuided, confirmCopy, waitForGoogleTest, signIn, pickPage, connectPage, setFormsChoice, saveForms, reloadForms, chooseMapForm,
       saveFieldMap, sendTestLead, finish, close,
     ],
   );

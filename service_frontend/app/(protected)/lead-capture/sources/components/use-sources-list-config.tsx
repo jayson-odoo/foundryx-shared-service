@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { Link2, RefreshCw } from 'lucide-react';
+import { KeyRound, Link2, RefreshCw } from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -46,7 +46,17 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
         icon: RefreshCw,
         surfaces: { row: true },
         permission: 'lead_capture.manage',
-        isVisible: (rows) => rows.every((r) => !ROUTING.has(r.status)),
+        isVisible: (rows) => rows.every((r) => r.platform === 'facebook' && !ROUTING.has(r.status)),
+        run: (rows) => openWizard(rows[0].id),
+      },
+      {
+        // Google Ads (card 68a R8): the wizard shows the URL with a new key; the old key stops at once.
+        id: 'new-key',
+        label: 'New key',
+        icon: KeyRound,
+        surfaces: { row: true },
+        permission: 'lead_capture.manage',
+        isVisible: (rows) => rows.every((r) => r.platform === 'google' && r.status !== 'DISCONNECTED'),
         run: (rows) => openWizard(rows[0].id),
       },
       {
@@ -55,7 +65,8 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
         icon: Link2,
         surfaces: { row: true },
         permission: 'lead_capture.manage',
-        isVisible: (rows) => rows.every((r) => ROUTING.has(r.status) && r.needsMapping.length > 0),
+        isVisible: (rows) =>
+          rows.every((r) => r.platform === 'facebook' && ROUTING.has(r.status) && r.needsMapping.length > 0),
         run: (rows) => openWizard(rows[0].id),
       },
     ];
@@ -96,7 +107,9 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
         meta: { headerTitle: 'Status' },
         header: ({ column }) => <DataGridColumnHeader title="Status" column={column} />,
         cell: ({ row }) => <StatusBadge status={row.original.status} registry={SOURCE_STATUS_REGISTRY} />,
-        size: 150,
+        // "Waiting for test" must fit at 1280 px without being cut (crew pass 3208a91e).
+        size: 190,
+        minSize: 190,
         enableSorting: true,
       },
       {
@@ -168,7 +181,7 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
       actions,
       searchPlaceholder: 'Search sources',
       defaultSort: { id: 'createdAt', desc: true },
-      createLabel: 'Connect a source',
+      createLabel: 'Create',
       createPermission: 'lead_capture.manage',
       onCreate: () => openWizard(),
     };

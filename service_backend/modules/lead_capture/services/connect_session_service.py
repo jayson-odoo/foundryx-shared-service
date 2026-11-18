@@ -49,6 +49,7 @@ from .. import meta_leads
 from ..meta_leads import LOGIN_SCOPES, MetaLeadClient, MetaLeadError
 from ..models import (
     PLATFORM_FACEBOOK,
+    PLATFORM_GOOGLE,
     SESSION_KIND_LOGIN,
     SESSION_KIND_WIZARD,
     LcApiKey,
@@ -348,6 +349,8 @@ def channels() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if login_config()["available"]:
         out.append({"key": PLATFORM_FACEBOOK, "label": "Facebook", "setup": "automatic"})
+    # Google Ads lead forms (card 68a): guided, needs nothing on this server.
+    out.append({"key": PLATFORM_GOOGLE, "label": "Google Ads", "setup": "guided"})
     return out
 
 
@@ -509,6 +512,30 @@ def wizard_connect(db: Session, principal: WizardPrincipal, page_id: str) -> LcS
     return source
 
 
+def wizard_google_source(db: Session, principal: WizardPrincipal) -> Tuple[LcSource, str, str]:
+    """The Google source of this session (card 68a R9), made with the ONE
+    create function and bound to the session. Asked again in the same session
+    (the person lost the key) = the same source with a new key."""
+    from . import google_source_service
+
+    session = principal.session
+    if session.source_id:
+        bound = source_service.get_source(db, principal.tenant_id, session.source_id)
+        if bound.platform != PLATFORM_GOOGLE:
+            raise SessionError(409, "wrong_channel", "This link is for another kind of source.")
+        try:
+            url, key = google_source_service.rotate_key(db, principal.tenant_id, bound.id, actor=principal.actor)
+        except source_service.SourceError as exc:
+            raise SessionError(exc.status_code, exc.code, exc.message) from None
+        return bound, url, key
+    source, url, key = google_source_service.create_guided_source(
+        db, principal.tenant_id, actor=principal.actor, user_id=session.user_id
+    )
+    session.source_id = source.id
+    db.commit()
+    return source, url, key
+
+
 def finish(db: Session, principal: WizardPrincipal) -> Dict[str, Any]:
     """Done screen data (AC-64-17): what was connected, by whom, when, the
     test lead, and what is still open."""
@@ -563,9 +590,13 @@ def last_test_lead(db: Session, principal: WizardPrincipal, source_id: str) -> D
 
     source = principal.require_source(db, source_id)
     row = (
-        db.query(LcLead.id, LcLead.received_at)
+        db.query(LcLead.id, LcLead.received_at, LcLead.form_id)
         .filter(LcLead.tenant_id == principal.tenant_id, LcLead.source_id == source.id, LcLead.is_test.is_(True))
         .order_by(LcLead.received_at.desc(), LcLead.id.desc())
         .first()
     )
-    return {"leadId": row.id if row else None, "receivedAt": row.received_at if row else None}
+    return {
+        "leadId": row.id if row else None,
+        "receivedAt": row.received_at if row else None,
+        "formId": row.form_id if row else None,
+    }

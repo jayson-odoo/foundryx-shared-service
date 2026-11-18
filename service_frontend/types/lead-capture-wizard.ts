@@ -97,6 +97,15 @@ export interface WizardConsumerField {
 export interface WizardTestLead {
   leadId: string | null;
   receivedAt: string | null;
+  /** The form the test lead came from (Google: the Fields step maps it). */
+  formId?: string | null;
+}
+
+/** A Google Ads source's inbound URL + key (card 68a); the key is shown only here. */
+export interface WizardGuidedSource {
+  source: WizardSource;
+  url: string;
+  key: string;
 }
 
 export interface WizardDone {

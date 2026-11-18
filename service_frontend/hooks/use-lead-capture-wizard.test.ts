@@ -17,6 +17,7 @@ const svc = vi.hoisted(() => ({
   sendTestLead: vi.fn(),
   lastTestLead: vi.fn(),
   finish: vi.fn(),
+  googleSource: vi.fn(),
 }));
 vi.mock('@/services/lead-capture-wizard-service', () => ({ leadCaptureWizardService: svc }));
 
@@ -112,5 +113,53 @@ describe('useLeadCaptureWizard', () => {
     svc.questions.mockResolvedValueOnce({ formId: 'f2', formName: 'F2', data: [] });
     await act(() => hook.result.current.chooseMapForm('f2'));
     expect(hook.result.current.mapFormId).toBe('f2');
+  });
+
+  it('copies the Google URL and key on a plain-http page (no navigator.clipboard) and unblocks Continue', async () => {
+    window.history.replaceState(null, '', '/public/lead-capture/connect#s=secret-value-0123456789abcdef');
+    svc.redeem.mockResolvedValue({ accessToken: 't', expiresAt: '2999-01-01T00:00:00Z', returnOrigin: null, sourceId: null });
+    svc.context.mockResolvedValue({ ...CONTEXT, source: null });
+    svc.googleSource.mockResolvedValue({ source: { ...LIVE, platform: 'google' }, url: 'http://host/in/abc', key: 'k3y' });
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    const exec = vi.fn(() => true);
+    Object.defineProperty(document, 'execCommand', { value: exec, configurable: true });
+    const hook = renderHook(() => useLeadCaptureWizard());
+    await waitFor(() => expect(hook.result.current.phase).toBe('ready'));
+    act(() => hook.result.current.chooseChannel('google'));
+    await waitFor(() => expect(hook.result.current.state.guided).not.toBeNull());
+    await act(() => hook.result.current.copyGuided('url'));
+    await act(() => hook.result.current.copyGuided('key'));
+    expect(hook.result.current.problem).toBeNull();
+    expect(hook.result.current.state.copiedUrl).toBe(true);
+    expect(hook.result.current.state.copiedKey).toBe(true);
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
+  it('a Google test lead sent before Continue still passes the Test step (crew pass 8fc0c469)', async () => {
+    window.history.replaceState(null, '', '/public/lead-capture/connect#s=secret-value-0123456789abcdef');
+    svc.redeem.mockResolvedValue({ accessToken: 't', expiresAt: '2999-01-01T00:00:00Z', returnOrigin: null, sourceId: null });
+    svc.context.mockResolvedValue({ ...CONTEXT, source: null });
+    svc.googleSource.mockResolvedValue({ source: { ...LIVE, platform: 'google' }, url: 'http://host/in/abc', key: 'k3y' });
+    svc.fields.mockResolvedValue([{ key: 'name', label: 'Name', type: 'name' }]);
+    svc.questions.mockResolvedValue({ formId: '400', formName: null, data: [] });
+    // No test lead when the URL + key are shown...
+    svc.lastTestLead.mockResolvedValue({ leadId: null, receivedAt: null, formId: null });
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    Object.defineProperty(document, 'execCommand', { value: vi.fn(() => true), configurable: true });
+    const hook = renderHook(() => useLeadCaptureWizard());
+    await waitFor(() => expect(hook.result.current.phase).toBe('ready'));
+    act(() => hook.result.current.chooseChannel('google'));
+    await waitFor(() => expect(hook.result.current.state.guided).not.toBeNull());
+    await act(() => hook.result.current.copyGuided('url'));
+    await act(() => hook.result.current.copyGuided('key'));
+    // ...the person presses "Send test data" in Google Ads BEFORE Continue.
+    svc.lastTestLead.mockResolvedValue({ leadId: 'early', receivedAt: '2026-11-18T10:00:00Z', formId: '400' });
+    vi.useFakeTimers();
+    await act(() => hook.result.current.confirmCopy());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    expect(hook.result.current.state.testPassed).toBe(true);
+    expect(hook.result.current.mapFormId).toBe('400');
   });
 });

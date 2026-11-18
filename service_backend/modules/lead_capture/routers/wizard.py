@@ -29,6 +29,7 @@ from ..services import (
     connect_session_service as sessions,
     field_service,
     form_service,
+    google_source_service,
     read_service,
     source_service,
 )
@@ -64,6 +65,22 @@ def _source(db: Session, principal: WizardPrincipal, source_id: str):
         return principal.require_source(db, source_id)
     except sessions.SessionError as exc:
         raise _api(exc)
+
+
+@router.post("/in/{source_key}")
+async def google_inbound(source_key: str, request: Request, db: Session = Depends(get_db)) -> dict:
+    """Google Ads lead form webhook (card 68a R2). No auth header: the path's
+    source key picks the source and the body's ``google_key`` proves it."""
+    raw = bytearray()
+    async for chunk in request.stream():  # capped read: an oversize body is never buffered
+        raw += chunk
+        if len(raw) > google_source_service.MAX_BODY_BYTES:
+            break
+    try:
+        google_source_service.receive(db, source_key, bytes(raw), ip=client_ip(request))
+    except google_source_service.ReceiveError as exc:
+        raise _api(exc)
+    return {}
 
 
 @router.post("/connect/redeem", response_model=schemas.WizardSession)
@@ -110,6 +127,15 @@ def facebook_login(
     except sessions.SessionError as exc:
         raise _api(exc)
     return schemas.FacebookPageList(data=[schemas.FacebookPage(**p) for p in pages])
+
+
+@router.post("/wizard/google/source", response_model=schemas.GuidedSourceCreated, status_code=201)
+def google_source(principal: WizardPrincipal = Depends(get_wizard), db: Session = Depends(get_db)) -> schemas.GuidedSourceCreated:
+    try:
+        row, url, key = sessions.wizard_google_source(db, principal)
+    except sessions.SessionError as exc:
+        raise _api(exc)
+    return schemas.GuidedSourceCreated(source=read_service.source_item(row), url=url, key=key)
 
 
 @router.get("/wizard/facebook/pages", response_model=schemas.FacebookPageList)

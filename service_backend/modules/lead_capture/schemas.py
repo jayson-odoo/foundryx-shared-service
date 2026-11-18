@@ -95,6 +95,20 @@ class SourceList(BaseModel):
     data: List[SourceItem]
 
 
+class GuidedSourceCreated(BaseModel):
+    """A new Google source (card 68a R1): the inbound URL + the Google key,
+    shown only in this answer (and again after a rotate)."""
+
+    source: SourceItem
+    url: str
+    key: str
+
+
+class KeyRotated(BaseModel):
+    url: str
+    key: str
+
+
 class SettingsItem(ApiModel):
     allowSharedPages: bool
     updatedAt: Optional[datetime] = None
@@ -303,6 +317,7 @@ class WizardConnect(BaseModel):
 class WizardTestLead(ApiModel):
     leadId: Optional[str] = None
     receivedAt: Optional[datetime] = None
+    formId: Optional[str] = None
 
 
 class WizardDone(ApiModel):

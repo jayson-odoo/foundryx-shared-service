@@ -15,11 +15,11 @@ import { BrandMark } from '@/components/platform/branding';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useLeadCaptureWizard, type UseLeadCaptureWizard } from '@/hooks/use-lead-capture-wizard';
 import {
-  WIZARD_STEPS,
   answerLabel,
   currentStep,
   isAnswered,
   progressPercent,
+  stepsFor,
   visibleSteps,
   type WizardStepKey,
 } from '@/lib/lead-capture-wizard';
@@ -29,6 +29,7 @@ import { DoneScreen } from './components/done-screen';
 import { WizardProblem } from './components/wizard-problem';
 import {
   ChannelStep,
+  CopyStep,
   FieldsStep,
   FormsStep,
   PageStep,
@@ -58,6 +59,7 @@ const BODIES: Record<WizardStepKey, (props: { wizard: UseLeadCaptureWizard }) =>
   forms: FormsStep,
   fields: FieldsStep,
   test: TestStep,
+  copy: CopyStep,
 };
 
 export default function LeadCaptureConnectPage() {
@@ -81,7 +83,8 @@ export default function LeadCaptureConnectPage() {
 
   return (
     <main className="flex min-h-screen justify-center bg-background px-4 py-6 sm:py-10">
-      <div className="flex w-full max-w-2xl flex-col gap-4">
+      {/* min-w-0: a one-line URL must clamp, never widen the page (375 px, crew pass 8fc0c469). */}
+      <div className="flex w-full min-w-0 max-w-2xl flex-col gap-4">
         <header className="flex items-center justify-between gap-3">
           {context ? (
             <BrandMark branding={brandingOf(context.branding.name, context.branding.logoUrl)} />
@@ -107,7 +110,7 @@ export default function LeadCaptureConnectPage() {
               <div className="flex flex-col gap-2">
                 <Progress value={progressPercent(state)} aria-label="Setup progress" className="h-1.5" />
                 <ol className="flex justify-between gap-1 text-xs">
-                  {WIZARD_STEPS.map((s) => (
+                  {stepsFor(state.channel).map((s) => (
                     <li
                       key={s.key}
                       className={cn(

@@ -20,7 +20,7 @@ import logging
 import re
 import secrets
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -28,7 +28,7 @@ from app.config import settings
 from app.secrets import decrypt_secret
 
 from ..meta_leads import SUBCODE_TEST_LEAD_EXISTS, MetaLeadClient, MetaLeadError
-from ..models import PLATFORM_FACEBOOK, SOURCE_ROUTING_STATES, LcSource
+from ..models import PLATFORM_FACEBOOK, PLATFORM_GOOGLE, SOURCE_ROUTING_STATES, LcSource
 from . import source_service
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,8 @@ def form_questions(
     """``{"formId", "formName", "data": [{key, label, type, options}]}``."""
     form_id = _check_form_id(form_id)
     source = _source(db, tenant_id, source_id)
+    if source.platform == PLATFORM_GOOGLE:
+        return _google_questions(db, source, form_id)
     meta = client or MetaLeadClient()
     creds = _page_token(source, meta)
     try:
@@ -109,6 +111,39 @@ def form_questions(
         source_service.handle_meta_error(db, source, exc, dead_only=True)
         raise _meta_error(exc) from None
     return {"formId": form_id, "formName": read.get("formName"), "data": read.get("questions") or []}
+
+
+def _google_questions(db: Session, source: LcSource, form_id: str) -> Dict[str, Any]:
+    """Google has no form read on the guided path (card 68a R7): the questions
+    are the columns of the newest lead Google sent for this form, with Google's
+    own labels. No lead yet = an empty list."""
+    from ..models import LcLead
+    from .google_source_service import answers_from_google
+
+    lead = (
+        db.query(LcLead)
+        .filter(LcLead.tenant_id == source.tenant_id, LcLead.source_id == source.id, LcLead.form_id == form_id)
+        .order_by(LcLead.received_at.desc(), LcLead.id.desc())
+        .first()
+    )
+    out: List[Dict[str, Any]] = []
+    if lead is not None and lead.raw_encrypted:
+        try:
+            columns = (decrypt_secret(lead.raw_encrypted).get("raw") or {}).get("user_column_data")
+        except Exception:  # noqa: BLE001 - undecryptable: no questions, never a 500
+            columns = None
+        labels = {
+            str(c.get("column_id") or c.get("column_name")): str(c.get("column_name") or c.get("column_id"))
+            for c in columns or []
+            if isinstance(c, dict)
+        }
+        seen = set()
+        for ans in answers_from_google(columns):
+            if ans["key"] in seen:
+                continue
+            seen.add(ans["key"])
+            out.append({"key": ans["key"], "label": labels.get(ans["key"], ans["key"]), "type": "text", "options": []})
+    return {"formId": form_id, "formName": lead.form_name if lead else None, "data": out}
 
 
 def _clear_test_leads(meta: MetaLeadClient, token: str, form_id: str) -> None:

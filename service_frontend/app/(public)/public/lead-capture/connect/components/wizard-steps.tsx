@@ -5,7 +5,7 @@
  * one question; data + actions come from `useLeadCaptureWizard` only.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ExternalLink, Facebook, Loader2 } from 'lucide-react';
+import { AlertTriangle, Check, Copy, ExternalLink, Facebook, Loader2, Megaphone } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -15,7 +15,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import type { UseLeadCaptureWizard } from '@/hooks/use-lead-capture-wizard';
 import { blockReason, defaultTarget } from '@/lib/lead-capture-wizard';
 import { cn } from '@/lib/utils';
-import { CREATE_FORM_GUIDE, GuidePlayer } from './guide-player';
+import { CREATE_FORM_GUIDE, GOOGLE_TEST_DATA_GUIDE, GuidePlayer } from './guide-player';
 
 interface StepProps {
   wizard: UseLeadCaptureWizard;
@@ -61,9 +61,15 @@ export function ChannelStep({ wizard }: StepProps) {
             wizard.state.channel === channel.key ? 'border-primary ring-1 ring-primary' : 'border-border',
           )}
         >
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-[#1877F2] text-white">
-            <Facebook className="size-5" aria-hidden />
-          </span>
+          {channel.key === 'facebook' ? (
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-[#1877F2] text-white">
+              <Facebook className="size-5" aria-hidden />
+            </span>
+          ) : (
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
+              <Megaphone className="size-5" aria-hidden />
+            </span>
+          )}
           <span className="flex min-w-0 flex-col">
             <span className="text-sm font-medium text-foreground">{channel.label}</span>
             <Badge variant="secondary" appearance="light" size="sm" className="mt-1 w-fit">
@@ -265,10 +271,82 @@ export function FieldsStep({ wizard }: StepProps) {
   );
 }
 
+function CopyRow({
+  label,
+  value,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <div className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5">
+        <ClampedText text={value} lines={1} className="min-w-0 flex-1 font-mono text-sm text-foreground" />
+        <Button type="button" variant="outline" size="sm" onClick={onCopy} aria-label={`Copy ${label}`}>
+          {copied ? <Check className="text-success" aria-hidden /> : <Copy aria-hidden />}
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Google Ads: the inbound URL + key, each copied once (AC-64-40). */
+export function CopyStep({ wizard }: StepProps) {
+  const { state } = wizard;
+  if (!state.guided) {
+    return (
+      <StepAction label="Show URL and key" onClick={() => void wizard.showGuided()} busy={wizard.busy === 'copy'} />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <CopyRow
+        label="Webhook URL"
+        value={state.guided.url}
+        copied={state.copiedUrl}
+        onCopy={() => void wizard.copyGuided('url')}
+      />
+      <CopyRow label="Key" value={state.guided.key} copied={state.copiedKey} onCopy={() => void wizard.copyGuided('key')} />
+      {state.copyConfirmed ? null : (
+        <StepAction label="Continue" onClick={() => void wizard.confirmCopy()} reason={blockReason('copy', state)} />
+      )}
+    </div>
+  );
+}
+
+function GoogleTestStep({ wizard }: StepProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <GuidePlayer frames={GOOGLE_TEST_DATA_GUIDE} />
+      {wizard.testWaiting ? (
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          Waiting for the test data
+        </p>
+      ) : (
+        <StepAction
+          label="Check again"
+          onClick={() => void wizard.waitForGoogleTest()}
+          busy={wizard.busy === 'test'}
+        />
+      )}
+    </div>
+  );
+}
+
 export function TestStep({ wizard }: StepProps) {
   const forms = usableForms(wizard);
   if (wizard.state.testPassed) {
     return null;
+  }
+  if (wizard.state.channel === 'google') {
+    return <GoogleTestStep wizard={wizard} />;
   }
   return (
     <div className="flex flex-col gap-3">
