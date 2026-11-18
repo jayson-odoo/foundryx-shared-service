@@ -24,6 +24,7 @@ from ..services import (
     delivery_service,
     field_service,
     form_service,
+    google_source_service,
     read_service,
     source_service,
 )
@@ -75,6 +76,27 @@ def _connect_token(db: Session, key: LeadGatewayKey, body: schemas.ConnectFacebo
     if body.loginId:
         return connect_session_service.login_token(db, key.tenant_id, body.loginId, key.key_id)
     return body.systemUserToken or ""
+
+
+@router.post("/sources/google", response_model=schemas.GuidedSourceCreated, status_code=201)
+def create_google_source(
+    key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.GuidedSourceCreated:
+    """A Google Ads lead form source (card 68a): the product shows the URL +
+    key to its customer to paste into the Google Ads lead form."""
+    row, url, secret = google_source_service.create_guided_source(db, key.tenant_id, actor=_actor(key))
+    return schemas.GuidedSourceCreated(source=read_service.source_item(row), url=url, key=secret)
+
+
+@router.post("/sources/{source_id}/rotate-key", response_model=schemas.KeyRotated)
+def rotate_source_key(
+    source_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.KeyRotated:
+    try:
+        url, secret = google_source_service.rotate_key(db, key.tenant_id, source_id, actor=_actor(key))
+    except source_service.SourceError as exc:
+        raise _api(exc)
+    return schemas.KeyRotated(url=url, key=secret)
 
 
 @router.get("/sources", response_model=schemas.SourceList)

@@ -20,6 +20,7 @@ from ..services import (
     delivery_service,
     field_service,
     form_service,
+    google_source_service,
     key_service,
     read_service,
     source_service,
@@ -61,6 +62,34 @@ def connect_facebook(
     except connect_service.ConnectError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
     return read_service.source_item(row)
+
+
+@router.post("/sources/google", response_model=schemas.GuidedSourceCreated, status_code=201)
+def create_google_source(
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.GuidedSourceCreated:
+    row, url, key = google_source_service.create_guided_source(
+        db, user.tenant_id, actor=source_service.Actor.user(actor_id, user.id), user_id=actor_id
+    )
+    return schemas.GuidedSourceCreated(source=read_service.source_item(row), url=url, key=key)
+
+
+@router.post("/sources/{source_id}/rotate-key", response_model=schemas.KeyRotated)
+def rotate_source_key(
+    source_id: str,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.KeyRotated:
+    try:
+        url, key = google_source_service.rotate_key(
+            db, user.tenant_id, source_id, actor=source_service.Actor.user(actor_id, user.id)
+        )
+    except source_service.SourceError as exc:
+        raise _http(exc)
+    return schemas.KeyRotated(url=url, key=key)
 
 
 @router.get("/sources", response_model=schemas.SourceList)
