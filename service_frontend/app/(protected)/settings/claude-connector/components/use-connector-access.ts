@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import {
   getTenantSettings,
   listSettingsAudit,
@@ -47,6 +48,8 @@ export function useConnectorAccess(): UseConnectorAccess {
   const [saving, setSaving] = useState(false);
   const [values, setValues] = useState<TenantFormValues | null>(null);
   const [errors, setErrors] = useState<Partial<Record<ConnectorTenantField, string>>>({});
+  // Foundryx UIUX switch only: the done toast. The request is the same.
+  const fx = useFx();
 
   const reload = useCallback(async () => {
     setIsLoading(true);
@@ -102,7 +105,11 @@ export function useConnectorAccess(): UseConnectorAccess {
       setSettings(s);
       setEditing(false);
       setValues(null);
-      toast.success('Settings saved. Changes apply immediately.');
+      if (fx) {
+        toast.fxDone({ what: 'Claude connector access settings saved', byWhom: 'you' });
+      } else {
+        toast.success('Settings saved. Changes apply immediately.');
+      }
       listSettingsAudit()
         .then(setAudit)
         .catch(() => undefined);
@@ -117,7 +124,7 @@ export function useConnectorAccess(): UseConnectorAccess {
     } finally {
       setSaving(false);
     }
-  }, [values]);
+  }, [values, fx]);
 
   return {
     settings,
