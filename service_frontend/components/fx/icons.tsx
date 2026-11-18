@@ -5,32 +5,42 @@
  * and empty states. Pages name an icon by meaning (`FxIconName`), never pick a
  * glyph of their own, so the same action never gets two icons.
  */
-import type { SVGProps } from 'react';
+import { isValidElement, type ReactElement, type SVGProps } from 'react';
 import {
   ArrowLeftRight,
   Bell,
   BellRing,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  Clock,
   Columns3,
   Copy,
   Download,
   Ellipsis,
   Filter,
+  FlaskConical,
   LayoutGrid,
   Mail,
   Menu,
   MessageCircleMore,
+  Mic,
+  PanelRight,
+  Paperclip,
   Pencil,
   Pin,
   PinOff,
   Plus,
   RefreshCw,
+  Save,
   Search,
   Send,
   Settings,
   Settings2,
   Share2,
+  Smile,
+  Star,
   Tag,
   Trash2,
   Undo2,
@@ -79,6 +89,18 @@ export const FX_ICONS = {
   unpin: PinOff,
   previous: ChevronLeft,
   next: ChevronRight,
+  // Found missing by the first page wave (FX-21): the conversation pane and
+  // the new broadcast form had drawn these as their own glyphs.
+  snooze: Clock,
+  panel: PanelRight,
+  'save-draft': Save,
+  'test-message': FlaskConical,
+  attach: Paperclip,
+  emoji: Smile,
+  'quick-reply': Star,
+  voice: Mic,
+  up: ChevronUp,
+  down: ChevronDown,
 } satisfies Record<string, LucideIcon>;
 
 export type FxIconName = keyof typeof FX_ICONS;
@@ -88,14 +110,22 @@ export type FxFileIconName = `${Lowercase<FxFileType>}${'' | '-down' | '-up'}`;
 
 export type FxAnyIconName = FxIconName | FxFileIconName;
 
+/**
+ * An icon by meaning, or a drawn icon node for a meaning the set does not
+ * hold yet (sized by the caller, `aria-hidden`). Prefer a name: a node is
+ * the way out for a page-only meaning, not a second glyph for a named one.
+ */
+export type FxIconRef = FxAnyIconName | ReactElement;
+
 interface FxIconProps {
-  name: FxAnyIconName;
+  name: FxIconRef;
   size?: FxIconSize;
   className?: string;
 }
 
-/** Draws an icon by meaning. */
+/** Draws an icon by meaning (or the node it was given). */
 export function FxIcon({ name, size = 18, className }: FxIconProps) {
+  if (isValidElement(name)) return name;
   if (name in FX_ICONS) {
     const Glyph = FX_ICONS[name as FxIconName];
     return (
