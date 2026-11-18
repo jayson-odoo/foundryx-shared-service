@@ -6,6 +6,7 @@
  * same input.
  */
 import type { ReactElement } from 'react';
+import { computeAccessibleName } from 'dom-accessibility-api';
 import {
   act,
   fireEvent,
@@ -348,9 +349,14 @@ async function pick(combobox: string, option: string) {
 }
 
 function nameInput(): HTMLInputElement {
-  return (
-    screen.getByText('Name *').parentElement as HTMLElement
-  ).querySelector('input') as HTMLInputElement;
+  // The label reads "Name *" in both looks (the star is a separate,
+  // screen-reader-hidden span with the switch on).
+  const label = Array.from(document.querySelectorAll('label')).find(
+    (el) => el.textContent === 'Name *',
+  ) as HTMLElement;
+  return (label.parentElement as HTMLElement).querySelector(
+    'input',
+  ) as HTMLInputElement;
 }
 
 async function fillNewBroadcast() {
@@ -764,6 +770,67 @@ describe('new broadcast with the switch on', () => {
   });
 });
 
+/** Every form control on the page and its accessible name. */
+function unnamedControls(): string[] {
+  const controls = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      'input:not([type="hidden"]), textarea, select, [role="combobox"], [role="spinbutton"]',
+    ),
+  );
+  return controls
+    .filter((el) => !computeAccessibleName(el).trim())
+    .map((el) => el.outerHTML.slice(0, 120));
+}
+
+describe('screen-reader names with the switch on (owner re-test)', () => {
+  it('Name, Labels and every other control are named by their visible labels', async () => {
+    render(<NewBroadcastPage />, true);
+    await settle();
+    await fillNewBroadcast();
+    expect(screen.getByRole('textbox', { name: 'Name' })).toBe(nameInput());
+    expect(screen.getByRole('textbox', { name: 'Labels' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Source' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Segment' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Channel' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Template' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Body {{1}} source' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Body {{1}} field' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Body {{1}} fallback' })).toBeTruthy();
+    expect(unnamedControls()).toEqual([]);
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Schedule for' }));
+    await settle();
+    expect(screen.getByRole('textbox', { name: 'Date' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Time' })).toBeTruthy();
+    expect(unnamedControls()).toEqual([]);
+
+    await pick('Source', 'Selected contacts');
+    expect(screen.getByRole('combobox', { name: 'Contacts' })).toBeTruthy();
+    expect(unnamedControls()).toEqual([]);
+  });
+
+  it('a static binding and the test-send contact are named too', async () => {
+    render(<NewBroadcastPage />, true);
+    await settle();
+    await fillNewBroadcast();
+    await pick('Body {{1}} source', 'Static text');
+    expect(screen.getByRole('textbox', { name: 'Body {{1}} text' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Send a test message' }));
+    await settle();
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('combobox', { name: 'Contact' })).toBeTruthy();
+    expect(unnamedControls()).toEqual([]);
+  });
+
+  it('with the switch off the names are as today', async () => {
+    render(<NewBroadcastPage />, false);
+    await settle();
+    expect(screen.getByRole('combobox', { name: 'Audience source' })).toBeTruthy();
+    expect(nameInput().id).toBe('');
+    expect(screen.queryByRole('textbox', { name: 'Name' })).toBeNull();
+  });
+});
+
 describe('both looks send the same requests for the same input', () => {
   async function run(
     fx: boolean,
@@ -844,7 +911,8 @@ describe('both looks send the same requests for the same input', () => {
         screen.getByRole('button', { name: 'Send a test message' }),
       );
       await settle();
-      await pick('Test-send contact', 'Aisyah Rahman (+60 12-345 6789)');
+      // Named by its visible label "Contact" with the switch on.
+      await pick('Contact', 'Aisyah Rahman (+60 12-345 6789)');
       fireEvent.click(screen.getByRole('button', { name: 'Send test' }));
     });
     expect(off.length).toBe(2);
