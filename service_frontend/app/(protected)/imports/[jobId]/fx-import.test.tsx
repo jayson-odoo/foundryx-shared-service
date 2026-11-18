@@ -79,7 +79,7 @@ vi.mock('@/providers/import-activity-provider', () => ({
 
 const CONFIG: ImportConfig = {
   entityType: 'user',
-  label: 'Users',
+  label: 'User',
   columns: [
     { key: 'name', label: 'Name', type: 'string', required: true, unique: false, options: null, hasResolver: false },
     { key: 'email', label: 'Email', type: 'email', required: true, unique: true, options: null, hasResolver: false },
@@ -167,7 +167,7 @@ vi.mock('@/services/import-service', () => ({
 }));
 
 import { ImportModal } from '@/components/platform/import-wizard/import-modal';
-import { checkSignature, importMainAction } from './fx-import-page';
+import { checkSignature, importMainAction, pluralNoun } from './fx-import-page';
 import ImportPage from './page';
 
 function Wrap({ fx, children }: { fx: boolean; children: ReactNode }) {
@@ -207,7 +207,7 @@ async function uploadThroughDialog(fx: boolean): Promise<unknown[]> {
       <ImportModal entityType="user" context={{ project_id: 'p-1' }} onClose={() => h.calls.push(['onClose'])} />
     </Wrap>,
   );
-  await screen.findByText('Import Users');
+  await screen.findByText('Import User');
   await settle();
   const input = document.body.querySelector('input[type="file"]') as HTMLInputElement;
   fireEvent.change(input, { target: { files: [FILE()] } });
@@ -236,7 +236,7 @@ describe('import dialog: same upload request in both looks', () => {
         <ImportModal entityType="user" onClose={() => {}} />
       </Wrap>,
     );
-    await screen.findByText('Import Users');
+    await screen.findByText('Import User');
     await settle();
     expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
@@ -251,7 +251,7 @@ describe('import dialog: same upload request in both looks', () => {
           <ImportModal entityType="user" onClose={() => {}} />
         </Wrap>,
       );
-      await screen.findByText('Import Users');
+      await screen.findByText('Import User');
       await settle();
       fireEvent.click(screen.getByRole('button', { name: /Download (a )?template/ }));
       fireEvent.click(await screen.findByRole('button', { name: 'Download .xlsx' }));
@@ -387,7 +387,7 @@ describe('import page: Check always before Import (approved change)', () => {
 
   it('the red action follows the step', () => {
     const noop = () => {};
-    const base = { noun: 'users', phase: 'idle' as const, ticketError: null, onCheck: noop, onImport: noop };
+    const base = { noun: 'user', phase: 'idle' as const, ticketError: null, onCheck: noop, onImport: noop };
     expect(importMainAction({ ...base, checked: false, job: VALIDATED })?.id).toBe('check');
     const ready = importMainAction({ ...base, checked: true, job: VALIDATED });
     expect(ready?.id).toBe('import');
@@ -401,6 +401,11 @@ describe('import page: Check always before Import (approved change)', () => {
         ?.blocked?.reason,
     ).toBe('Pick an offering to issue tickets.');
     expect(importMainAction({ ...base, checked: true, job: DONE })).toBeNull();
+    expect(importMainAction({ ...base, checked: true, job: { ...VALIDATED, validRows: 1 } })?.label).toBe(
+      'Import 1 user',
+    );
+    expect(pluralNoun('contacts', 3)).toBe('contacts');
+    expect(pluralNoun('category', 3)).toBe('categories');
   });
 
   it('a finished import shows its outcome with no red action', async () => {

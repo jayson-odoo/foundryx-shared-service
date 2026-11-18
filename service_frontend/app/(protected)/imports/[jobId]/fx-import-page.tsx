@@ -71,7 +71,15 @@ export function checkSignature(
   return JSON.stringify({ mapping, sheet, context: context ?? null });
 }
 
-/** The red action for where the import is (pure, tested). */
+/** "user" -> "users" for any count but one ("contacts" stays). */
+export function pluralNoun(noun: string, count: number): string {
+  if (count === 1 || /s$/i.test(noun)) return noun;
+  if (/[^aeiou]y$/i.test(noun)) return `${noun.slice(0, -1)}ies`;
+  return `${noun}s`;
+}
+
+/** The red action for where the import is (pure, tested). `noun` is the
+ *  importer's own label in lower case ("user"). */
 export function importMainAction(input: {
   checked: boolean;
   job: ImportJob | null;
@@ -87,13 +95,13 @@ export function importMainAction(input: {
     return {
       id: 'check',
       label: phase === 'testing' ? 'Checking…' : 'Check rows',
-      fullLabel: `Check the ${noun} in this file without importing them`,
+      fullLabel: `Check the ${pluralNoun(noun, 2)} in this file without importing them`,
       onClick: input.onCheck,
       working: phase === 'testing',
     };
   }
   const ready = job?.validRows ?? 0;
-  const label = `Import ${fmtCount(ready)} ${noun}`;
+  const label = `Import ${fmtCount(ready)} ${pluralNoun(noun, ready)}`;
   return {
     id: 'import',
     label: phase === 'importing' ? 'Importing…' : label,
