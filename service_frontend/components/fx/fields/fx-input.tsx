@@ -9,6 +9,7 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { FX_FIELD, FX_FIELD_SIZE, type FxFieldSize } from './classes';
+import { FxFieldContext, fxControlName, useFxFieldIds, type FxFieldIds } from './fx-field-context';
 
 export type FxInputProps = React.ComponentProps<'input'> & {
   variant?: FxFieldSize | null;
@@ -23,7 +24,28 @@ function stopWheelStep(event: React.WheelEvent<HTMLInputElement>) {
   if (event.currentTarget === document.activeElement) event.currentTarget.blur();
 }
 
+/** Inside a labelled `FxField`: the field's id and its label as the name. */
+function useFieldNaming(props: {
+  id?: string;
+  'aria-label'?: string;
+  'aria-labelledby'?: string;
+  'aria-describedby'?: string;
+}) {
+  const field = useFxFieldIds();
+  if (!field) return {};
+  return fxControlName(
+    {
+      id: props.id,
+      ariaLabel: props['aria-label'],
+      ariaLabelledBy: props['aria-labelledby'],
+      ariaDescribedBy: props['aria-describedby'],
+    },
+    field,
+  );
+}
+
 export function FxInput({ className, type, variant, onWheel, ...props }: FxInputProps) {
+  const naming = useFieldNaming(props);
   return (
     <input
       data-slot="input"
@@ -46,6 +68,7 @@ export function FxInput({ className, type, variant, onWheel, ...props }: FxInput
         className,
       )}
       {...props}
+      {...naming}
     />
   );
 }
@@ -61,12 +84,14 @@ const TEXTAREA_SIZE: Record<FxFieldSize, string> = {
 };
 
 export function FxTextarea({ className, variant, ...props }: FxTextareaProps) {
+  const naming = useFieldNaming(props);
   return (
     <textarea
       data-slot="textarea"
       data-fx-field=""
       className={cn('w-full', FX_FIELD, TEXTAREA_SIZE[variant ?? 'md'], className)}
       {...props}
+      {...naming}
     />
   );
 }
@@ -122,26 +147,68 @@ export function FxFieldMessage({ children, tone = 'error', id, className }: FxFi
   );
 }
 
-/** A field and its message, positioned so the message never moves layout. */
+/** The visible label of a labelled `FxField`. */
+export const FX_FIELD_LABEL = 'text-sm font-semibold text-(--fx-ink-2)';
+
+/**
+ * A field and its message, positioned so the message never moves layout.
+ * With a `label`, it also shows the label above the field and names the
+ * control inside by it (`htmlFor` + `aria-labelledby`, see
+ * `fx-field-context.ts`), and points the control at its message.
+ */
 export function FxField({
   message,
   tone,
   messageId,
   className,
   children,
+  label,
+  id,
+  labelClassName,
+  fieldClassName,
 }: {
   message?: React.ReactNode;
   tone?: 'error' | 'why';
   messageId?: string;
   className?: string;
   children: React.ReactNode;
+  /** The visible label; names the control inside. */
+  label?: React.ReactNode;
+  /** The control's id (default: a generated one). */
+  id?: string;
+  labelClassName?: string;
+  /** Classes on the box holding the control and its message (with `label`). */
+  fieldClassName?: string;
 }) {
+  const auto = React.useId();
+  const controlId = id ?? `fx-field-${auto}`;
+  const msgId = messageId ?? `${controlId}-message`;
+  const hasMessage = Boolean(message);
+  const ids = React.useMemo<FxFieldIds>(
+    () => ({ controlId, labelId: `${controlId}-label`, messageId: hasMessage ? msgId : undefined }),
+    [controlId, msgId, hasMessage],
+  );
+  if (label === undefined || label === null || label === false) {
+    return (
+      <div className={cn('relative', className)}>
+        {children}
+        <FxFieldMessage id={messageId} tone={tone}>
+          {message}
+        </FxFieldMessage>
+      </div>
+    );
+  }
   return (
-    <div className={cn('relative', className)}>
-      {children}
-      <FxFieldMessage id={messageId} tone={tone}>
-        {message}
-      </FxFieldMessage>
+    <div className={cn('flex min-w-0 flex-col gap-1.5', className)} data-fx-labelled-field="">
+      <label id={ids.labelId} htmlFor={controlId} className={cn(FX_FIELD_LABEL, labelClassName)}>
+        {label}
+      </label>
+      <div className={cn('relative', fieldClassName)}>
+        <FxFieldContext.Provider value={ids}>{children}</FxFieldContext.Provider>
+        <FxFieldMessage id={msgId} tone={tone}>
+          {message}
+        </FxFieldMessage>
+      </div>
     </div>
   );
 }
