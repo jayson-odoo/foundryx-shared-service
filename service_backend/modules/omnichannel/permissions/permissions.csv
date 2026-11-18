@@ -28,3 +28,4 @@ broadcasts,Broadcasts,send,Send,Send/schedule/cancel/test-send a broadcast campa
 omnichannel_migration,Data Migration,read,Read,View respond.io migration jobs and their reports
 omnichannel_migration,Data Migration,manage,Manage,Connect respond.io and run migration preflights/dry runs/migrations
 contacts,Contacts,erase,Erase,Erase a contact and all its messages for good
+partner_keys,Partner API Keys,manage,Manage,Mint revoke and edit the tenant partner API keys

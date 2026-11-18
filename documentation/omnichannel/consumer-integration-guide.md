@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Partner API: partner key** (section 6e). New tenant-scoped partner key (`fxp_live_...`), minted from the dashboard by a tenant admin with the new Partner API Keys permission, and `GET /api/v1/omnichannel/partner/me`. Additive: workspace keys and every existing route, field and code are unchanged; a partner key is refused (`401 invalid_api_key`) on existing routes. |
 > | **2026-11-18** | **Channel connection state and `channel.updated`** (sections 3b, 5a, 7). At payload version 2, each item of the channel list (§5a) gains `connectionState` (`CONNECTED`, `NEEDS_RECONNECT`, `PAUSED`, `DISCONNECTED`); `status` keeps its four values. New opt-in webhook event type `channel.updated` (`data` = `{ "channel": <channel item> }`) fires when a channel is connected, paused or resumed, disconnected or restored, or its token stops or starts working again. Only endpoints that list `channel.updated` receive it; no existing endpoint does. |
 > | **2026-11-18** | **Template header and button variables** (sections 3b, 4.1, 5). A template send accepts optional `template.headerVariables` (text-header `{{n}}` values) and `template.buttonVariables` (one value per dynamic URL button), so templates with a text header or a dynamic URL button can now be sent through this API. At payload version 2, each `GET /templates` item gains `headerFormat`, `headerVariableCount` and `buttonVariableCount`. Templates with an image, video or document header still cannot be sent through this API. Additive: a send without the new fields behaves as before. |
 > | **2026-11-18** | **Sender attribution** (sections 3b, 4, 4.3, 9.1). `POST /messages` accepts an optional `sender {externalId, displayName, avatarUrl?}` (JSON body and multipart `payload`) naming the person on your side who wrote the message. It is stored on the message only: the customer receives exactly the same text, and the send stays an API send (`senderId` `apikey:<id>`, `message.outbound` `source` `api`). At payload version 2, `MessageItem` (history, single message, comment, `message.inbound` / `message.outbound`) gains `sender {type, externalId?, displayName?, avatarUrl?, userId?}`. `senderName`, `senderAvatarUrl` and `senderType` are unchanged at every version. At payload version 2 (`X-Fx-Api-Version: 2`) a malformed `sender` answers `422 invalid_request`; at version 1 (the default) a malformed `sender` is ignored exactly as before, so no existing caller can start receiving a 422 from it. A send without `sender` behaves as before. |
@@ -891,6 +892,36 @@ An invalid body answers `422 invalid_request` with the problems keyed by field, 
 ```
 
 `fieldErrors` is keyed `timezone` and `windows`. Only the first `windows` problem is reported; its message names the day and window it is about (for example `mon.0: …`).
+
+---
+
+## 6e. Partner API (provisioning organisations)
+
+**Who it is for:** a client application that serves many organisations of its own (for example a CRM where each customer company needs its own WhatsApp numbers) and wants to set them up without asking Foundryx staff for every one. The client application has its **own tenant**; each of its organisations becomes one workspace in that tenant.
+
+**Nothing changes for existing integrations.** Partner routes live under `/api/v1/omnichannel/partner/*` and accept only a partner key. Workspace keys (`fxw_live_`) and every route in sections 3 to 6d behave exactly as before.
+
+### How a partner key is issued
+
+A partner key (`fxp_live_...`) is minted from the Foundryx dashboard by an admin of your tenant who holds the **Partner API Keys: Manage** permission. It is never self-serve from the API. The full key is shown **once** at mint time; store it like a password. The admin can list keys, revoke one, and set each key's **allowed return origins** (exact `https://host[:port]` origins, used by the hosted connect flow that comes later; `http://` only for `localhost`).
+
+```
+Authorization: Bearer fxp_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+* The key **encodes your tenant** and nothing else. You never send a tenant id.
+* Missing, malformed, unknown or revoked key, or a workspace key, answers `401 invalid_api_key`. A partner key on a workspace-key route also answers `401 invalid_api_key`.
+* Tenant suspended or archived, or the omnichannel service off for the tenant: `403 service_not_enabled`.
+* The per-key limits of section 3a apply to each partner key on its own (10 in progress, 600 per minute, `429 rate_limited` with `Retry-After`).
+* Errors use the `/api/v1` envelope of section 3.
+
+### `GET /api/v1/omnichannel/partner/me`
+
+Proves the key works and shows what it is bound to.
+
+```json
+{ "tenantId": "8b1f...", "tenantName": "EcoHub", "keyId": "3c9e...", "keyName": "EcoHub production" }
+```
 
 ---
 
