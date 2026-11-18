@@ -697,7 +697,20 @@ class MessageItem(ApiModel):
     createdAt: datetime
 
 
-class ThreadItem(ApiModel):
+class ChannelWindowItem(ApiModel):
+    """One contact-channel identity's messaging window, as an API-key sender
+    sees it (payload version 2, `messaging_policy.window_state`).
+    `allowedSendTypes`: `["ANY"]` | `["TEMPLATE"]` | `[]` (nothing sendable)."""
+
+    channelId: str
+    channelType: str
+    windowOpen: bool
+    windowExpiresAt: Optional[datetime] = None
+    humanAgentExpiresAt: Optional[datetime] = None
+    allowedSendTypes: List[str] = []
+
+
+class ThreadItem(VersionedPayload, ApiModel):
     id: str  # contact id - the contact IS the thread
     tenantId: str
     workspaceId: str
@@ -757,6 +770,15 @@ class ThreadItem(ApiModel):
     # Current lifecycle stage; null until S2 registers the scoped status entity.
     lifecycle: Optional[ContactLifecycleSummary] = None
     createdAt: datetime
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS).
+    # The window of the thread's current `channelId`, computed for an API-key
+    # sender (automation: `actor_is_human=False`); `windows` = one entry per
+    # channel identity of the contact (per WhatsApp number). `cswExpiresAt` /
+    # `windowExpiresAt` above are unchanged.
+    windowOpen: Optional[bool] = None
+    allowedSendTypes: Optional[List[str]] = None  # ["ANY"] | ["TEMPLATE"] | []
+    windowReason: Optional[str] = None  # OPEN | CLOSED | HUMAN_AGENT_ONLY | NO_WINDOW
+    windows: Optional[List[ChannelWindowItem]] = None
 
 
 class ThreadListResponse(ApiModel):
@@ -1533,13 +1555,15 @@ class PublicChannelListResponse(ApiModel):
     data: List[PublicChannelItem]
 
 
-class PublicMessageListResponse(ApiModel):
+class PublicMessageListResponse(VersionedPayload, ApiModel):
     """A contact's message history for the consumer API - full-fidelity
     ``MessageItem`` (every message type). ``nextBefore`` = pass back as
     ``before`` to page further into history (null when the page is the oldest)."""
     contactId: str
     data: List[MessageItem]
     nextBefore: Optional[str] = None
+    # Payload version 2 and up only: the window of the contact's current channel.
+    window: Optional[ChannelWindowItem] = None
 
 
 class PublicContactListResponse(ApiModel):

@@ -391,3 +391,61 @@ def authorize(
         raise PolicyRejected("automation_outside_window", AUTOMATION_OUTSIDE_WINDOW_MESSAGE)
 
     raise PolicyRejected("messaging_window_closed", MESSAGING_WINDOW_CLOSED_MESSAGE)
+
+
+# ── Window state for consumers (payload version 2, Track A S1) ──────────────
+
+SEND_ANY = "ANY"
+SEND_TEMPLATE = "TEMPLATE"
+
+WINDOW_OPEN = "OPEN"
+WINDOW_CLOSED = "CLOSED"
+WINDOW_HUMAN_AGENT_ONLY = "HUMAN_AGENT_ONLY"
+WINDOW_NONE = "NO_WINDOW"
+
+
+@dataclass(frozen=True)
+class WindowState:
+    """What a sender may send on ONE contact-channel identity right now.
+
+    `window_open` = the channel's standard window is open (always true for
+    web chat, which has none); `allowed_send_types` = `["ANY"]` (free-form and
+    templates), `["TEMPLATE"]` (WhatsApp outside its window) or `[]` (nothing
+    this sender can send); `reason` = OPEN | CLOSED | HUMAN_AGENT_ONLY |
+    NO_WINDOW."""
+
+    window_open: bool
+    allowed_send_types: tuple
+    reason: str
+    window_expires_at: Optional[datetime]
+    human_agent_expires_at: Optional[datetime]
+
+
+def window_state(
+    identity: Optional[ContactChannelIdentity],
+    channel_type: str,
+    *,
+    actor_is_human: bool,
+    now: Optional[datetime] = None,
+) -> WindowState:
+    """The read-side twin of `authorize`, per identity: the same window rules,
+    answered as data instead of a refusal. WhatsApp reads the identity's OWN
+    `window_expires_at` (the per-number truth), never `contacts.csw_expires_at`.
+    Messenger/Instagram inside only the 7-day human-agent window allow
+    free-form for a human actor and nothing for automation (an API key, a
+    workflow, a broadcast), exactly like `authorize` (D-A7-6)."""
+    now = now or datetime.now(timezone.utc)
+    policy = POLICIES.get(channel_type, POLICIES["WHATSAPP"])
+    expires = _aware(identity.window_expires_at) if identity is not None else None
+    human_expires = _aware(identity.human_agent_expires_at) if identity is not None else None
+
+    if policy.reengage_mode == "none":
+        return WindowState(True, (SEND_ANY,), WINDOW_NONE, expires, human_expires)
+    if expires is not None and expires > now:
+        return WindowState(True, (SEND_ANY,), WINDOW_OPEN, expires, human_expires)
+    if policy.reengage_mode == "template":
+        return WindowState(False, (SEND_TEMPLATE,), WINDOW_CLOSED, expires, human_expires)
+    if policy.human_agent_hours and human_expires is not None and human_expires > now:
+        allowed = (SEND_ANY,) if actor_is_human else ()
+        return WindowState(False, allowed, WINDOW_HUMAN_AGENT_ONLY, expires, human_expires)
+    return WindowState(False, (), WINDOW_CLOSED, expires, human_expires)

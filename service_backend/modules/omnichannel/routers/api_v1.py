@@ -116,6 +116,14 @@ def versioned(item, version: int, status_code: int = status.HTTP_200_OK):
     return JSONResponse(content, status_code=status_code)
 
 
+def versioned_shape(item, fmt: str, version: int, status_code: int = status.HTTP_200_OK):
+    """`versioned` for a route with two shapes: `?format=rio` is a respond.io
+    mirror and is never versioned."""
+    if fmt == FORMAT_RIO:
+        return item
+    return versioned(item, version, status_code=status_code)
+
+
 router = APIRouter(dependencies=[Depends(api_version)])
 
 # Cap on a JSON body the gateway reads itself (the send route and the workflow routes).
@@ -172,6 +180,7 @@ async def send_message(
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> PublicSendResponse:
     """Send a message via the public gateway (plan 12 AC-12-10). Accepts EITHER
     JSON (text/template/media-by-url) OR multipart (``file`` part + a ``payload``
@@ -227,6 +236,7 @@ async def send_message(
             idempotency_key=idempotency_key,
             channel_id=channel_id,
             reply_to_message_id=reply_to,
+            version=version,
         )
     else:
         try:
@@ -252,6 +262,7 @@ async def send_message(
             api_ws.key_id,
             payload,
             idempotency_key,
+            version,
         )
     # A replay is still 202 with the ORIGINAL message id (idempotent).
     return PublicSendResponse(id=message_id, status="queued", idempotencyReplay=replay)
@@ -298,6 +309,7 @@ def list_contacts(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """List contacts (threads) in the workspace, filterable.
 
@@ -309,8 +321,9 @@ def list_contacts(
         page=page, page_size=page_size, fmt=fmt,
     )
     if fmt != FORMAT_RIO:
-        return PublicContactListResponse(
-            data=items, total=total, page=page, pageSize=page_size
+        return versioned(
+            PublicContactListResponse(data=items, total=total, page=page, pageSize=page_size),
+            version,
         )
     base = dict(status=status, assignee=assignee, priority=priority, search=search,
                 pageSize=page_size, format=FORMAT_RIO)
@@ -332,12 +345,14 @@ def get_contact(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Get one contact by ``phone:+60…``, ``id:<uuid>`` or a bare id.
     `ThreadItem` by default; `RioContactItem` with `?format=rio`."""
-    return PublicGatewayService(db).get_contact(
+    item = PublicGatewayService(db).get_contact(
         api_ws.tenant_id, api_ws.workspace_id, identifier, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 @router.patch(
@@ -351,6 +366,7 @@ def update_contact(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Partial update - only sent fields change. Send ``assignedUserId`` as
     null to unassign. Send ``customFields`` as null (the whole value, not an
@@ -363,7 +379,7 @@ def update_contact(
     an unknown/foreign/inactive id is a `422 invalid_request`."""
     sent = payload.model_fields_set
     _S = ...  # sentinel = "not provided"
-    return PublicGatewayService(db).update_contact(
+    item = PublicGatewayService(db).update_contact(
         api_ws.tenant_id, api_ws.workspace_id, identifier,
         first_name=payload.firstName if "firstName" in sent else _S,
         last_name=payload.lastName if "lastName" in sent else _S,
@@ -377,6 +393,7 @@ def update_contact(
         lifecycle=payload.lifecycle if "lifecycle" in sent else _S,
         fmt=fmt,
     )
+    return versioned_shape(item, fmt, version)
 
 
 @router.get(
@@ -393,6 +410,7 @@ def list_contact_messages(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """A contact's message history - ALL types, always oldest→newest, read-only
     (never marks the thread read). Media: the default shape returns a RELATIVE,
@@ -403,7 +421,8 @@ def list_contact_messages(
     page deeper by passing `nextBefore` back as `?before=`.
     `?format=rio` → respond.io `{items, pagination}` with a two-way cursor:
     `pagination.next` for OLDER history, `pagination.previous` for NEWER."""
-    contact_id, items = PublicGatewayService(db).list_contact_messages(
+    svc = PublicGatewayService(db)
+    contact_id, items = svc.list_contact_messages(
         api_ws.tenant_id, api_ws.workspace_id, identifier,
         limit=limit, before_id=before, after_id=after, fmt=fmt,
     )
@@ -418,9 +437,12 @@ def list_contact_messages(
         next_before = (
             items[0].id if (after is None and len(items) == limit) else None
         )
-        return PublicMessageListResponse(
+        response = PublicMessageListResponse(
             contactId=contact_id, data=items, nextBefore=next_before
         )
+        if payload_version.visible("PublicMessageListResponse", "window", version):
+            response.window = svc.contact_window(api_ws.tenant_id, contact_id)
+        return versioned(response, version)
     oldest = items[0].messageId if items else None
     newest = items[-1].messageId if items else None
     next_url = _page_url(request, limit=limit, before=oldest, format=FORMAT_RIO) if len(items) == limit else None
@@ -460,11 +482,13 @@ def open_conversation(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Reopen the conversation. Echoes the contact in the requested shape."""
-    return PublicGatewayService(db).set_conversation_state(
+    item = PublicGatewayService(db).set_conversation_state(
         api_ws.tenant_id, api_ws.workspace_id, identifier, open_=True, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 @router.post(
@@ -477,11 +501,13 @@ def close_conversation(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Close the conversation. Echoes the contact in the requested shape."""
-    return PublicGatewayService(db).set_conversation_state(
+    item = PublicGatewayService(db).set_conversation_state(
         api_ws.tenant_id, api_ws.workspace_id, identifier, open_=False, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 # ── Comments (internal notes - never sent to the customer) ────────────────────

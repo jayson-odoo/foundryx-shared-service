@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Window state and refusal details, version 2 only** (sections 3b, 6, 9.1, 10). At payload version 2 (`X-Fx-Api-Version: 2`, or an endpoint with `payloadVersion: 2`) `ThreadItem` gains `windowOpen`, `allowedSendTypes`, `windowReason` and `windows[]` (one entry per channel identity of the contact, so each WhatsApp number has its own window); the message history gains `window`; and the window refusals (`409 csw_window_closed` / `messaging_window_closed`) gain `details {channelId, windowExpiresAt, allowedSendTypes, reason}`. Status codes, `code` and `message` are unchanged at every version; version 1 bodies are unchanged byte for byte. |
 > | **2026-11-18** | **Payload versions** (sections 3b, 7, 10). A webhook endpoint can carry an optional `payloadVersion` (integer, set on `POST /webhooks` or `PATCH /webhooks/{id}`), and any `/api/v1/omnichannel/*` request can send an optional `X-Fx-Api-Version` header. Leaving both out keeps version 1: every webhook body and response stays exactly as it is today. New fields on an existing event or response will only ever appear at a higher version. Version 2 currently adds one key, `payloadVersion`, on the webhook endpoint item. An unknown version answers `422 invalid_request`. Non-breaking: nothing changes for an integration that does not opt in. |
 > | **2026-11-05** | **Request body size limit** (sections 3a, 10). Every request body under your API key is limited: 256 KiB, and `POST /messages` as multipart up to the largest media limit (100 MiB) plus 1 MiB. A larger body answers `422 invalid_request` ("Request body is too large."). A multipart send takes exactly one `file` part and one `payload` part, with at most 5 form fields; more answers `422 invalid_request`. |
 > | **2026-11-05** | **Send body size** (section 4). A JSON body larger than 256 KiB on `POST /messages` answers `422 invalid_request` ("Request body is too large."). Nothing else changes. |
@@ -169,6 +170,7 @@ Every webhook body and every response shape has a **payload version**. **The def
 |----|----|
 | 1 | The shapes in this guide. |
 | 2 | `payloadVersion` (integer) on the webhook endpoint item (§7): the version that endpoint's deliveries use. |
+| 2 | Window state on `ThreadItem` (§9.1, also the `contact` in webhooks): `windowOpen`, `allowedSendTypes`, `windowReason`, `windows[]`. `window` on the message history (§6). `details` on the window refusals (§10). |
 
 ## 4. Sending messages
 
@@ -458,6 +460,8 @@ A **reaction is never its own message** - don't page history looking for one. It
 ```
 
 `nextBefore` is the oldest id on the page, and is `null` once a page comes back short (fewer rows than `limit`) - that's the beginning of the thread.
+
+**Payload version 2 (§3b):** the response also carries `window`, the window of the contact's current channel in the same form as one `ThreadItem.windows[]` entry (§9.1): `{channelId, channelType, windowOpen, windowExpiresAt, humanAgentExpiresAt, allowedSendTypes}`, or `null` when the contact has no channel yet. Absent at version 1 and on `?format=rio`.
 
 Contact not in your workspace → `404 contact_not_found`.
 
@@ -1177,9 +1181,19 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "tags": [ { "id": "…", "name": "VIP", "emoji": "⭐", "color": "amber" } ],
   "lifecycle": { "statusId": "…", "key": "hot_lead", "label": "🔥 Hot Lead",
                  "color": "orange", "isWon": false, "isLost": false },  // or null before any stage is set
-  "createdAt": "…"
+  "createdAt": "…",
+  // Payload version 2 only (§3b) - the next four keys are absent at version 1:
+  "windowOpen": true,            // the standard window of `channelId` is open (always true on WEBCHAT)
+  "allowedSendTypes": ["ANY"],   // what an API key may send on `channelId` now: ["ANY"] | ["TEMPLATE"] | [] (nothing)
+  "windowReason": "OPEN",        // OPEN | CLOSED | HUMAN_AGENT_ONLY | NO_WINDOW (web chat)
+  "windows": [                   // one entry per channel identity of this contact (each WhatsApp number on its own)
+    { "channelId": "…", "channelType": "WHATSAPP", "windowOpen": true,
+      "windowExpiresAt": "2026-07-10T11:02:43Z", "humanAgentExpiresAt": null, "allowedSendTypes": ["ANY"] }
+  ]
 }
 ```
+
+**Window state (version 2).** The four version 2 keys answer "what can my API key send right now" without you redoing the window rules. The top-level values describe the thread's current `channelId`; `windows[]` lists every channel the contact can be reached on (channels that were disconnected are left out). They are computed for an API-key sender: on Messenger/Instagram inside only the 7-day human-agent window, `windowReason` is `HUMAN_AGENT_ONLY` and `allowedSendTypes` is `[]`, because a send through this API is never a human agent. WhatsApp outside its 24h window is `CLOSED` with `["TEMPLATE"]`; Messenger/Instagram outside every window is `CLOSED` with `[]`; web chat is always `NO_WINDOW` with `["ANY"]`. WhatsApp entries use each number's own window: when a customer wrote to number A, number B stays `CLOSED` until they write to B. `cswExpiresAt` and `windowExpiresAt` keep their exact meaning.
 
 `cswExpiresAt` tells you whether free-form is currently allowed on a **WhatsApp** contact - if it's in the past, you must send a template to re-engage. It is on the `?format=rio` shape too (§9.2 `ContactObject`). It keeps this EXACT, WhatsApp-only meaning forever (plan 32 / A7a) - it reads `null` for a Messenger/Instagram/web chat contact even though a Messenger/Instagram contact has its own window. `windowExpiresAt` generalizes the same "is free-form currently allowed" question to every channel type (for a WhatsApp contact it carries the identical instant as `cswExpiresAt`); `humanAgentExpiresAt` is the Messenger/Instagram-only extended window - it has no template re-engagement, and a send through THIS Gateway API is always refused outside `windowExpiresAt` regardless of `humanAgentExpiresAt` (§4.1 note, `409 messaging_window_closed`) since the Gateway can never claim to be a human agent. **A web chat contact (plan 34 / A7b) has no window at all** - `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` are all `null` and a free-form send is never refused for window reasons; `visitorLastSeenAt` is the presence fact that stands in for a window on that channel type (never an authorization gate - see §4.1).
 
@@ -1360,8 +1374,8 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `no_active_channel` | 409 | The workspace has no connected number, on a send or when registering a webhook. |
 | `channel_not_available_for_contact` | 422 | (plan 32 / A7a) The resolved contact has no identity on the chosen channel (e.g. a WhatsApp-only contact addressed on a Messenger `channelId`). |
 | `template_not_found` | 422 | No APPROVED template matches `name`/`id`. |
-| `csw_window_closed` | 409 | WhatsApp's 24h window closed - send an approved template instead. Unchanged, WhatsApp-only meaning (plan 32 / A7a). |
-| `messaging_window_closed` | 409 | (plan 32 / A7a) Messenger/Instagram's own re-engagement window closed - there is no template re-engagement for these two types through this API; a distinct code from `csw_window_closed`, never that one's meaning. |
+| `csw_window_closed` | 409 | WhatsApp's 24h window closed - send an approved template instead. Unchanged, WhatsApp-only meaning (plan 32 / A7a). At payload version 2 (§3b) the body also carries `details: {channelId, windowExpiresAt, allowedSendTypes, reason}` for the refused channel (`reason` = `csw_window_closed`); `code` and `message` are the same at every version. |
+| `messaging_window_closed` | 409 | (plan 32 / A7a) Messenger/Instagram's own re-engagement window closed - there is no template re-engagement for these two types through this API; a distinct code from `csw_window_closed`, never that one's meaning. At payload version 2 (§3b) the body also carries `details: {channelId, windowExpiresAt, allowedSendTypes, reason}`; `reason` is `automation_outside_window` when the contact is still inside the 7-day human-agent window (a human agent could reply from the inbox, an API key cannot), else `messaging_window_closed`. |
 | `send_rejected` | 422 | WhatsApp/Meta rejected the send (message has the reason) - also covers a message `type` the chosen channel's type doesn't carry (e.g. `template` on Messenger/Instagram). |
 | `lifecycle_move_not_allowed` | 409 | The contact PATCH's `lifecycle` value is a real stage, but there is no path there from the contact's CURRENT stage (e.g. it already won or lost) - `message` carries the reason. |
 | `unsupported_type` | 400 | Unknown `type`. |
