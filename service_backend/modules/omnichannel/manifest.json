@@ -122,6 +122,15 @@
       "prefix": "/omnichannel"
     },
     {
+      "name": "partner_keys",
+      "prefix": "/omnichannel/partner-keys"
+    },
+    {
+      "name": "partner_v1",
+      "prefix": "/api/v1/omnichannel/partner",
+      "public": true
+    },
+    {
       "name": "api_v1",
       "prefix": "/api/v1/omnichannel",
       "public": true

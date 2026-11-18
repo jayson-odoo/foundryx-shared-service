@@ -432,7 +432,7 @@ def test_migration_adds_one_nullable_column_on_top_of_0026():
 
     path = (
         Path(__file__).resolve().parents[1]
-        / "modules/omnichannel/alembic/versions/0027_omni_strict_number_window.py"
+        / "modules/omnichannel/alembic/versions/0029_omni_strict_number_window.py"
     )
     src = path.read_text()
     assigned = {
@@ -440,7 +440,7 @@ def test_migration_adds_one_nullable_column_on_top_of_0026():
         for n in ast.parse(src).body if isinstance(n, ast.Assign)
         for t in n.targets if isinstance(t, ast.Name) and t.id in ("revision", "down_revision")
     }
-    assert assigned["revision"] == "0027_omni_strict_number_window"
+    assert assigned["revision"] == "0029_omni_strict_number_window"
     assert len(assigned["revision"]) <= 32
-    assert assigned["down_revision"] == "0026_omni_contact_erasures"
+    assert assigned["down_revision"] == "0028_omni_partner_api_keys"
     assert "nullable=True" in src and "strict_number_window" in src

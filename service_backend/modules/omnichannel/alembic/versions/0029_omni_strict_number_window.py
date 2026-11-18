@@ -7,15 +7,15 @@ no default on a small per-workspace table is a catalog-only change in Postgres.
 Idempotent guard (inspector check), same style as `0026_omni_contact_erasures`.
 Revision id <= 32 chars.
 
-Revision ID: 0027_omni_strict_number_window
-Revises: 0026_omni_contact_erasures
+Revision ID: 0029_omni_strict_number_window
+Revises: 0028_omni_partner_api_keys
 Create Date: 2026-11-18
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0027_omni_strict_number_window"
-down_revision = "0026_omni_contact_erasures"
+revision = "0029_omni_strict_number_window"
+down_revision = "0028_omni_partner_api_keys"
 branch_labels = None
 depends_on = None
 

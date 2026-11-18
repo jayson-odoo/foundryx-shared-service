@@ -210,6 +210,12 @@ export interface ResourceListConfig<T extends object> {
    * carry, like the ideation BR<->idea unlink).
    */
   getEntityId?: (row: T) => string;
+  /**
+   * Called once a grace-window (deferred) action commits, from any surface
+   * (row button, right-click / long-press menu, card, bulk bar), with the ids it
+   * acted on. A page whose list is built from data it holds refreshes here.
+   */
+  onDeferredCommitted?: (entityIds: string[]) => void;
   searchPlaceholder?: string;
   /**
    * Keep the list query (page, sort, filters, search) in the address bar so a
@@ -263,6 +269,9 @@ export interface ResourceListConfig<T extends object> {
   /** Filename stem for CSV export (default 'export'). */
   exportFilename?: string;
   createLabel?: string;
+  /** Toolbar Create button style: `outline` when the page already has its own
+   * filled main button (an embedded list in a record tab). Default `primary`. */
+  createVariant?: 'primary' | 'outline';
   onCreate?: () => void;
   /** Permission key required to show the create button (UX gate). */
   createPermission?: string;

@@ -14,6 +14,7 @@ is open (every outcome is committed as it is reached).
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import logging
 import re
 import time
@@ -22,7 +23,7 @@ from urllib.parse import urlsplit
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 from sqlalchemy.exc import IntegrityError
 
@@ -74,6 +75,10 @@ ANSWER_UNPARSEABLE = "ANSWER_UNPARSEABLE"
 QTY_BELOW_TRANSFERRED = "QTY_BELOW_TRANSFERRED"
 ROW_HAS_TRANSFERS = "ROW_HAS_TRANSFERS"
 ROW_RECEIVED = "ROW_RECEIVED"
+NOT_APPLIED = "OPERATION_NOT_APPLIED"  # = operations.NOT_APPLIED (operations imports this module)
+LOOKUP_FAILED = "LOOKUP_FAILED"
+LOOKUP_FAILED_MESSAGE = "AutoCount could not be reached to check this change. Please try again shortly."
+NOT_YET_CONFIRMED_MESSAGE = "AutoCount has not confirmed this change yet. Please try again in a couple of minutes."
 DOC_HAS_TRANSFERS = "DOC_HAS_TRANSFERS"
 DOC_CANCELLED = "DOC_CANCELLED"
 DOC_NOT_FOUND = "DOC_NOT_FOUND"
@@ -346,6 +351,8 @@ class PrimitiveService(WriteFrame):
         company = CompanyRepository(self.db).get(call.tenant_id, company_id)
         if company is None:
             return self._wrap(WriteActionResult(None, OUTCOME_REFUSED, WRITE_DISABLED))
+        if self._lookup_action is not None:  # a same-key resend of an unknown outcome: read, never write
+            return self._look_up(call, company, self._lookup_action)
         row = self._new_row(call, company.id)
         self._deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
         self._put_sent = False
@@ -385,6 +392,74 @@ class PrimitiveService(WriteFrame):
             return self._wrap(self._finish(row, outcome, INTERNAL_ERROR))
         finally:
             self.db.rollback()
+
+    @contextmanager
+    def looking_up(self, action: AcWriteAction, operation_id: Optional[str], *, trust_absent: bool) -> Iterator[None]:
+        """Inside: the next primitive call looks ``action``'s unknown outcome up (``_look_up``) instead of
+        writing; its GET is logged under ``operation_id``. ``trust_absent``: the write is old enough that a
+        change not found is not coming (else the answer stays pending: a timed-out PUT may still land)."""
+        self._lookup_action, self._owner_operation_id, self._trust_absent = action, operation_id, trust_absent
+        try:
+            yield
+        finally:
+            self._lookup_action, self._owner_operation_id, self._trust_absent = None, None, False
+
+    @contextmanager
+    def under_operation(self, operation_id: Optional[str]) -> Iterator[None]:
+        """Inside: action rows and GETs carry ``operation_id`` (the single-document operation row)."""
+        self._owner_operation_id = operation_id
+        try:
+            yield
+        finally:
+            self._owner_operation_id = None
+
+    def _look_up(self, call: _Call, company: AcCompany, action: AcWriteAction) -> PrimitiveResult:
+        """AUTOCOUNT-STRANDED-OPS-B / owner rule: an unknown outcome is checked before a retry. ONE logged GET of
+        the document, judged by ``payloads.change_landed`` against the action's stored before-image (only THIS
+        change, never the rest of the document, which another person may have edited since):
+        ``done`` (the change is in AutoCount: the action is settled done), ``refused`` / ``OPERATION_NOT_APPLIED``
+        (it is not: the action is settled so it no longer holds the document, and the caller runs fresh) or
+        ``pending_verification`` (the document could not be read: nothing is decided)."""
+        unread = PrimitiveResult(action.id, OUTCOME_PENDING, LOOKUP_FAILED, LOOKUP_FAILED_MESSAGE,
+                                 doc_key=call.doc_key)
+        before = action.before_json if isinstance(action.before_json, dict) else None
+        base_url, _refusal = self._resolve_write_base_url(company)
+        if before is None or base_url is None:
+            return unread
+        self._call_log = self.new_call_log(
+            company, kind=call.kind, doc_key=call.doc_key, doc_no=before.get("DocNo"), key_id=call.key_id,
+            operation_id=action.operation_id, action_id=action.id,
+        )
+        read_date = _doc_date(before) or self.find_date(company, call.kind, int(call.doc_key or 0), call.doc_date)[0]
+        if read_date is None:
+            return unread
+        self.db.commit()  # no transaction open during the GET
+        try:
+            after = self._reader_for(base_url).get_document(
+                call.kind, int(call.doc_key or 0), read_date, doc_no=before.get("DocNo"))
+        except DocReadError:
+            return unread
+        try:
+            landed, new_key = payloads.change_landed(
+                call.kind, call.primitive, before, after, header_changes=call.header_changes,
+                line_changes=call.line_changes, line=_no_note(call.line), dtl_key=call.dtl_key)
+        except Exception:  # noqa: BLE001 - a check that cannot judge decides nothing
+            logger.exception("autocount look-up could not judge action %s", action.id)
+            return unread
+        if landed:
+            action.outcome, action.error_code, action.after_json = OUTCOME_DONE, None, after
+            self.db.commit()
+            if call.kind != "QT" and call.stage:
+                self._stage(company, call.kind, after)  # as the write's own done path does
+            return PrimitiveResult(action.id, OUTCOME_DONE, None, "The change was found in AutoCount.",
+                                   [], after.get("DocKey"), after.get("DocNo"), new_key, after)
+        if not self._trust_absent:
+            return PrimitiveResult(action.id, OUTCOME_PENDING, LOOKUP_FAILED, NOT_YET_CONFIRMED_MESSAGE,
+                                   doc_key=call.doc_key)
+        action.outcome, action.error_code = OUTCOME_REFUSED, NOT_APPLIED  # settled: no longer holds the document
+        self.db.commit()
+        return PrimitiveResult(action.id, OUTCOME_REFUSED, NOT_APPLIED,
+                               "Nothing was changed in AutoCount. Please try again.", doc_key=call.doc_key)
 
     @staticmethod
     def _capable(call: _Call) -> bool:
@@ -438,7 +513,7 @@ class PrimitiveService(WriteFrame):
             AcWriteAction(
                 tenant_id=call.tenant_id, company_id=company_id, action=call.primitive,
                 doc_type=str(call.kind)[:16], doc_key=call.doc_key, dtl_key=call.dtl_key,
-                outcome=OUTCOME_REFUSED, key_id=call.key_id, operation_id=call.operation_id,
+                outcome=OUTCOME_REFUSED, key_id=call.key_id, operation_id=call.operation_id or self._owner_operation_id,
                 step=call.step, created_at=datetime.now(timezone.utc),  # step order = time order
                 **self._trace_columns(),
             )
@@ -684,8 +759,9 @@ class PrimitiveService(WriteFrame):
         if (call.kind == "PO" and call.operation_id is None and call.doc_key is not None
                 and self.row_needs_attention(company, call.doc_key, row)):
             raise WriteRefusal(ROW_NEEDS_ATTENTION, "a link on this row needs attention; resume it first")
-        if call.kind == "PO" and self._spo_ref(company.tenant_id, company.id, int(call.dtl_key or 0)):
-            raise WriteRefusal("ROW_ON_SPO", "row is referenced by a shipping purchase order")
+        spo_ref = self._spo_ref(company.tenant_id, company.id, int(call.dtl_key or 0)) if call.kind == "PO" else None
+        if spo_ref:
+            raise WriteRefusal("ROW_ON_SPO", payloads.on_spo_message(spo_ref), plain=True)
         received = self._row_received(company, call.kind, dict(row, DocKey=doc.get("DocKey")))
         if received is not None and received > 0:  # unknown is left to AutoCount
             raise WriteRefusal(ROW_RECEIVED, "row has received quantity")

@@ -29,6 +29,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     Header,
     HTTPException,
     Query,
@@ -451,13 +452,21 @@ def embed_promote_ideas(
 async def embed_upload_attachment(
     idea_id: str,
     file: UploadFile = File(...),
+    commentId: Optional[str] = Form(default=None),
     principal: EmbedTokenPrincipal = Depends(require_embed_principal),
     db: Session = Depends(get_db),
 ) -> IdeaAttachmentOut:
-    """Upload a file onto an idea from the iframe. Scoped to tenant+product (404
-    otherwise); the token is the boundary (no operator permission)."""
+    """Upload a file onto an idea (or the caller's own comment with ``commentId``)
+    from the iframe. Scoped to tenant+product (404 otherwise); the token is the
+    boundary (no operator permission)."""
     _assert_in_scope(db, principal, idea_id)
-    _assert_can_manage(db, principal, [idea_id])
+    if commentId:
+        # Commenting is open to every embed user; authorship is the gate.
+        IdeaCommentService(db).assert_author(
+            principal.tenant_id, idea_id, commentId, _embed_viewer(principal)
+        )
+    else:
+        _assert_can_manage(db, principal, [idea_id])
     content = await file.read(ATTACHMENT_CAP_BYTES + 1)
     if len(content) > ATTACHMENT_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
@@ -467,6 +476,7 @@ async def embed_upload_attachment(
         file.filename or "",
         content,
         content_prefix=EMBED_CONTENT_PREFIX,
+        comment_id=commentId or None,
     )
 
 
@@ -474,6 +484,7 @@ async def embed_upload_attachment(
 def embed_attachment_content(
     idea_id: str,
     attachment_id: str,
+    variant: Optional[str] = Query(default=None, pattern="^thumb$"),
     principal: EmbedTokenPrincipal = Depends(require_embed_principal),
     db: Session = Depends(get_db),
 ):
@@ -481,7 +492,7 @@ def embed_attachment_content(
     tenant+product (404 otherwise)."""
     _assert_in_scope(db, principal, idea_id)
     key, mime, filename = IdeaAttachmentService(db).content(
-        principal.tenant_id, idea_id, attachment_id
+        principal.tenant_id, idea_id, attachment_id, variant
     )
     return _serve_blob(db, principal.tenant_id, key, mime, filename, "inline")
 
@@ -654,7 +665,7 @@ def embed_list_comments(
     db: Session = Depends(get_db),
 ) -> List[IdeaCommentOut]:
     _assert_in_scope(db, principal, idea_id)
-    return IdeaCommentService(db).list(
+    return IdeaCommentService(db, EMBED_CONTENT_PREFIX).list(
         principal.tenant_id, idea_id, _embed_viewer(principal), project_names=True
     )
 
@@ -670,7 +681,7 @@ def embed_create_comment(
 ) -> IdeaCommentOut:
     _assert_in_scope(db, principal, idea_id)
     viewer = _embed_viewer(principal)
-    return IdeaCommentService(db).create(
+    return IdeaCommentService(db, EMBED_CONTENT_PREFIX).create(
         principal.tenant_id,
         idea_id,
         body=body.body,
@@ -691,7 +702,7 @@ def embed_edit_comment(
     db: Session = Depends(get_db),
 ) -> IdeaCommentOut:
     _assert_in_scope(db, principal, idea_id)
-    return IdeaCommentService(db).edit(
+    return IdeaCommentService(db, EMBED_CONTENT_PREFIX).edit(
         principal.tenant_id, idea_id, comment_id, body=body.body, viewer=_embed_viewer(principal)
     )
 

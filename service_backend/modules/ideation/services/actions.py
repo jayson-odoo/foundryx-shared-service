@@ -22,6 +22,21 @@ from app.services.status_machine import (
 )
 
 from ..models import Idea, IdeaVote
+from .history import HistoryActor
+
+# The operator-edited fields the History tab records, with their screen labels.
+HISTORY_FIELDS = {
+    "title": "Title",
+    "type": "Type",
+    "product": "Product",
+    "problem": "Business problem",
+    "proposed_solution": "Proposed solution",
+    "impact": "Impact",
+    "department": "Department",
+    "desired_outcome": "Desired outcome",
+    "use_cases": "Use cases",
+    "current_workaround": "Current workaround",
+}
 from ..schemas import IdeaOut
 from .card_fields import clean_text, clean_use_cases
 from .idea_types import resolve_idea_type
@@ -178,12 +193,14 @@ class IdeaActionService:
         use_cases: Optional[List[str]] = None,
         current_workaround: Optional[str] = None,
         idea_type: Optional[str] = None,
+        history_actor: Optional[HistoryActor] = None,
     ) -> IdeaOut:
         """Operator edit of the mutable idea fields (partial). Status moves ride
         the dedicated ``/{id}/status`` route - never duplicated here. Each provided
         segregated field updates its column AND its ``captured_json`` mirror (blank
         clears the optional ones; ``problem`` keeps its NOT-NULL value)."""
         idea = self._idea_or_404(tenant_id, idea_id)
+        before = self._history_fields(idea)
         captured: dict = dict(idea.captured_json or {})
         # Reclassify (idea <-> issue); blank/None = untouched, unknown = 422.
         if idea_type is not None and idea_type.strip():
@@ -225,9 +242,44 @@ class IdeaActionService:
         if raw_text is not None:
             idea.raw_text = raw_text.strip()
         idea.captured_json = captured
+        if history_actor is not None:
+            # The History tab (lane FEEDBACK-SUBSCRIBE): one row per changed field.
+            from .history import record_edits
+
+            self.db.flush()
+            record_edits(
+                self.db, tenant_id, idea.id, before, self._history_fields(idea), HISTORY_FIELDS, history_actor
+            )
         self.db.commit()
         self.db.refresh(idea)
         return self._reader.serialize_one(idea, voter_id, tenant_id=tenant_id)
+
+    def _history_fields(self, idea: Idea) -> dict:
+        """The edited fields as people read them (names and labels, never ids)."""
+        from ..models import IdeaType
+
+        product = (
+            self.db.query(Product.name)
+            .filter(Product.id == idea.product_id, Product.tenant_id == idea.tenant_id)
+            .first()
+            if idea.product_id
+            else None
+        )
+        type_label = (
+            self.db.query(IdeaType.label).filter(IdeaType.key == idea.type).first() if idea.type else None
+        )
+        return {
+            "title": idea.title,
+            "type": type_label[0] if type_label else None,
+            "product": product[0] if product else None,
+            "problem": idea.problem,
+            "proposed_solution": idea.proposed_solution,
+            "impact": idea.impact,
+            "department": idea.department,
+            "desired_outcome": idea.desired_outcome,
+            "use_cases": list(idea.use_cases or []) if isinstance(idea.use_cases, list) else idea.use_cases,
+            "current_workaround": idea.current_workaround,
+        }
 
     def _recount(self, idea: Idea) -> None:
         """Recompute the idea's denormalized tallies from ``idea_votes`` (the
@@ -433,9 +485,24 @@ class IdeaActionService:
         self.db.query(IdeaVote).filter(IdeaVote.idea_id == idea_id).delete(
             synchronize_session=False
         )
+        # Lane FEEDBACK-SUBSCRIBE: followers + share links go with the idea.
+        from ..models import IdeaFollower, IdeaShareLink
+
+        from ..models import IdeaHistory
+
+        for model in (IdeaFollower, IdeaShareLink, IdeaHistory):
+            self.db.query(model).filter(
+                model.tenant_id == tenant_id, model.idea_id == idea_id
+            ).delete(synchronize_session=False)
         # AC-19-09: comments go with the idea (replies first, then parents).
+        from .attachments import IdeaAttachmentService
         from .comments import IdeaCommentService
 
+        # Files first (report AND comment files): a comment file's FK points at
+        # its comment, so the rows must go before the comments do.
+        attachments = IdeaAttachmentService(self.db)
+        blob_keys = attachments.purge_for_idea(tenant_id, idea_id)
         IdeaCommentService(self.db).purge_for_idea(tenant_id, idea_id)
         self.db.delete(idea)
         self.db.commit()
+        attachments.delete_blobs(tenant_id, blob_keys)
