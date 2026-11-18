@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lead Capture guide - mock v1</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Poppins:wght@500;600&display=swap" rel="stylesheet">
+<style>
+/* MOCK ONLY (static review file). The real page uses Tailwind utilities + the
+   shared components named in the yellow "reuse" tags; no CSS ships. */
+:root{--primary:#FF5A00;--primary-10:#FFEFE6;--fg:#0F172A;--muted:#64748B;--border:#E2E8F0;--card:#fff;--bg:#F8FAFC;--muted-bg:#F1F5F9;
+--success:#16A34A;--success-10:#DCFCE7;--warning:#D97706;--warning-10:#FEF3C7;--danger:#DC2626;--danger-10:#FEE2E2;--fb:#1877F2}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;color:var(--fg);background:var(--bg);font-size:14px;line-height:1.5}
+h1,h2,h3{font-family:Poppins,Inter,sans-serif;margin:0}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600}
+.logo{width:32px;height:32px;border-radius:8px;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-family:Poppins}
+.hero{margin:24px 0 16px}.hero h1{font-size:26px}.hero p{color:var(--muted);margin:6px 0 0}
+.reuse{display:inline-block;font:500 10px/1.4 ui-monospace,monospace;background:#FEF9C3;color:#854D0E;border:1px dashed #CA8A04;border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:middle}
+.alert{display:flex;gap:10px;border:1px solid #FCD34D;background:var(--warning-10);border-radius:10px;padding:12px 14px;margin:16px 0}
+.flow{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0 24px}
+.flow .c{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px}
+.num{width:26px;height:26px;border-radius:50%;background:var(--primary);color:#fff;font-weight:600;display:inline-flex;align-items:center;justify-content:center;font-size:13px}
+.tabs{display:flex;gap:4px;background:var(--muted-bg);padding:4px;border-radius:10px;width:fit-content;margin:8px 0 16px}
+.tab{padding:7px 14px;border-radius:7px;font-weight:500;color:var(--muted);cursor:pointer;border:0;background:none;font:inherit}
+.tab.on{background:#fff;color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:14px}
+.card h2{font-size:17px;margin-bottom:4px}.card h3{font-size:14px;margin:16px 0 6px}
+.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+ul.tick{padding-left:18px;margin:8px 0}ul.tick li{margin:4px 0}
+.code{position:relative;background:#0F172A;color:#E2E8F0;border-radius:10px;padding:12px 44px 12px 14px;font:12.5px/1.6 ui-monospace,Menlo,monospace;white-space:pre;overflow-x:auto;margin:8px 0}
+.copy{position:absolute;top:8px;right:8px;background:#1E293B;border:1px solid #334155;color:#CBD5E1;border-radius:6px;font-size:11px;padding:3px 8px;cursor:pointer}
+.k{color:#FDBA74}.s{color:#86EFAC}.c2{color:#94A3B8}
+.pill{display:inline-flex;align-items:center;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:500;margin:2px 4px 2px 0}
+.ok{background:var(--success-10);color:var(--success)}.wait{background:var(--warning-10);color:var(--warning)}.bad{background:var(--danger-10);color:var(--danger)}.off{background:var(--muted-bg);color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}th{color:var(--muted);font-weight:500;background:var(--muted-bg)}
+ol.steps{padding-left:20px}ol.steps li{margin:6px 0}
+.note{color:var(--muted);font-size:13px}
+/* customer tab */
+.video{background:#0F172A;border-radius:12px;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#CBD5E1;position:relative;margin-bottom:16px}
+.play{width:56px;height:56px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px}
+.cap{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.65);color:#fff;padding:4px 10px;border-radius:6px;font-size:12px}
+.stepgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.scard{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.shot{background:var(--muted-bg);padding:12px;position:relative;border-bottom:1px solid var(--border)}
+.wiz{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:11px}
+.wiz .bar{height:4px;background:var(--muted-bg);border-radius:4px;margin:6px 0}.wiz .bar i{display:block;height:4px;background:var(--primary);border-radius:4px}
+.wiz .fold{border:1px solid var(--border);border-radius:6px;padding:4px 6px;margin:4px 0;color:var(--muted);display:flex;justify-content:space-between}
+.wiz .fold b{background:var(--primary-10);color:var(--fg);border-radius:999px;padding:0 6px;font-weight:500}
+.wiz .open{border:1px solid #FDBA74;border-radius:6px;padding:6px;margin:4px 0}
+.wbtn{display:inline-block;background:var(--primary);color:#fff;border-radius:5px;padding:3px 8px;margin-top:4px;position:relative}
+.wbtn.fb{background:var(--fb)}
+.ring{outline:3px solid var(--primary);outline-offset:3px;border-radius:6px}
+.marker{position:absolute;width:22px;height:22px;border-radius:50%;background:var(--primary);color:#fff;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 3px #fff}
+.sbody{padding:12px 14px}.sbody .t{font-weight:600}.sbody p{margin:4px 0 0;color:var(--muted)}
+.sel{border:1px solid var(--border);border-radius:5px;padding:3px 6px;color:var(--fg);display:inline-block;min-width:110px}
+.anno{margin:20px 0;padding:14px;border:2px dashed #CA8A04;background:#FEFCE8;border-radius:12px;font-size:13px}
+.anno h3{font-size:14px;margin:0 0 6px}.anno code{background:#fff;padding:0 4px;border-radius:3px}
+@media (max-width:640px){.flow,.stepgrid{grid-template-columns:1fr}.hero h1{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="anno">
+<h3>Mock v1 - review notes (not part of the page)</h3>
+Route: <code>/public/lead-capture/guide</code>, no login, inside the existing <code>(public)</code> layout.
+Partner name + logo = the host tenant's branding (one Shared Service tenant per partner app), so
+<code>partner.&lt;ss-host&gt;/public/lead-capture/guide</code> shows that partner's name; the bare host shows a generic "your app".
+Hosts in code samples are built from the page's own origin + backend URL, never typed in. Yellow tags = the existing component reused.
+All data on the page is fake (<code>app.partner.example</code>, "Test Person").
+</div>
+
+<div class="top">
+  <div class="brand"><span class="logo">P</span>Partner CRM <span class="reuse">BrandMark components/platform/branding</span></div>
+</div>
+
+<div class="hero">
+  <h1>Receive Facebook leads in Partner CRM</h1>
+  <p>What Foundryx sets up, the two things your developers build, and what your customer clicks.</p>
+</div>
+
+<div class="alert"><span>&#9888;</span><div><b>Pilot first.</b> Until Meta approves the app for all businesses, only Facebook accounts Foundryx adds as testers can connect a Page. Send Foundryx the Facebook name of the Page admin before a pilot. <span class="reuse">Alert components/ui/alert.tsx</span></div></div>
+
+<div class="flow">
+  <div class="c"><span class="num">1</span><p>Someone fills in a lead form on a Facebook ad.</p></div>
+  <div class="c"><span class="num">2</span><p>Facebook tells the Shared Service within seconds. It reads the answers and keeps them.</p></div>
+  <div class="c"><span class="num">3</span><p>Partner CRM collects the lead: every minute by a scheduled pull, or at once by an optional push.</p></div>
+</div>
+
+<div class="tabs"><button class="tab on">For developers</button><button class="tab">For your customer</button><span class="reuse">Tabs components/ui/tabs.tsx</span></div>
+
+<!-- ============ DEVELOPERS ============ -->
+<div class="card">
+  <span class="eyebrow">Done once by Foundryx</span><h2>Setup</h2>
+  <ul class="tick">
+    <li>Turns on Lead Capture for your account.</li>
+    <li>Gives your backend one key, <code>fxl_live_...</code>. Keep it in the backend environment only, never in a browser.</li>
+    <li>Lists your web address on that key (for example <code>https://app.partner.example</code>), so the Connect window can report back to your page. <code>https</code> only (<code>http</code> only for localhost), no path, at most 10.</li>
+  </ul>
+  <span class="reuse">Card components/ui/card.tsx</span>
+</div>
+
+<div class="card">
+  <span class="eyebrow">Built by your developers</span><h2>A. A "Connect Facebook Page" button</h2>
+  <p class="note">Put it in your app's settings. When the user clicks it:</p>
+  <h3>1. Your backend asks for a one-time link</h3>
+<div class="code"><button class="copy">Copy</button><span class="k">POST</span> https://ss.example/be/api/v1/lead-capture/connect-sessions
+Authorization: Bearer fxl_live_...
+Content-Type: application/json
+
+{<span class="s">"returnOrigin"</span>: <span class="s">"https://app.partner.example"</span>}
+
+<span class="c2">-> 201 {"url": "https://ss.example/public/lead-capture/connect#s=...", "expiresAt": "2026-11-18T03:30:00Z"}</span></div>
+  <p class="note">The link works once, for 10 minutes: ask for a new one on every click. To reopen it for one Page (Reconnect, or new form fields), add <code>"sourceId": "&lt;source id&gt;"</code>. <span class="reuse">Code (showCopyButton) components/ui/code.tsx + use-copy-to-clipboard</span></p>
+  <h3>2. Your page opens it in a popup and waits for one message</h3>
+<div class="code"><button class="copy">Copy</button><span class="k">const</span> popup = window.open(url, <span class="s">'lead_capture'</span>, <span class="s">'popup,width=720,height=860'</span>);
+window.addEventListener(<span class="s">'message'</span>, (event) => {
+  <span class="k">if</span> (event.origin !== <span class="s">'https://ss.example'</span>) <span class="k">return</span>;
+  <span class="k">if</span> (event.data?.type === <span class="s">'lead-capture:done'</span> || event.data?.type === <span class="s">'lead-capture:closed'</span>) {
+    refreshConnectedPages();   <span class="c2">// GET /be/api/v1/lead-capture/sources</span>
+  }
+});</div>
+  <table><tr><th>type</th><th>sourceId</th><th>When</th></tr>
+  <tr><td><code>lead-capture:done</code></td><td>always</td><td>Finished; the Page passed its test lead (Live)</td></tr>
+  <tr><td><code>lead-capture:closed</code></td><td>when a Page was connected</td><td>Closed before the end</td></tr></table>
+  <h3>3. Show the connected Pages</h3>
+  <p class="note">From <code>GET /be/api/v1/lead-capture/sources</code>: <code>pageName</code> and <code>status</code>.</p>
+  <span class="pill ok">Live</span><span class="pill wait">Waiting for test</span><span class="pill bad">Reconnect</span><span class="pill off">Disconnected</span><span class="pill off">Draft</span>
+  <span class="reuse">StatusBadge + SOURCE_STATUS_REGISTRY (sources/components/source-status.ts)</span>
+</div>
+
+<div class="card">
+  <span class="eyebrow">Built by your developers</span><h2>B. One scheduled job that collects leads</h2>
+  <p class="note">Every minute your backend asks for new leads and creates them.</p>
+<div class="code"><button class="copy">Copy</button><span class="k">GET</span> https://ss.example/be/api/v1/lead-capture/leads?cursor=&lt;saved cursor&gt;
+Authorization: Bearer fxl_live_...</div>
+  <p class="note">First run: <code>?since=2026-11-18T00:00:00Z</code> instead of <code>cursor</code>. The answer (fake data):</p>
+<div class="code"><button class="copy">Copy</button>{
+  <span class="s">"data"</span>: [{
+    <span class="s">"id"</span>: "e3a10000-0000-0000-0000-000000000001",
+    <span class="s">"sourceId"</span>: "4c1f0000-0000-0000-0000-000000000001",
+    <span class="s">"formName"</span>: "Year-end promo",
+    <span class="s">"receivedAt"</span>: "2026-11-18T03:20:05Z",
+    <span class="s">"createdAt"</span>: "2026-11-18T03:20:00Z",
+    <span class="s">"isTest"</span>: false,
+    <span class="s">"fields"</span>: {"name": "Test Person", "phone": "+60120000000",
+               "email": "test.person@example.com",
+               "notes": "property_type: Condominium\nbudget: RM 500k - 800k"},
+    <span class="s">"answers"</span>: [...], <span class="s">"attribution"</span>: {...}
+  }],
+  <span class="s">"nextCursor"</span>: "WyIyMDI2LTExLTE4VDAzOjIwOjA1...",
+  <span class="s">"hasMore"</span>: false
+}</div>
+  <h3>The job, in four steps</h3>
+  <ol class="steps">
+    <li>For each item create a lead (status New, source Facebook): <code>name</code> &rarr; Client name, <code>phone</code> &rarr; Phone, <code>email</code> &rarr; Email, <code>notes</code> &rarr; Remarks.</li>
+    <li>Save <code>id</code> on the lead with a unique constraint; if it already exists skip the item, so a re-run never creates a duplicate.</li>
+    <li>Save <code>nextCursor</code> and use it on the next run. (An empty first <code>since</code> page has <code>nextCursor: null</code>: call with the same <code>since</code> again.)</li>
+    <li>If <code>hasMore</code> is true, call again straight away.</li>
+  </ol>
+  <p class="note"><code>isTest: true</code> = Meta's dummy test lead; show or skip it. A lead shows in the pull about 5 seconds after it is stored.</p>
+</div>
+
+<div class="card">
+  <span class="eyebrow">Optional, later</span><h2>Faster delivery and your own field names</h2>
+  <h3>Instant push instead of every minute</h3>
+  <p class="note">The Shared Service posts each lead to one backend URL the moment it arrives (same lead shape, same <code>id</code>), signed with <code>X-Lead-Capture-Signature: t=...,v1=...</code>. Verify it:</p>
+<div class="code"><button class="copy">Copy</button><span class="k">import</span> hashlib, hmac, time
+
+<span class="k">def</span> verify(secret, header, raw_body):
+    parts = dict(p.split(<span class="s">"="</span>, 1) <span class="k">for</span> p <span class="k">in</span> header.split(<span class="s">","</span>) <span class="k">if</span> <span class="s">"="</span> <span class="k">in</span> p)
+    t, v1 = parts.get(<span class="s">"t"</span>, <span class="s">""</span>), parts.get(<span class="s">"v1"</span>, <span class="s">""</span>)
+    <span class="k">if not</span> t.isdigit() <span class="k">or</span> abs(time.time() - int(t)) > 300:
+        <span class="k">return</span> False
+    expected = hmac.new(secret.encode(), t.encode() + b<span class="s">"."</span> + raw_body, hashlib.sha256).hexdigest()
+    <span class="k">return</span> hmac.compare_digest(expected, v1)</div>
+  <p class="note">Register the URL with <code>POST /be/api/v1/lead-capture/webhooks</code>. Answer any 2xx once the lead is saved; retries run 1 min, 5 min, 30 min, 2 h, 6 h, 24 h.</p>
+  <h3>Your own field names</h3>
+<div class="code"><button class="copy">Copy</button><span class="k">PUT</span> https://ss.example/be/api/v1/lead-capture/fields
+[{"key": "property_type", "label": "Property type", "type": "text"},
+ {"key": "budget_range",  "label": "Budget range",  "type": "text"},
+ {"key": "remarks",       "label": "Remarks",       "type": "notes"}]</div>
+  <p class="note">The Fields step then maps form questions onto these instead of Remarks. Types: name, phone, email, notes, text; at most 50.</p>
+</div>
+
+<!-- ============ CUSTOMER ============ -->
+<div class="tabs" style="margin-top:32px"><button class="tab">For developers</button><button class="tab on">For your customer</button></div>
+<p class="note" style="margin-top:-6px"><b>Who:</b> an admin of the Facebook Page that runs the ads, with their own Facebook account. About 2 minutes.</p>
+
+<div class="video"><div class="play">&#9654;</div><div class="cap">Click Continue with Facebook and sign in</div></div>
+<p class="note" style="margin-top:-8px">Walkthrough video: recorded automatically from the real wizard with fake data, captions only, &lt; 5 MB. <span class="reuse">native &lt;video controls&gt; + &lt;track kind=captions&gt;</span></p>
+
+<div class="stepgrid">
+  <div class="scard"><div class="shot">
+    <div class="wiz" style="text-align:right"><span style="float:left;font-weight:600">Partner CRM &rsaquo; Settings</span><span class="wbtn ring">Connect Facebook Page</span></div>
+    <span class="marker" style="top:6px;right:6px">1</span></div>
+    <div class="sbody"><div class="t">1. Open the window</div><p>In Partner CRM settings, click <b>Connect Facebook Page</b>. A window opens with Partner CRM's name and logo.</p></div></div>
+
+  <div class="scard"><div class="shot">
+    <div class="wiz"><b>Connect a lead source</b><div class="bar"><i style="width:0"></i></div>
+    <div class="open">Where do the leads come from?<br><span class="sel ring" style="margin-top:4px">&#9635; Facebook Page &middot; Automatic</span></div></div>
+    <span class="marker" style="top:58px;left:20px">2</span></div>
+    <div class="sbody"><div class="t">2. Channel</div><p>Click <b>Facebook Page</b>.</p></div></div>
+
+  <div class="scard"><div class="shot">
+    <div class="wiz"><b>Connect a lead source</b><div class="bar"><i style="width:17%"></i></div>
+    <div class="fold">Where do the leads come from? <b>Facebook Page</b></div>
+    <div class="open">Sign in to Facebook<br><span class="wbtn fb ring">Continue with Facebook</span></div></div>
+    <span class="marker" style="bottom:12px;left:110px">3</span></div>
+    <div class="sbody"><div class="t">3. Sign in</div><p>Click <b>Continue with Facebook</b>, sign in, leave every box ticked and click Save.</p></div></div>
+
+  <div class="scard"><div class="shot">
+    <div class="wiz"><b>Connect a lead source</b><div class="bar"><i style="width:33%"></i></div>
+    <div class="fold">Sign in to Facebook <b>Signed in</b></div>
+    <div class="open">Which Page do the leads come from?<br><span class="sel">Sunrise Homes (test)</span><br><span class="wbtn ring">Connect Page</span></div></div>
+    <span class="marker" style="bottom:10px;left:90px">4</span></div>
+    <div class="sbody"><div class="t">4. Page</div><p>Pick the Page that runs the ads and click <b>Connect Page</b>.</p></div></div>
+
+  <div class="scard"><div class="shot">
+    <div class="wiz"><b>Connect a lead source</b><div class="bar"><i style="width:50%"></i></div>
+    <div class="fold">Which Page? <b>Sunrise Homes (test)</b></div>
+    <div class="open">Which lead forms?<br>&#9673; All forms, including new ones<br>&#9675; Only the forms I tick<br><span class="wbtn ring">Save forms</span></div></div>
+    <span class="marker" style="bottom:10px;left:84px">5</span></div>
+    <div class="sbody"><div class="t">5. Forms</div><p>Keep <b>All forms, including new ones</b> (or tick only some) and click <b>Save forms</b>.</p></div></div>
+
+  <div class="scard"><div class="shot">
+    <div class="wiz"><b>Connect a lead source</b><div class="bar"><i style="width:67%"></i></div>
+    <div class="open">Where does each answer go?<br>Full name &rarr; <span class="sel">Name</span><br>Budget &rarr; <span class="sel">Lead notes</span><br><span class="wbtn ring">Save fields</span></div></div>
+    <span class="marker" style="bottom:10px;left:84px">6</span></div>
+    <div class="sbody"><div class="t">6. Fields</div><p>Match each form question to a field and click <b>Save fields</b>. Anything not matched goes into the notes.</p></div></div>
+
+  <div class="scard"><div class="shot">
+    <div class="wiz"><b>Connect a lead source</b><div class="bar"><i style="width:83%"></i></div>
+    <div class="open">Send a test lead<br><span class="wbtn ring">Send test lead</span></div></div>
+    <span class="marker" style="bottom:10px;left:96px">7</span></div>
+    <div class="sbody"><div class="t">7. Test</div><p>Click <b>Send test lead</b> and wait about a minute until it arrives.</p></div></div>
+
+  <div class="scard"><div class="shot">
+    <div class="wiz"><b>Connect a lead source</b><div class="bar"><i style="width:100%"></i></div>
+    <div class="fold">Send a test lead <b>Test lead received</b></div><span class="wbtn ring">Finish setup</span></div>
+    <span class="marker" style="bottom:10px;left:86px">8</span></div>
+    <div class="sbody"><div class="t">8. Finish</div><p>Click <b>Finish setup</b>.</p></div></div>
+
+  <div class="scard"><div class="shot">
+    <div class="wiz"><b>&#10004; Sunrise Homes (test) is connected</b><br>Connected by: Test Admin<br>Test lead received: 18/11/2026, 11:21 am<br><span class="wbtn ring">Done</span></div>
+    <span class="marker" style="bottom:10px;left:56px">9</span></div>
+    <div class="sbody"><div class="t">9. Done</div><p>Click <b>Done</b>. The window closes and the Page shows in Partner CRM as <span class="pill ok">Live</span>. Every new ad on that Page is covered with nothing more to do.</p></div></div>
+</div>
+<p class="note">Each screenshot is a real wizard capture (PNG, fake data); the orange ring + number is drawn from the button's position recorded by the capture script. <span class="reuse">Card + next/image; ring overlay from manifest.json</span></p>
+
+<div class="card" style="margin-top:14px">
+  <h2>What they might see instead</h2>
+  <table>
+  <tr><th>Message</th><th>What to do</th></tr>
+  <tr><td>"Facebook did not give permission to read leads."</td><td>Click <b>Try again</b> and leave every permission ticked.</td></tr>
+  <tr><td>"No Page was shared."</td><td>Sign in with a Facebook account that is an admin of the Page; click <b>Try again</b>.</td></tr>
+  <tr><td>"&lt;Page&gt; only lets chosen apps read its leads."</td><td>Meta Business settings &rsaquo; Integrations &rsaquo; Leads Access: add the app, then click <b>Check again</b>.</td></tr>
+  <tr><td>"&lt;Page&gt; is already connected to another account."</td><td>Click <b>Choose another Page</b>, or ask Foundryx to move it.</td></tr>
+  <tr><td>"This Page has no lead forms yet."</td><td>Create one in Instant Forms, then click <b>Check again</b>.</td></tr>
+  <tr><td>"This link has expired"</td><td>Close it and click Connect Facebook Page again.</td></tr>
+  <tr><td>Page shows <span class="pill bad">Reconnect</span> later</td><td>Facebook stopped sharing (password change, admin removed). Click Reconnect and sign in again; leads from the gap are caught up automatically.</td></tr>
+  </table>
+</div>
+
+<p class="note" style="margin-top:24px">Questions, or a pilot Page to add: contact Foundryx.</p>
+</div>
+</body>
+</html>
