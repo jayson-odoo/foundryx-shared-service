@@ -10,7 +10,7 @@
  * - The delete × turns red on hover with "Delete" as its tooltip.
  * - Greyed with its reason as the tooltip when it cannot apply.
  */
-import { forwardRef, type ButtonHTMLAttributes } from 'react';
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { FxTooltip } from '@/components/fx/fx-tooltip';
@@ -20,6 +20,8 @@ export interface FxIconActionProps
   extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> {
   label: string;
   icon: FxAnyIconName;
+  /** Drawn instead of `icon` (an action that brings its own icon). */
+  iconNode?: ReactNode;
   /** Greys the button; the reason becomes its tooltip. */
   disabledReason?: string;
   tone?: 'delete';
@@ -31,7 +33,7 @@ export const FxIconActionButton = forwardRef<
   HTMLButtonElement,
   FxIconActionProps
 >(function FxIconActionButton(
-  { label, icon, disabledReason, tone, mini, className, onClick, ...rest },
+  { label, icon, iconNode, disabledReason, tone, mini, className, onClick, ...rest },
   ref,
 ) {
   const blocked = Boolean(disabledReason);
@@ -59,7 +61,7 @@ export const FxIconActionButton = forwardRef<
       }}
       {...rest}
     >
-      <FxIcon name={icon} size={18} />
+      {iconNode ?? <FxIcon name={icon} size={18} />}
       <span
         aria-hidden="true"
         data-fx-decor=""

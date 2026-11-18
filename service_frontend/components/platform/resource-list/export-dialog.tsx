@@ -14,6 +14,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import { useFx } from '@/hooks/use-fx';
+import { FxExportDialog } from '@/components/fx/list/fx-export-dialog';
 import type { ExportColumn } from './types';
 
 export interface ExportDialogProps {
@@ -22,10 +24,19 @@ export interface ExportDialogProps {
   columns: ExportColumn[];
   /** Number of selected rows; 0 means "export the whole filtered set". */
   selectedCount: number;
+  /**
+   * Every row matching the list's filter. Read only with the Foundryx UIUX
+   * switch on, where the panel and its button name the count.
+   */
+  totalCount?: number;
   onExport: (columnIds: string[]) => Promise<void> | void;
 }
 
-export function ExportDialog({
+export function ExportDialog(props: ExportDialogProps) {
+  return useFx() ? <FxExportDialog {...props} /> : <ExportDialogLegacy {...props} />;
+}
+
+function ExportDialogLegacy({
   open,
   onOpenChange,
   columns,
