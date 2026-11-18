@@ -101,3 +101,12 @@ export const CREATE_FORM_GUIDE: GuideFrame[] = [
   { caption: 'Open Instant Forms', items: ['Ads', 'Instant Forms', 'Insights'], target: 1 },
   { caption: 'Create a form and publish it', items: ['Create form', 'Drafts', 'Published'], target: 0 },
 ];
+
+/** Google Ads lead form: paste our URL + key, then "Send test data"
+ * (https://support.google.com/google-ads/answer/9423234). */
+export const GOOGLE_TEST_DATA_GUIDE: GuideFrame[] = [
+  { caption: 'Open the lead form in Google Ads', items: ['Campaigns', 'Assets', 'Lead forms'], target: 2 },
+  { caption: 'Open the lead delivery option', items: ['Questions', 'Form submission message', 'Lead delivery option'], target: 2 },
+  { caption: 'Paste the webhook URL and the key', items: ['Webhook URL', 'Key'], target: 0 },
+  { caption: 'Press Send test data', items: ['Send test data', 'Save'], target: 0 },
+];

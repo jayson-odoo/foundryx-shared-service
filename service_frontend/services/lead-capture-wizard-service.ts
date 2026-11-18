@@ -11,6 +11,7 @@ import type {
   WizardContext,
   WizardDone,
   WizardFormList,
+  WizardGuidedSource,
   WizardPage,
   WizardQuestionList,
   WizardSessionGrant,
@@ -36,6 +37,8 @@ export interface LeadCaptureWizardService {
   login(token: string, code: string, redirectUri?: string): Promise<WizardPage[]>;
   pages(token: string): Promise<WizardPage[]>;
   connect(token: string, pageId: string): Promise<WizardSource>;
+  /** Google Ads: this session's source with its URL + a key (again = a new key). */
+  googleSource(token: string): Promise<WizardGuidedSource>;
   source(token: string, sourceId: string): Promise<WizardSource>;
   forms(token: string, sourceId: string): Promise<WizardFormList>;
   saveForms(token: string, sourceId: string, formsMode: 'all' | 'pick', formIds: string[]): Promise<WizardSource>;
@@ -62,6 +65,8 @@ export const leadCaptureWizardService: LeadCaptureWizardService = {
     (await publicFetch<{ data: WizardPage[] }>(`${BASE}/wizard/facebook/pages`, auth(token))).data,
   connect: (token, pageId) =>
     publicFetch<WizardSource>(`${BASE}/wizard/facebook/connect`, auth(token, json('POST', { pageId }))),
+  googleSource: (token) =>
+    publicFetch<WizardGuidedSource>(`${BASE}/wizard/google/source`, auth(token, json('POST', {}))),
   source: (token, sourceId) =>
     publicFetch<WizardSource>(`${BASE}/wizard/sources/${encodeURIComponent(sourceId)}`, auth(token)),
   forms: (token, sourceId) =>
