@@ -6,8 +6,15 @@
  * workspace first); a workspace picker renders in the header only when the
  * tenant has more than one workspace (the segment control already occupies
  * the list toolbar).
+ *
+ * Foundryx UIUX switch on (slice W1-CONTACTS): "Add contact" is the page's
+ * red action; Save as segment and Manage segments sit in a More menu beside
+ * it; the workspace picker is the branch picker; the bulk panels name their
+ * field and end in a done toast (with Undo where the API can reverse it);
+ * segments and the filter builder are unchanged.
  */
-import { Fragment, useCallback, useState } from 'react';
+import { Fragment, useCallback, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { LoaderCircleIcon } from 'lucide-react';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
@@ -16,6 +23,13 @@ import { PageHeader } from '@/components/platform/page-header';
 import { ResourceList } from '@/components/platform/resource-list';
 import { SearchSelect } from '@/components/platform/search-select';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
+import { FxOtherActions } from '@/components/fx/actions/other-actions';
+import {
+  useRegisterMainAction,
+  type FxMainActionSpec,
+  type FxOtherActionSpec,
+} from '@/components/fx/actions/page-actions-context';
 import { useActiveWorkspace } from '@/hooks/use-contacts';
 import { useContactSegments } from '@/hooks/use-contact-segments';
 import { useContactTags } from '@/hooks/use-contact-tags';
@@ -33,6 +47,8 @@ import { ManageSegmentsDialog } from './components/manage-segments-dialog';
 import { SaveSegmentDialog } from './components/save-segment-dialog';
 import { useContactActions } from './components/use-contact-actions';
 import { useContactsListConfig } from './components/use-contacts-list-config';
+import { useContactsFxDone } from './components/use-contacts-fx-done';
+import { contactNewPath } from './components/paths';
 import { useSegmentDeleteController } from './components/use-segment-delete-controller';
 
 interface PendingAction {
@@ -48,8 +64,13 @@ function nameForId(rows: ContactListItem[]): (id: string) => string {
   return (id) => byId.get(id) ?? id;
 }
 
+/** Switch on: the segment actions, both kept in the More menu. */
+const FX_MORE_IDS = ['save-segment', 'manage-segments'];
+
 export default function ContactsPage() {
   const { can } = useCan();
+  const fx = useFx();
+  const router = useRouter();
   const { workspaceId, workspaces, ready, setWorkspaceId } = useActiveWorkspace();
   const {
     segments,
@@ -116,6 +137,80 @@ export default function ContactsPage() {
 
   const canManageSegments = can('segments.manage');
 
+  // --- Foundryx UIUX switch on only
+  const fxDone = useContactsFxDone(bulk, workspaceId, () => void refreshSegments());
+  const canAdd = can('contacts.manage');
+  const mainSpec = useMemo<FxMainActionSpec | null>(
+    () =>
+      fx && workspaceId && canAdd
+        ? { id: 'create', label: 'Add contact', onClick: () => router.push(contactNewPath) }
+        : null,
+    [fx, workspaceId, canAdd, router],
+  );
+  useRegisterMainAction(mainSpec);
+  const hasFilter = Boolean(currentFilter);
+  const hasSegments = segments.length > 0;
+  const fxOthers = useMemo<FxOtherActionSpec[]>(
+    () => [
+      ...(canManageSegments && hasFilter
+        ? [{ id: 'save-segment', label: 'Save as segment', icon: 'add' as const, onClick: () => setSaveSegmentOpen(true) }]
+        : []),
+      ...(canManageSegments && hasSegments
+        ? [
+            {
+              id: 'manage-segments',
+              label: 'Manage segments',
+              icon: 'settings' as const,
+              onClick: () => setManageSegmentsOpen(true),
+            },
+          ]
+        : []),
+    ],
+    [canManageSegments, hasFilter, hasSegments],
+  );
+  const fxHeaderActions = (
+    <Fragment>
+      {workspaces.length > 1 && (
+        <div data-fx-branch-picker="" className="flex items-center gap-2">
+          {/* Phones keep the picker and drop its caption, so the header row
+              (picker, More, Add contact) fits 375px without scrolling sideways. */}
+          <span className="text-xs font-semibold text-(--fx-ink-3) max-sm:hidden">Workspace</span>
+          <SearchSelect
+            ariaLabel="Workspace"
+            className="w-48 max-sm:w-28"
+            value={workspaceId}
+            onChange={setWorkspaceId}
+            options={workspaces.map((w) => ({ label: w.name, value: w.id }))}
+          />
+        </div>
+      )}
+      <FxOtherActions actions={fxOthers} moreIds={FX_MORE_IDS} />
+    </Fragment>
+  );
+  const legacyHeaderActions = (
+    <Fragment>
+      {workspaces.length > 1 && (
+        <SearchSelect
+          ariaLabel="Workspace"
+          className="w-56"
+          value={workspaceId}
+          onChange={setWorkspaceId}
+          options={workspaces.map((w) => ({ label: w.name, value: w.id }))}
+        />
+      )}
+      {canManageSegments && currentFilter && (
+        <Button variant="outline" size="sm" onClick={() => setSaveSegmentOpen(true)}>
+          Save as segment
+        </Button>
+      )}
+      {canManageSegments && segments.length > 0 && (
+        <Button variant="outline" size="sm" onClick={() => setManageSegmentsOpen(true)}>
+          Manage segments
+        </Button>
+      )}
+    </Fragment>
+  );
+
   if (!ready) {
     return (
       <Container width="fluid">
@@ -131,30 +226,12 @@ export default function ContactsPage() {
       <Fragment>
         <Container width="fluid">
           <PageHeader
-            description="Every contact in this workspace - lifecycle, tags, assignee and channel."
-            actions={
-              <Fragment>
-                {workspaces.length > 1 && (
-                  <SearchSelect
-                    ariaLabel="Workspace"
-                    className="w-56"
-                    value={workspaceId}
-                    onChange={setWorkspaceId}
-                    options={workspaces.map((w) => ({ label: w.name, value: w.id }))}
-                  />
-                )}
-                {canManageSegments && currentFilter && (
-                  <Button variant="outline" size="sm" onClick={() => setSaveSegmentOpen(true)}>
-                    Save as segment
-                  </Button>
-                )}
-                {canManageSegments && segments.length > 0 && (
-                  <Button variant="outline" size="sm" onClick={() => setManageSegmentsOpen(true)}>
-                    Manage segments
-                  </Button>
-                )}
-              </Fragment>
+            description={
+              fx
+                ? 'Every contact in this workspace: lifecycle, tags, assignee and channel.'
+                : 'Every contact in this workspace - lifecycle, tags, assignee and channel.'
             }
+            actions={fx ? fxHeaderActions : legacyHeaderActions}
           />
         </Container>
         <Container width="fluid">
@@ -169,6 +246,7 @@ export default function ContactsPage() {
             onSave={(values) =>
               createSegment({ name: values.name, description: values.description, filter: currentFilter })
             }
+            onSaved={fx ? (values, created) => fxDone.reportSegmentSaved(values.name, created) : undefined}
           />
         )}
 
@@ -191,7 +269,17 @@ export default function ContactsPage() {
           onConfirm={async (assigneeUserId) => {
             if (!assignPending) return;
             const result = await bulk.assign(assignPending.rows.map((r) => r.id), assigneeUserId);
-            reportBulkResult(result, 'assigned', nameForId(assignPending.rows));
+            if (fx) {
+              const member = members.find((m) => m.userId === assigneeUserId);
+              fxDone.reportBulk({
+                kind: 'assign',
+                rows: assignPending.rows,
+                result,
+                target: assigneeUserId ? (member?.name ?? member?.email ?? null) : null,
+                sent: { kind: 'assign', assigneeUserId },
+                reload: assignPending.reload,
+              });
+            } else reportBulkResult(result, 'assigned', nameForId(assignPending.rows));
             assignPending.reload();
           }}
         />
@@ -205,7 +293,16 @@ export default function ContactsPage() {
           onConfirm={async (mode, tagIds) => {
             if (!tagsPending) return;
             const result = await bulk.tags(tagsPending.rows.map((r) => r.id), mode, tagIds);
-            reportBulkResult(result, mode === 'add' ? 'tagged' : 'untagged', nameForId(tagsPending.rows));
+            if (fx) {
+              fxDone.reportBulk({
+                kind: mode === 'add' ? 'add-tags' : 'remove-tags',
+                rows: tagsPending.rows,
+                result,
+                target: tags.filter((t) => tagIds.includes(t.id)).map((t) => t.name),
+                sent: { kind: 'tags', mode, tagIds },
+                reload: tagsPending.reload,
+              });
+            } else reportBulkResult(result, mode === 'add' ? 'tagged' : 'untagged', nameForId(tagsPending.rows));
             tagsPending.reload();
           }}
         />
@@ -218,7 +315,16 @@ export default function ContactsPage() {
           onConfirm={async (toStatusId) => {
             if (!lifecyclePending) return;
             const result = await bulk.lifecycle(lifecyclePending.rows.map((r) => r.id), toStatusId);
-            reportBulkResult(result, 'moved', nameForId(lifecyclePending.rows));
+            if (fx) {
+              fxDone.reportBulk({
+                kind: 'lifecycle',
+                rows: lifecyclePending.rows,
+                result,
+                target: stages.find((st) => st.id === toStatusId)?.label ?? null,
+                sent: { kind: 'lifecycle' },
+                reload: lifecyclePending.reload,
+              });
+            } else reportBulkResult(result, 'moved', nameForId(lifecyclePending.rows));
             lifecyclePending.reload();
           }}
         />
