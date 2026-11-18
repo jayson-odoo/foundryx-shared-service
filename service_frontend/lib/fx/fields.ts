@@ -104,16 +104,37 @@ export function passwordStrength(password: string): PasswordStrength {
   return { level, label: LABELS[level], missing };
 }
 
-/** The value a step lands on: clamped to [min, max] and on the step grid from min. */
-export function snapToStep(value: number, min: number, max: number, step: number): number {
-  if (!(step > 0)) return Math.min(max, Math.max(min, value));
-  const steps = Math.round((value - min) / step);
-  const snapped = min + steps * step;
-  const decimals = (String(step).split('.')[1] ?? '').length;
-  return Math.min(max, Math.max(min, Number(snapped.toFixed(decimals))));
+/** A typed value kept inside [min, max], as typed otherwise (FX-12). */
+export function clampValue(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
-/** A stepper's next value: one step up or down, clamped. */
+/** Where the step grid starts: min, or 0 when there is no min. */
+function gridOrigin(min: number): number {
+  return Number.isFinite(min) ? min : 0;
+}
+
+/** The value a step lands on: clamped to [min, max] and on the step grid from min. */
+export function snapToStep(value: number, min: number, max: number, step: number): number {
+  if (!(step > 0)) return clampValue(value, min, max);
+  const origin = gridOrigin(min);
+  const steps = Math.round((value - origin) / step);
+  const snapped = origin + steps * step;
+  const decimals = (String(step).split('.')[1] ?? '').length;
+  return clampValue(Number(snapped.toFixed(decimals)), min, max);
+}
+
+/**
+ * A stepper's next value: one step up or down, clamped. A value between two
+ * steps (typed, FX-12) moves to the next step in that direction, the way a
+ * browser number field does: 6.5 goes up to 7 and down to 6.
+ */
 export function stepValue(value: number, direction: 1 | -1, min: number, max: number, step: number): number {
-  return snapToStep(value + direction * step, min, max, step);
+  if (!(step > 0)) return clampValue(value, min, max);
+  const position = (value - gridOrigin(min)) / step;
+  if (Math.abs(position - Math.round(position)) < 1e-9) {
+    return snapToStep(value + direction * step, min, max, step);
+  }
+  const next = direction > 0 ? Math.ceil(position) : Math.floor(position);
+  return snapToStep(gridOrigin(min) + next * step, min, max, step);
 }

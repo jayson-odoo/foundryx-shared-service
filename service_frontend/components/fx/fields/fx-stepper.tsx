@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { snapToStep, stepValue } from '@/lib/fx/fields';
+import { clampValue, snapToStep, stepValue } from '@/lib/fx/fields';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { FX_FIELD_BOX } from './classes';
 
@@ -24,7 +24,11 @@ export interface FxStepperProps {
   onChange: (value: number) => void;
   min?: number;
   max?: number;
+  /** What − and + (and the arrow keys) add or take away. */
   step?: number;
+  /** Also put a typed value on the step grid. Off by default: a typed value
+   *  is only kept inside min and max (FX-12), so 6.5 stays 6.5 at step 1. */
+  snap?: boolean;
   /** Written after the number ("%", "days"). */
   unit?: string;
   disabled?: boolean;
@@ -57,7 +61,7 @@ function useHoldRepeat(run: () => boolean) {
 }
 
 /** The stepper's number, its keys, and the hold-to-repeat buttons. */
-function useStepper({ value, onChange, min = -Infinity, max = Infinity, step = 1 }: FxStepperProps) {
+function useStepper({ value, onChange, min = -Infinity, max = Infinity, step = 1, snap = false }: FxStepperProps) {
   const valueRef = useRef(value);
   valueRef.current = value;
   const [text, setText] = useState(String(value));
@@ -83,7 +87,7 @@ function useStepper({ value, onChange, min = -Infinity, max = Infinity, step = 1
       setText(String(value));
       return;
     }
-    const next = snapToStep(n, min, max, step);
+    const next = snap ? snapToStep(n, min, max, step) : clampValue(n, min, max);
     setText(String(next));
     if (next !== value) onChange(next);
   };
