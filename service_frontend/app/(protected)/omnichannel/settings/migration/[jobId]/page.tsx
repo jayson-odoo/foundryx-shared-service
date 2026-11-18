@@ -29,6 +29,8 @@ import { MigrationFailuresTable } from '../components/migration-failures-table';
 import { MigrationSyncCard } from '../components/migration-sync-card';
 import { canOfferSync } from '../components/sync-status';
 import { migrationListPath } from '../components/paths';
+import { useFx } from '@/hooks/use-fx';
+import { FxMigrationJobDetail } from '../components/fx-migration-job-detail';
 
 const POLL_MS = 3000;
 
@@ -41,7 +43,22 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-export default function MigrationJobDetailPage({ params }: { params: Promise<{ jobId: string }> }) {
+type MigrationJobPageProps = { params: Promise<{ jobId: string }> };
+
+export default function MigrationJobDetailPage(props: MigrationJobPageProps) {
+  return useFx() ? <FxMigrationJobPage {...props} /> : <MigrationJobDetailPageLegacy {...props} />;
+}
+
+function FxMigrationJobPage({ params }: MigrationJobPageProps) {
+  const { jobId } = use(params);
+  return (
+    <RequirePermission permission="omnichannel_migration.read">
+      <FxMigrationJobDetail jobId={jobId} />
+    </RequirePermission>
+  );
+}
+
+function MigrationJobDetailPageLegacy({ params }: MigrationJobPageProps) {
   const { jobId } = use(params);
   const { formatDateTime } = useDatetime();
   const actions = useMigrationActions();
