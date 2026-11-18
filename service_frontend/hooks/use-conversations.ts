@@ -244,7 +244,8 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     },
     [isFiltered, load, workspaceId],
   );
-  useConversationSocket(workspaceId, onEvent, setIsConnected);
+  // Back after a drop: fetch the list again for whatever arrived meanwhile.
+  useConversationSocket(workspaceId, onEvent, setIsConnected, load);
 
   const setFilters = useCallback((patch: Partial<ConversationFilters>) => {
     setFiltersState((prev) => ({ ...prev, ...patch }));
