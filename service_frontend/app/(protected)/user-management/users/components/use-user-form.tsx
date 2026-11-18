@@ -131,6 +131,9 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<User> | null>(() => {
     if (isLoading || notFound || loadError) return null;
 
@@ -251,14 +254,25 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
       editable: !creating,
       editPermission: 'users.update',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: creating
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Edit / Save user is
+      // the red action; the account actions sit in More (FX-22).
+      fx: creating
+        ? { mainActionId: 'save' }
+        : {
+            mainActionId: 'save',
+            fullLabel: (rows) => (rows[0]?.name ? `Save ${rows[0].name}` : ''),
+            iconFor: { 'send-invitation': 'send', trash: 'trash' },
+            moreActionIds: ['reset-password', 'resend-verification', 'impersonate'],
+          },
     };
   }, [
+    formDirty,
     isLoading,
     notFound,
     loadError,
