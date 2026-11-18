@@ -10,12 +10,18 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
+import { useFx } from '@/hooks/use-fx';
 import type { UploadFileItem } from '@/types/documents';
 import { formatBytes } from './lib';
 import { useUploadManager } from './upload-manager';
 
 /** Global right-side drawer surfacing upload progress, decoupled from the page. */
 export function UploadActivityDrawer() {
+  // Foundryx UIUX: the one Jobs sheet shows this list as a tab instead.
+  return useFx() ? null : <UploadActivityDrawerLegacy />;
+}
+
+function UploadActivityDrawerLegacy() {
   const { items, open, setOpen, resolveConflict, retry, remove, clearFinished } =
     useUploadManager();
 
@@ -33,25 +39,47 @@ export function UploadActivityDrawer() {
           )}
         </SheetHeader>
 
-        <div className="flex-1 overflow-y-auto">
-          {items.length === 0 ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">No uploads yet.</p>
-          ) : (
-            <ul className="divide-y">
-              {items.map((it) => (
-                <UploadRow
-                  key={it.id}
-                  item={it}
-                  onResolve={resolveConflict}
-                  onRetry={retry}
-                  onRemove={remove}
-                />
-              ))}
-            </ul>
-          )}
-        </div>
+        <UploadsList
+          items={items}
+          onResolve={resolveConflict}
+          onRetry={retry}
+          onRemove={remove}
+        />
       </SheetContent>
     </Sheet>
+  );
+}
+
+/** The drawer's list of uploads, shared with the Foundryx UIUX Jobs sheet. */
+export function UploadsList({
+  items,
+  onResolve,
+  onRetry,
+  onRemove,
+}: {
+  items: UploadFileItem[];
+  onResolve: (id: string, mode: 'replace' | 'keep_both') => void;
+  onRetry: (id: string) => void;
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {items.length === 0 ? (
+        <p className="p-6 text-center text-sm text-muted-foreground">No uploads yet.</p>
+      ) : (
+        <ul className="divide-y">
+          {items.map((it) => (
+            <UploadRow
+              key={it.id}
+              item={it}
+              onResolve={onResolve}
+              onRetry={onRetry}
+              onRemove={onRemove}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

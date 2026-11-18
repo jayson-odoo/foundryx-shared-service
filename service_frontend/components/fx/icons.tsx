@@ -8,17 +8,26 @@
 import type { SVGProps } from 'react';
 import {
   ArrowLeftRight,
+  Bell,
   BellRing,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Ellipsis,
   Filter,
+  LayoutGrid,
   Mail,
+  Menu,
+  MessageCircleMore,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
   Search,
   Send,
   Settings,
+  Settings2,
   Share2,
   Tag,
   Trash2,
@@ -54,6 +63,16 @@ export const FX_ICONS = {
   tag: Tag,
   trash: Trash2,
   close: X,
+  // Shell (slice F5): the top bar and the side panel.
+  jobs: Settings2,
+  notifications: Bell,
+  chat: MessageCircleMore,
+  apps: LayoutGrid,
+  menu: Menu,
+  pin: Pin,
+  unpin: PinOff,
+  previous: ChevronLeft,
+  next: ChevronRight,
 } satisfies Record<string, LucideIcon>;
 
 export type FxIconName = keyof typeof FX_ICONS;

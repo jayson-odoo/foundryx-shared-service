@@ -194,6 +194,12 @@ function FxPageHeader({
           <div className="text-sm text-(--fx-ink-3)">{description}</div>
         )}
       </div>
+      {/* The top bar's search moves in here once the page scrolls (F5,
+          app/components/layouts/demo1/components/fx-header.tsx). */}
+      <div
+        data-fx-header-merge=""
+        className="flex min-w-0 items-center self-center empty:hidden"
+      />
       {hasActions && (
         <div
           data-fx-header-actions=""

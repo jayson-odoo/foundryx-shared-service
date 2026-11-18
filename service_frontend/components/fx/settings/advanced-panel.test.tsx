@@ -100,19 +100,27 @@ describe('Advanced settings panel', () => {
     expect(sw('Animations')).toBeInTheDocument();
     expect(sw('Slim scrollbars')).toBeInTheDocument();
     expect(within(p).getByText('Thickness')).toBeInTheDocument();
-    for (const notBuilt of [
-      'Cross-fade on theme changes',
+    // Built by the actions (F2) and shell (F5) slices.
+    for (const built of [
       'Hover lift',
       'Press and hold to confirm',
-      'Hold to Copy',
       'Styled tooltips',
+      'Wait before it folds to icons',
+      'Merge into the page header on scroll',
+      'Condense the top bar on scroll',
+      'Floating red action',
+    ])
+      expect(within(p).getByText(built), built).toBeInTheDocument();
+    for (const notBuilt of [
+      'Cross-fade on theme changes',
+      'Hold to Copy',
       'Clipboard',
       'Smart view and Table view',
       'Show the submenu safe zone',
     ])
       expect(within(p).queryByText(notBuilt), notBuilt).toBeNull();
-    // Master switch plus the two built switches.
-    expect(within(p).getAllByRole('switch')).toHaveLength(3);
+    // Master switch plus the ten built switches.
+    expect(within(p).getAllByRole('switch')).toHaveLength(11);
   });
 
   it('finds a setting by name or note and hides sections with nothing left', () => {
