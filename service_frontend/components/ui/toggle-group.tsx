@@ -5,13 +5,20 @@ import { cn } from '@/lib/utils';
 import { toggleVariants } from '@/components/ui/toggle';
 import { type VariantProps } from 'class-variance-authority';
 import { ToggleGroup as ToggleGroupPrimitive } from 'radix-ui';
+import { useFx } from '@/hooks/use-fx';
+import { FxToggleGroup, FxToggleGroupItem } from '@/components/fx/fields/fx-toggle-group';
 
 const ToggleGroupContext = React.createContext<VariantProps<typeof toggleVariants>>({
   size: 'md',
   variant: 'default',
 });
 
-function ToggleGroup({
+// Foundryx UIUX switch: the playbook segmented toggle while on; today's while off.
+function ToggleGroup(props: React.ComponentProps<typeof ToggleGroupPrimitive.Root> & VariantProps<typeof toggleVariants>) {
+  return useFx() ? <FxToggleGroup {...props} /> : <ToggleGroupLegacy {...props} />;
+}
+
+function ToggleGroupLegacy({
   className,
   variant,
   size,
@@ -34,7 +41,12 @@ function ToggleGroup({
   );
 }
 
-function ToggleGroupItem({
+// Foundryx UIUX switch: the playbook segmented toggle while on; today's while off.
+function ToggleGroupItem(props: React.ComponentProps<typeof ToggleGroupPrimitive.Item> & VariantProps<typeof toggleVariants>) {
+  return useFx() ? <FxToggleGroupItem {...props} /> : <ToggleGroupItemLegacy {...props} />;
+}
+
+function ToggleGroupItemLegacy({
   className,
   children,
   variant,

@@ -15,7 +15,7 @@ Playbook version: 0.71.0
 - **Server-rendered first paint.** `app/layout.tsx` reads the cookies; while on, `<html>` gets `data-fx="on"`, `data-fx-pal`, `data-fx-dpal`, `data-fx-font` and `--fx-scale`, and `<head>` gets one Google Fonts stylesheet (Geist, Plus Jakarta Sans, Inter, Manrope, DM Sans). While off the markup is exactly the old one.
 - **Where the switch lives:** a palette (Theme) icon button in the top bar on wider screens; on phones the same panel opens from a "Theme" row in the user menu, under Dark Mode, because the 375px top bar has no room for another icon.
 - **Name and version** come from one place, `service_frontend/lib/fx/version.ts` (`FX_SWITCH_NAME`, `FX_PLAYBOOK_VERSION`), shown as "Foundryx UIUX (0.71.0)".
-- **Scope:** every route. Embedded pages (`app/embed/**`) are always off (`<FxOff>` in `app/embed/layout.tsx`). Sign-in, public portal and `/wa-callback` get only the global look (font, size, scrollbars) for a browser that opted in; none of their pages is converted.
+- **Scope:** every route. Embedded pages (`app/embed/**`) are always off (`<FxOff>` in `app/embed/layout.tsx`: components and global look). Sign-in (`app/(auth)`), the public portal (`app/(public)`) and `/wa-callback` get only the global look (font, size, scrollbars) for a browser that opted in: `<FxComponentsOff>` in their layouts makes `useFx()` false there, so shared fields stay legacy and none of their pages is converted.
 - **Advanced settings** (behaviour knobs) are stored per browser in `localStorage` key `fx_settings`, holding only values that differ from the playbook defaults. The full list with defaults is `service_frontend/lib/fx/settings-schema.ts`.
 - **Advanced settings panel:** the Theme panel's "Advanced settings" link (shown only while on) opens a floating, draggable, see-through panel (`service_frontend/components/fx/settings/advanced-panel.tsx`): master switch, presets (Save, Export, Import, Delete with Undo; stored per browser in `fx_presets`; files are validated and clamped to the schema), Find a setting, one section per area with Reset, and Reset all. Its place is remembered per browser (`fx_adv_pos`). It shows only rows whose behaviour has been built: `FX_BUILT_SLICES` in `settings-schema.ts` lists the merged slices, and each slice that builds a setting adds itself there. Until company-wide admin settings exist (backend work), every value is per browser.
 - **Size base:** the root font size is SS's 16px base times the Theme panel size, so "Normal (90%)" renders 14.4px root text while the switch is on.
@@ -110,6 +110,17 @@ Each is still with the owner; the build uses the default shown until answered.
 - **Q-QT:** build the Clipboard, Quick Tool and right-click tool now. Default: not built until asked.
 
 Also in place as build defaults, still open with the owner: the switch and theme are per browser (Q-SYNC); sign-in, public portal and embedded pages stay outside the switch (Q-SCOPE); fx CSS stays in the four sanctioned CSS files (Q-CSS); Advanced settings are per browser (Q-ADV).
+
+## Fields (slice F4)
+
+Built defaults for the field rules, each kept in one place so it is easy to change:
+
+- **Every dropdown is searchable**, whatever its size (SS's own rule; Q-DD default). The playbook's ~12-option threshold is not used.
+- **Moments** use a 12-hour clock while the switch is on: "14 Nov 2026, 2:14 pm"; dates read "14 Nov 2026"; recent ones in lists read "now", "5 min", "3 h", "Yesterday", then "14 Nov". `useDatetime()` switches by itself, so every page that already goes through it gets this. The zone line under a time picker reads "Kuala Lumpur time (GMT+8)".
+- **Day totals and quick picks** count in the report's own zone (the picker's `timeZone`), since SS has no organisation zone yet (Q-TZ default). The range quick picks are the playbook's (Today, This week, This month, Last month, This year) plus SS's Last 7 days and Last 30 days; weeks start on Monday.
+- **Money:** "RM" only when the currency is MYR; every other currency shows its ISO code, whatever the tenant default (Q-CUR default; `FX_HOME_CURRENCY` in `service_frontend/lib/money.ts`). `formatMoney` is unchanged; `formatMoneyFx` is the new formatter.
+- **Secret fields:** the show/hide eye is reachable by Tab and carries `aria-pressed` while the switch is on (today it is skipped by Tab).
+- **The bare `Select`** (a few screens) gets the playbook look only; it does not switch to the phone's own picker on touch, because its options are not known to the field.
 
 ## Final confirmation
 
