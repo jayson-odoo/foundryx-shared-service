@@ -97,6 +97,7 @@ From the build:
 - **Smart view never shortens a value:** long values wrap inside their capped width (no two-line limit, since a clamp would add the "..." the playbook bans). Lists that reorder their rows by dragging keep today's table (the toggle and moving columns would fight the row order). Hand-resizing columns is off under the switch; the widths come from the content.
 - **Dragging a header** moves the header row live and the column's cells on drop; the Columns panel drags on touch after a short press anywhere on the row rather than only from the grip, so a quick swipe still scrolls the list.
 - **View and column choices are stored with the user's other list preferences** (new keys next to the list's own), so they follow the person across devices, unlike the per-browser switch.
+- **The Advanced settings show the actions and lists rows** now that both are built; "Hover lift" turned off stops the lift on fields and list cards.
 
 ## Mocks
 

@@ -693,7 +693,7 @@ export function FxResourceList<T extends object>({
                         onKeyDown={(e) => e.key === 'Enter' && openRow(row)}
                         data-testid={`resource-card-${id}`}
                         className={cn(
-                          'group relative flex flex-col rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface) text-left transition-[translate,box-shadow,border-color] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-0.5 hover:shadow-[0_6px_18px_var(--fx-shade)] focus-visible:outline-hidden',
+                          'group relative flex flex-col rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface) text-left transition-[translate,box-shadow,border-color] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-0.5 hover:shadow-[0_6px_18px_var(--fx-shade)] focus-visible:outline-hidden [:root[data-fx-lift=off]_&]:hover:translate-y-0',
                           selected && 'border-(--fx-link)',
                         )}
                       >
