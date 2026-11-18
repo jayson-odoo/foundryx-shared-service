@@ -26,6 +26,7 @@ from app.services import status_machine
 from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaAttachment, IdeaVote
+from .attachments import IdeaAttachmentService
 from ..schemas import (
     BoardColumnOut,
     BoardOut,
@@ -169,6 +170,8 @@ class IdeaReadService:
             .filter(
                 IdeaAttachment.idea_id.in_(idea_ids),
                 IdeaAttachment.tenant_id.in_({i.tenant_id for i in ideas}),
+                # Comment files ride their comment, never the report.
+                IdeaAttachment.comment_id.is_(None),
             )
             .order_by(IdeaAttachment.created_at.asc(), IdeaAttachment.id.asc())
             .all()
@@ -176,18 +179,7 @@ class IdeaReadService:
         out: Dict[str, List[IdeaAttachmentOut]] = {}
         for r in rows:
             out.setdefault(r.idea_id, []).append(
-                IdeaAttachmentOut(
-                    id=r.id,
-                    kind=r.kind,
-                    name=(r.filename or "").strip() or r.kind,
-                    url=r.url or "",
-                    sizeBytes=r.size_bytes,
-                    contentPath=(
-                        f"{self.content_prefix}/{r.idea_id}/attachments/{r.id}/content"
-                        if r.storage_key
-                        else None
-                    ),
-                )
+                IdeaAttachmentService.to_out(r, self.content_prefix)
             )
         return out
 

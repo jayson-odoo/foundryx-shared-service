@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, ReactNode, useContext } from 'react';
+import { createContext, ReactNode, useContext, type MouseEvent } from 'react';
 import { cn } from '@/lib/utils';
 import { ColumnFiltersState, RowData, SortingState, Table } from '@tanstack/react-table';
 
@@ -70,6 +70,12 @@ export interface DataGridProps<TData extends object> {
   recordCount: number;
   children?: ReactNode;
   onRowClick?: (row: TData) => void;
+  /**
+   * Right-click (long-press on touch) on a body row: the caller opens the
+   * row's actions at the cursor (owner standing rule: row actions live in
+   * right-click). The browser menu is suppressed only when this is set.
+   */
+  onRowContextMenu?: (row: TData, event: MouseEvent) => void;
   /**
    * Each body row becomes a real link target to this href (AC-DLA-14): click,
    * Enter/Space and middle-click all open it, hover prefetches it once. Stays

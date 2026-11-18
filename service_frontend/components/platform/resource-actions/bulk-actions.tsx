@@ -28,6 +28,8 @@ export interface BulkActionsProps<T> {
   actions: ResourceAction<T>[];
   rows: T[];
   runtime: ResourceActionRuntime;
+  /** Called once a deferred action commits, with the ids it acted on. */
+  onDeferredCommitted?: (entityIds: string[]) => void;
   /** Row id extractor for a `deferred` action's park - defaults to `row.id`. */
   getEntityId?: (row: T) => string;
 }
@@ -48,6 +50,7 @@ export function BulkActions<T>({
   rows,
   runtime,
   getEntityId = defaultEntityId,
+  onDeferredCommitted,
 }: BulkActionsProps<T>) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<ResourceAction<T> | null>(null);
@@ -75,6 +78,7 @@ export function BulkActions<T>({
         active ? deferredDoneMessage(active.label, active.entityType, active.ids.length) : 'Done.',
       );
       runtime.reload();
+      if (active) onDeferredCommitted?.(active.ids);
     },
     onFailed: (error) => {
       settleActive();
