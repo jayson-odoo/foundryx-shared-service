@@ -69,17 +69,35 @@ describe('MediaCapsForm', () => {
     expect(input.value).toBe('2');
   });
 
-  it('clamps an over-ceiling entry and saves bytes; blank clears to null', async () => {
+  it('refuses an over-ceiling entry with a message and saves nothing', async () => {
+    const { toast } = await import('sonner');
+    render(<MediaCapsForm />);
+    await screen.findByText('Image');
+    // Image ceiling is 5 MB; 6 MB used to be saved silently as 5 MB.
+    fireEvent.change(document.querySelector('#cap-imageMaxBytes') as HTMLInputElement, {
+      target: { value: '6' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save media settings' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Image can be at most 5 MB.', expect.anything()));
+    expect(svc.update).not.toHaveBeenCalled();
+  });
+
+  it('saves the typed size in bytes, the shown ceiling as the ceiling; blank clears to null', async () => {
     svc.update.mockResolvedValue(settings());
     render(<MediaCapsForm />);
     await screen.findByText('Sticker');
-    // Sticker ceiling is 500KB; typing 5 (MB) must clamp to the ceiling in bytes.
-    const sticker = document.querySelector('#cap-stickerMaxBytes') as HTMLInputElement;
-    fireEvent.change(sticker, { target: { value: '5' } });
+    fireEvent.change(document.querySelector('#cap-videoMaxBytes') as HTMLInputElement, {
+      target: { value: '8' },
+    });
+    // Sticker ceiling is 500 KB, shown as "0.49" MB: typing what is shown saves the ceiling.
+    fireEvent.change(document.querySelector('#cap-stickerMaxBytes') as HTMLInputElement, {
+      target: { value: '0.49' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Save media settings' }));
     await waitFor(() => expect(svc.update).toHaveBeenCalled());
     const payload = svc.update.mock.calls[0][0];
-    expect(payload.stickerMaxBytes).toBe(500 * 1024); // clamped
+    expect(payload.videoMaxBytes).toBe(8 * MB);
+    expect(payload.stickerMaxBytes).toBe(500 * 1024);
     expect(payload.imageMaxBytes).toBeNull(); // blank → cleared
   });
 

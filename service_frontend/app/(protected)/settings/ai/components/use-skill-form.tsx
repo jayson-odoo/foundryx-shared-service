@@ -161,6 +161,9 @@ export function useSkillForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<AiSkill> | null>(() => {
     if (!isNew && !skill) return null;
     return {
@@ -292,7 +295,7 @@ export function useSkillForm(
       editable: true,
       editPermission: 'ai_agents.manage',
       initialEditing: isNew ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: isNew
@@ -300,6 +303,7 @@ export function useSkillForm(
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
+    formDirty,
     actions,
     form,
     initialEditing,
