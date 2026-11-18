@@ -304,4 +304,7 @@ class LcConnectSession(LeadCaptureBase):
     finished_at = Column(UTCDateTime(), nullable=True)
     meta_encrypted = Column(Text, nullable=True)
     meta_expires_at = Column(UTCDateTime(), nullable=True)
+    # Google sign-in (plan 68): Fernet {refreshToken, accessToken, email, dev}.
+    google_encrypted = Column(Text, nullable=True)
+    google_expires_at = Column(UTCDateTime(), nullable=True)
     created_at = _created()
