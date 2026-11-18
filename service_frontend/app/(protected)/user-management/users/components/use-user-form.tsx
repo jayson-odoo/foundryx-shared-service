@@ -16,6 +16,7 @@ import type { Role, User } from '@/types/user';
 import { AvatarUpload } from '@/components/platform/avatar-upload';
 import { UserAvatar } from '@/components/platform/user-avatar';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
 import { useUserAvatar } from '@/hooks/use-avatar';
 import { ProfileTab, SecurityTab, ActivityTab } from './user-form-fields';
 import { useUserActions } from './use-user-actions';
@@ -52,6 +53,9 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
   const router = useRouter();
   const actions = useUserActions();
   const creating = !userId;
+  // Foundryx UIUX switch only: done toasts. Every request is the same in
+  // both looks.
+  const fx = useFx();
   const { data: session } = useSession();
   // Own record: email locked on this form - the /account ceremony owns it
   // (plan sprint-2/04, no self-bypass; the backend 409s it anyway).
@@ -144,7 +148,15 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
             roleIds: values.roleIds,
             status: values.status,
           });
-          toast.success('User created - invitation sent.');
+          if (fx) {
+            toast.fxDone({
+              what: `${created.name || values.name} invited`,
+              forWhom: created.email || values.email,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success('User created - invitation sent.');
+          }
           router.push(userFormPath(created.id));
         } else {
           const updated = await userService.update(userId, {
@@ -157,7 +169,11 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
           });
           setUser(updated);
           form.reset(toFormValues(updated));
-          toast.success('User updated.');
+          if (fx) {
+            toast.fxDone({ what: `${updated.name || updated.email} saved`, byWhom: 'you' });
+          } else {
+            toast.success('User updated.');
+          }
         }
         ok = true;
       })();
@@ -269,6 +285,7 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
           },
     };
   }, [
+    fx,
     isLoading,
     notFound,
     loadError,
