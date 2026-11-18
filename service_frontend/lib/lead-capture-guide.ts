@@ -25,6 +25,8 @@ export interface DeveloperSamples {
   popup: string;
   pull: string;
   pullAnswer: string;
+  webhook: string;
+  webhookBody: string;
   verify: string;
   fields: string;
 }
@@ -42,7 +44,11 @@ export function developerSamples(apiBase: string): DeveloperSamples {
       '        "expiresAt": "2026-11-18T03:30:00Z"}',
     ].join('\n'),
     popup: [
-      "const popup = window.open(url, 'lead_capture', 'popup,width=720,height=860');",
+      '// On the click: open the window first (a popup opened after an await is blocked),',
+      '// then ask your backend for the link and send the window there.',
+      "const popup = window.open('', 'lead_capture', 'popup,width=720,height=860');",
+      "const { url } = await fetch('/your-backend/lead-capture/connect-link', { method: 'POST' }).then((r) => r.json());",
+      'popup.location.href = url;',
       'const sharedService = new URL(url).origin;',
       "window.addEventListener('message', (event) => {",
       '  if (event.origin !== sharedService) return;',
@@ -57,18 +63,37 @@ export function developerSamples(apiBase: string): DeveloperSamples {
       '  "data": [{',
       '    "id": "e3a10000-0000-0000-0000-000000000001",',
       '    "sourceId": "4c1f0000-0000-0000-0000-000000000001",',
+      '    "sourceName": "Sample Home Page",',
+      '    "platform": "facebook",',
       '    "formName": "Sample lead form",',
       '    "receivedAt": "2026-11-18T03:20:05Z",',
       '    "createdAt": "2026-11-18T03:20:00Z",',
       '    "isTest": false,',
+      '    "duplicateOf": null,',
       '    "fields": {"name": "Test Person", "phone": "+60120000000",',
       '               "email": "test.person@example.com",',
       '               "notes": "property_type: Condominium\\nbudget: 500k - 800k"},',
-      '    "answers": [...], "attribution": {...}',
+      '    "answers": [...], "attribution": {...}, "platformLeadId": "...", "pageId": "...", "formId": "..."',
       '  }],',
       '  "nextCursor": "WyIyMDI2LTExLTE4VDAzOjIwOjA1...",',
       '  "hasMore": false',
       '}',
+    ].join('\n'),
+    webhook: [
+      `POST ${apiBase}/webhooks`,
+      'Authorization: Bearer fxl_live_...',
+      '',
+      `{"url": "${SAMPLE_PARTNER_ORIGIN}/hooks/leads", "events": ["lead.created", "source.updated"]}`,
+      '',
+      '-> 201 {"id": "...", "url": "...", "events": [...], "secret": "whsec_..."}   // secret shown once: keep it',
+    ].join('\n'),
+    webhookBody: [
+      'POST <your url>',
+      'X-Lead-Capture-Event: lead.created',
+      'X-Lead-Capture-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256>',
+      '',
+      '{"id": "<event id>", "type": "lead.created", "occurredAt": "2026-11-18T03:20:05Z",',
+      ' "data": { <the same lead as in the pull, with its own id> }}',
     ].join('\n'),
     verify: [
       'import hashlib, hmac, time',

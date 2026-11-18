@@ -13,7 +13,7 @@ export interface CodeSampleProps {
 export function CodeSample({ code, testId }: CodeSampleProps) {
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   return (
-    <div data-testid={testId} className="relative min-w-0 rounded-lg border border-border bg-muted">
+    <div data-testid={testId} className="relative grid min-w-0 grid-cols-[minmax(0,1fr)] rounded-lg border border-border bg-muted">
       <pre className="overflow-x-auto p-3 pe-24 font-mono text-xs leading-relaxed text-foreground">
         <code>{code}</code>
       </pre>

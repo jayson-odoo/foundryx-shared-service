@@ -57,7 +57,22 @@ const POPUP_MESSAGES: ReadonlyArray<{ type: string; when: string }> = [
   { type: 'lead-capture:closed', when: 'Closed before the end. Has sourceId once a Page was connected.' },
 ];
 
-function Section({ eyebrow, title, children }: { eyebrow: string; title: string; children: React.ReactNode }) {
+export interface GuideSectionProps {
+  eyebrow: string;
+  title: string;
+  children: React.ReactNode;
+}
+
+export interface GuideTextProps {
+  children: React.ReactNode;
+}
+
+export interface StepShotProps {
+  step: CustomerStep;
+  number: number;
+}
+
+function Section({ eyebrow, title, children }: GuideSectionProps) {
   return (
     <Card>
       <CardContent className="flex flex-col gap-3">
@@ -69,15 +84,15 @@ function Section({ eyebrow, title, children }: { eyebrow: string; title: string;
   );
 }
 
-function Sub({ children }: { children: React.ReactNode }) {
+function Sub({ children }: GuideTextProps) {
   return <h3 className="mt-2 text-sm font-semibold text-foreground">{children}</h3>;
 }
 
-function Note({ children }: { children: React.ReactNode }) {
+function Note({ children }: GuideTextProps) {
   return <p className="text-sm text-muted-foreground">{children}</p>;
 }
 
-function Mono({ children }: { children: React.ReactNode }) {
+function Mono({ children }: GuideTextProps) {
   return <code className="rounded bg-muted px-1 font-mono text-xs text-foreground">{children}</code>;
 }
 
@@ -85,7 +100,7 @@ function pct(part: number, whole: number): string {
   return `${((part / whole) * 100).toFixed(2)}%`;
 }
 
-function StepShot({ step, number }: { step: CustomerStep; number: number }) {
+function StepShot({ step, number }: StepShotProps) {
   const shot = step.shot ? SHOTS[step.shot] : undefined;
   if (!shot) return null;
   return (
@@ -261,11 +276,15 @@ export function LeadCaptureGuide({ partnerName, apiBase, branding }: LeadCapture
 
             <Section eyebrow="Optional, later" title="Faster delivery and your own field names">
               <Sub>Instant push instead of every minute</Sub>
+              <Note>Register one backend URL. Keep the secret from the answer: it is shown only once.</Note>
+              <CodeSample testId="code-webhook" code={samples.webhook} />
               <Note>
-                Register one backend URL with <Mono>POST /webhooks</Mono>. Each lead is posted to it the moment it
-                arrives (same lead shape, same <Mono>id</Mono>), signed in the{' '}
-                <Mono>X-Lead-Capture-Signature: t=...,v1=...</Mono> header. Check it:
+                Each lead is then posted to it the moment it arrives, wrapped in an event. The lead is{' '}
+                <Mono>data</Mono>: save it on <Mono>data.id</Mono> (the same id the pull returns), never on the
+                event&apos;s own <Mono>id</Mono>, so push and pull never create the lead twice.
               </Note>
+              <CodeSample testId="code-webhook-body" code={samples.webhookBody} />
+              <Note>Check the signature with the secret over the raw body:</Note>
               <CodeSample testId="code-verify" code={samples.verify} />
               <Note>Answer any 2xx once the lead is saved. Retries run after 1 min, 5 min, 30 min, 2 h, 6 h, 24 h.</Note>
               <Sub>Your own field names</Sub>

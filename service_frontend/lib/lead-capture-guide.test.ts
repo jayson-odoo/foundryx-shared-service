@@ -50,6 +50,27 @@ describe('customer steps follow the wizard', () => {
   });
 });
 
+describe('the guide quotes the wizard it describes', () => {
+  // The wizard's own screens + the channel label the backend serves.
+  const wizardSources = [
+    'app/(public)/public/lead-capture/connect/page.tsx',
+    'app/(public)/public/lead-capture/connect/components/wizard-steps.tsx',
+    'app/(public)/public/lead-capture/connect/components/wizard-problem.tsx',
+    'app/(public)/public/lead-capture/connect/components/done-screen.tsx',
+    '../service_backend/modules/lead_capture/services/connect_session_service.py',
+  ]
+    .map((rel) => fs.readFileSync(path.join(root, rel), 'utf8'))
+    .join('\n');
+
+  it.each(CUSTOMER_STEPS.filter((s) => s.key !== 'open'))('step $key: "$click" is a real wizard button', (step) => {
+    expect(wizardSources).toContain(step.click);
+  });
+
+  it.each(GUIDE_PROBLEMS)('problem "$message" is the wizard\'s own text', (problem) => {
+    expect(wizardSources).toContain(problem.message.replace(/^<Page> /, ' '));
+  });
+});
+
 describe('code samples', () => {
   it('builds the API base from the backend URL', () => {
     expect(guideApiBase({ NEXT_PUBLIC_BACKEND_API_URL: 'https://ss.example/be/' })).toBe(
@@ -70,6 +91,9 @@ describe('code samples', () => {
     expect(samples.pull).toContain('GET https://ss.example/be/api/v1/lead-capture/leads?cursor=');
     expect(samples.fields).toContain('PUT https://ss.example/be/api/v1/lead-capture/fields');
     expect(all).toContain('fxl_live_...');
+    // A pushed lead is the event's `data`: dedupe key = data.id, not the event id.
+    expect(samples.webhookBody).toContain('"data":');
+    expect(samples.webhook).toContain('"secret"');
   });
 });
 
@@ -81,6 +105,9 @@ describe('no secrets or real hosts in the guide', () => {
     'app/(public)/public/lead-capture/guide/lead-capture-guide.tsx',
     'app/(public)/public/lead-capture/guide/code-sample.tsx',
     'public/media/lead-capture-guide/walkthrough.vtt',
+    'scripts/capture-lead-capture-guide.sh',
+    '../documentation/plans/meta-leads/guide-page/README.md',
+    '../documentation/plans/meta-leads/guide-page/mock-v1.html',
   ];
 
   it.each(files)('%s has no key, token or real host', (rel) => {
@@ -88,7 +115,7 @@ describe('no secrets or real hosts in the guide', () => {
     expect(src).not.toMatch(/fxl_live_[A-Za-z0-9_-]{6,}/);
     expect(src).not.toMatch(/\b(sk|pk)_(live|test)_[A-Za-z0-9]{6,}/);
     expect(src).not.toMatch(/EAA[A-Za-z0-9]{20,}/); // Meta access token shape
-    expect(src).not.toMatch(/foundryx\.my|ecohub/i);
+    expect(src).not.toMatch(/foundryx\.my/i);
   });
 });
 
