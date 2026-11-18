@@ -90,6 +90,12 @@ From the build:
 - **Undo by waiting:** the tenant windows stay (10 s deletes, 5 s otherwise, Settings > General); under the switch the countdown reads "Deleting 12 contacts in 8 s" with "Undo", and it does not pause under the pointer because the server's clock does not stop. Done toasts (`toast.fxDone`) keep the playbook's 6 s with a pause.
 - **The attention pulse keeps its 1.8 s under reduced motion** (the playbook says it is not decoration), so it names its own duration rather than the `--fx-t-pulse` token, which reduced motion stills.
 - **Keyboard focus slides an icon action's label out** (playbook) although SS's design language bans motion on a keyboard-initiated action; the playbook rule wins under the switch, and reduced motion still stops it.
+- **Header search and filters run on the server**, so a column gets one only where its list already declares that field filterable: text searches (contains), date ranges (whole days, both ends) and status ticks. Status ticks show no counts and number or amount columns get no range, because the list API returns neither counts per value nor number ranges (its range filter takes dates only). A column with nothing to filter sorts when its header is clicked.
+- **"Showing 51-100 of 12,340"** uses a hyphen, not the playbook's en dash (SS bans en dashes in every tracked file).
+- **Lists under the switch keep the page and filters in the address** (`ctx`) whenever the list owns its page; an embedded list never writes the record's own `ctx`. With the switch off only lists that opted in do, as before.
+- **Smart view never shortens a value:** long values wrap inside their capped width (no two-line limit, since a clamp would add the "..." the playbook bans). Lists that reorder their rows by dragging keep today's table (the toggle and moving columns would fight the row order). Hand-resizing columns is off under the switch; the widths come from the content.
+- **Dragging a header** moves the header row live and the column's cells on drop; the Columns panel drags on touch after a short press anywhere on the row rather than only from the grip, so a quick swipe still scrolls the list.
+- **View and column choices are stored with the user's other list preferences** (new keys next to the list's own), so they follow the person across devices, unlike the per-browser switch.
 
 ## Mocks
 
