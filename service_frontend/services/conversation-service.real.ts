@@ -268,7 +268,11 @@ export const realConversationService: ConversationService = {
     return apiFetch<LifecycleMove[]>(`/omnichannel/contacts/${contactId}/lifecycle-moves`);
   },
 
-  subscribe(workspaceId, handler: (event: ConversationSocketEvent) => void) {
+  subscribe(
+    workspaceId,
+    handler: (event: ConversationSocketEvent) => void,
+    onConnectionChange?: (connected: boolean) => void,
+  ) {
     let socket: WebSocket | null = null;
     let stopped = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -292,6 +296,7 @@ export const realConversationService: ConversationService = {
       );
       socket.onopen = () => {
         authRetries = 0; // a successful connect clears the auth-retry budget
+        onConnectionChange?.(true);
       };
       socket.onmessage = (e) => {
         try {
@@ -303,6 +308,7 @@ export const realConversationService: ConversationService = {
       socket.onclose = (e) => {
         socket = null;
         if (stopped) return;
+        onConnectionChange?.(false);
         if (e.code === 4403) {
           // Genuine permission denial stops after a few tries; a refreshed
           // token on the next attempt recovers an expired-token close.
