@@ -26,6 +26,7 @@ import { SettingsProvider } from '@/providers/settings-provider';
 import { resetPageActionsForTests } from '@/components/fx/actions/page-actions-context';
 import MigrationJobDetailPage from './[jobId]/page';
 import { MIGRATION_JOBS } from './components/migration-fixture.test-data';
+import { ScopeSection } from './components/migration-form-sections';
 import { MigrationFormView } from './components/migration-form-view';
 import {
   fxMigrationCount,
@@ -320,5 +321,27 @@ describe('starting a migration: the same requests in both looks', () => {
       'run',
     ]);
     expect(on).toEqual(off);
+  });
+});
+
+describe('the scope switch is named under the new look only', () => {
+  it('adds the name with the switch on and nothing with it off', () => {
+    const props = {
+      contactsOnly: false,
+      messagesSince: null,
+      editing: true,
+      onChange: vi.fn(),
+    };
+    const off = render(<ScopeSection {...props} />, { wrapper: look(false) });
+    expect(off.container.querySelector('[role="switch"]')).not.toHaveAttribute(
+      'aria-label',
+    );
+    off.unmount();
+    render(<ScopeSection {...props} />, { wrapper: look(true) });
+    expect(
+      screen.getByRole('switch', {
+        name: 'Contacts only (skip message history)',
+      }),
+    ).toBeInTheDocument();
   });
 });

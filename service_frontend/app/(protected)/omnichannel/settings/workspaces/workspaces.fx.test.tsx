@@ -16,11 +16,13 @@ import {
   screen,
   waitFor,
 } from '@testing-library/react';
+import { useForm } from 'react-hook-form';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiKeyItem } from '@/types/api-keys';
 import type { Workspace } from '@/types/omnichannel';
 import { FX_DEFAULT_THEME } from '@/lib/fx/cookies';
 import { FxProvider } from '@/providers/fx-provider';
+import { Form } from '@/components/ui/form';
 import { resetPageActionsForTests } from '@/components/fx/actions/page-actions-context';
 import { fxMintLabel } from './components/fx-mint-api-key-dialog';
 import { fxRevokeLine } from './components/fx-revoke-api-key-dialog';
@@ -29,6 +31,7 @@ import { RevokeApiKeyDialog } from './components/revoke-api-key-dialog';
 import { useApiKeyList } from './components/use-api-key-list';
 import { useWorkspaceActions } from './components/use-workspace-actions';
 import { useWorkspaceForm } from './components/use-workspace-form';
+import { SettingsTab } from './components/workspace-form-fields';
 
 const net = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('@/lib/api-client', async (orig) => {
@@ -432,5 +435,34 @@ describe('workspace record: the same requests in both looks', () => {
     expect(trash(on.result.current).deferred?.entityType).toBe('workspace');
     expect(trash(on.result.current).deferred?.fxName?.([WS])).toBe('General');
     expect(trash(on.result.current).confirm).toBeUndefined();
+  });
+});
+
+describe('workspace settings fields are named under the new look only', () => {
+  function Fields() {
+    const form = useForm<{ name: string; status: 'ACTIVE' | 'INACTIVE' }>({
+      defaultValues: { name: 'General', status: 'ACTIVE' },
+    });
+    return (
+      <Form {...form}>
+        <SettingsTab form={form} editing creating={false} workspace={WS} />
+      </Form>
+    );
+  }
+
+  it('adds the names with the switch on and nothing with it off', () => {
+    const off = render(<Fields />, { wrapper: look(false) });
+    expect(
+      off.container.querySelector('[aria-label="Workspace name"]'),
+    ).toBeNull();
+    expect(off.container.querySelector('[aria-label="Status"]')).toBeNull();
+    off.unmount();
+    render(<Fields />, { wrapper: look(true) });
+    expect(screen.getByRole('textbox', { name: 'Workspace name' })).toHaveValue(
+      'General',
+    );
+    expect(
+      screen.getByRole('combobox', { name: 'Status' }),
+    ).toBeInTheDocument();
   });
 });
