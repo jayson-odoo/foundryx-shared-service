@@ -8,7 +8,7 @@
  */
 import type { WizardConsumerField, WizardPage, WizardQuestion } from '@/types/lead-capture-wizard';
 
-export type WizardStepKey = 'channel' | 'signin' | 'page' | 'forms' | 'fields' | 'test';
+export type WizardStepKey = 'channel' | 'signin' | 'page' | 'forms' | 'fields' | 'test' | 'copy';
 
 export interface WizardStepDef {
   key: WizardStepKey;
@@ -27,6 +27,26 @@ export const WIZARD_STEPS: readonly WizardStepDef[] = [
   { key: 'test', label: 'Test', question: 'Send a test lead' },
 ];
 
+/** Google Ads lead forms, guided path (card 68a R9): the person pastes our
+ * URL + key into the Google Ads form, Google's "Send test data" passes Test,
+ * and the Fields step maps the columns that test lead carried. */
+export const GOOGLE_STEPS: readonly WizardStepDef[] = [
+  WIZARD_STEPS[0],
+  { key: 'copy', label: 'Copy', question: 'Paste these into your Google Ads lead form' },
+  { key: 'test', label: 'Test', question: 'Send test data from Google Ads' },
+  { key: 'fields', label: 'Fields', question: 'Where does each answer go?' },
+];
+
+/** The steps of the chosen channel (Facebook until one is chosen). */
+export function stepsFor(channel: string | null | undefined): readonly WizardStepDef[] {
+  return channel === 'google' ? GOOGLE_STEPS : WIZARD_STEPS;
+}
+
+export interface GuidedSecret {
+  url: string;
+  key: string;
+}
+
 export type FormsChoice = 'all' | 'pick';
 
 export interface WizardState {
@@ -41,6 +61,11 @@ export interface WizardState {
   formsSaved: boolean;
   fieldsSaved: boolean;
   testPassed: boolean;
+  /** Google: the inbound URL + key, held only in this tab. */
+  guided: GuidedSecret | null;
+  copiedUrl: boolean;
+  copiedKey: boolean;
+  copyConfirmed: boolean;
 }
 
 export const INITIAL_WIZARD_STATE: WizardState = {
@@ -54,6 +79,10 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   formsSaved: false,
   fieldsSaved: false,
   testPassed: false,
+  guided: null,
+  copiedUrl: false,
+  copiedKey: false,
+  copyConfirmed: false,
 };
 
 /** Has this step got its answer? */
@@ -71,6 +100,8 @@ export function isAnswered(step: WizardStepKey, s: WizardState): boolean {
       return s.fieldsSaved;
     case 'test':
       return s.testPassed;
+    case 'copy':
+      return s.copyConfirmed;
     default:
       return false;
   }
@@ -78,7 +109,7 @@ export function isAnswered(step: WizardStepKey, s: WizardState): boolean {
 
 /** The first step still waiting for an answer; null = every step answered. */
 export function currentStep(s: WizardState): WizardStepKey | null {
-  const step = WIZARD_STEPS.find((d) => !isAnswered(d.key, s));
+  const step = stepsFor(s.channel).find((d) => !isAnswered(d.key, s));
   return step ? step.key : null;
 }
 
@@ -86,7 +117,7 @@ export function currentStep(s: WizardState): WizardStepKey | null {
 export function visibleSteps(s: WizardState): WizardStepDef[] {
   const current = currentStep(s);
   const out: WizardStepDef[] = [];
-  for (const def of WIZARD_STEPS) {
+  for (const def of stepsFor(s.channel)) {
     out.push(def);
     if (def.key === current) break;
   }
@@ -95,8 +126,9 @@ export function visibleSteps(s: WizardState): WizardStepDef[] {
 
 /** 0..100 for the progress bar. */
 export function progressPercent(s: WizardState): number {
-  const done = WIZARD_STEPS.filter((d) => isAnswered(d.key, s)).length;
-  return Math.round((done / WIZARD_STEPS.length) * 100);
+  const steps = stepsFor(s.channel);
+  const done = steps.filter((d) => isAnswered(d.key, s)).length;
+  return Math.round((done / steps.length) * 100);
 }
 
 export interface FoldedAnswer {
@@ -134,6 +166,8 @@ export function answerLabel(
       return { text: 'Mapped' };
     case 'test':
       return { text: 'Test lead received' };
+    case 'copy':
+      return { text: 'Copied' };
     default:
       return null;
   }
@@ -151,6 +185,9 @@ export function blockReason(step: WizardStepKey, s: WizardState): string | null 
       return s.channel ? null : 'Pick a channel.';
     case 'page':
       return s.pageId ? null : 'Pick a Page.';
+    case 'copy':
+      if (!s.guided) return 'Show the URL and key first.';
+      return s.copiedUrl && s.copiedKey ? null : 'Copy the URL and the key first.';
     case 'forms':
       if (!s.formsMode) return 'Choose which forms.';
       if (s.formsMode === 'pick' && s.formIds.length === 0) return 'Tick at least one form.';
@@ -204,7 +241,10 @@ const STANDARD_TARGETS: Record<string, string[]> = {
   FIRST_NAME: ['first_name', 'firstName', 'name'],
   LAST_NAME: ['last_name', 'lastName'],
   EMAIL: ['email'],
+  WORK_EMAIL: ['email'],
   PHONE: ['phone', 'phone_number', 'mobile'],
+  PHONE_NUMBER: ['phone', 'phone_number', 'mobile'],
+  WORK_PHONE: ['phone', 'phone_number', 'mobile'],
 };
 const NOTES_KEYS = ['notes', 'note', 'remarks'];
 
