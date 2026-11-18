@@ -24,6 +24,8 @@ import { EMOJI_GROUPS } from '@/lib/emoji';
 import { cn } from '@/lib/utils';
 import type { ConversationMessage, DeliveryStatus, ReplyRef } from '@/types/omnichannel';
 
+import { useFx } from '@/hooks/use-fx';
+import { FxMessageBubble } from './fx/fx-message-bubble';
 import { MessageMedia, isMediaMessage } from './message-media';
 import { MessageStructured, isStructuredMessage } from './message-structured';
 
@@ -44,7 +46,7 @@ export interface MessageBubbleProps {
 }
 
 /** Quick-react palette (WhatsApp's six). */
-const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+export const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 /** Aggregated emoji → count chip row under a bubble. */
 function ReactionChips({
@@ -132,7 +134,7 @@ function QuotedBlock({ replyTo, contactName }: { replyTo: ReplyRef; contactName?
   );
 }
 
-async function copyText(text: string): Promise<void> {
+export async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -140,14 +142,18 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-function messageLink(message: ConversationMessage): string {
+export function messageLink(message: ConversationMessage): string {
   const url = new URL(window.location.href);
   url.searchParams.set('thread', message.contactId);
   url.searchParams.set('msg', message.id);
   return url.toString();
 }
 
-export function MessageBubble({
+export function MessageBubble(props: MessageBubbleProps) {
+  return useFx() ? <FxMessageBubble {...props} /> : <MessageBubbleLegacy {...props} />;
+}
+
+function MessageBubbleLegacy({
   message,
   contactName,
   onReply,
