@@ -42,6 +42,8 @@ Status: **built** after owner OK on mock v2 (18 Nov 17:04). Page: `service_front
 | Error "already connected" -> choose another | Button text **Choose another Page**; leads-access -> **Check again** + "Open Meta Business settings" | `connect/components/wizard-problem.tsx:22-41` |
 | (missing) | "This Page has no lead forms yet" + **Check again**; "This link has expired" | `wizard-steps.tsx:128-149`, `connect/page.tsx:68-75` |
 | connect-sessions body | also optional `sourceId` (reopen for Reconnect / new fields) | `schemas.py:221-223`, `gateway.py:275-293` |
+| Push: "same lead shape, same id" | The push body is an event envelope `{id: <event id>, type, occurredAt, data: <Lead>}`: dedupe on `data.id`; `POST /webhooks` returns `secret` once | `consumer-integration-guide.md:395-397,444`, `schemas.py:147-148` |
+| Channel button "Facebook Page" | The channel card reads **Facebook** | `connect_session_service.py:350` |
 | `/be/api/v1/...` | gateway mounts at `/api/v1/lead-capture`; `/be` is the production proxy prefix | `manifest.json` routers, `DEPLOY.md:78` |
 
 ## Screenshots + video (re-generate when the wizard changes)
@@ -63,3 +65,9 @@ partner backend does, then drives the real wizard with real mouse clicks. It wri
 `walkthrough.vtt` (captions), plus `lib/lead-capture-guide-shots.json` (each step's button box, drawn as the
 numbered ring). At the end it disconnects the capture tenant's source, so the simulated Page is free for the next
 run. Local stack only: it never needs or touches a real key. Playwright is not used (retired, `AGENTS.md:37`).
+
+## Evidence
+
+`evidence/guide-{developers,customer}-{1280,375}.png`: agent-browser full-page captures of the rebuilt frontend.
+At both widths: no horizontal scroll, no "Foundryx" text, 8 code blocks, 9 step cards, 8/8 screenshots loaded,
+Copy shows "Copied". The video plays with its captions track showing. No `fxl_live_<secret>` pattern in `.next`.

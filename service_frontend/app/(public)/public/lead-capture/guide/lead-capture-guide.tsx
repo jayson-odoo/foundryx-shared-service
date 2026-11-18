@@ -314,6 +314,7 @@ export function LeadCaptureGuide({ partnerName, apiBase, branding }: LeadCapture
             <video
               controls
               preload="metadata"
+              poster={SHOTS.channel ? `/${SHOTS.channel.file}` : undefined}
               className="aspect-video w-full rounded-xl border border-border bg-muted"
               aria-label="Walkthrough of the Connect window"
             >
@@ -321,7 +322,7 @@ export function LeadCaptureGuide({ partnerName, apiBase, branding }: LeadCapture
               <track kind="captions" src={`/${shots.captions}`} srcLang="en" label="English" default />
             </video>
 
-            <ol className="grid gap-4 sm:grid-cols-2">
+            <ol className="grid items-start gap-4 sm:grid-cols-2">
               {steps.map((step, i) => (
                 <li key={step.key} className="flex flex-col overflow-hidden rounded-xl border border-border bg-card">
                   <StepShot step={step} number={i + 1} />
