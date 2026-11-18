@@ -103,6 +103,9 @@ export function useTenantForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<TenantListItem> | null>(() => {
     if (isLoading || notFound) return null;
 
@@ -197,7 +200,7 @@ export function useTenantForm(
       editable: !creating,
       editPermission: 'tenants.update',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: creating
@@ -205,6 +208,7 @@ export function useTenantForm(
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
+    formDirty,
     isLoading,
     notFound,
     creating,

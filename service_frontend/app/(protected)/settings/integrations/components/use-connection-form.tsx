@@ -161,6 +161,9 @@ export function useConnectionForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<Connection> | null>(() => {
     if (isLoading || notFound) return null;
 
@@ -219,7 +222,7 @@ export function useConnectionForm(
       editable: !creating,
       editPermission: 'integrations.manage',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel: () => {
         if (creating) {
@@ -234,6 +237,7 @@ export function useConnectionForm(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    formDirty,
     isLoading,
     notFound,
     creating,

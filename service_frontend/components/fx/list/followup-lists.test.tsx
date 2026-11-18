@@ -222,11 +222,15 @@ describe('FX-13 amounts and status', () => {
     expect(box.className).toContain('text-end');
   });
 
-  it('status columns (pure)', () => {
-    expect(Array.from(fxStatusColumnIds({ a: 'status', b: 'text' }, { c: 'status', d: 'date' }))).toEqual([
-      'a',
-      'c',
+  it('status columns (pure): a declared status column is the only one; inferred only when none is declared', () => {
+    // Users: Roles and Status both have dropdown filters; the page declares Status.
+    expect(Array.from(fxStatusColumnIds({ roles: 'status', status: 'status' }, { status: 'status' }))).toEqual([
+      'status',
     ]);
+    expect(Array.from(fxStatusColumnIds({ a: 'status', b: 'text' }, { c: 'status', d: 'date' }))).toEqual(['c']);
+    // Nothing declared: today's inference.
+    expect(Array.from(fxStatusColumnIds({ a: 'status', b: 'text' }, { d: 'date' }))).toEqual(['a']);
+    expect(Array.from(fxStatusColumnIds({ a: 'status', b: 'status' }, undefined))).toEqual(['a', 'b']);
     expect(Array.from(fxStatusColumnIds({ a: null }, undefined))).toEqual([]);
   });
 });
