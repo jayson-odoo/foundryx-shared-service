@@ -2,8 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import type { FilterGroup, ListQuery, ListResult, SortState, StatusView } from '@/types/resource';
+import type {
+  FilterFieldDef,
+  FilterGroup,
+  ListQuery,
+  ListResult,
+  SortState,
+  StatusView,
+} from '@/types/resource';
 import { decodeListQuery } from '@/lib/list-context';
+import { momentDateFields, toServerDateFilter } from '@/lib/date-filter';
 import { useDebounce } from './use-debounce';
 
 export interface UseResourceListOptions<T> {
@@ -25,11 +33,23 @@ export interface UseResourceListOptions<T> {
    * exactly this reason.
    */
   restoreFromCtx?: boolean;
+  /**
+   * The list's filter fields and the user's zone: day filters on moment
+   * fields go to the server as that zone's local days (`lib/date-filter.ts`).
+   * Without them the filter is sent as held.
+   */
+  filterFields?: FilterFieldDef[];
+  timeZone?: string;
 }
 
 export interface UseResourceListResult<T> {
-  /** The live query (search reflects the DEBOUNCED value) - used for export + record-nav ctx. */
+  /** The live query (search reflects the DEBOUNCED value) - used for record-nav ctx. */
   query: ListQuery;
+  /**
+   * `query` as the server gets it (day filters on moments as local-day
+   * instants): what the fetcher was called with, and what export sends.
+   */
+  serverQuery: ListQuery;
   /**
    * The query that produced the CURRENT `data` (AC-DLA-15/32, T2 half).
    * While a refetch is in flight `query` has already advanced (new page/
@@ -85,6 +105,8 @@ export function useResourceList<T>({
   defaultSort = null,
   defaultSegment,
   restoreFromCtx = false,
+  filterFields,
+  timeZone,
 }: UseResourceListOptions<T>): UseResourceListResult<T> {
   const searchParams = useSearchParams();
   // Lazy initializer runs exactly once, at mount - the whole point (a later
@@ -122,6 +144,14 @@ export function useResourceList<T>({
     [page, pageSize, debouncedSearch, sort, filter, statusView, segment],
   );
 
+  // A stable key for the moment fields, so a config rebuilt on each render
+  // never re-fetches.
+  const momentKey = momentDateFields(filterFields).join('\n');
+  const serverQuery = useMemo<ListQuery>(() => {
+    if (!timeZone || !momentKey || !query.filter) return query;
+    return { ...query, filter: toServerDateFilter(query.filter, momentKey.split('\n'), timeZone) };
+  }, [query, momentKey, timeZone]);
+
   // The query that produced the rows CURRENTLY in `data` - starts equal to
   // the first query, only ever reassigned once a fetch for a NEWER query
   // resolves (see the effect below). Never read `query` for "which page are
@@ -150,7 +180,7 @@ export function useResourceList<T>({
     // empty/wrong-page result and flashing (or sticking on) "No records".
     let clamping = false;
     setIsLoading(true);
-    fetcher(query)
+    fetcher(serverQuery)
       .then((result) => {
         if (!active) return;
         if (query.page > 0 && query.pageSize > 0 && query.page * query.pageSize >= result.total) {
@@ -182,7 +212,7 @@ export function useResourceList<T>({
     return () => {
       active = false;
     };
-  }, [fetcher, query, reloadKey]);
+  }, [fetcher, query, serverQuery, reloadKey]);
 
   const isPlaceholderData = isLoading && data.length > 0;
 
@@ -196,6 +226,7 @@ export function useResourceList<T>({
 
   return {
     query,
+    serverQuery,
     loadedQuery,
     data,
     total,

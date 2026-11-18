@@ -59,6 +59,11 @@ export function mimeLabel(mime: string): string {
 
 export type CapValues = Record<keyof OmnichannelSettingsOverrides, string>;
 
+/** A typed size above the Meta ceiling: what the page says instead of saving. */
+export function mediaCapTooLargeMessage(label: string, ceilingMb: string): string {
+  return `${label} can be at most ${ceilingMb} MB.`;
+}
+
 /** Seed the MB-string inputs from the stored byte overrides (null → blank). */
 export function seedValues(settings: OmnichannelSettings): CapValues {
   const seed = {} as CapValues;
@@ -133,7 +138,15 @@ function MediaCapsFormLegacy() {
         return;
       }
       const ceiling = settings.effective[cap.effectiveKind].ceilingBytes;
-      payload[cap.overrideKey] = Math.min(mbToBytes(mb), ceiling);
+      const bytes = mbToBytes(mb);
+      // Above the most allowed: say so and save nothing, never a smaller
+      // number than the one typed. The ceiling as shown ("0.49" for 500 KB)
+      // is the ceiling itself.
+      if (bytes > ceiling && formatMb(bytes) !== formatMb(ceiling)) {
+        toast.error(mediaCapTooLargeMessage(cap.label, formatMb(ceiling)));
+        return;
+      }
+      payload[cap.overrideKey] = Math.min(bytes, ceiling);
     }
     try {
       await save(payload);

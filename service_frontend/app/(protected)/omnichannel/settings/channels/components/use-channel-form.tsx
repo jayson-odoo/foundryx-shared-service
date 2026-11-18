@@ -158,6 +158,9 @@ export function useChannelForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<Channel> | null>(() => {
     if (isLoading || notFound) return null;
 
@@ -367,7 +370,7 @@ export function useChannelForm(
       editable: true,
       editPermission: 'channels.manage',
       initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       onReload: reloadChannel,
@@ -384,6 +387,7 @@ export function useChannelForm(
   }, [
     fx,
     byWhom,
+    formDirty,
     isLoading,
     notFound,
     channel,

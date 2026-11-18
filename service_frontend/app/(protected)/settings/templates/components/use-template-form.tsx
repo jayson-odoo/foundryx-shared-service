@@ -260,6 +260,9 @@ export function useTemplateForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<Template> | null>(() => {
     if (!isNew && !template) return null;
     const mergeFields = activeContext?.facts ?? [];
@@ -333,7 +336,7 @@ export function useTemplateForm(
       editable: true,
       editPermission: 'templates.manage',
       initialEditing: isNew ? true : initialEditing,
-      isDirty: docDirty || form.formState.isDirty,
+      isDirty: docDirty || formDirty,
       onSave,
       onCancel,
       // House Form invariant: circular N / M prev-next record-nav (?ctx=&i=).
@@ -342,6 +345,7 @@ export function useTemplateForm(
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
+    formDirty,
     actions,
     activeContext,
     contexts,
