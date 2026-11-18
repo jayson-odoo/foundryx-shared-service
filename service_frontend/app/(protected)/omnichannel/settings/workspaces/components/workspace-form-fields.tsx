@@ -30,6 +30,7 @@ import { CHANNEL_STATUS_REGISTRY } from '../../channels/components/channel-statu
 import { channelFormPath } from '../../channels/components/paths';
 import { WORKSPACE_STATUS_REGISTRY, WORKSPACE_STATUSES } from './workspace-status';
 import type { WorkspaceFormValues } from './workspace-schema';
+import { useFx } from '@/hooks/use-fx';
 
 function Initials({ name, email }: { name: string | null; email: string }) {
   const initials = (name || email).trim().slice(0, 2).toUpperCase();
@@ -51,6 +52,9 @@ export interface WorkspaceTabProps {
 
 export function SettingsTab({ form, editing, creating, workspace }: WorkspaceTabProps) {
   const { formatDate } = useDatetime();
+  // Foundryx UIUX switch only: name the two fields after their row labels
+  // (nothing is added while off).
+  const fx = useFx();
   return (
     <Card>
       <CardContent className="py-1">
@@ -62,7 +66,11 @@ export function SettingsTab({ form, editing, creating, workspace }: WorkspaceTab
               render={({ field }) => (
                 <FormItem className="max-w-sm">
                   <FormControl>
-                    <Input placeholder="e.g. Sales & Support" {...field} />
+                    <Input
+                      placeholder="e.g. Sales & Support"
+                      aria-label={fx ? 'Workspace name' : undefined}
+                      {...field}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -89,7 +97,7 @@ export function SettingsTab({ form, editing, creating, workspace }: WorkspaceTab
                 <FormItem className="max-w-[200px]">
                   <Select value={field.value} onValueChange={field.onChange}>
                     <FormControl>
-                      <SelectTrigger>
+                      <SelectTrigger aria-label={fx ? 'Status' : undefined}>
                         <SelectValue />
                       </SelectTrigger>
                     </FormControl>

@@ -14,6 +14,7 @@ import type {
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { QuickReply } from '@/types/omnichannel';
 import { toCsv } from '@/lib/csv';
+import { fxQuickReplyName } from './quick-reply-fx';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -68,7 +69,11 @@ export function useQuickRepliesListConfig(
         // 15) - no confirm, no `run` (the registered `quick_replies.delete`
         // handler commits it server-side - it resolves the owning workspace
         // from the quick-reply row itself, so `entityId` stays its bare id).
-        deferred: { actionKey: 'quick_replies.delete', entityType: 'quick_reply' },
+        deferred: {
+          actionKey: 'quick_replies.delete',
+          entityType: 'quick_reply',
+          fxName: (rows) => (rows.length === 1 ? fxQuickReplyName(rows[0]) : undefined),
+        },
       },
     ];
 
@@ -164,6 +169,13 @@ export function useQuickRepliesListConfig(
         { id: 'body', label: 'Message' },
       ],
       actions,
+      // Foundryx UIUX switch only (slice W2-WS); ignored while off.
+      fx: {
+        noun: 'quick replies',
+        iconFor: { edit: 'edit', delete: 'trash' },
+        copyable: ['shortcut', 'body'],
+        cardLines: [['shortcut'], ['body']],
+      },
     };
   }, [items, onCreate, onEdit, pathname]);
 }
