@@ -28,7 +28,8 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
  * product is the red action; Edit and Delete as icon actions; Hold to Copy on
  * SKU and price; phone cards show price and status, then SKU and kind. The
  * price column gets no header amount range: the products list API filters
- * nothing but its search.
+ * nothing but its search. Prices stay start-aligned: the list shell has no
+ * way yet to end-align a column's header with its cells.
  */
 const FX_PRODUCTS: FxListConfig<Product> = {
   mainActionId: 'create',
@@ -161,7 +162,7 @@ export function useProductsListConfig(handlers: {
         header: () => 'Price',
         cell: ({ row }) =>
           fx ? (
-            <span className="block text-end text-sm tabular-nums text-(--fx-ink)">
+            <span className="text-sm tabular-nums text-(--fx-ink)">
               {formatMoneyFx(row.original.defaultPrice, row.original.currency)}
             </span>
           ) : (
