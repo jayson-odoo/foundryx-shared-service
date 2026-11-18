@@ -24,6 +24,7 @@ import type {
 } from '@/components/platform/resource-list/types';
 import { ConfirmActionDialog } from './confirm-action-dialog';
 import { deferredToast, dismissDeferredToast } from './deferred-toast';
+import { runResourceAction } from './run-action';
 
 export interface ActionMenuProps<T> {
   actions: ResourceAction<T>[];
@@ -175,7 +176,7 @@ export function ActionMenu<T>({
       await parkDeferred(action, entityIds);
       return;
     }
-    await action.run(rows, runtime);
+    await runResourceAction(action, rows, runtime);
   }
 
   async function parkDeferred(
@@ -206,6 +207,7 @@ export function ActionMenu<T>({
           windowSeconds,
           count: parkedIds.length > 1 ? parkedIds.length : undefined,
           noun: parkedIds.length > 1 ? entityNoun(entityType, parkedIds.length) : undefined,
+          fxName: parkedIds.length === 1 ? action.deferred.fxName?.(rows) : undefined,
           onCancel: () => {
             void deferred.cancel();
             untrackPendingEntities(parkedIds);

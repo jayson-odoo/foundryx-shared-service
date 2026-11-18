@@ -21,6 +21,7 @@ import {
 } from '@/lib/money';
 import { FX_FIELD_BOX, FX_FIELD_INNER, FX_FIELD_SIZE, type FxFieldSize } from './classes';
 import { FxFieldMessage } from './fx-input';
+import { FxFieldContext, fxControlName, useFxFieldIds } from './fx-field-context';
 import { FxSearchSelect } from './fx-search-select';
 
 export const FX_MONEY_HINT = 'Enter an amount, like 14,000.00';
@@ -95,11 +96,26 @@ export function FxMoneyField({
 
   const shown = error ?? message;
   const label = fxCurrencyLabel(currency);
+  // Inside a labelled FxField the amount takes the field's id and label;
+  // the currency picker keeps its own name.
+  const field = useFxFieldIds();
+  const naming = field
+    ? fxControlName(
+        {
+          id,
+          ariaLabel: aria['aria-label'] ? `${aria['aria-label']} (${label})` : undefined,
+          ariaLabelledBy: aria['aria-labelledby'],
+          ariaDescribedBy: shown ? messageId : undefined,
+        },
+        field,
+      )
+    : null;
 
   return (
     <div className={cn('relative', className)}>
       <div className={cn(FX_FIELD_BOX, FX_FIELD_SIZE[size], 'gap-2', currencies && 'ps-1')} data-fx-field="">
         {currencies && onCurrencyChange ? (
+          <FxFieldContext.Provider value={null}>
           <FxSearchSelect
             ariaLabel="Currency"
             value={(currency ?? '').toUpperCase() || 'MYR'}
@@ -112,6 +128,7 @@ export function FxMoneyField({
             }))}
             className="h-[calc(100%-6px)] w-auto shrink-0 gap-1 rounded-(--fx-r-s) border-0 bg-(--fx-surface-2) px-2 text-(--fx-ink-2) shadow-none enabled:hover:translate-y-0 enabled:hover:shadow-none"
           />
+          </FxFieldContext.Provider>
         ) : (
           <span className="shrink-0 text-(--fx-ink-3)" aria-hidden="true">
             {label}
@@ -129,6 +146,7 @@ export function FxMoneyField({
           aria-describedby={shown ? messageId : undefined}
           aria-label={aria['aria-label'] ? `${aria['aria-label']} (${label})` : undefined}
           aria-labelledby={aria['aria-labelledby']}
+          {...naming}
           onChange={(e) => {
             setEditing(true);
             setText(e.target.value);

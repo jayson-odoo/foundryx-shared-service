@@ -27,7 +27,7 @@
  *   actions as icon actions, Export and ×; floating at the lower edge on
  *   phones;
  * - the empty, nothing-matches, couldn't-load and no-access states
- *   (`FxListState`), smaller inside a record's tab;
+ *   (`FxListState`), smaller inside a record's tab (`fx.compactStates`);
  * - phone cards under 720px (`FxPhoneCards`), the view toggle hidden;
  * - Hold to Copy on the page's copyable columns (`config.fx.copyable`);
  * - the export panel's words (`ExportDialog` with the switch on).
@@ -73,7 +73,12 @@ import { FilterBuilder } from '@/components/platform/resource-list/filter-builde
 import type { ResourceListProps } from '@/components/platform/resource-list/resource-list';
 import type { FxColumnKind } from '@/components/platform/resource-list/types';
 import { FxIconAction, FxIconActionButton } from '@/components/fx/actions/icon-action';
-import { useRegisterMainAction, type FxMainActionSpec } from '@/components/fx/actions/page-actions-context';
+import {
+  useRegisterMainAction,
+  useRegisterOtherActions,
+  type FxMainActionSpec,
+  type FxOtherActionSpec,
+} from '@/components/fx/actions/page-actions-context';
 import { FxTooltip } from '@/components/fx/fx-tooltip';
 import type { FilterGroup } from '@/types/resource';
 import { FxColumnsPanel } from './fx-columns-panel';
@@ -82,6 +87,7 @@ import { FxListHeaderContext, type FxHeaderKind, type FxListHeaderContextValue }
 import {
   combineFilters,
   fxHeaderFilterKind,
+  fxStatusColumnIds,
   splitFilters,
   type FxHeaderFilters,
   type FxHeaderValue,
@@ -89,6 +95,9 @@ import {
 import { FxPager } from './fx-pager';
 import { FxListState, fxListStateKind } from './fx-list-state';
 import { FxSelectionBar } from './fx-selection-bar';
+
+const NO_OTHERS: FxOtherActionSpec[] = [];
+const NO_IDS: string[] = [];
 
 /** Phones show cards (playbook "Responsive": 720px and below). */
 export const FX_PHONE_QUERY = '(max-width: 719px)';
@@ -380,8 +389,8 @@ export function FxResourceList<T extends object>({
   const copyable = useMemo(() => new Set(config.fx?.copyable ?? []), [config.fx?.copyable]);
   const phoneHidden = useMemo(() => new Set(config.fx?.phoneHidden ?? []), [config.fx?.phoneHidden]);
   const statusIds = useMemo(
-    () => new Set(Object.entries(kinds).filter(([, k]) => k === 'status').map(([id]) => id)),
-    [kinds],
+    () => fxStatusColumnIds(kinds, config.fx?.columnKind),
+    [kinds, config.fx?.columnKind],
   );
 
   const defaultSort = config.defaultSort ?? null;
@@ -518,7 +527,7 @@ export function FxResourceList<T extends object>({
   const stateNode: ReactNode = stateKind ? (
     <FxListState
       kind={stateKind}
-      compact={Boolean(hideHeader)}
+      compact={Boolean(config.fx?.compactStates)}
       noun={noun}
       title={config.pageTitle ?? cap(noun)}
       canCreate={Boolean(config.onCreate) && (!config.createPermission || can(config.createPermission))}
@@ -541,9 +550,14 @@ export function FxResourceList<T extends object>({
     if (list.total > list.data.length) setAllMatching(true);
   };
 
-  // --- the red action: the list's own Create, unless the page names another
+  // --- the red action: the list's own Create, unless the page names another.
+  // A list without its own header hands it to the page header only when the
+  // page asks (`fx.createInPageHeader`, FX-17).
   const mayCreate = Boolean(config.onCreate) && (!config.createPermission || can(config.createPermission));
-  const createIsMain = !hideHeader && mayCreate && (config.fx?.mainActionId ?? 'create') === 'create';
+  const createIsMain =
+    (!hideHeader || config.fx?.createInPageHeader === true) &&
+    mayCreate &&
+    (config.fx?.mainActionId ?? 'create') === 'create';
   const createLabel = config.createLabel ?? 'Create';
   const fullLabel = config.fx?.fullLabel;
   const onCreate = config.onCreate;
@@ -560,6 +574,8 @@ export function FxResourceList<T extends object>({
     [createIsMain, onCreate, createLabel, fullLabel, selectedRows],
   );
   useRegisterMainAction(mainSpec);
+  // The page's More list (FX-16): header Other Actions named here sit in More.
+  useRegisterOtherActions(NO_OTHERS, config.fx?.moreActionIds ?? NO_IDS);
 
   const listStyle = { '--fx-page-head-h': `${pageHeadH}px` } as CSSProperties;
   const showToggle = viewsOn && !config.rowReorder && !phone;

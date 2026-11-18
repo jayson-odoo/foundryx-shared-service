@@ -1,7 +1,8 @@
 'use client';
 
 import { LoaderCircleIcon } from 'lucide-react';
-import { toAbsoluteUrl } from '@/lib/helpers';
+import { AppLogo } from '@/components/platform/branding/app-logo';
+import { useTenantBranding } from '@/hooks/use-branding';
 
 /**
  * The full-screen auth-gate loader (AC-DLA-49) - a spinner, no loading-word
@@ -9,17 +10,14 @@ import { toAbsoluteUrl } from '@/lib/helpers';
  * "in progress").
  */
 export function ScreenLoader() {
+  const { branding } = useTenantBranding();
   return (
     <div
       role="status"
       aria-label="Loading"
       className="flex flex-col items-center gap-3 justify-center fixed inset-0 z-50"
     >
-      <img
-        className="h-[30px] max-w-none"
-        src={toAbsoluteUrl('/media/app/mini-logo.svg')}
-        alt="logo"
-      />
+      <AppLogo branding={branding} variant="mini" />
       <LoaderCircleIcon className="size-5 animate-spin text-muted-foreground" />
     </div>
   );

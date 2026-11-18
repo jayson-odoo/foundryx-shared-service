@@ -12,6 +12,7 @@ import { Check, ChevronDown } from 'lucide-react';
 import { Select as SelectPrimitive } from 'radix-ui';
 import { cn } from '@/lib/utils';
 import { FX_FIELD, FX_MENU, FX_MENU_ROW } from './classes';
+import { fxControlName, useFxFieldIds } from './fx-field-context';
 
 const TRIGGER_SIZE = {
   sm: 'h-7 px-2.5 text-xs',
@@ -25,6 +26,19 @@ export function FxSelectTrigger({
   size,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & { size?: keyof typeof TRIGGER_SIZE | null }) {
+  // Inside a labelled FxField the trigger takes the field's id and label.
+  const field = useFxFieldIds();
+  const naming = field
+    ? fxControlName(
+        {
+          id: props.id,
+          ariaLabel: props['aria-label'],
+          ariaLabelledBy: props['aria-labelledby'],
+          ariaDescribedBy: props['aria-describedby'],
+        },
+        field,
+      )
+    : null;
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
@@ -36,6 +50,7 @@ export function FxSelectTrigger({
         className,
       )}
       {...props}
+      {...naming}
     >
       {children}
       <SelectPrimitive.Icon asChild>

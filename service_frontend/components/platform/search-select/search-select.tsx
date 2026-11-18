@@ -47,6 +47,12 @@ export interface SearchSelectProps {
   /** Accessible name for the combobox trigger. */
   ariaLabel?: string;
   /**
+   * Foundryx UIUX switch only (ignored with the switch off): the trigger's
+   * id, for a visible `<label htmlFor>` that names it. Inside a labelled
+   * `FxField` the field's own id and label are used without it.
+   */
+  id?: string;
+  /**
    * Allow committing the typed search text as the value when it matches no
    * option (a combobox with create - e.g. a free dotted mapping source path
    * `Data.0.X`). The listed options stay the discoverable set; a custom value is

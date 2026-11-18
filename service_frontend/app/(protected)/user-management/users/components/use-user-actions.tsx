@@ -8,6 +8,7 @@ import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { userService } from '@/services/user-service';
 import { useImpersonation } from '@/hooks/use-impersonation';
+import { useFx } from '@/hooks/use-fx';
 import type { User } from '@/types/user';
 import { userFormHref } from './paths';
 
@@ -21,6 +22,9 @@ export function useUserActions(): ResourceAction<User>[] {
   const { data: session } = useSession();
   const { start } = useImpersonation();
   const selfId = session?.user?.id;
+  // Foundryx UIUX switch only: the confirm names who (FX-04). Off keeps
+  // today's words exactly.
+  const fx = useFx();
 
   return useMemo<ResourceAction<User>[]>(() => {
     const ids = (rows: User[]) => rows.map((r) => r.id);
@@ -66,7 +70,12 @@ export function useUserActions(): ResourceAction<User>[] {
         // a record mutation the server can undo/redo the way trash/archive can).
         // Kept as a plain (non-typed) confirm rather than forced into `deferred`.
         confirm: {
-          title: 'Impersonate this user?',
+          title: fx
+            ? (rows) => {
+                const who = rows[0]?.name?.trim();
+                return who ? `Impersonate ${who}?` : 'Impersonate this user?';
+              }
+            : 'Impersonate this user?',
           description:
             'You’ll browse the system with this user’s permissions to test their access. Anything you create or change stays recorded under your own account. Exit anytime from the top banner.',
           confirmLabel: 'Impersonate',
@@ -115,7 +124,12 @@ export function useUserActions(): ResourceAction<User>[] {
         // dialog, no `run` (the registered `users.trash` handler commits it
         // server-side); a bulk trash parks ONE row per user behind one
         // countdown.
-        deferred: { actionKey: 'users.trash', entityType: 'user' },
+        // Switch on only: the one-user countdown names them (FX-03).
+        deferred: {
+          actionKey: 'users.trash',
+          entityType: 'user',
+          fxName: (rows) => rows[0]?.name || undefined,
+        },
       },
       {
         id: 'restore',
@@ -131,5 +145,5 @@ export function useUserActions(): ResourceAction<User>[] {
         },
       },
     ];
-  }, [router, start, selfId]);
+  }, [router, start, selfId, fx]);
 }
