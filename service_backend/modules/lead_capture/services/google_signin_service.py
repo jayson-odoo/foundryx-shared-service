@@ -29,7 +29,7 @@ from app.secrets import decrypt_secret, encrypt_secret
 
 from .. import google_ads
 from ..google_ads import GoogleAdsClient, GoogleAdsError
-from ..models import PLATFORM_GOOGLE, SOURCE_DISCONNECTED, LcSource
+from ..models import PLATFORM_GOOGLE, SOURCE_ROUTING_STATES, LcSource
 from . import google_source_service, source_service
 from .connect_session_service import LOGIN_TTL, SessionError, WizardPrincipal
 
@@ -155,19 +155,19 @@ def forms(principal: WizardPrincipal, account_id: str, *, client: Optional[Googl
     return _forms(api, login, account["id"])
 
 
-def _taken_elsewhere(db: Session, tenant_id: str, account_id: str, form_ids: List[str], own_id: Optional[str]) -> bool:
-    rows = (
-        db.query(LcSource)
-        .filter(
-            LcSource.tenant_id == tenant_id,
-            LcSource.platform == PLATFORM_GOOGLE,
-            LcSource.account_ref == account_id,
-            LcSource.status != SOURCE_DISCONNECTED,
-        )
-        .all()
+def _taken_elsewhere(db: Session, tenant_id: str, account_id: str, own_id: Optional[str]) -> bool:
+    """One routing Google source per account per tenant (the
+    ``uq_lc_source_live_account`` backstop, like one source per Facebook Page).
+    More forms are added by reopening that source."""
+    q = db.query(LcSource.id).filter(
+        LcSource.tenant_id == tenant_id,
+        LcSource.platform == PLATFORM_GOOGLE,
+        LcSource.account_ref == account_id,
+        LcSource.status.in_(SOURCE_ROUTING_STATES),
     )
-    wanted = set(form_ids)
-    return any(r.id != own_id and wanted & set(source_service.picked_forms(r)) for r in rows)
+    if own_id:
+        q = q.filter(LcSource.id != own_id)
+    return q.first() is not None
 
 
 def connect(
@@ -199,8 +199,10 @@ def connect(
             raise SessionError(409, "wrong_channel", "This link is for another kind of source.")
         if source.account_ref and source.account_ref != account["id"]:
             raise SessionError(409, "wrong_account", "Pick the Google Ads account this source was connected with.")
-    if _taken_elsewhere(db, principal.tenant_id, account["id"], picked, source.id if source else None):
-        raise SessionError(409, "source_exists", "A ticked form is already a source here. Untick it or open that source.")
+    if _taken_elsewhere(db, principal.tenant_id, account["id"], source.id if source else None):
+        raise SessionError(
+            409, "source_exists", "This Google Ads account is already a source here. Open it from the sources list to add forms."
+        )
 
     if source is None:
         source, _url, _key = google_source_service.create_guided_source(

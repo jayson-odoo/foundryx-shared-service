@@ -292,3 +292,30 @@ def test_another_session_cannot_use_this_google_signin(client, lc, google):
     other = _wiz(client)
     res = client.get(f"{BASE}/google/accounts", headers=other)
     assert res.status_code == 409 and res.json()["error"]["code"] == "LOGIN_REQUIRED"
+
+
+def test_one_source_per_account_a_second_wizard_on_another_form_is_409_not_500(client, lc, google):
+    """Postgres-only bug class (uq_lc_source_live_account): found in the
+    browser pass. One live Google source per account, like one per Page."""
+    first = _wiz(client)
+    _signin(client, first)
+    client.post(f"{BASE}/google/connect", json={"accountId": ACCOUNT, "formIds": [FORM_A]}, headers=first)
+    second = _wiz(client)
+    _signin(client, second)
+    res = client.post(f"{BASE}/google/connect", json={"accountId": ACCOUNT, "formIds": [FORM_B]}, headers=second)
+    assert res.status_code == 409 and res.json()["error"]["code"] == "source_exists"
+
+
+def test_reopened_source_adds_forms_to_the_same_source(client, lc, google):
+    from tests.test_lead_capture_lc import _key_with_origins, _wizard
+
+    first = _wiz(client)
+    _signin(client, first)
+    sid = client.post(f"{BASE}/google/connect", json={"accountId": ACCOUNT, "formIds": [FORM_A]}, headers=first).json()["source"]["id"]
+    admin = _login(client)
+    key, _ = _key_with_origins(client, admin, origins=("https://crm2.example.com",))
+    reopened = _wizard(client, key, sourceId=sid, returnOrigin="https://crm2.example.com")
+    _signin(client, reopened)
+    res = client.post(f"{BASE}/google/connect", json={"accountId": ACCOUNT, "formIds": [FORM_B]}, headers=reopened)
+    assert res.status_code == 200, res.text
+    assert res.json()["source"]["id"] == sid and sorted(res.json()["source"]["formIds"]) == sorted([FORM_A, FORM_B])
