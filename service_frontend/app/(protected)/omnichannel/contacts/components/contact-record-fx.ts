@@ -117,9 +117,12 @@ export function contactDetailsUndoPatch(
   return undo;
 }
 
-/** "AR" for "Aisyah binti Rahman": first and last word. */
+/** "AR" for "Aisyah binti Rahman": first and last word that start with a
+ *  letter ("CC" for "Check Contact 17"). */
 export function contactInitials(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
+  const all = name.trim().split(/\s+/).filter(Boolean);
+  const lettered = all.filter((w) => w[0].toLowerCase() !== w[0].toUpperCase());
+  const words = lettered.length ? lettered : all;
   if (!words.length) return '?';
   const first = words[0][0] ?? '';
   const last = words.length > 1 ? (words[words.length - 1][0] ?? '') : '';

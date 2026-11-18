@@ -329,13 +329,19 @@ describe('record header', () => {
     expect(screen.getAllByText('+60123456789').length).toBeGreaterThanOrEqual(
       2,
     );
-    expect(
-      screen.getByRole('link', { name: 'Back to contacts' }),
-    ).toHaveAttribute('href', expect.stringContaining('/omnichannel/contacts'));
+    // Once in the header and once above it for phones (one shows per width).
+    const backLinks = screen.getAllByRole('link', { name: 'Back to contacts' });
+    expect(backLinks).toHaveLength(2);
+    for (const link of backLinks)
+      expect(link).toHaveAttribute(
+        'href',
+        expect.stringContaining('/omnichannel/contacts'),
+      );
     // Per-section editing stays (Q-EDIT): the mock shows no red action here.
     expect(screen.getByTestId('main-action')).toHaveTextContent('');
     expect(contactInitials('Aisyah binti Rahman')).toBe('AR');
     expect(contactInitials('Kay')).toBe('K');
+    expect(contactInitials('Check Contact 17')).toBe('CC');
   });
 });
 

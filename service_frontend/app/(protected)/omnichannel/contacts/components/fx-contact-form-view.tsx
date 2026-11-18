@@ -63,16 +63,21 @@ function BackLink({
   href,
   label,
   onClick,
+  className,
 }: {
   href: string;
   label: string;
   onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  className?: string;
 }) {
   return (
     <Link
       href={href}
       onClick={onClick}
-      className="inline-flex min-h-9 items-center gap-1 text-sm font-semibold whitespace-nowrap text-(--fx-link) transition-[translate] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-px"
+      className={cn(
+        className,
+        'inline-flex min-h-9 items-center gap-1 text-sm font-semibold whitespace-nowrap text-(--fx-link) transition-[translate] duration-(--fx-t-hover) ease-(--fx-ease-out) hover:-translate-y-px',
+      )}
     >
       <ChevronLeft aria-hidden="true" className="size-4" />
       {label}
@@ -164,6 +169,12 @@ export function FxContactRecord({
   return (
     <Container width="fluid">
       <div className="flex flex-col gap-4" data-fx-contact-record="">
+        {/* Phones: Back to contacts on its own line above the header (mock). */}
+        <BackLink
+          href={backHref}
+          label={config.backLabel ?? 'Back'}
+          className="-mb-3 self-start sm:hidden"
+        />
         <PageHeader
           crumbs={config.breadcrumb}
           title={title}
@@ -176,7 +187,11 @@ export function FxContactRecord({
           }
           actions={
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <BackLink href={backHref} label={config.backLabel ?? 'Back'} />
+              <BackLink
+                href={backHref}
+                label={config.backLabel ?? 'Back'}
+                className="max-sm:hidden"
+              />
               {config.recordNav && !editing && (
                 <RecordNav
                   fetchAt={config.recordNav.fetchAt}
@@ -318,10 +333,22 @@ export function FxNewContact({
   useRegisterMainAction(main);
 
   const details = config.tabs[0];
+  const leaveBack = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!dirty) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    guard(() => router.push(config.backHref));
+  };
 
   return (
     <Container width="fluid">
       <div className="flex flex-col gap-4" data-fx-new-contact="">
+        <BackLink
+          href={config.backHref}
+          label={config.backLabel ?? 'Back'}
+          onClick={leaveBack}
+          className="-mb-3 self-start sm:hidden"
+        />
         <PageHeader
           crumbs={config.breadcrumb}
           title={typeof config.title === 'string' ? config.title : undefined}
@@ -332,12 +359,8 @@ export function FxNewContact({
               <BackLink
                 href={config.backHref}
                 label={config.backLabel ?? 'Back'}
-                onClick={(e) => {
-                  if (!dirty) return;
-                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                  e.preventDefault();
-                  guard(() => router.push(config.backHref));
-                }}
+                onClick={leaveBack}
+                className="max-sm:hidden"
               />
               <Button
                 type="button"
