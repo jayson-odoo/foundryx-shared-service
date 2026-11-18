@@ -3,6 +3,7 @@ import {
   FX_SETTING_AREAS,
   FX_SETTINGS,
   fxSetting,
+  fxSettingBuilt,
   fxSettingValue,
   sanitizeFxSettings,
 } from './settings-schema';
@@ -52,5 +53,13 @@ describe('Foundryx UIUX settings schema', () => {
     expect(fxSettingValue({ motion: false }, 'motion')).toBe(false);
     expect(fxSettingValue({}, 'motion')).toBe(true);
     expect(fxSettingValue({}, 'nope')).toBeUndefined();
+  });
+
+  it('marks as built only the settings whose behaviour exists in merged slices', () => {
+    expect(
+      FX_SETTINGS.filter(fxSettingBuilt).map((setting) => setting.key),
+    ).toEqual(['motion', 'scroll', 'scroll-size']);
+    // F1 did not build the theme cross-fade, so its row stays hidden.
+    expect(fxSettingBuilt(fxSetting('theme-fade')!)).toBe(false);
   });
 });

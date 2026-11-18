@@ -10,6 +10,9 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-18** | **Delivery history and contact list filters** (sections 6a, 7). New `GET /webhooks/{id}/deliveries?status=&limit=&before=` returns the delivery history of one of your own endpoints, newest first (no event body, no secret); another workspace's endpoint answers the same `404 not_found` as an unknown id. `GET /contacts` takes two optional filters: `updatedSince` (contacts changed or messaged after an ISO 8601 instant) and `channelId` (contacts with an identity on that channel; a channel outside your workspace answers `404 channel_not_found`, as on `GET /templates`). Additive: a request without the new parameters gets exactly today's response, and no existing response gains a field. |
+> | **2026-11-18** | **Per-number WhatsApp window, opt-in per workspace** (section 4.1). A workspace (or a whole tenant) can switch on per-number window enforcement. When on, a free-form WhatsApp send is allowed only while the customer's 24h window is open on the number you send from; a send on a number the customer has not written to in 24h answers the existing `409 csw_window_closed` at once instead of `202` and a later `FAILED` from Meta. Templates are always allowed. Off by default: a workspace that has not opted in sees no change at all, and no response gains a field. |
+> | **2026-11-18** | **Partner API: partner key** (section 6e). New tenant-scoped partner key (`fxp_live_...`), minted from the dashboard by a tenant admin with the new Partner API Keys permission, and `GET /api/v1/omnichannel/partner/me`. Additive: workspace keys and every existing route, field and code are unchanged; a partner key is refused (`401 invalid_api_key`) on existing routes. |
 > | **2026-11-18** | **Channel connection state and `channel.updated`** (sections 3b, 5a, 7). At payload version 2, each item of the channel list (§5a) gains `connectionState` (`CONNECTED`, `NEEDS_RECONNECT`, `PAUSED`, `DISCONNECTED`); `status` keeps its four values. New opt-in webhook event type `channel.updated` (`data` = `{ "channel": <channel item> }`) fires when a channel is connected, paused or resumed, disconnected or restored, or its token stops or starts working again. Only endpoints that list `channel.updated` receive it; no existing endpoint does. |
 > | **2026-11-18** | **Template header and button variables** (sections 3b, 4.1, 5). A template send accepts optional `template.headerVariables` (text-header `{{n}}` values) and `template.buttonVariables` (one value per dynamic URL button), so templates with a text header or a dynamic URL button can now be sent through this API. At payload version 2, each `GET /templates` item gains `headerFormat`, `headerVariableCount` and `buttonVariableCount`. Templates with an image, video or document header still cannot be sent through this API. Additive: a send without the new fields behaves as before. |
 > | **2026-11-18** | **Sender attribution** (sections 3b, 4, 4.3, 9.1). `POST /messages` accepts an optional `sender {externalId, displayName, avatarUrl?}` (JSON body and multipart `payload`) naming the person on your side who wrote the message. It is stored on the message only: the customer receives exactly the same text, and the send stays an API send (`senderId` `apikey:<id>`, `message.outbound` `source` `api`). At payload version 2, `MessageItem` (history, single message, comment, `message.inbound` / `message.outbound`) gains `sender {type, externalId?, displayName?, avatarUrl?, userId?}`. `senderName`, `senderAvatarUrl` and `senderType` are unchanged at every version. At payload version 2 (`X-Fx-Api-Version: 2`) a malformed `sender` answers `422 invalid_request`; at version 1 (the default) a malformed `sender` is ignored exactly as before, so no existing caller can start receiving a 422 from it. A send without `sender` behaves as before. |
@@ -251,6 +254,8 @@ The JSON body always has `to` + `type`, plus one type-specific object:
 >
 > **Check before you send, don't probe.** `cswExpiresAt` on the contact (§6a / §9.1) is the signal: in the future ⇒ free-form is allowed; past or `null` ⇒ template only. Every inbound webhook also refreshes it. Treating the `409` as your detection mechanism turns a preventable state into a user-visible failure.
 >
+> **Several WhatsApp numbers in one workspace: per-number window (opt-in, 2026-11-18).** Meta keeps one 24h window per business number, but a contact is one record across all numbers of a workspace, so `cswExpiresAt` is refreshed by an inbound on ANY number. By default a free-form send on number B is accepted (`202`) while the customer only wrote to number A, and Meta then refuses it (the message ends `FAILED`, Meta code `131047`). A workspace can opt in to **per-number enforcement**: free-form on a WhatsApp number then needs an inbound on THAT number in the last 24h, otherwise the send answers `409 csw_window_closed` (same code and message as above) before anything is queued. A number the customer never wrote to counts as closed. Templates are always allowed, Messenger, Instagram and web chat are unchanged, and a contact who only uses one number behaves the same either way. The flag applies to every send path (this API, the Foundryx inbox, the embedded inbox, workflows; broadcasts send templates). Ask your Foundryx operator to switch it on; it is off unless set. Operators: the staff dashboard route `PUT /omnichannel/settings?workspaceId=<id>` with `{"strictNumberWindow": true}` (omit `workspaceId` to set the tenant default; `null` clears), or one statement for a workspace without a staff login: `INSERT INTO app_omnichannel.omnichannel_settings (id, tenant_id, workspace_id, strict_number_window) VALUES (gen_random_uuid()::text, '<tenantId>', '<workspaceId>', true) ON CONFLICT (tenant_id, workspace_id) DO UPDATE SET strict_number_window = EXCLUDED.strict_number_window;`
+
 > **Messenger and Instagram (plan 32 / A7a) have their OWN window, not the CSW above** - `windowExpiresAt`/`humanAgentExpiresAt` on the contact (§9.1/9.2), never `cswExpiresAt` (which stays `null` for those two types). Free-form is allowed for 24h after the person's last message the same way; there is **no template re-engagement** for Messenger/Instagram (out of scope for this integration - message templates exist for WhatsApp only). A send from THIS Gateway API outside that window is always refused `409 messaging_window_closed` (a distinct code from `csw_window_closed` - it never changes meaning) - the Gateway is automation by construction, so it can never use the human-agent 7-day extension a live agent gets in the Foundryx inbox.
 >
 > **Web chat (plan 34 / A7b) has NO messaging window at all.** `cswExpiresAt`, `windowExpiresAt` and `humanAgentExpiresAt` all read `null` for a web chat contact - there is no external provider and no re-engagement rule to encode, so a free-form send to a web chat contact is never refused for window reasons, no matter how long ago the visitor last messaged. `visitorLastSeenAt` (§9.1/9.2) tells you whether the visitor is likely still around, but it is a presence fact, not an authorization gate - sending to a visitor who left twelve days ago is not an error, it is a message that will be waiting for them when they return.
@@ -523,7 +528,11 @@ A miss (or a contact in another workspace) → `404 contact_not_found`.
 
 ### List contacts - `GET /api/v1/omnichannel/contacts`
 
-Query params: `status` (`OPEN|SNOOZED|CLOSED`), `assignee` (`all|unassigned`), `priority` (`LOW|MEDIUM|HIGH|URGENT`), `search` (name / phone / message body), `page` (0-based), `pageSize` (1-200).
+Query params: `status` (`OPEN|SNOOZED|CLOSED`), `assignee` (`all|unassigned`), `priority` (`LOW|MEDIUM|HIGH|URGENT`), `search` (name / phone / message body), `updatedSince`, `channelId`, `page` (0-based), `pageSize` (1-200).
+
+* `updatedSince` (optional, 2026-11-18): an ISO 8601 instant such as `2026-11-18T00:00:00Z`; only contacts changed after it are listed (a message in or out, a profile edit, a status change). An instant without an offset is read as UTC. A value that is not a timestamp answers `422 invalid_request`. Use it to reconcile after an outage: keep the time of your last successful sync and list what changed since.
+* `channelId` (optional, 2026-11-18): only contacts with an identity on that channel (a number they wrote to, or that knows them). The channel must be a channel of your workspace (active or paused); any other id answers `404 channel_not_found`, the same answer `GET /templates?channelId=` gives.
+* Both combine with each other and with the filters above, and work with `?format=rio` (the `next`/`previous` links keep them). Without them the response is exactly as before.
 
 ```json
 { "data": [ /* ThreadItem - see §9.1 */ ], "total": 42, "page": 0, "pageSize": 50 }
@@ -894,6 +903,36 @@ An invalid body answers `422 invalid_request` with the problems keyed by field, 
 
 ---
 
+## 6e. Partner API (provisioning organisations)
+
+**Who it is for:** a client application that serves many organisations of its own (for example a CRM where each customer company needs its own WhatsApp numbers) and wants to set them up without asking Foundryx staff for every one. The client application has its **own tenant**; each of its organisations becomes one workspace in that tenant.
+
+**Nothing changes for existing integrations.** Partner routes live under `/api/v1/omnichannel/partner/*` and accept only a partner key. Workspace keys (`fxw_live_`) and every route in sections 3 to 6d behave exactly as before.
+
+### How a partner key is issued
+
+A partner key (`fxp_live_...`) is minted from the Foundryx dashboard by an admin of your tenant who holds the **Partner API Keys: Manage** permission. It is never self-serve from the API. The full key is shown **once** at mint time; store it like a password. The admin can list keys, revoke one, and set each key's **allowed return origins** (exact `https://host[:port]` origins, used by the hosted connect flow that comes later; `http://` only for `localhost`).
+
+```
+Authorization: Bearer fxp_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+* The key **encodes your tenant** and nothing else. You never send a tenant id.
+* Missing, malformed, unknown or revoked key, or a workspace key, answers `401 invalid_api_key`. A partner key on a workspace-key route also answers `401 invalid_api_key`.
+* Tenant suspended or archived, or the omnichannel service off for the tenant: `403 service_not_enabled`.
+* The per-key limits of section 3a apply to each partner key on its own (10 in progress, 600 per minute, `429 rate_limited` with `Retry-After`).
+* Errors use the `/api/v1` envelope of section 3.
+
+### `GET /api/v1/omnichannel/partner/me`
+
+Proves the key works and shows what it is bound to.
+
+```json
+{ "tenantId": "8b1f...", "tenantName": "EcoHub", "keyId": "3c9e...", "keyName": "EcoHub production" }
+```
+
+---
+
 ## 7. Receiving events (webhooks: Foundryx → you)
 
 Foundryx POSTs a **signed JSON envelope** to each callback URL you registered for the channel, for each event type you subscribed to.
@@ -1053,7 +1092,7 @@ async def receive(request: Request):
 * Only an `ACTIVE` endpoint gets events: while it is `DISABLED` or `AUTO_DISABLED` no event is queued for it, and none is replayed after it is re-enabled.
 * While a workspace is trashed, its tenant is suspended or the service is off for it, no event is queued, and queued retries end failed. Those events are not sent later, even after the workspace is back.
 * Webhook delivery is fully isolated - a slow/broken consumer never blocks an inbound WhatsApp message.
-* A **delivery log** is available in the dashboard (per-attempt status, response code, latency, error) for debugging.
+* A **delivery log** is available in the dashboard (per-attempt status, response code, latency, error) for debugging, and with your API key through `GET /webhooks/{id}/deliveries` (below).
 
 ### Registering your callbacks - `/api/v1/omnichannel/webhooks`
 
@@ -1067,6 +1106,7 @@ async def receive(request: Request):
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret (returned once) |
 | POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume delivery (`409 endpoint_paused_by_staff` on enable when staff paused it) |
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove it |
+| GET | `/api/v1/omnichannel/webhooks/{id}/deliveries` | Delivery history of the endpoint (below) |
 
 ```bash
 curl -X POST https://YOUR-FOUNDRYX-HOST/api/v1/omnichannel/webhooks \
@@ -1096,6 +1136,25 @@ The URL is validated at registration: **https only**, no `localhost`, no private
 **Which key owns an endpoint.** The key that last changed an endpoint owns it: registering, a PATCH with a real change, a rotation, or enabling a paused one makes that key the owner. A disable, a delete and every action by staff leave the owner alone, and a request that changes nothing moves nothing.
 
 **When a key is revoked.** When staff revoke a key they may also pause the endpoints it owns, and `disabledReason` on each paused endpoint says the API key that registered it was revoked. Resume one with `POST /webhooks/{id}/enable` using another live key, and resume only the endpoints you recognise. After a rotation, do this with the new key. A key's own disable can be resumed by a key, except on an endpoint disabled before 2026-11-02, which reads as a staff pause. A pause set by staff cannot be undone with a key: enable, PATCH, rotate and DELETE answer `409 endpoint_paused_by_staff`, and only staff resume it. Registering, or a PATCH, rotate, enable or disable, made with a key that is revoked meanwhile answers `401` and changes nothing; a DELETE under way may still land.
+
+#### Delivery history - `GET /api/v1/omnichannel/webhooks/{id}/deliveries`
+
+The deliveries of one of your own endpoints, newest first (2026-11-18). One item is one event sent to the endpoint, with its retries.
+
+Query params: `status` (`PENDING|SUCCESS|FAILED`, any case), `limit` (1-200, default 50), `before` (the `nextBefore` of the previous page).
+
+```json
+{ "data": [ { "id": "9b1c…", "eventId": "evt_…", "eventType": "message.inbound",
+              "status": "FAILED", "attemptCount": 6, "responseStatus": 500, "responseMs": 412,
+              "error": "Consumer returned 500.", "lastAttemptAt": "2026-11-18T03:10:00Z",
+              "nextAttemptAt": null, "createdAt": "2026-11-17T21:02:11Z" } ],
+  "nextBefore": "9b1c…" }
+```
+
+* `eventId` is the envelope `id` (and the `X-Fx-Event-Id` header) your endpoint received; `status` is `PENDING` while retries remain, `SUCCESS` or `FAILED` (dead-lettered) after; `attemptCount` is the number of attempts so far; `lastAttemptAt` is the latest attempt and `nextAttemptAt` the next retry (`null` when none is due); `responseStatus` is your endpoint's HTTP answer (`null` when none came back) and `error` a short reason, which never names a host.
+* The event body and the signing secret are never returned.
+* Paging: `nextBefore` is set when the page is full; pass it as `before` for older rows. A short page is the last one (`nextBefore: null`). A `before` that is not a delivery of this endpoint answers `422 invalid_request`.
+* An unknown endpoint id, or one of another workspace, answers `404 not_found`. A bad `status` or `limit` answers `422 invalid_request`.
 
 An operator can also manage these from the Foundryx dashboard, where a per-attempt **delivery log** is available for debugging.
 
@@ -1411,7 +1470,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 | `no_active_channel` | 409 | The workspace has no connected number, on a send or when registering a webhook. |
 | `channel_not_available_for_contact` | 422 | (plan 32 / A7a) The resolved contact has no identity on the chosen channel (e.g. a WhatsApp-only contact addressed on a Messenger `channelId`). |
 | `template_not_found` | 422 | No APPROVED template matches `name`/`id`. |
-| `csw_window_closed` | 409 | WhatsApp's 24h window closed - send an approved template instead. Unchanged, WhatsApp-only meaning (plan 32 / A7a). At payload version 2 (§3b) the body also carries `details: {channelId, windowExpiresAt, allowedSendTypes, reason}` for the refused channel (`reason` = `csw_window_closed`); `code` and `message` are the same at every version. |
+| `csw_window_closed` | 409 | WhatsApp's 24h window closed - send an approved template instead. Unchanged, WhatsApp-only meaning (plan 32 / A7a). In a workspace with per-number enforcement on (2026-11-18, §4.1), "closed" means closed on the number you send from. At payload version 2 (§3b) the body also carries `details: {channelId, windowExpiresAt, allowedSendTypes, reason}` for the refused channel (`reason` = `csw_window_closed`); `code` and `message` are the same at every version. |
 | `messaging_window_closed` | 409 | (plan 32 / A7a) Messenger/Instagram's own re-engagement window closed - there is no template re-engagement for these two types through this API; a distinct code from `csw_window_closed`, never that one's meaning. At payload version 2 (§3b) the body also carries `details: {channelId, windowExpiresAt, allowedSendTypes, reason}`; `reason` is `automation_outside_window` when the contact is still inside the 7-day human-agent window (a human agent could reply from the inbox, an API key cannot), else `messaging_window_closed`. |
 | `send_rejected` | 422 | WhatsApp/Meta rejected the send (message has the reason) - also covers a message `type` the chosen channel's type doesn't carry (e.g. `template` on Messenger/Instagram). |
 | `lifecycle_move_not_allowed` | 409 | The contact PATCH's `lifecycle` value is a real stage, but there is no path there from the contact's CURRENT stage (e.g. it already won or lost) - `message` carries the reason. |
@@ -1790,7 +1849,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/messages` | Send a message (all types) | `202 {id, status, idempotencyReplay}` |
 | GET | `/api/v1/omnichannel/channels` | List the workspace's channels (`isDefault` marks the implicit send channel, none when `channelId` is required) | `{data[]}` of channel items (§5a) |
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
-| GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
+| GET | `/api/v1/omnichannel/contacts` | List contacts (filters incl. `updatedSince`, `channelId` + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |
 | PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/team/language/countryCode/customFields/tags/lifecycle) | `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}/messages` | Message history | `{contactId, data[], nextBefore}` of `MessageItem` |
@@ -1805,6 +1864,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | POST | `/api/v1/omnichannel/webhooks/{id}/rotate` | New signing secret | `{signingSecret}` |
 | POST | `/api/v1/omnichannel/webhooks/{id}/enable` \| `/disable` | Pause / resume (`409 endpoint_paused_by_staff` on enable when staff paused it) | `WebhookEndpoint` |
 | DELETE | `/api/v1/omnichannel/webhooks/{id}` | Remove | `204` |
+| GET | `/api/v1/omnichannel/webhooks/{id}/deliveries` | Delivery history (`status`, `limit`, `before`) | `{data[], nextBefore}` |
 | GET | `/api/v1/omnichannel/workflows/catalog` | Node types a key may use, plus the workspace's pickers | `{nodes[], options}` (§6c) |
 | POST | `/api/v1/omnichannel/workflows` | Create a workflow | `201` workflow |
 | GET | `/api/v1/omnichannel/workflows` | List the workspace's workflows (paged) | `{data[], nextCursor}` |

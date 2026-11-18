@@ -27,7 +27,24 @@ export type FxSettingArea =
   | 'scrollbars'
   | 'testing';
 
-export type FxSlice = 'F1' | 'F2' | 'F3a' | 'F3b' | 'F4' | 'F5' | 'S-QT';
+/** The build slice that adds a setting's behaviour; `unassigned` = no slice
+ *  builds it yet (its row stays hidden until one does). */
+export type FxSlice =
+  | 'F1'
+  | 'F2'
+  | 'F3a'
+  | 'F3b'
+  | 'F4'
+  | 'F5'
+  | 'S-QT'
+  | 'unassigned';
+
+/**
+ * Slices merged into the branch this code ships from. The Advanced settings
+ * panel shows a row only when its behaviour exists, so each slice that builds
+ * a setting's behaviour adds itself here in the same change.
+ */
+export const FX_BUILT_SLICES: readonly FxSlice[] = ['F1'];
 
 interface FxSettingBase {
   key: string;
@@ -125,9 +142,11 @@ export const FX_SETTINGS: FxSetting[] = [
     'Things slide and fade instead of jumping.',
     true,
   ),
+  // No slice builds the cross-fade yet (F1 left it out), so its row stays
+  // hidden until one does.
   sw(
     'motion',
-    'F1',
+    'unassigned',
     'theme-fade',
     'Cross-fade on theme changes',
     'The page fades when the mode or palette changes.',
@@ -547,6 +566,11 @@ export const FX_SETTINGS: FxSetting[] = [
     false,
   ),
 ];
+
+/** True when the setting's behaviour exists in this build. */
+export function fxSettingBuilt(setting: FxSetting): boolean {
+  return FX_BUILT_SLICES.includes(setting.slice);
+}
 
 /** Stored values: only what differs from the playbook defaults. */
 export type FxSettingValues = Record<string, boolean | number>;

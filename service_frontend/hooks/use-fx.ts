@@ -10,18 +10,21 @@
  *   }
  *
  * The legacy body is renamed, never edited, so the off markup stays identical.
- * Both hooks return "off" with no provider and inside `<FxOff>`.
+ * Both hooks return "off" with no provider, inside `<FxOff>` and inside
+ * `<FxComponentsOff>` (sign-in, public portal: global look only).
  */
 import { useContext } from 'react';
 import { fxSettingValue } from '@/lib/fx/settings-schema';
 import { FxContext, type FxContextValue } from '@/providers/fx-provider';
 import { FxOffContext } from '@/components/fx/fx-off';
+import { FxComponentsOffContext } from '@/components/fx/fx-components-off';
 
 /** True while the Foundryx UIUX switch is on for this browser. */
 export function useFx(): boolean {
   const ctx = useContext(FxContext);
   const forcedOff = useContext(FxOffContext);
-  return Boolean(ctx?.on) && !forcedOff;
+  const componentsOff = useContext(FxComponentsOffContext);
+  return Boolean(ctx?.on) && !forcedOff && !componentsOff;
 }
 
 /**
@@ -31,7 +34,8 @@ export function useFx(): boolean {
 export function useFxSetting(key: string): boolean | number | undefined {
   const ctx = useContext(FxContext);
   const forcedOff = useContext(FxOffContext);
-  if (!ctx?.on || forcedOff) return undefined;
+  const componentsOff = useContext(FxComponentsOffContext);
+  if (!ctx?.on || forcedOff || componentsOff) return undefined;
   return fxSettingValue(ctx.settings, key);
 }
 

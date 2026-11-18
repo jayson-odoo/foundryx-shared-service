@@ -270,7 +270,29 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _whatsapp_window_open(contact: Contact, now: datetime) -> bool:
+def _whatsapp_window_open(
+    db: Session, contact: Contact, channel: Channel, now: datetime
+) -> bool:
+    """The WhatsApp free-form window - the ONE place that decides it.
+
+    Default (today, every workspace that has not opted in): the CONTACT-level
+    `contacts.csw_expires_at`, which an inbound on ANY of the workspace's
+    WhatsApp numbers refreshes.
+
+    S12 (decision D3, opt-in per workspace via
+    `omnichannel_settings.strict_number_window`): the window of the TARGET
+    number only - `contact_channel_identities.window_expires_at` for
+    (contact, channel), stamped by `stamp_inbound_window` on every inbound to
+    that number. Meta's window is per business number, so a customer who wrote
+    to number A has no open window on number B; without this a free-form send
+    on B is accepted and later fails at Meta (131047). No identity on the
+    target number = closed."""
+    from .media_settings_service import MediaSettingsService
+
+    if MediaSettingsService(db).strict_number_window(contact.tenant_id, contact.workspace_id):
+        identity = _identity_for(db, contact, channel)
+        expires = _aware(identity.window_expires_at) if identity is not None else None
+        return expires is not None and expires > now
     expires = _aware(contact.csw_expires_at)
     return expires is not None and expires > now
 
@@ -308,7 +330,7 @@ def window_open(
         # must never bail out on a web chat send.
         return True
     if policy.reengage_mode == "template":
-        return _whatsapp_window_open(contact, now)
+        return _whatsapp_window_open(db, contact, channel, now)
     identity = _identity_for(db, contact, channel)
     if identity is None:
         return False
@@ -358,7 +380,7 @@ def authorize(
     if policy.reengage_mode == "template":
         if (kind or "").upper() == "TEMPLATE":
             return SendDecision()
-        if _whatsapp_window_open(contact, now):
+        if _whatsapp_window_open(db, contact, channel, now):
             return SendDecision()
         raise PolicyRejected("csw_window_closed", CSW_CLOSED_MESSAGE)
 
