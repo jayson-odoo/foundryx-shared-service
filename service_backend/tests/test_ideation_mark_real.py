@@ -167,3 +167,24 @@ def test_mark_real_needs_triage_permission(setup):
     h = _auth(s["client"], email="viewer-mr@example.com", password="Viewer1234!")
     assert _mark(s, iid, h).status_code == 403
     assert _row(s, iid)["is_test"] is True
+
+
+def test_mark_real_other_tenants_item_is_404_and_untouched(setup):
+    s = setup
+    iid = _idea(s, 813)
+    _set(s, iid, is_test=True, tenant_id="tenant-x")
+    res = _mark(s, iid)
+    assert res.status_code == 404
+    assert _row(s, iid)["is_test"] is True
+
+
+def test_mark_real_never_flips_a_foreign_tenant_row_pointing_at_the_survivor(setup):
+    """A stored ``merged_into_id`` is resolved tenant-scoped: a corrupted row in
+    another tenant that points at this survivor is never touched."""
+    s = setup
+    survivor = _idea(s, 814)
+    foreign = _idea(s, 815)
+    _set(s, survivor, is_test=True)
+    _set(s, foreign, is_test=True, merged_into_id=survivor, tenant_id="tenant-x")
+    assert _mark(s, survivor).status_code == 200
+    assert _row(s, foreign)["is_test"] is True
