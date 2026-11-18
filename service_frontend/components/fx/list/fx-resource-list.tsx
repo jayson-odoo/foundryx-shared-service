@@ -491,8 +491,8 @@ export function FxResourceList<T extends object>({
 
   const panelColumns = movableOrder
     .map((id) => table.getColumn(id))
-    .filter((c): c is NonNullable<typeof c> => Boolean(c) && c!.getCanHide())
-    .map((c) => ({ id: c.id, label: columnLabel(c as Column<unknown, unknown>) }));
+    .filter((c): c is NonNullable<typeof c> => Boolean(c))
+    .map((c) => ({ id: c.id, label: columnLabel(c as Column<unknown, unknown>), canHide: c.getCanHide() }));
 
   return (
     <>

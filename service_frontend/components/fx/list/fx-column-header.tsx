@@ -81,22 +81,29 @@ export function FxColumnHeader<TData, TValue>({
 
   const header = (
     <span className="flex min-w-0 items-center">
-      <button
-        type="button"
-        data-fx-header-label=""
-        aria-label={kind || canSort ? actionLabel : undefined}
-        aria-haspopup={kind === 'date' || kind === 'status' ? 'dialog' : undefined}
-        disabled={!kind && !canSort}
-        onClick={onHeaderClick}
-        className={cn(
-          'min-w-0 cursor-pointer text-start text-[0.8125rem] font-semibold disabled:cursor-default',
-          'break-words',
-          active ? 'text-(--fx-link)' : 'text-(--fx-ink-2)',
-          PRESSED_CLASS,
-        )}
-      >
-        {title}
-      </button>
+      {kind || canSort ? (
+        <button
+          type="button"
+          data-fx-header-label=""
+          aria-label={actionLabel}
+          aria-haspopup={kind === 'date' || kind === 'status' ? 'dialog' : undefined}
+          onClick={onHeaderClick}
+          className={cn(
+            'min-w-0 cursor-pointer break-words text-start text-[0.8125rem] font-semibold',
+            active ? 'text-(--fx-link)' : 'text-(--fx-ink-2)',
+            PRESSED_CLASS,
+          )}
+        >
+          {title}
+        </button>
+      ) : (
+        <span
+          data-fx-header-label=""
+          className="min-w-0 break-words text-[0.8125rem] font-semibold text-(--fx-ink-2)"
+        >
+          {title}
+        </span>
+      )}
       {sortDir && (
         <span
           aria-hidden="true"

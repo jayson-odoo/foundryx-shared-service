@@ -173,7 +173,16 @@ export function FxListTable({
   }, [columnIds, needs, available, view, shortIds]);
 
   const widths = useMemo(() => {
-    if (view === 'smart') return plan.widths;
+    if (view === 'smart') {
+      if (!plan.tooNarrow || available <= 0) return plan.widths;
+      // Even two columns don't fit (phones get cards in slice F3b): the
+      // columns share the width and their values wrap, so the page never
+      // scrolls sideways.
+      const sum = Object.values(plan.widths).reduce((a, b) => a + b, 0);
+      return Object.fromEntries(
+        Object.entries(plan.widths).map(([id, w]) => [id, Math.floor((w * available) / sum)]),
+      );
+    }
     // Table view: every column at its width; spare width spreads evenly.
     const sum = Object.values(plan.widths).reduce((a, b) => a + b, 0);
     const data = plan.inTable.filter((id) => !isStructuralColumn(table.getColumn(id) as Column<unknown, unknown>));

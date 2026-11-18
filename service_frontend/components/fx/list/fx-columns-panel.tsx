@@ -50,6 +50,8 @@ import { FxIconActionButton } from '@/components/fx/actions/icon-action';
 export interface FxPanelColumn {
   id: string;
   label: string;
+  /** False for a column the list never lets go (its switch stays on). */
+  canHide?: boolean;
 }
 
 export interface FxColumnsPanelProps {
@@ -224,7 +226,7 @@ function PanelRow({
         id={switchId}
         size="sm"
         checked={shown}
-        disabled={lastShown}
+        disabled={lastShown || column.canHide === false}
         aria-label={`Show ${column.label}`}
         onCheckedChange={(c) => onToggle(Boolean(c))}
         onPointerDown={(e) => e.stopPropagation()}
