@@ -201,7 +201,7 @@ export function TrashView({ view, onChanged }: TrashViewProps) {
   );
 }
 
-function TrashEntry({
+export function TrashEntry({
   view,
   name,
   meta,

@@ -31,6 +31,7 @@ import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
 import { cn } from '@/lib/utils';
 import { documentService } from '@/services/document-service';
 import type { FileRow, FolderRow, SharedWithMeItem } from '@/types/documents';
@@ -50,6 +51,7 @@ import { TrashView } from './trash-view';
 import { UploadDialog } from './upload-dialog';
 import { useDrive } from './use-drive';
 import { useUploadManager } from './upload-manager';
+import { FxDriveExplorer } from './fx-drive-explorer';
 
 type Section = 'drive' | 'shared' | 'trash';
 interface Targets {
@@ -62,7 +64,16 @@ interface PendingRename {
   name: string;
 }
 
+/**
+ * Foundryx UIUX (slice W3-DOCS): the same explorer with the playbook's chrome
+ * (Upload as the red action, a selection bar, done toasts). Off renders the
+ * legacy body below, unchanged.
+ */
 export function DriveExplorer() {
+  return useFx() ? <FxDriveExplorer /> : <DriveExplorerLegacy />;
+}
+
+function DriveExplorerLegacy() {
   const drive = useDrive();
   const uploads = useUploadManager();
   const downloads = useDownloads();
