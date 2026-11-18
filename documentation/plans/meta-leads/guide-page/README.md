@@ -2,7 +2,7 @@
 
 Owner ask (18 Nov): "i think the guide better to have a frontend page like maybe a video or step by step guide".
 
-Status: **mock v1, waiting for owner OK** (`mock-v1.html` in this folder). Nothing is built until then.
+Status: **built** after owner OK on mock v2 (18 Nov 17:04). Page: `service_frontend/app/(public)/public/lead-capture/guide/`, content: `service_frontend/lib/lead-capture-guide.ts`.
 
 ## Route and identity
 
@@ -44,12 +44,22 @@ Status: **mock v1, waiting for owner OK** (`mock-v1.html` in this folder). Nothi
 | connect-sessions body | also optional `sourceId` (reopen for Reconnect / new fields) | `schemas.py:221-223`, `gateway.py:275-293` |
 | `/be/api/v1/...` | gateway mounts at `/api/v1/lead-capture`; `/be` is the production proxy prefix | `manifest.json` routers, `DEPLOY.md:78` |
 
-## Screenshots + video
+## Screenshots + video (re-generate when the wizard changes)
 
-A committed capture script drives the real wizard page on the simulated Facebook path with fake data and writes
-PNGs + `manifest.json` (button box per step) + a webm + a WebVTT caption file into `public/media/lead-capture-guide/`.
-Run on demand (npm script, documented here) when the wizard changes.
+```bash
+# 1. local stack, simulated Facebook (META_APP_ID unset), dev seed:
+cd service_backend && python -m scripts.bootstrap_db && uvicorn app.main:app --port 8001
+cd service_frontend && rm -rf .next && npm run build && npm start      # :3001
+# 2. capture (agent-browser CLI; AGENT_BROWSER=<path> to use a local install,
+#    AGENT_BROWSER_EXECUTABLE_PATH=<chrome> if it has no browser of its own):
+cd service_frontend && npm run capture:lead-capture-guide
+# 3. check the PNGs, then: npx vitest run lib/lead-capture-guide.test.ts
+```
 
-Open question for crew: the brief names Playwright, but Playwright is retired from this repo
-(`AGENTS.md:37`, guard test `service_frontend/no-playwright.guard.test.ts` fails on the word). Proposal: the
-`agent-browser` CLI (the repo's sanctioned browser tool) - see the PR's crew-ask.
+`scripts/capture-lead-capture-guide.sh` provisions a fresh local tenant named "Partner CRM" via the dev operator
+login, installs Lead Capture, mints a gateway key listing the frontend origin, asks for a connect session exactly as a
+partner backend does, then drives the real wizard with real mouse clicks. It writes
+`public/media/lead-capture-guide/<step>.png`, `walkthrough.webm` (fails the run if 5 MB or more) and
+`walkthrough.vtt` (captions), plus `lib/lead-capture-guide-shots.json` (each step's button box, drawn as the
+numbered ring). At the end it disconnects the capture tenant's source, so the simulated Page is free for the next
+run. Local stack only: it never needs or touches a real key. Playwright is not used (retired, `AGENTS.md:37`).

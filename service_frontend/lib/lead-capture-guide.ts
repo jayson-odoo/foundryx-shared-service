@@ -118,7 +118,7 @@ function wizardTitle(key: WizardStepKey): string {
 }
 
 const WIZARD_LINES: Record<WizardStepKey, { click: string; line: string }> = {
-  channel: { click: 'Facebook Page', line: 'Click Facebook Page.' },
+  channel: { click: 'Facebook', line: 'Click Facebook.' },
   signin: {
     click: 'Continue with Facebook',
     line: 'Click Continue with Facebook, sign in, leave every box ticked and click Save.',

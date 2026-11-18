@@ -51,6 +51,12 @@ interface Shot {
 
 const SHOTS = shots.steps as Record<string, Shot>;
 
+/** The wizard's one message to the opener (`types/lead-capture-wizard.ts:111-114`). */
+const POPUP_MESSAGES: ReadonlyArray<{ type: string; when: string }> = [
+  { type: 'lead-capture:done', when: 'Finished; the Page passed its test lead and is Live. Always has sourceId.' },
+  { type: 'lead-capture:closed', when: 'Closed before the end. Has sourceId once a Page was connected.' },
+];
+
 function Section({ eyebrow, title, children }: { eyebrow: string; title: string; children: React.ReactNode }) {
   return (
     <Card>
@@ -194,33 +200,16 @@ export function LeadCaptureGuide({ partnerName, apiBase, branding }: LeadCapture
               </Note>
               <Sub>2. Your page opens it in a popup and waits for one message</Sub>
               <CodeSample testId="code-popup" code={samples.popup} />
-              <div className="overflow-x-auto rounded-lg border border-border">
-                <table className="w-full min-w-[480px] text-sm">
-                  <thead className="bg-muted text-start text-muted-foreground">
-                    <tr>
-                      <th className="px-3 py-2 text-start font-medium">type</th>
-                      <th className="px-3 py-2 text-start font-medium">sourceId</th>
-                      <th className="px-3 py-2 text-start font-medium">When</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-foreground">
-                    <tr className="border-t border-border">
-                      <td className="px-3 py-2">
-                        <Mono>lead-capture:done</Mono>
-                      </td>
-                      <td className="px-3 py-2">always</td>
-                      <td className="px-3 py-2">Finished; the Page passed its test lead (Live)</td>
-                    </tr>
-                    <tr className="border-t border-border">
-                      <td className="px-3 py-2">
-                        <Mono>lead-capture:closed</Mono>
-                      </td>
-                      <td className="px-3 py-2">when a Page was connected</td>
-                      <td className="px-3 py-2">Closed before the end</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              <dl className="flex flex-col divide-y divide-border rounded-lg border border-border text-sm">
+                {POPUP_MESSAGES.map((m) => (
+                  <div key={m.type} className="flex flex-col gap-1 p-3 sm:flex-row sm:gap-4">
+                    <dt className="shrink-0 sm:w-48">
+                      <Mono>{m.type}</Mono>
+                    </dt>
+                    <dd className="text-foreground">{m.when}</dd>
+                  </div>
+                ))}
+              </dl>
               <Sub>3. Show the connected Pages</Sub>
               <Note>
                 From <Mono>GET /sources</Mono>: <Mono>pageName</Mono> and <Mono>status</Mono>, shown as:
@@ -318,24 +307,14 @@ export function LeadCaptureGuide({ partnerName, apiBase, branding }: LeadCapture
             </ol>
 
             <Section eyebrow="If something goes wrong" title="What they might see instead">
-              <div className="overflow-x-auto rounded-lg border border-border">
-                <table className="w-full min-w-[480px] text-sm">
-                  <thead className="bg-muted text-muted-foreground">
-                    <tr>
-                      <th className="px-3 py-2 text-start font-medium">Message</th>
-                      <th className="px-3 py-2 text-start font-medium">What to do</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-foreground">
-                    {GUIDE_PROBLEMS.map((p) => (
-                      <tr key={p.message} className="border-t border-border align-top">
-                        <td className="px-3 py-2">&quot;{p.message}&quot;</td>
-                        <td className="px-3 py-2">{p.action}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <dl className="flex flex-col divide-y divide-border rounded-lg border border-border text-sm">
+                {GUIDE_PROBLEMS.map((p) => (
+                  <div key={p.message} className="flex flex-col gap-1 p-3 sm:flex-row sm:gap-4">
+                    <dt className="shrink-0 font-medium text-foreground sm:w-2/5">&quot;{p.message}&quot;</dt>
+                    <dd className="text-muted-foreground">{p.action}</dd>
+                  </div>
+                ))}
+              </dl>
             </Section>
           </TabsContent>
         </Tabs>

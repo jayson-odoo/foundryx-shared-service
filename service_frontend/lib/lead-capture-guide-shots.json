@@ -1,6 +1,98 @@
 {
-  "viewport": { "width": 760, "height": 900 },
+  "viewport": {
+    "width": 760,
+    "height": 720
+  },
   "video": "media/lead-capture-guide/walkthrough.webm",
   "captions": "media/lead-capture-guide/walkthrough.vtt",
-  "steps": {}
+  "steps": {
+    "channel": {
+      "file": "media/lead-capture-guide/channel.png",
+      "width": 760,
+      "height": 720,
+      "box": {
+        "x": 86,
+        "y": 253,
+        "width": 290,
+        "height": 70
+      }
+    },
+    "signin": {
+      "file": "media/lead-capture-guide/signin.png",
+      "width": 760,
+      "height": 720,
+      "box": {
+        "x": 86,
+        "y": 299,
+        "width": 588,
+        "height": 34
+      }
+    },
+    "page": {
+      "file": "media/lead-capture-guide/page.png",
+      "width": 760,
+      "height": 720,
+      "box": {
+        "x": 86,
+        "y": 391,
+        "width": 111,
+        "height": 34
+      }
+    },
+    "forms": {
+      "file": "media/lead-capture-guide/forms.png",
+      "width": 760,
+      "height": 720,
+      "box": {
+        "x": 86,
+        "y": 451,
+        "width": 94,
+        "height": 34
+      }
+    },
+    "fields": {
+      "file": "media/lead-capture-guide/fields.png",
+      "width": 760,
+      "height": 720,
+      "box": {
+        "x": 86,
+        "y": 615,
+        "width": 92,
+        "height": 34
+      }
+    },
+    "test": {
+      "file": "media/lead-capture-guide/test.png",
+      "width": 760,
+      "height": 720,
+      "box": {
+        "x": 86,
+        "y": 483,
+        "width": 113,
+        "height": 34
+      }
+    },
+    "finish": {
+      "file": "media/lead-capture-guide/finish.png",
+      "width": 760,
+      "height": 720,
+      "box": {
+        "x": 69,
+        "y": 484,
+        "width": 99,
+        "height": 34
+      }
+    },
+    "done": {
+      "file": "media/lead-capture-guide/done.png",
+      "width": 760,
+      "height": 720,
+      "box": {
+        "x": 69,
+        "y": 383,
+        "width": 57,
+        "height": 34
+      }
+    }
+  }
 }

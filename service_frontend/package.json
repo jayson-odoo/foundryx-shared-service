@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "capture:lead-capture-guide": "bash scripts/capture-lead-capture-guide.sh"
   },
   "dependencies": {
     "@auth/core": "^0.40.0",
