@@ -175,7 +175,12 @@ export function ResourceList<T extends object>({
     if (!urlState || typeof window === 'undefined') return;
     const url = new URL(window.location.href);
     url.searchParams.set('ctx', encodeListQuery(list.query));
-    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+    // `null`, never `window.history.state`: Next's patched replaceState skips
+    // syncing `useSearchParams()` for a state that carries its own `__NA`
+    // marker, so a later remount of this list (same page) restored the
+    // PAGE-LOAD ctx instead of the current one (#259). Next copies its own
+    // history internals onto the new entry itself.
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
   }, [urlState, list.query]);
 
   // Mirror the current ad-hoc filter tree out to the parent page (opt-in,

@@ -107,3 +107,9 @@ revoke/remove through the core grace-window engine.
   never had (e.g. mistyped on the gateway): "This receiver does not exist." (code `endpoint_not_found` either way).
 - CI: the AutoCount write-back deadline test runs on a fake clock (it failed on a busy runner).
 
+## Round 7 (crew-pass ffa60e3f NOT READY)
+- Any list that writes its state to the address bar keeps the CURRENT search / sort / filter / page when it is mounted
+  again on the same page (Delivery: Pull only, then Push to my system). Cause fixed in the shared list: it wrote with
+  `history.replaceState(history.state, ...)`, which Next's router does not sync to `useSearchParams()`; it now writes
+  with `null`, as the rest of the app does.
+
