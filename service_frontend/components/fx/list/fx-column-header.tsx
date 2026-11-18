@@ -79,8 +79,11 @@ export function FxColumnHeader<TData, TValue>({
     );
   }
 
+  // Amount columns right-align their header with their cells (FX-13); the
+  // sort arrow then sits at the start so it never covers the name.
+  const alignEnd = column.columnDef.meta?.fxAlign === 'end';
   const header = (
-    <span className="flex min-w-0 items-center">
+    <span className={cn('flex min-w-0 items-center', alignEnd && 'justify-end')}>
       {kind || canSort ? (
         <button
           type="button"
@@ -89,7 +92,8 @@ export function FxColumnHeader<TData, TValue>({
           aria-haspopup={kind === 'date' || kind === 'status' ? 'dialog' : undefined}
           onClick={onHeaderClick}
           className={cn(
-            'min-w-0 cursor-pointer break-words text-start text-[0.8125rem] font-semibold',
+            'min-w-0 cursor-pointer break-words text-[0.8125rem] font-semibold',
+            alignEnd ? 'text-end' : 'text-start',
             active ? 'text-(--fx-link)' : 'text-(--fx-ink-2)',
             PRESSED_CLASS,
           )}
@@ -108,7 +112,10 @@ export function FxColumnHeader<TData, TValue>({
         <span
           aria-hidden="true"
           data-fx-sort-arrow={sortDir}
-          className="absolute end-1 top-1/2 -translate-y-1/2 text-(--fx-link)"
+          className={cn(
+            'absolute top-1/2 -translate-y-1/2 text-(--fx-link)',
+            alignEnd ? 'start-1' : 'end-1',
+          )}
         >
           {sortDir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />}
         </span>

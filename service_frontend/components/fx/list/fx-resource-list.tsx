@@ -27,7 +27,7 @@
  *   actions as icon actions, Export and ×; floating at the lower edge on
  *   phones;
  * - the empty, nothing-matches, couldn't-load and no-access states
- *   (`FxListState`), smaller inside a record's tab;
+ *   (`FxListState`), smaller inside a record's tab (`fx.compactStates`);
  * - phone cards under 720px (`FxPhoneCards`), the view toggle hidden;
  * - Hold to Copy on the page's copyable columns (`config.fx.copyable`);
  * - the export panel's words (`ExportDialog` with the switch on).
@@ -87,6 +87,7 @@ import { FxListHeaderContext, type FxHeaderKind, type FxListHeaderContextValue }
 import {
   combineFilters,
   fxHeaderFilterKind,
+  fxStatusColumnIds,
   splitFilters,
   type FxHeaderFilters,
   type FxHeaderValue,
@@ -388,8 +389,8 @@ export function FxResourceList<T extends object>({
   const copyable = useMemo(() => new Set(config.fx?.copyable ?? []), [config.fx?.copyable]);
   const phoneHidden = useMemo(() => new Set(config.fx?.phoneHidden ?? []), [config.fx?.phoneHidden]);
   const statusIds = useMemo(
-    () => new Set(Object.entries(kinds).filter(([, k]) => k === 'status').map(([id]) => id)),
-    [kinds],
+    () => fxStatusColumnIds(kinds, config.fx?.columnKind),
+    [kinds, config.fx?.columnKind],
   );
 
   const defaultSort = config.defaultSort ?? null;
@@ -526,7 +527,7 @@ export function FxResourceList<T extends object>({
   const stateNode: ReactNode = stateKind ? (
     <FxListState
       kind={stateKind}
-      compact={Boolean(hideHeader)}
+      compact={Boolean(config.fx?.compactStates)}
       noun={noun}
       title={config.pageTitle ?? cap(noun)}
       canCreate={Boolean(config.onCreate) && (!config.createPermission || can(config.createPermission))}
@@ -549,9 +550,14 @@ export function FxResourceList<T extends object>({
     if (list.total > list.data.length) setAllMatching(true);
   };
 
-  // --- the red action: the list's own Create, unless the page names another
+  // --- the red action: the list's own Create, unless the page names another.
+  // A list without its own header hands it to the page header only when the
+  // page asks (`fx.createInPageHeader`, FX-17).
   const mayCreate = Boolean(config.onCreate) && (!config.createPermission || can(config.createPermission));
-  const createIsMain = !hideHeader && mayCreate && (config.fx?.mainActionId ?? 'create') === 'create';
+  const createIsMain =
+    (!hideHeader || config.fx?.createInPageHeader === true) &&
+    mayCreate &&
+    (config.fx?.mainActionId ?? 'create') === 'create';
   const createLabel = config.createLabel ?? 'Create';
   const fullLabel = config.fx?.fullLabel;
   const onCreate = config.onCreate;

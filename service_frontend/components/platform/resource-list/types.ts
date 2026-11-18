@@ -23,6 +23,12 @@ declare module '@tanstack/react-table' {
   interface ColumnMeta<TData extends RowData, TValue> {
     /** When false, the column can't be drag-reordered (e.g. select, actions). */
     reorderable?: boolean;
+    /**
+     * Foundryx UIUX switch only (FX-13): `'end'` right-aligns the column's
+     * header and cells together (amounts). Ignored with the switch off and on
+     * phone cards.
+     */
+    fxAlign?: 'start' | 'end';
   }
 }
 
@@ -202,7 +208,9 @@ export interface FxListConfig<T> {
   copyable?: string[];
   /** Column ids dropped from phone cards (F3b). */
   phoneHidden?: string[];
-  /** Header search and filter kind per column id (F3a). */
+  /** Header search and filter kind per column id (F3a). A `'status'` column
+   *  also takes the phone card's top line, with or without a filter field
+   *  (FX-13). */
   columnKind?: Record<string, FxColumnKind>;
   /** Phone card lines (F3b): column ids per line, in order. */
   cardLines?: string[][];
@@ -210,6 +218,14 @@ export interface FxListConfig<T> {
    *  empty, nothing-matches and couldn't-load words (F3b). Default: the
    *  page title in lower case, else "records". */
   noun?: string;
+  /** A list rendered without its own header (`hideHeader`) hands its Create
+   *  to the page header as the red action only when this is set (FX-17).
+   *  A list with its own header always does. */
+  createInPageHeader?: boolean;
+  /** The smaller empty, nothing-matches and couldn't-load words, for a list
+   *  inside a card or a record's tab (FX-17). `embeddedListConfig` sets it;
+   *  every other list shows the full size. */
+  compactStates?: boolean;
 }
 
 export interface ExportColumn {
