@@ -16,7 +16,7 @@
  *   (`useHideMainAction(true)`), so the page never shows two red actions.
  */
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { FxAnyIconName } from '@/components/fx/icons';
+import type { FxIconRef } from '@/components/fx/icons';
 
 export interface FxBlocked {
   /** The "why" under the button, e.g. "Tick at least one client." */
@@ -43,7 +43,9 @@ export interface FxMainActionSpec {
 export interface FxOtherActionSpec {
   id: string;
   label: string;
-  icon: FxAnyIconName;
+  /** A meaning (`'snooze'`, `'csv-down'`), or a drawn icon node for a
+   *  meaning the set does not hold. */
+  icon: FxIconRef;
   onClick: () => void;
   /** Greyed with its reason as the tooltip. */
   disabledReason?: string;

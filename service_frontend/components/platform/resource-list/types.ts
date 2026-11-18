@@ -186,8 +186,9 @@ export interface FxListConfig<T> {
   /** The red action's full label on hover and focus, from the ticked rows
    *  (or none): "Send 3 reminders for RM 18,200.00". */
   fullLabel?: (rows: T[]) => string;
-  /** The icon each Other Action shows, by action id (one icon per meaning). */
-  iconFor?: Record<string, import('@/components/fx/icons').FxAnyIconName>;
+  /** The icon each Other Action shows, by action id (one icon per meaning):
+   *  a meaning's name, or a drawn icon node. */
+  iconFor?: Record<string, import('@/components/fx/icons').FxIconRef>;
   /** Action ids that always sit in the More menu. */
   moreActionIds?: string[];
   /** Column ids whose values Hold to Copy copies (F3b). */
