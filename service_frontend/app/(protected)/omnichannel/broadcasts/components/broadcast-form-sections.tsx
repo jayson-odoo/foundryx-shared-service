@@ -30,6 +30,7 @@ import { StatusBadge } from '@/components/platform/status-badge';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import { useContactPicker } from '@/hooks/use-contact-picker';
 import { channelService } from '@/services/channel-service';
 import { conversationService } from '@/services/conversation-service';
@@ -38,6 +39,22 @@ import { zonedTimeToUtc, utcToZonedInputValue } from '@/lib/datetime';
 import type { Broadcast, BroadcastCounts, Channel, WhatsAppTemplate } from '@/types/omnichannel';
 import { BROADCAST_STATUS_REGISTRY } from './broadcast-status';
 import type { BroadcastFormValues } from './broadcast-schema';
+
+/**
+ * Foundryx UIUX only: a required field's visible label, its star hidden from
+ * screen readers so the field is named by its label alone ("Name"), while
+ * the switch-off text stays exactly "Name *".
+ */
+function requiredLabel(fx: boolean, text: string) {
+  return fx ? (
+    <>
+      {text}
+      <span aria-hidden="true"> *</span>
+    </>
+  ) : (
+    `${text} *`
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Details
@@ -62,6 +79,9 @@ export function DetailsSection({
   pulseTarget?: string;
 }) {
   const [draft, setDraft] = useState('');
+  // Foundryx UIUX switch: Name and Labels are named by their visible labels
+  // (`htmlFor` + `id`); with the switch off the markup is as today.
+  const fx = useFx();
 
   const addLabel = () => {
     const v = draft.trim();
@@ -80,12 +100,22 @@ export function DetailsSection({
       </CardHeader>
       <CardContent className="flex flex-col gap-4 py-4">
         <div className="space-y-1.5" data-fx-pulse-target={pulseTarget}>
-          <label className="text-sm text-muted-foreground">Name *</label>
-          <Input value={name} onChange={(e) => onNameChange(e.target.value)} disabled={!editing} />
+          <label className="text-sm text-muted-foreground" htmlFor={fx ? 'bc-name' : undefined}>
+            {requiredLabel(fx, 'Name')}
+          </label>
+          <Input
+            id={fx ? 'bc-name' : undefined}
+            aria-required={fx || undefined}
+            value={name}
+            onChange={(e) => onNameChange(e.target.value)}
+            disabled={!editing}
+          />
           {error && <ClampedText text={error} lines={2} className="text-xs text-destructive" />}
         </div>
         <div className="space-y-1.5">
-          <label className="text-sm text-muted-foreground">Labels</label>
+          <label className="text-sm text-muted-foreground" htmlFor={fx && editing ? 'bc-labels' : undefined}>
+            Labels
+          </label>
           <div className="flex flex-wrap items-center gap-1.5">
             {labels.map((l) => (
               <Badge key={l} size="sm" variant="secondary" appearance="light" className="gap-1">
@@ -104,6 +134,7 @@ export function DetailsSection({
             ))}
             {editing && (
               <Input
+                id={fx ? 'bc-labels' : undefined}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -168,6 +199,7 @@ export function ChannelSection({
   /** Foundryx UIUX only: `data-fx-pulse-target` on the Channel field. */
   pulseTarget?: string;
 }) {
+  const fx = useFx();
   return (
     <Card>
       <CardHeader>
@@ -175,13 +207,16 @@ export function ChannelSection({
       </CardHeader>
       <CardContent className="py-4">
         <div className="max-w-sm space-y-1.5" data-fx-pulse-target={pulseTarget}>
-          <label className="text-sm text-muted-foreground">Channel *</label>
+          <label className="text-sm text-muted-foreground" htmlFor={fx ? 'bc-channel' : undefined}>
+            {requiredLabel(fx, 'Channel')}
+          </label>
           <SearchSelect
+            id={fx ? 'bc-channel' : undefined}
             options={channels.map((c) => ({ label: c.name, value: c.id }))}
             value={value || null}
             onChange={onChange}
             disabled={!editing}
-            ariaLabel="Channel"
+            ariaLabel={fx ? undefined : 'Channel'}
             className="w-full"
           />
           {error && <ClampedText text={error} lines={2} className="text-xs text-destructive" />}
@@ -226,15 +261,19 @@ export function MessageSectionHeader({
   /** Foundryx UIUX only: `data-fx-pulse-target` on the Template field. */
   pulseTarget?: string;
 }) {
+  const fx = useFx();
   return (
     <div className="max-w-sm space-y-1.5" data-fx-pulse-target={pulseTarget}>
-      <label className="text-sm text-muted-foreground">Template *</label>
+      <label className="text-sm text-muted-foreground" htmlFor={fx ? 'bc-template' : undefined}>
+        {requiredLabel(fx, 'Template')}
+      </label>
       <SearchSelect
+        id={fx ? 'bc-template' : undefined}
         options={templates.map((t) => ({ label: `${t.name} (${t.language ?? 'default'})`, value: t.id }))}
         value={templateId || null}
         onChange={onChange}
         disabled={!editing}
-        ariaLabel="Template"
+        ariaLabel={fx ? undefined : 'Template'}
         className="w-full"
       />
       {error && <ClampedText text={error} lines={2} className="text-xs text-destructive" />}
@@ -441,6 +480,7 @@ export function TestSendDialog({
 }) {
   const [contactId, setContactId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const fx = useFx();
   // Server-searched A2 contact list (review round 1, S2) - the dialog only
   // needs contacts while open, but the picker's debounce/cache is cheap to
   // keep mounted regardless.
@@ -474,13 +514,16 @@ export function TestSendDialog({
         </DialogHeader>
         <DialogBody className="space-y-3">
           <div className="space-y-1.5">
-            <label className="text-sm text-muted-foreground">Contact</label>
+            <label className="text-sm text-muted-foreground" htmlFor={fx ? 'bc-test-contact' : undefined}>
+              Contact
+            </label>
             <SearchSelect
+              id={fx ? 'bc-test-contact' : undefined}
               options={contactOptions}
               value={contactId}
               onChange={setContactId}
               onQueryChange={setContactQuery}
-              ariaLabel="Test-send contact"
+              ariaLabel={fx ? undefined : 'Test-send contact'}
               className="w-full"
             />
           </div>

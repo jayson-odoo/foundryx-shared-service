@@ -121,16 +121,19 @@ function FxScheduleSection({
                 </div>
               </div>
               <div className="flex flex-col gap-1.5">
-                <span className="text-sm font-semibold text-(--fx-ink-2)">
+                <label
+                  htmlFor="bc-schedule-time"
+                  className="text-sm font-semibold text-(--fx-ink-2)"
+                >
                   Time
-                </span>
+                </label>
                 <FxField>
                   <div data-fx-pulse-target={BC_PULSE.time}>
                     <SearchSelect
+                      id="bc-schedule-time"
                       options={timeOptions(parts.time)}
                       value={parts.time}
                       onChange={(time) => onParts({ ...parts, time })}
-                      ariaLabel="Time"
                       className="w-full"
                     />
                   </div>
