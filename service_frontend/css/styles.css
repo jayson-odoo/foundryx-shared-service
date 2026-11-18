@@ -373,3 +373,58 @@
     transition: none;
   }
 }
+
+/* Attention pulse (playbook "Blocked red action"): the element a blocked
+   action waits for swells to x1.08 and settles, with a soft red glow behind
+   it shaped like the element, over 1.8 s. Set by pulseFxTarget()
+   (components/fx/actions/pulse.ts) as `data-fx-pulsing`. Reduced motion keeps
+   it on purpose (it says what to do), so it names its own 1.8 s rather than
+   the --fx-t-pulse token, which reduced motion stills. Never a box: no
+   shadow, outline or border. Inputs draw no ::after, so a field names its
+   wrapper as the target. */
+@keyframes fx-need {
+  0%,
+  100% {
+    scale: 1;
+  }
+  35% {
+    scale: 1.08;
+  }
+}
+
+@keyframes fx-need-glow {
+  0% {
+    opacity: 0;
+    scale: 0.7;
+  }
+  30% {
+    opacity: 1;
+    scale: 1;
+  }
+  100% {
+    opacity: 0;
+    scale: 1.15;
+  }
+}
+
+:root[data-fx='on'] [data-fx-pulsing] {
+  position: relative;
+  z-index: 0;
+  animation: fx-need 1.8s var(--fx-ease-in-out) 1;
+}
+
+:root[data-fx='on'] [data-fx-pulsing]::after {
+  content: '';
+  position: absolute;
+  inset: -18px -24px;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    rgba(var(--fx-act-rgb), 0.38),
+    rgba(var(--fx-act-rgb), 0)
+  );
+  filter: blur(6px);
+  pointer-events: none;
+  animation: fx-need-glow 1.8s var(--fx-ease-out) forwards;
+}

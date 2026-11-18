@@ -86,6 +86,10 @@ From the build:
 - **Layers** map onto SS's named z-scale: `--fx-z-header` = `--z-header` (10), `--fx-z-pop` 40, `--fx-z-dialog` = `--z-modal` (50), SS's banner 60, `--fx-z-toast` 70, `--fx-z-tip` 1000.
 - **Theme panel copy:** the panel shows no explanatory sentences (the playbook draft's "Saved in this browser..." line and the mock's "Off: SS looks and works exactly as today..." line), because SS's foolproof-UI rule bans instructional copy on screen.
 - **Phones:** the Theme entry sits in the user menu, not the top bar (see "How the switch is built").
+- **Confirm dialogs:** which actions ask first is unchanged (SS's carve-out list). Plain confirms get the 3 s press and hold; the typed ones (module uninstall, tenant purge, bulk share revoke) type the record's name or number instead of holding (gap-audit choice), matched ignoring case and spaces, with the action greyed and "Type the name to confirm." under it until it matches. The safe button is "Keep" plus the action's object ("Keep tenant"), or "Go back" when the action names no object. Discard changes is a single click.
+- **Undo by waiting:** the tenant windows stay (10 s deletes, 5 s otherwise, Settings > General); under the switch the countdown reads "Deleting 12 contacts in 8 s" with "Undo", and it does not pause under the pointer because the server's clock does not stop. Done toasts (`toast.fxDone`) keep the playbook's 6 s with a pause.
+- **The attention pulse keeps its 1.8 s under reduced motion** (the playbook says it is not decoration), so it names its own duration rather than the `--fx-t-pulse` token, which reduced motion stills.
+- **Keyboard focus slides an icon action's label out** (playbook) although SS's design language bans motion on a keyboard-initiated action; the playbook rule wins under the switch, and reduced motion still stops it.
 
 ## Mocks
 
