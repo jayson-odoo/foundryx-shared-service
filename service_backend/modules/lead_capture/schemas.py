@@ -265,6 +265,56 @@ class LoginConfig(BaseModel):
     scopes: List[str]
 
 
+class GoogleLoginConfig(BaseModel):
+    """Google sign-in for the hosted wizard (plan 68). ``simulated`` = no
+    Google client on this server: any code works."""
+
+    available: bool
+    simulated: bool
+    clientId: Optional[str] = None
+    scopes: List[str]
+
+
+class GoogleLoginRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=2048)
+    redirectUri: Optional[str] = Field(default=None, max_length=500)
+
+
+class GoogleAccount(BaseModel):
+    id: str
+    name: str
+
+
+class GoogleAccountList(BaseModel):
+    data: List[GoogleAccount]
+
+
+class GoogleLeadForm(BaseModel):
+    id: str
+    name: str
+
+
+class GoogleLeadFormList(BaseModel):
+    data: List[GoogleLeadForm]
+
+
+class GoogleConnectRequest(BaseModel):
+    accountId: str = Field(min_length=1, max_length=32)
+    formIds: List[str] = Field(default_factory=list, max_length=200)
+
+
+class GoogleFormResult(BaseModel):
+    id: str
+    name: str
+    ok: bool
+    message: Optional[str] = None
+
+
+class GoogleConnectResult(BaseModel):
+    source: SourceItem
+    forms: List[GoogleFormResult]
+
+
 class FacebookLoginRequest(BaseModel):
     code: str = Field(min_length=1, max_length=2048)
     redirectUri: Optional[str] = Field(default=None, max_length=2048)
@@ -306,6 +356,7 @@ class WizardContext(BaseModel):
     branding: WizardBranding
     channels: List[Channel]
     login: LoginConfig
+    googleLogin: GoogleLoginConfig
     returnOrigin: Optional[str] = None
     source: Optional[SourceItem] = None
 

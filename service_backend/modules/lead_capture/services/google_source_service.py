@@ -63,13 +63,34 @@ def inbound_url(source: LcSource) -> str:
     return f"{settings.public_base_url.rstrip('/')}{INBOUND_PATH}{source.source_key}"
 
 
-def _google_key(source: LcSource) -> Optional[str]:
+def _credentials(source: LcSource) -> Dict[str, Any]:
     if not source.credentials_encrypted:
-        return None
+        return {}
     try:
-        return str(decrypt_secret(source.credentials_encrypted).get("googleKey") or "") or None
+        data = decrypt_secret(source.credentials_encrypted)
     except Exception:  # noqa: BLE001 - undecryptable = no usable key (403, never 500)
-        return None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _google_key(source: LcSource) -> Optional[str]:
+    return str(_credentials(source).get("googleKey") or "") or None
+
+
+def current_key(source: LcSource) -> Optional[str]:
+    """The source's Google key, server side only (plan 68 writes it into the
+    customer's Google Ads forms)."""
+    return _google_key(source)
+
+
+def store_refresh_token(source: LcSource, refresh_token: Optional[str]) -> None:
+    """Keep the Google sign-in's refresh token (Fernet) next to the key, for
+    later health checks / re-apply (plan 68 G-D3). No commit."""
+    if not refresh_token:
+        return
+    creds = _credentials(source)
+    creds["googleRefreshToken"] = refresh_token
+    source.credentials_encrypted = encrypt_secret(creds)
 
 
 def create_guided_source(
@@ -104,7 +125,9 @@ def rotate_key(db: Session, tenant_id: str, source_id: str, *, actor: Actor) -> 
     if source.status == SOURCE_DISCONNECTED:
         raise SourceError(409, "source_disconnected", "This source is disconnected.")
     key = _new_secret()
-    source.credentials_encrypted = encrypt_secret({"googleKey": key})
+    creds = _credentials(source)
+    creds["googleKey"] = key
+    source.credentials_encrypted = encrypt_secret(creds)
     source_service.record_event(db, source, ACTION_KEY_ROTATED, actor)
     db.commit()
     db.refresh(source)
