@@ -1208,3 +1208,20 @@ def test_n1_the_orphan_fence_before_a_429_sleep_stops_as_job_orphaned(session_fa
     # The runner's own wait (Retry-After 1, after the sink's internal ones)
     # never happens: the fence fires first, so no further POSTs either.
     assert bf.error_code != "SINK_ERROR"
+
+
+def test_s03_the_feed_view_carries_the_floor_and_the_completed_from_day(session_factory):
+    """The Backfill dialog derives the run-once rule from these two values."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+
+    view = DocFeedService(db).view(co.tenant_id, co.id)
+    item = next(i for i in view.feeds if i.feed == "delivery_orders")
+    assert item.backfillFloor == date(2019, 1, 1)
+    assert item.fullBackfillFromDay is None
+
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+    view = DocFeedService(db).view(co.tenant_id, co.id)
+    item = next(i for i in view.feeds if i.feed == "delivery_orders")
+    assert item.fullBackfillFromDay == date(2023, 1, 1)

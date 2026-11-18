@@ -173,6 +173,11 @@ class DocFeedService:
             lastPollOkAt=row.last_poll_ok_at if row else None,
             lastSweepOkAt=row.last_sweep_ok_at if row else None,
             fullBackfillDoneAt=row.full_backfill_done_at if row else None,
+            backfillFloor=date.fromisoformat(BACKFILL_FROM_DEFAULT),
+            fullBackfillFromDay=(
+                self.backfills.earliest_completed_live_from_day(tenant_id, row.id)
+                if row and row.full_backfill_done_at is not None else None
+            ),
             contractGate=DocFeedContractGateOut(**gate) if gate else None,
             retryableCount=counts.get("retryable", 0),
             failedCount=counts.get("failed", 0),
