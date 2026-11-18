@@ -500,6 +500,19 @@ export const mockIdeationService: IdeaService & IdeaExtendedOps = {
     return { available: true, ideas: await Promise.all(ideas.map((i) => mockIdeationService.getIdea(i.id))) };
   },
 
+  async markReal(id: string): Promise<Idea> {
+    const rec = requireRecord(id);
+    if (rec.idea.mergedIntoId) {
+      const survivor = findRecord(rec.idea.mergedIntoId);
+      throw new Error(`This feedback was merged into ${survivor?.idea.ideaNumber ?? 'another item'}.`);
+    }
+    if (!rec.idea.isTest) throw new Error('This feedback is already a real item.');
+    for (const r of records) {
+      if (r.idea.id === id || r.idea.mergedIntoId === id) r.idea.isTest = false;
+    }
+    return mockIdeationService.getIdea(id);
+  },
+
   async unmerge(id: string): Promise<Idea[]> {
     const rec = requireRecord(id);
     const children = records.filter((r) => r.idea.mergedIntoId === id);

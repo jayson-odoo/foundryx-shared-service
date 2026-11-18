@@ -7,6 +7,7 @@ import { useForm, type UseFormReturn } from 'react-hook-form';
 import {
   Archive,
   ArchiveRestore,
+  BadgeCheck,
   Bell,
   History,
   Link2,
@@ -327,6 +328,28 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
                   run: async (rows: Idea[]) => {
                     await ideaFollowerService.stopSharing(rows[0].id);
                     toast.success('The share link no longer works.');
+                  },
+                } satisfies ResourceAction<Idea>,
+                {
+                  // Lane FEEDBACK-WA-TEST-FLAG: a real filing that arrived
+                  // flagged as a test item can be shared and followed once
+                  // staff mark it real (its merged items come along).
+                  id: 'mark-real',
+                  label: 'Mark as real item',
+                  icon: BadgeCheck,
+                  permission: 'ideation.triage.manage',
+                  surfaces: { row: false, form: true, bulk: false },
+                  isVisible: (rows: Idea[]) => rows.every((r) => r.isTest),
+                  run: async (rows: Idea[]) => {
+                    if (!ideationService.markReal) return;
+                    try {
+                      const updated = await ideationService.markReal(rows[0].id);
+                      setIdea(updated);
+                      form.reset(toFormValues(updated));
+                      toast.success('Marked as a real item.');
+                    } catch (e) {
+                      toast.error(e instanceof Error && e.message ? e.message : 'Could not mark the feedback as real.');
+                    }
                   },
                 } satisfies ResourceAction<Idea>,
               ]
