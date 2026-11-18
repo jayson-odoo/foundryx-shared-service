@@ -23,10 +23,16 @@ const BACKEND =
   'http://localhost:8001';
 
 export const config = {
-  matcher: ['/embed/omnichannel/:path*', '/public/webchat/:widgetKey*', '/public/feedback/board/:path*'],
+  matcher: [
+    '/embed/omnichannel/:path*',
+    '/public/webchat/:widgetKey*',
+    '/public/feedback/board/:path*',
+    '/public/lead-capture/:path*',
+  ],
 };
 
 const BOARD_PREFIX = '/public/feedback/board/';
+const LEAD_CAPTURE_PREFIX = '/public/lead-capture/';
 const DEFAULT_BOARD_FRAME_ANCESTORS = 'https://fe-sorento.foundryx.my';
 
 /**
@@ -88,6 +94,16 @@ async function fetchAllowedOrigins(url: string): Promise<string[]> {
 export async function middleware(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.next();
   const { pathname, searchParams } = req.nextUrl;
+
+  if (pathname.startsWith(LEAD_CAPTURE_PREFIX)) {
+    // The hosted Lead Capture wizard opens as a top-level popup only (plan 64
+    // L-C): nothing may frame it (a framed look-alike could walk a Page owner
+    // through connecting their Page), and its URL never leaves as a Referer.
+    res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+    res.headers.set('X-Frame-Options', 'DENY');
+    res.headers.set('Referrer-Policy', 'no-referrer');
+    return res;
+  }
 
   if (pathname.startsWith(BOARD_PREFIX)) {
     res.headers.set('Content-Security-Policy', `frame-ancestors ${boardFrameAncestors()}`);
