@@ -107,7 +107,9 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
         meta: { headerTitle: 'Status' },
         header: ({ column }) => <DataGridColumnHeader title="Status" column={column} />,
         cell: ({ row }) => <StatusBadge status={row.original.status} registry={SOURCE_STATUS_REGISTRY} />,
-        size: 150,
+        // "Waiting for test" must fit at 1280 px without being cut (crew pass 3208a91e).
+        size: 190,
+        minSize: 190,
         enableSorting: true,
       },
       {
@@ -179,7 +181,7 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
       actions,
       searchPlaceholder: 'Search sources',
       defaultSort: { id: 'createdAt', desc: true },
-      createLabel: 'Connect a source',
+      createLabel: 'Create',
       createPermission: 'lead_capture.manage',
       onCreate: () => openWizard(),
     };

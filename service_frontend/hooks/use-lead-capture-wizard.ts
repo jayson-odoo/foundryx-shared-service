@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
+import { copyText } from '@/lib/clipboard';
 import { launchMetaOAuth } from '@/lib/embedded-signup';
 import { launchGoogleOAuth } from '@/lib/google-oauth';
 import { postToOpener } from '@/lib/lead-capture-post-message';
@@ -257,9 +258,7 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     async (which: 'url' | 'key') => {
       const value = which === 'url' ? state.guided?.url : state.guided?.key;
       if (!value) return;
-      try {
-        await navigator.clipboard.writeText(value);
-      } catch {
+      if (!(await copyText(value))) {
         setProblem({ screen: 'generic', message: 'Copy did not work. Select the text and copy it.' });
         return;
       }
