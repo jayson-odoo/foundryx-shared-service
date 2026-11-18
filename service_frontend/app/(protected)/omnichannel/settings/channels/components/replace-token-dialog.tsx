@@ -7,7 +7,6 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -142,9 +141,8 @@ function FxReplaceTokenDialog({ channel, open, onOpenChange, onReplaced }: Repla
   return (
     <Dialog open={open} onOpenChange={(next) => !(saving && !next) && onOpenChange(next)}>
       <FxHideMainWhile open={open} />
-      <DialogContent className={FX_DIALOG_CLASS}>
+      <DialogContent className={FX_DIALOG_CLASS} aria-describedby={undefined}>
         <DialogTitle className={FX_DIALOG_TITLE_CLASS}>Replace the token for {channel.name}</DialogTitle>
-        <DialogDescription className="sr-only">Replace the token for {channel.name}</DialogDescription>
         <div className="flex flex-col gap-1.5">
           <label htmlFor={FX_INPUT_ID} className={FX_LABEL_CLASS}>
             {LABEL}

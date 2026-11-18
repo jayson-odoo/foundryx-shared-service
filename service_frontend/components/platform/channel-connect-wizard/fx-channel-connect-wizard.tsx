@@ -18,7 +18,7 @@
  */
 import type { ReactNode } from 'react';
 import { CheckCircle2, Inbox, Loader2 } from 'lucide-react';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { SearchSelect } from '@/components/platform/search-select';
@@ -332,9 +332,8 @@ export function FxChannelConnectWizard({
   return (
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
       <FxHideMainWhile open={open} />
-      <DialogContent className={FX_DIALOG_CLASS} data-fx-connect-wizard="">
+      <DialogContent className={FX_DIALOG_CLASS} aria-describedby={undefined} data-fx-connect-wizard="">
         <DialogTitle className={FX_DIALOG_TITLE_CLASS}>{title}</DialogTitle>
-        <DialogDescription className="sr-only">{title}</DialogDescription>
         {body}
         {footer}
       </DialogContent>

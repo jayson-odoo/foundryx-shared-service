@@ -5,7 +5,6 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -40,11 +39,10 @@ function FxWebhookSecretDialog({ secret, name, onOpenChange }: WebhookSecretDial
   return (
     <Dialog open={secret !== null} onOpenChange={onOpenChange}>
       <FxHideMainWhile open={secret !== null} />
-      <DialogContent className={FX_DIALOG_CLASS}>
+      <DialogContent className={FX_DIALOG_CLASS} aria-describedby={undefined}>
         <DialogTitle className={FX_DIALOG_TITLE_CLASS}>
           {name ? `New signing secret for ${name}` : 'New signing secret'}
         </DialogTitle>
-        <DialogDescription className="sr-only">New signing secret</DialogDescription>
         {secret && <WebhookSecretPanel secret={secret} />}
         <FxDialogFooter action={{ label: 'Done', onClick: () => onOpenChange(false) }} />
       </DialogContent>

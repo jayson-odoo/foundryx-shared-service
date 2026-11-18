@@ -17,7 +17,7 @@ import Link from 'next/link';
 import { ChevronLeft, Code2, LoaderCircleIcon } from 'lucide-react';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { PageHeader } from '@/components/platform/page-header';
 import { FxDiscardDialog } from '@/components/fx/actions/confirm-dialog';
 import {
@@ -67,7 +67,6 @@ export function FxTemplateBuilderView({ channelId, templateId }: TemplateBuilder
       onClick: () => void onSaveDraft(),
       working: saving,
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers read `run`
   }, [b.loading, b.notFound, canSubmit, readOnly, saveLabel, doc.name, saving, submitting]);
   useRegisterMainAction(main);
 
@@ -92,7 +91,6 @@ export function FxTemplateBuilderView({ channelId, templateId }: TemplateBuilder
       });
     }
     return list;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers read `run`
   }, [b.loading, b.notFound, canSubmit, readOnly, saveLabel, saving, submitting, setPayloadOpen]);
   useRegisterOtherActions(others);
 
@@ -160,9 +158,8 @@ export function FxTemplateBuilderView({ channelId, templateId }: TemplateBuilder
       </div>
 
       <Dialog open={b.payloadOpen} onOpenChange={b.setPayloadOpen}>
-        <DialogContent className="max-w-2xl rounded-(--fx-r-l) border-(--fx-line) bg-(--fx-surface) p-6 text-(--fx-ink) max-sm:w-[calc(100%-32px)]">
+        <DialogContent aria-describedby={undefined} className="max-w-2xl rounded-(--fx-r-l) border-(--fx-line) bg-(--fx-surface) p-6 text-(--fx-ink) max-sm:w-[calc(100%-32px)]">
           <DialogTitle className="text-lg font-bold">Payload for {name}</DialogTitle>
-          <DialogDescription className="sr-only">The components sent to WhatsApp</DialogDescription>
           <pre className="max-h-[60vh] overflow-auto rounded-(--fx-r-m) bg-(--fx-surface-2) p-3 text-xs">
             {JSON.stringify(toMetaComponents(doc), null, 2)}
           </pre>

@@ -8,7 +8,6 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -354,9 +353,8 @@ export function ChannelWidgetTab({ form, editing, channelId, webchatConfig }: Ch
           />
           <Dialog open={!!rotatedSecret} onOpenChange={(o) => !o && setRotatedSecret(null)}>
             <FxHideMainWhile open={!!rotatedSecret} />
-            <DialogContent className={FX_DIALOG_CLASS}>
+            <DialogContent className={FX_DIALOG_CLASS} aria-describedby={undefined}>
               <DialogTitle className={FX_DIALOG_TITLE_CLASS}>New widget secret</DialogTitle>
-              <DialogDescription className="sr-only">New widget secret</DialogDescription>
               {rotatedSecret && <FxSecretOnce value={rotatedSecret} label="Widget secret" />}
               <FxDialogFooter action={{ label: 'Done', onClick: () => setRotatedSecret(null), disabled: rotating }} />
             </DialogContent>
