@@ -282,3 +282,87 @@ def test_gateway_rotate_is_tenant_scoped(client, lc):
     )
     assert res.status_code == 404
     assert _post(client, made["url"], _google_body(made["key"])).status_code == 200
+
+
+# ── R9 hosted wizard, guided path ───────────────────────────────────────────
+
+def _wiz(client):
+    from tests.test_lead_capture_lc import _key_with_origins, _wizard
+
+    admin = _login(client)
+    key, _ = _key_with_origins(client, admin)
+    return _wizard(client, key)
+
+
+def test_wizard_lists_google_as_a_guided_channel(client, lc):
+    wiz = _wiz(client)
+    channels = client.get("/public/lead-capture/wizard/context", headers=wiz).json()["channels"]
+    assert {"key": "google", "label": "Google Ads", "setup": "guided"} in channels
+
+
+def test_wizard_creates_its_google_source_once_and_binds_it(client, lc, posts):
+    wiz = _wiz(client)
+    res = client.post("/public/lead-capture/wizard/google/source", headers=wiz)
+    assert res.status_code == 201, res.text
+    made = res.json()
+    sid = made["source"]["id"]
+    ctx = client.get("/public/lead-capture/wizard/context", headers=wiz).json()
+    assert ctx["source"]["id"] == sid and ctx["source"]["platform"] == "google"
+    # asking again in the same session shows the same URL with a fresh key (the old one stops)
+    again = client.post("/public/lead-capture/wizard/google/source", headers=wiz).json()
+    assert again["source"]["id"] == sid and again["url"] == made["url"] and again["key"] != made["key"]
+    assert _post(client, made["url"], _google_body(made["key"])).status_code == 403
+    assert _post(client, again["url"], _google_body(again["key"])).status_code == 200
+
+
+def test_wizard_test_step_sees_the_google_test_lead_and_its_form(client, lc, posts):
+    wiz = _wiz(client)
+    made = client.post("/public/lead-capture/wizard/google/source", headers=wiz).json()
+    sid = made["source"]["id"]
+    before = client.get(f"/public/lead-capture/wizard/sources/{sid}/test-lead", headers=wiz).json()
+    assert before["leadId"] is None
+    extra = [{"column_name": "What is your budget?", "string_value": "Under 10k"}]
+    assert _post(client, made["url"], _google_body(made["key"], extra_columns=extra)).status_code == 200
+    after = client.get(f"/public/lead-capture/wizard/sources/{sid}/test-lead", headers=wiz).json()
+    assert after["leadId"] and after["formId"] == str(GOOGLE_FORM)
+    # Fields step: the form's questions come from the lead Google sent, with Google's labels
+    qs = client.get(f"/public/lead-capture/wizard/sources/{sid}/forms/{GOOGLE_FORM}/questions", headers=wiz)
+    assert qs.status_code == 200, qs.text
+    data = qs.json()["data"]
+    assert [q["key"] for q in data] == ["FULL_NAME", "EMAIL", "PHONE_NUMBER", "What is your budget?"]
+    assert [q["label"] for q in data] == ["Full Name", "User Email", "User Phone", "What is your budget?"]
+    # map the custom question, then Done
+    fields = client.get("/public/lead-capture/wizard/fields", headers=wiz).json()["data"]
+    notes = next(f["key"] for f in fields if f["type"] == "notes")
+    res = client.put(
+        f"/public/lead-capture/wizard/sources/{sid}/field-map",
+        json={"formId": str(GOOGLE_FORM), "map": {"What is your budget?": notes}},
+        headers=wiz,
+    )
+    assert res.status_code == 200, res.text
+    done = client.post("/public/lead-capture/wizard/finish", headers=wiz).json()
+    assert done["source"]["platform"] == "google" and done["testLeadAt"]
+
+
+def test_google_questions_with_no_lead_yet_is_an_empty_list(client, lc):
+    wiz = _wiz(client)
+    sid = client.post("/public/lead-capture/wizard/google/source", headers=wiz).json()["source"]["id"]
+    res = client.get(f"/public/lead-capture/wizard/sources/{sid}/forms/{GOOGLE_FORM}/questions", headers=wiz)
+    assert res.status_code == 200 and res.json()["data"] == []
+
+
+def test_a_facebook_session_cannot_make_a_google_source(client, lc):
+    from modules.lead_capture.models import PLATFORM_FACEBOOK, LcConnectSession
+
+    wiz = _wiz(client)
+    made = client.post("/public/lead-capture/wizard/google/source", headers=wiz).json()
+    db = lc()
+    try:
+        src = db.query(LcSource).filter(LcSource.id == made["source"]["id"]).one()
+        src.platform = PLATFORM_FACEBOOK  # the session is now bound to a non-Google source
+        db.commit()
+        assert db.query(LcConnectSession).count() >= 1
+    finally:
+        db.close()
+    res = client.post("/public/lead-capture/wizard/google/source", headers=wiz)
+    assert res.status_code == 409

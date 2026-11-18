@@ -217,7 +217,7 @@ def test_wizard_token_is_scoped_to_wizard_routes(client, lc):
     ctx = client.get("/public/lead-capture/wizard/context", headers=wiz)
     assert ctx.status_code == 200, ctx.text
     assert ctx.json()["returnOrigin"] == ORIGIN
-    assert [c["key"] for c in ctx.json()["channels"]] == ["facebook"]
+    assert [c["key"] for c in ctx.json()["channels"]] == ["facebook", "google"]
     # Staff and gateway routes refuse it.
     assert client.get("/lead-capture/sources", headers=wiz).status_code == 401
     assert client.get("/api/v1/lead-capture/sources", headers=wiz).status_code == 401
@@ -439,7 +439,7 @@ def test_facebook_hidden_when_app_set_but_no_login_config(client, lc, monkeypatc
     monkeypatch.setattr(settings, "lead_capture_login_config_id", "")
     admin = _login(client)
     key, _ = _key_with_origins(client, admin)
-    assert client.get("/api/v1/lead-capture/channels", headers=_gw(key)).json()["data"] == []
+    assert [c["key"] for c in client.get("/api/v1/lead-capture/channels", headers=_gw(key)).json()["data"]] == ["google"]
     wiz = _wizard(client, key)
     res = client.post("/public/lead-capture/wizard/facebook/login", json={"code": FB_CODE}, headers=wiz)
     assert res.status_code == 409
