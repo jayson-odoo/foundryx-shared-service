@@ -7,9 +7,26 @@
  * Sending, Queued, Sent, Delivered, Read or Not sent (with the reason under
  * the bubble). The word is the icon's tooltip and its screen-reader name.
  */
-import { AlertTriangle, Check, CheckCheck, Clock, Copy, Link2, Reply, SmilePlus, StickyNote, X } from 'lucide-react';
-
-import { FxTooltip } from '@/components/fx/fx-tooltip';
+import {
+  AlertTriangle,
+  Check,
+  CheckCheck,
+  Clock,
+  Copy,
+  Link2,
+  Reply,
+  SmilePlus,
+  StickyNote,
+  X,
+} from 'lucide-react';
+import type {
+  ConversationMessage,
+  DeliveryStatus,
+  ReplyRef,
+} from '@/types/omnichannel';
+import { formatTime as formatTimeUtc } from '@/lib/datetime';
+import { EMOJI_GROUPS } from '@/lib/emoji';
+import { cn } from '@/lib/utils';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -20,24 +37,22 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
-import { formatTime as formatTimeUtc } from '@/lib/datetime';
-import { EMOJI_GROUPS } from '@/lib/emoji';
-import { cn } from '@/lib/utils';
-import type { ConversationMessage, DeliveryStatus, ReplyRef } from '@/types/omnichannel';
-
-import { MessageMedia, isMediaMessage } from '../message-media';
-import { MessageStructured, isStructuredMessage } from '../message-structured';
+import { FxTooltip } from '@/components/fx/fx-tooltip';
 import {
-  HighlightedText,
-  QUICK_EMOJIS,
   copyText,
+  HighlightedText,
   messageLink,
+  QUICK_EMOJIS,
   type MessageBubbleProps,
 } from '../message-bubble';
+import { isMediaMessage, MessageMedia } from '../message-media';
+import { isStructuredMessage, MessageStructured } from '../message-structured';
 
 /** What an agent's message is doing now, in words (pure, tested). `null`
  *  only means "Sending" for the composer's own optimistic bubble. */
-export function fxDeliveryLabel(message: Pick<ConversationMessage, 'id' | 'deliveryStatus'>): string | null {
+export function fxDeliveryLabel(
+  message: Pick<ConversationMessage, 'id' | 'deliveryStatus'>,
+): string | null {
   const status: DeliveryStatus | null = message.deliveryStatus;
   switch (status) {
     case 'QUEUED':
@@ -73,16 +88,30 @@ function FxDeliveryState({ message }: { message: ConversationMessage }) {
     );
   return (
     <FxTooltip label={label}>
-      <span role="img" aria-label={label} data-testid="fx-delivery" data-fx-delivery={label} className="inline-flex">
+      <span
+        role="img"
+        aria-label={label}
+        data-testid="fx-delivery"
+        data-fx-delivery={label}
+        className="inline-flex"
+      >
         {icon}
       </span>
     </FxTooltip>
   );
 }
 
-function FxQuotedBlock({ replyTo, contactName }: { replyTo: ReplyRef; contactName?: string }) {
+function FxQuotedBlock({
+  replyTo,
+  contactName,
+}: {
+  replyTo: ReplyRef;
+  contactName?: string;
+}) {
   const author =
-    replyTo.senderType === 'CONTACT' ? (contactName ?? 'Customer') : (replyTo.senderName ?? 'Agent');
+    replyTo.senderType === 'CONTACT'
+      ? (contactName ?? 'Customer')
+      : (replyTo.senderName ?? 'Agent');
   return (
     <div
       className="mb-1.5 rounded-(--fx-r-s) border-s-2 border-(--fx-link) bg-(--fx-surface)/70 px-2.5 py-1.5 text-xs"
@@ -94,7 +123,13 @@ function FxQuotedBlock({ replyTo, contactName }: { replyTo: ReplyRef; contactNam
   );
 }
 
-function FxReactionChips({ message, align }: { message: ConversationMessage; align: 'start' | 'end' }) {
+function FxReactionChips({
+  message,
+  align,
+}: {
+  message: ConversationMessage;
+  align: 'start' | 'end';
+}) {
   if (message.reactions.length === 0) return null;
   const counts = message.reactions.reduce<Record<string, number>>((acc, r) => {
     acc[r.emoji] = (acc[r.emoji] ?? 0) + 1;
@@ -102,7 +137,10 @@ function FxReactionChips({ message, align }: { message: ConversationMessage; ali
   }, {});
   return (
     <div
-      className={cn('mt-1 flex flex-wrap gap-1', align === 'end' ? 'justify-end' : 'justify-start')}
+      className={cn(
+        'mt-1 flex flex-wrap gap-1',
+        align === 'end' ? 'justify-end' : 'justify-start',
+      )}
       data-testid="reaction-chips"
     >
       {Object.entries(counts).map(([emoji, count]) => (
@@ -185,9 +223,16 @@ export function FxMessageBubble({
                 isActiveMatch && 'ring-2 ring-(--fx-link)',
               )}
             >
-              {message.replyTo && <FxQuotedBlock replyTo={message.replyTo} contactName={contactName} />}
+              {message.replyTo && (
+                <FxQuotedBlock
+                  replyTo={message.replyTo}
+                  contactName={contactName}
+                />
+              )}
               {message.messageType === 'TEMPLATE' && (
-                <div className="mb-1 text-xs font-semibold text-(--fx-ink-3)">Template</div>
+                <div className="mb-1 text-xs font-semibold text-(--fx-ink-3)">
+                  Template
+                </div>
               )}
               {isStructuredMessage(message) ? (
                 <MessageStructured message={message} />
@@ -201,7 +246,12 @@ export function FxMessageBubble({
                   )}
                 </div>
               ) : message.mediaUrl ? (
-                <a href={message.mediaUrl} target="_blank" rel="noreferrer" className="text-(--fx-link) underline underline-offset-2">
+                <a
+                  href={message.mediaUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-(--fx-link) underline underline-offset-2"
+                >
                   {message.body ?? 'Attachment'}
                 </a>
               ) : (
@@ -215,18 +265,27 @@ export function FxMessageBubble({
               </div>
             </div>
             {failed && message.errorMessage && (
-              <p className="mt-1 text-end text-xs text-(--fx-act)" data-testid="bubble-error">
+              <p
+                className="mt-1 text-end text-xs text-(--fx-act)"
+                data-testid="bubble-error"
+              >
                 {message.errorMessage}
               </p>
             )}
-            <FxReactionChips message={message} align={isAgent ? 'end' : 'start'} />
+            <FxReactionChips
+              message={message}
+              align={isAgent ? 'end' : 'start'}
+            />
           </div>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent data-testid="bubble-menu">
         {onReact && (
           <>
-            <div className="flex items-center gap-0.5 px-1 py-0.5" data-testid="react-row">
+            <div
+              className="flex items-center gap-0.5 px-1 py-0.5"
+              data-testid="react-row"
+            >
               {QUICK_EMOJIS.map((emoji) => (
                 <ContextMenuItem
                   key={emoji}
@@ -249,7 +308,9 @@ export function FxMessageBubble({
                 <ContextMenuSubContent className="max-h-64 w-64 overflow-y-auto p-2">
                   {EMOJI_GROUPS.map((group) => (
                     <div key={group.label}>
-                      <div className="px-1 pb-1 text-xs font-semibold text-(--fx-ink-3)">{group.label}</div>
+                      <div className="px-1 pb-1 text-xs font-semibold text-(--fx-ink-3)">
+                        {group.label}
+                      </div>
                       <div className="grid grid-cols-8 gap-0.5 pb-1">
                         {group.emojis.map((emoji, i) => (
                           <ContextMenuItem
@@ -282,16 +343,25 @@ export function FxMessageBubble({
         )}
         {onReply && (
           <>
-            <ContextMenuItem onClick={() => onReply(message)} data-testid="menu-reply">
+            <ContextMenuItem
+              onClick={() => onReply(message)}
+              data-testid="menu-reply"
+            >
               <Reply className="size-4" /> Reply
             </ContextMenuItem>
             <ContextMenuSeparator />
           </>
         )}
-        <ContextMenuItem onClick={() => void copyText(message.body ?? '')} data-testid="menu-copy">
+        <ContextMenuItem
+          onClick={() => void copyText(message.body ?? '')}
+          data-testid="menu-copy"
+        >
           <Copy className="size-4" /> Copy message
         </ContextMenuItem>
-        <ContextMenuItem onClick={() => void copyText(messageLink(message))} data-testid="menu-copy-link">
+        <ContextMenuItem
+          onClick={() => void copyText(messageLink(message))}
+          data-testid="menu-copy-link"
+        >
           <Link2 className="size-4" /> Copy link to message
         </ContextMenuItem>
       </ContextMenuContent>

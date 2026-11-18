@@ -5,23 +5,37 @@
  * the 24-hour window strip, the kept draft and the delivery states.
  */
 import type { ReactNode } from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
+import type {
+  ConversationMessage,
+  ConversationThread,
+  WhatsAppTemplate,
+} from '@/types/omnichannel';
 import { FX_DEFAULT_THEME } from '@/lib/fx/cookies';
 import { FxProvider } from '@/providers/fx-provider';
 import {
   resetPageActionsForTests,
   usePageActions,
 } from '@/components/fx/actions/page-actions-context';
-import type {
-  ConversationMessage,
-  ConversationThread,
-  WhatsAppTemplate,
-} from '@/types/omnichannel';
+import { Composer } from '../composer';
+import { ConversationDrawer } from '../conversation-drawer';
+import { MessageBubble } from '../message-bubble';
+import { fxConversationOf } from './fx-close-thread-dialog';
+import { fxWindowLine } from './fx-composer';
+import { fxDeliveryLabel } from './fx-message-bubble';
 
-vi.mock('next-themes', () => ({ useTheme: () => ({ theme: 'light', setTheme: vi.fn() }) }));
+vi.mock('next-themes', () => ({
+  useTheme: () => ({ theme: 'light', setTheme: vi.fn() }),
+}));
 vi.mock('next-auth/react', () => ({
   useSession: () => ({
     status: 'authenticated',
@@ -30,15 +44,27 @@ vi.mock('next-auth/react', () => ({
         id: 'usr-me',
         name: 'Jayden',
         timezone: 'Asia/Kuala_Lumpur',
-        permissions: ['conversations.read', 'conversations.reply', 'conversations.assign', 'teams.read'],
+        permissions: [
+          'conversations.read',
+          'conversations.reply',
+          'conversations.assign',
+          'teams.read',
+        ],
       },
     },
   }),
   getSession: vi.fn(async () => null),
 }));
-vi.mock('@/lib/impersonation-store', () => ({ useImpersonationSession: () => null }));
+vi.mock('@/lib/impersonation-store', () => ({
+  useImpersonationSession: () => null,
+}));
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn(), back: vi.fn() }),
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+    back: vi.fn(),
+  }),
   usePathname: () => '/omnichannel/inbox',
   useSearchParams: () => new URLSearchParams(),
 }));
@@ -63,15 +89,21 @@ vi.mock('@/services/conversation-service', () => ({
 }));
 vi.mock('@/services/workspace-service', () => ({
   workspaceService: {
-    getMembers: vi.fn(async () => [{ userId: 'usr-kay', name: 'Kay Tan', email: 'kay@example.com' }]),
+    getMembers: vi.fn(async () => [
+      { userId: 'usr-kay', name: 'Kay Tan', email: 'kay@example.com' },
+    ]),
   },
 }));
-vi.mock('@/hooks/use-workspace-has-active-channel', () => ({ useWorkspaceHasActiveChannel: () => true }));
+vi.mock('@/hooks/use-workspace-has-active-channel', () => ({
+  useWorkspaceHasActiveChannel: () => true,
+}));
 vi.mock('@/hooks/use-thread-events', () => ({
   useThreadEvents: () => ({ events: [], reload: vi.fn(async () => undefined) }),
 }));
 vi.mock('@/hooks/use-close-reasons', () => ({
-  useCloseReasons: () => ({ reasons: [{ id: 'cr-1', name: 'Resolved', isActive: true, sortOrder: 1 }] }),
+  useCloseReasons: () => ({
+    reasons: [{ id: 'cr-1', name: 'Resolved', isActive: true, sortOrder: 1 }],
+  }),
 }));
 vi.mock('@/hooks/use-teams', () => ({ useTeams: () => ({ teams: [] }) }));
 vi.mock('@/hooks/use-my-teams', () => ({ useMyTeams: () => ({ teams: [] }) }));
@@ -79,8 +111,12 @@ vi.mock('@/hooks/use-shortcuts', () => ({
   useShortcuts: () => ({ shortcuts: [], isRunning: false, run: vi.fn() }),
 }));
 vi.mock('@/hooks/use-media-query', () => ({ useMediaQuery: () => true }));
-vi.mock('@/hooks/use-contact-fields', () => ({ useContactFields: () => ({ fields: [] }) }));
-vi.mock('@/hooks/use-contact-tags', () => ({ useContactTags: () => ({ tags: [] }) }));
+vi.mock('@/hooks/use-contact-fields', () => ({
+  useContactFields: () => ({ fields: [] }),
+}));
+vi.mock('@/hooks/use-contact-tags', () => ({
+  useContactTags: () => ({ tags: [] }),
+}));
 
 function msg(over: Partial<ConversationMessage> = {}): ConversationMessage {
   return {
@@ -149,7 +185,10 @@ function threadOf(over: Partial<ConversationThread> = {}): ConversationThread {
 const state = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
 vi.mock('@/hooks/use-messages', () => ({ useMessages: () => state.current }));
 
-function resetState(thread: ConversationThread, messages: ConversationMessage[]) {
+function resetState(
+  thread: ConversationThread,
+  messages: ConversationMessage[],
+) {
   state.current = {
     thread,
     messages,
@@ -178,13 +217,6 @@ function resetState(thread: ConversationThread, messages: ConversationMessage[])
 }
 const fn = (name: string) => state.current[name] as ReturnType<typeof vi.fn>;
 
-import { Composer } from '../composer';
-import { ConversationDrawer } from '../conversation-drawer';
-import { MessageBubble } from '../message-bubble';
-import { fxDeliveryLabel } from './fx-message-bubble';
-import { fxConversationOf } from './fx-close-thread-dialog';
-import { fxWindowLine } from './fx-composer';
-
 function On({ children }: { children: ReactNode }) {
   return (
     <FxProvider initial initialTheme={FX_DEFAULT_THEME}>
@@ -195,7 +227,11 @@ function On({ children }: { children: ReactNode }) {
 
 function HeaderProbe() {
   const page = usePageActions();
-  return <output data-testid="probe">{page.hidden ? '' : (page.main?.fullLabel ?? '')}</output>;
+  return (
+    <output data-testid="probe">
+      {page.hidden ? '' : (page.main?.fullLabel ?? '')}
+    </output>
+  );
 }
 
 beforeEach(() => {
@@ -214,13 +250,19 @@ describe('red action', () => {
         <HeaderProbe />
       </On>,
     );
-    const red = await screen.findByRole('button', { name: "Close Lim Wei Jie's conversation" });
+    const red = await screen.findByRole('button', {
+      name: "Close Lim Wei Jie's conversation",
+    });
     expect(red).toHaveTextContent('Close conversation');
     // Drawn in the pane, so not handed to a page header (never twice).
     expect(screen.getByTestId('probe')).toHaveTextContent('');
     await userEvent.click(red);
-    expect(await screen.findByRole('dialog')).toHaveTextContent("Close Lim Wei Jie's conversation?");
-    expect(screen.getByRole('button', { name: 'Keep it open' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog')).toHaveTextContent(
+      "Close Lim Wei Jie's conversation?",
+    );
+    expect(
+      screen.getByRole('button', { name: 'Keep it open' }),
+    ).toBeInTheDocument();
   });
 
   it('is handed to the page header when the host draws one, and hidden while the dialog is open', async () => {
@@ -230,8 +272,16 @@ describe('red action', () => {
         <HeaderProbe />
       </On>,
     );
-    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent("Close Lim Wei Jie's conversation"));
-    expect(screen.queryByRole('button', { name: "Close Lim Wei Jie's conversation" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId('probe')).toHaveTextContent(
+        "Close Lim Wei Jie's conversation",
+      ),
+    );
+    expect(
+      screen.queryByRole('button', {
+        name: "Close Lim Wei Jie's conversation",
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it('is not registered in compact mode', async () => {
@@ -243,7 +293,9 @@ describe('red action', () => {
     );
     await screen.findByTestId('conversation-drawer');
     expect(screen.getByTestId('probe')).toHaveTextContent('');
-    expect(screen.queryByRole('button', { name: /conversation$/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /conversation$/ }),
+    ).not.toBeInTheDocument();
   });
 
   it('becomes Reopen once snoozed, with an Undo that snoozes again', async () => {
@@ -253,11 +305,18 @@ describe('red action', () => {
         <ConversationDrawer contactId="cnt-1" />
       </On>,
     );
-    await userEvent.click(await screen.findByRole('button', { name: "Reopen Lim Wei Jie's conversation" }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: "Reopen Lim Wei Jie's conversation",
+      }),
+    );
     await waitFor(() => expect(toastMock.fxDone).toHaveBeenCalled());
     expect(fn('setStatus')).toHaveBeenCalledWith('OPEN');
     const input = toastMock.fxDone.mock.calls[0][0];
-    expect(input).toMatchObject({ what: "Lim Wei Jie's conversation reopened", byWhom: 'Jayden' });
+    expect(input).toMatchObject({
+      what: "Lim Wei Jie's conversation reopened",
+      byWhom: 'Jayden',
+    });
     input.undo();
     expect(fn('setStatus')).toHaveBeenLastCalledWith('SNOOZED');
   });
@@ -269,7 +328,11 @@ describe('red action', () => {
         <ConversationDrawer contactId="cnt-1" />
       </On>,
     );
-    await userEvent.click(await screen.findByRole('button', { name: "Reopen Lim Wei Jie's conversation" }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: "Reopen Lim Wei Jie's conversation",
+      }),
+    );
     await waitFor(() => expect(toastMock.fxDone).toHaveBeenCalled());
     expect(toastMock.fxDone.mock.calls[0][0].undo).toBeUndefined();
   });
@@ -282,11 +345,16 @@ describe('done toasts', () => {
         <ConversationDrawer contactId="cnt-1" />
       </On>,
     );
-    await userEvent.click(await screen.findByRole('button', { name: 'Snooze' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Snooze' }),
+    );
     expect(fn('setStatus')).toHaveBeenCalledWith('SNOOZED');
     await waitFor(() => expect(toastMock.fxDone).toHaveBeenCalled());
     const input = toastMock.fxDone.mock.calls[0][0];
-    expect(input).toMatchObject({ what: "Lim Wei Jie's conversation snoozed", byWhom: 'Jayden' });
+    expect(input).toMatchObject({
+      what: "Lim Wei Jie's conversation snoozed",
+      byWhom: 'Jayden',
+    });
     input.undo();
     expect(fn('setStatus')).toHaveBeenLastCalledWith('OPEN');
   });
@@ -297,13 +365,24 @@ describe('done toasts', () => {
         <ConversationDrawer contactId="cnt-1" />
       </On>,
     );
-    await userEvent.click(await screen.findByRole('button', { name: "Close Lim Wei Jie's conversation" }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: "Close Lim Wei Jie's conversation",
+      }),
+    );
     const dialog = await screen.findByRole('dialog');
-    await userEvent.click(within(dialog).getByRole('combobox', { name: 'Close reason' }));
-    await userEvent.click(await screen.findByRole('option', { name: 'Resolved' }));
+    await userEvent.click(
+      within(dialog).getByRole('combobox', { name: 'Close reason' }),
+    );
+    await userEvent.click(
+      await screen.findByRole('option', { name: 'Resolved' }),
+    );
     await userEvent.click(within(dialog).getByTestId('close-thread-submit'));
     await waitFor(() => expect(toastMock.fxDone).toHaveBeenCalled());
-    expect(fn('closeThread')).toHaveBeenCalledWith({ closeReasonId: 'cr-1', note: undefined });
+    expect(fn('closeThread')).toHaveBeenCalledWith({
+      closeReasonId: 'cr-1',
+      note: undefined,
+    });
     const input = toastMock.fxDone.mock.calls[0][0];
     expect(input.what).toBe("Lim Wei Jie's conversation closed as Resolved");
     // The dialog itself no longer toasts "Conversation closed."
@@ -313,20 +392,33 @@ describe('done toasts', () => {
   });
 
   it('assign toasts to whom; Undo restores the previous owner and team', async () => {
-    resetState(threadOf({ assignedUserId: 'usr-me', assignedTeamId: 'team-9' }), [msg()]);
+    resetState(
+      threadOf({ assignedUserId: 'usr-me', assignedTeamId: 'team-9' }),
+      [msg()],
+    );
     render(
       <On>
         <ConversationDrawer contactId="cnt-1" />
       </On>,
     );
-    await userEvent.click(await screen.findByRole('button', { name: 'Assign' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Kay Tan' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Assign' }),
+    );
+    await userEvent.click(
+      await screen.findByRole('menuitem', { name: 'Kay Tan' }),
+    );
     expect(fn('assign')).toHaveBeenCalledWith('usr-kay');
     await waitFor(() => expect(toastMock.fxDone).toHaveBeenCalled());
     const input = toastMock.fxDone.mock.calls[0][0];
-    expect(input).toMatchObject({ what: 'Lim Wei Jie assigned to Kay Tan', byWhom: 'Jayden' });
+    expect(input).toMatchObject({
+      what: 'Lim Wei Jie assigned to Kay Tan',
+      byWhom: 'Jayden',
+    });
     input.undo();
-    expect(fn('patchContact')).toHaveBeenCalledWith({ assignedTeamId: 'team-9', assignedUserId: 'usr-me' });
+    expect(fn('patchContact')).toHaveBeenCalledWith({
+      assignedTeamId: 'team-9',
+      assignedUserId: 'usr-me',
+    });
   });
 
   it('a failed action shows the error and no done toast', async () => {
@@ -336,8 +428,12 @@ describe('done toasts', () => {
       </On>,
     );
     fn('setStatus').mockRejectedValueOnce(new Error('Conflict'));
-    await userEvent.click(await screen.findByRole('button', { name: 'Snooze' }));
-    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('Conflict'));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Snooze' }),
+    );
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith('Conflict'),
+    );
     expect(toastMock.fxDone).not.toHaveBeenCalled();
   });
 });
@@ -345,14 +441,24 @@ describe('done toasts', () => {
 describe('"New messages" pill', () => {
   beforeEach(() => {
     // jsdom does not scroll: make scrollTo move scrollTop like a browser.
-    Element.prototype.scrollTo = function scrollTo(this: Element, opts?: ScrollToOptions | number) {
-      if (typeof opts === 'object' && opts?.top !== undefined) this.scrollTop = opts.top;
+    Element.prototype.scrollTo = function scrollTo(
+      this: Element,
+      opts?: ScrollToOptions | number,
+    ) {
+      if (typeof opts === 'object' && opts?.top !== undefined)
+        this.scrollTop = opts.top;
     } as Element['scrollTo'];
   });
 
   function scrollTo(el: HTMLElement, top: number) {
-    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 2000 });
-    Object.defineProperty(el, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(el, 'scrollHeight', {
+      configurable: true,
+      value: 2000,
+    });
+    Object.defineProperty(el, 'clientHeight', {
+      configurable: true,
+      value: 500,
+    });
     el.scrollTop = top;
     fireEvent.scroll(el);
   }
@@ -374,7 +480,11 @@ describe('"New messages" pill', () => {
 
     // Scrolled up: the view stays, the pill shows.
     scrollTo(scroller, 200);
-    resetState(threadOf(), [msg(), msg({ id: 'm2', body: 'Second' }), msg({ id: 'm3', body: 'Third' })]);
+    resetState(threadOf(), [
+      msg(),
+      msg({ id: 'm2', body: 'Second' }),
+      msg({ id: 'm3', body: 'Third' }),
+    ]);
     rerender(view());
     expect(scroller.scrollTop).toBe(200);
     const pill = await screen.findByRole('button', { name: 'New messages' });
@@ -393,7 +503,10 @@ describe('"New messages" pill', () => {
     const { rerender } = render(view());
     const scroller = await screen.findByTestId('thread-scroller');
     scrollTo(scroller, 200);
-    resetState(threadOf(), [msg(), msg({ id: 'temp-1', senderType: 'AGENT', body: 'Mine' })]);
+    resetState(threadOf(), [
+      msg(),
+      msg({ id: 'temp-1', senderType: 'AGENT', body: 'Mine' }),
+    ]);
     rerender(view());
     expect(screen.queryByTestId('new-messages-pill')).not.toBeInTheDocument();
     expect(scroller.scrollTop).toBe(2000);
@@ -433,12 +546,18 @@ describe('composer', () => {
       </On>,
     );
     const strip = screen.getByTestId('csw-banner');
-    expect(strip).toHaveTextContent('The 24-hour window has closed. Only an approved template can be sent.');
+    expect(strip).toHaveTextContent(
+      'The 24-hour window has closed. Only an approved template can be sent.',
+    );
     const box = screen.getByTestId('message-input');
     expect(box).toBeDisabled();
     expect(box).toHaveAttribute('placeholder', 'Free-form messages are locked');
-    await userEvent.click(within(strip).getByRole('button', { name: 'Choose template' }));
-    expect(await screen.findByRole('dialog')).toHaveTextContent('Send a template');
+    await userEvent.click(
+      within(strip).getByRole('button', { name: 'Choose template' }),
+    );
+    expect(await screen.findByRole('dialog')).toHaveTextContent(
+      'Send a template',
+    );
   });
 
   it('open window: no strip, the box is usable', () => {
@@ -477,7 +596,9 @@ describe('composer', () => {
   it('a second Enter while the send is on its way sends nothing more', async () => {
     let resolve: (ok: boolean) => void = () => undefined;
     const props = base();
-    props.onSend.mockImplementation(() => new Promise<boolean>((r) => (resolve = r)));
+    props.onSend.mockImplementation(
+      () => new Promise<boolean>((r) => (resolve = r)),
+    );
     render(
       <On>
         <Composer {...props} windowOpen />
@@ -493,9 +614,13 @@ describe('composer', () => {
   });
 
   it('window strip words (pure)', () => {
-    expect(fxWindowLine(true, true)).toBe('The 24-hour window has closed. Only an approved template can be sent.');
+    expect(fxWindowLine(true, true)).toBe(
+      'The 24-hour window has closed. Only an approved template can be sent.',
+    );
     expect(fxWindowLine(true, false)).toBe('The messaging window has closed.');
-    expect(fxWindowLine(false, true)).toBe('The standard messaging window has closed.');
+    expect(fxWindowLine(false, true)).toBe(
+      'The standard messaging window has closed.',
+    );
   });
 });
 
@@ -504,25 +629,65 @@ describe('delivery states', () => {
     render(
       <On>
         <MessageBubble message={msg({ id: 'temp-x', senderType: 'AGENT' })} />
-        <MessageBubble message={msg({ id: 'a1', senderType: 'AGENT', deliveryStatus: 'QUEUED' })} />
-        <MessageBubble message={msg({ id: 'a2', senderType: 'AGENT', deliveryStatus: 'SENT' })} />
-        <MessageBubble message={msg({ id: 'a3', senderType: 'AGENT', deliveryStatus: 'DELIVERED' })} />
-        <MessageBubble message={msg({ id: 'a4', senderType: 'AGENT', deliveryStatus: 'READ' })} />
         <MessageBubble
-          message={msg({ id: 'a5', senderType: 'AGENT', deliveryStatus: 'FAILED', errorMessage: 'Window closed.' })}
+          message={msg({
+            id: 'a1',
+            senderType: 'AGENT',
+            deliveryStatus: 'QUEUED',
+          })}
+        />
+        <MessageBubble
+          message={msg({
+            id: 'a2',
+            senderType: 'AGENT',
+            deliveryStatus: 'SENT',
+          })}
+        />
+        <MessageBubble
+          message={msg({
+            id: 'a3',
+            senderType: 'AGENT',
+            deliveryStatus: 'DELIVERED',
+          })}
+        />
+        <MessageBubble
+          message={msg({
+            id: 'a4',
+            senderType: 'AGENT',
+            deliveryStatus: 'READ',
+          })}
+        />
+        <MessageBubble
+          message={msg({
+            id: 'a5',
+            senderType: 'AGENT',
+            deliveryStatus: 'FAILED',
+            errorMessage: 'Window closed.',
+          })}
         />
         <MessageBubble message={msg({ id: 'c1' })} />
       </On>,
     );
-    for (const label of ['Sending', 'Queued', 'Sent', 'Delivered', 'Read', 'Not sent']) {
+    for (const label of [
+      'Sending',
+      'Queued',
+      'Sent',
+      'Delivered',
+      'Read',
+      'Not sent',
+    ]) {
       expect(screen.getByRole('img', { name: label })).toBeInTheDocument();
     }
     expect(screen.getAllByTestId('fx-delivery')).toHaveLength(6);
-    expect(screen.getByTestId('bubble-error')).toHaveTextContent('Window closed.');
+    expect(screen.getByTestId('bubble-error')).toHaveTextContent(
+      'Window closed.',
+    );
   });
 
   it('labels (pure)', () => {
-    expect(fxDeliveryLabel({ id: 'temp-1', deliveryStatus: null })).toBe('Sending');
+    expect(fxDeliveryLabel({ id: 'temp-1', deliveryStatus: null })).toBe(
+      'Sending',
+    );
     expect(fxDeliveryLabel({ id: 'm-1', deliveryStatus: null })).toBeNull();
     expect(fxConversationOf('Lim Wei Jie')).toBe("Lim Wei Jie's conversation");
     expect(fxConversationOf('James')).toBe("James' conversation");

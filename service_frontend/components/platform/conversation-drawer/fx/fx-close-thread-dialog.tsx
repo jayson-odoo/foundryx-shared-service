@@ -8,9 +8,7 @@
  * done toast (with Undo) is the pane's job, so this dialog does not toast.
  */
 import { useEffect, useState } from 'react';
-
-import { useHideMainAction } from '@/components/fx/actions/page-actions-context';
-import { SearchSelect, type SearchSelectOption } from '@/components/platform/search-select';
+import { ApiError } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -23,8 +21,11 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { ApiError } from '@/lib/api-client';
-
+import { useHideMainAction } from '@/components/fx/actions/page-actions-context';
+import {
+  SearchSelect,
+  type SearchSelectOption,
+} from '@/components/platform/search-select';
 import type { CloseThreadDialogProps } from '../close-thread-dialog';
 
 const NOTE_MAX = 2000;
@@ -36,7 +37,13 @@ export function fxConversationOf(name?: string | null): string {
   return `${n}${n.endsWith('s') ? "'" : "'s"} conversation`;
 }
 
-export function FxCloseThreadDialog({ open, onOpenChange, reasons, onClose, contactName }: CloseThreadDialogProps) {
+export function FxCloseThreadDialog({
+  open,
+  onOpenChange,
+  reasons,
+  onClose,
+  contactName,
+}: CloseThreadDialogProps) {
   const [reasonId, setReasonId] = useState('');
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -65,10 +72,23 @@ export function FxCloseThreadDialog({ open, onOpenChange, reasons, onClose, cont
       onOpenChange(false);
     } catch (e) {
       if (e instanceof ApiError) {
-        const detail = e.detail as { fieldErrors?: Record<string, string>; code?: string; message?: string } | undefined;
-        setError(detail?.fieldErrors?.closeReasonId ?? detail?.fieldErrors?.note ?? detail?.message ?? e.message);
+        const detail = e.detail as
+          | {
+              fieldErrors?: Record<string, string>;
+              code?: string;
+              message?: string;
+            }
+          | undefined;
+        setError(
+          detail?.fieldErrors?.closeReasonId ??
+            detail?.fieldErrors?.note ??
+            detail?.message ??
+            e.message,
+        );
       } else {
-        setError(e instanceof Error ? e.message : 'Could not close the conversation.');
+        setError(
+          e instanceof Error ? e.message : 'Could not close the conversation.',
+        );
       }
     } finally {
       setSubmitting(false);
@@ -83,7 +103,9 @@ export function FxCloseThreadDialog({ open, onOpenChange, reasons, onClose, cont
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>It leaves the open list until the contact writes again.</DialogDescription>
+          <DialogDescription>
+            It leaves the open list until the contact writes again.
+          </DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
@@ -114,7 +136,12 @@ export function FxCloseThreadDialog({ open, onOpenChange, reasons, onClose, cont
               {error}
             </p>
           )}
-          <Button variant="fx-quiet" className="min-h-11 px-4" onClick={() => onOpenChange(false)} disabled={submitting}>
+          <Button
+            variant="fx-quiet"
+            className="min-h-11 px-4"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+          >
             Keep it open
           </Button>
           <Button

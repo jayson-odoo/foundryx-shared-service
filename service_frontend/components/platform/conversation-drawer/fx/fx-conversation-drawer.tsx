@@ -21,20 +21,30 @@
  *   at the bottom edge jumps there instead (gap audit 15).
  * - The 24-hour window strip and the kept draft live in the composer.
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSession } from 'next-auth/react';
-import { ArrowDown, ChevronDown, ChevronUp, Clock, Inbox, PanelRight, X } from 'lucide-react';
-
-import { FxIconActionButton } from '@/components/fx/actions/icon-action';
-import { FxMainAction } from '@/components/fx/actions/main-action';
 import {
-  useHideMainAction,
-  useRegisterMainAction,
-  type FxMainActionSpec,
-} from '@/components/fx/actions/page-actions-context';
-import { FxDayLine } from '@/components/fx/fields/fx-moment';
-import { FxTooltip } from '@/components/fx/fx-tooltip';
-import { StatusBadge } from '@/components/platform/status-badge';
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  ArrowDown,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Inbox,
+  PanelRight,
+  X,
+} from 'lucide-react';
+import { useSession } from 'next-auth/react';
+import type { ThreadStatus } from '@/types/omnichannel';
+import { ApiError } from '@/lib/api-client';
+import { dateKey } from '@/lib/datetime';
+import { useReducedMotion } from '@/lib/motion';
+import { toast } from '@/lib/toast';
+import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -46,17 +56,25 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { Skeleton } from '@/components/ui/skeleton';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ApiError } from '@/lib/api-client';
-import { dateKey } from '@/lib/datetime';
-import { useReducedMotion } from '@/lib/motion';
-import { toast } from '@/lib/toast';
-import { cn } from '@/lib/utils';
-import type { ThreadStatus } from '@/types/omnichannel';
-
+import { FxIconActionButton } from '@/components/fx/actions/icon-action';
+import { FxMainAction } from '@/components/fx/actions/main-action';
+import {
+  useHideMainAction,
+  useRegisterMainAction,
+  type FxMainActionSpec,
+} from '@/components/fx/actions/page-actions-context';
+import { FxDayLine } from '@/components/fx/fields/fx-moment';
+import { FxTooltip } from '@/components/fx/fx-tooltip';
+import { StatusBadge } from '@/components/platform/status-badge';
 import { ActivityFeed } from '../activity-feed';
 import { CloseThreadDialog } from '../close-thread-dialog';
 import { Composer } from '../composer';
@@ -64,7 +82,10 @@ import { ContactPanel } from '../contact-panel';
 import type { ConversationDrawerProps } from '../conversation-drawer';
 import { MessageBubble } from '../message-bubble';
 import { ShortcutMenu } from '../shortcut-menu';
-import { THREAD_PRIORITY_REGISTRY, THREAD_STATUS_REGISTRY } from '../thread-status';
+import {
+  THREAD_PRIORITY_REGISTRY,
+  THREAD_STATUS_REGISTRY,
+} from '../thread-status';
 import { useConversationPane } from '../use-conversation-pane';
 import { fxConversationOf } from './fx-close-thread-dialog';
 
@@ -80,7 +101,9 @@ function initials(name: string): string {
 }
 
 function errorText(e: unknown, fallback: string): string {
-  return e instanceof ApiError || e instanceof Error ? e.message || fallback : fallback;
+  return e instanceof ApiError || e instanceof Error
+    ? e.message || fallback
+    : fallback;
 }
 
 /** The red action for a thread in `status` (pure, tested). */
@@ -92,7 +115,12 @@ export function fxPaneMainAction(
 ): FxMainActionSpec {
   const subject = fxConversationOf(name);
   return status === 'OPEN'
-    ? { id: 'conversation-close', label: 'Close conversation', fullLabel: `Close ${subject}`, onClick: handlers.close }
+    ? {
+        id: 'conversation-close',
+        label: 'Close conversation',
+        fullLabel: `Close ${subject}`,
+        onClick: handlers.close,
+      }
     : {
         id: 'conversation-reopen',
         label: 'Reopen conversation',
@@ -178,7 +206,10 @@ export function FxConversationDrawer({
 
   // ── Done toasts with Undo where the API can put it back ─────────────────
   const owner = useMemo(
-    () => ({ userId: thread?.assignedUserId ?? null, teamId: thread?.assignedTeamId ?? null }),
+    () => ({
+      userId: thread?.assignedUserId ?? null,
+      teamId: thread?.assignedTeamId ?? null,
+    }),
     [thread?.assignedUserId, thread?.assignedTeamId],
   );
 
@@ -186,7 +217,9 @@ export function FxConversationDrawer({
     (prev: { userId: string | null; teamId: string | null }) => () => {
       patchContact({ assignedTeamId: prev.teamId, assignedUserId: prev.userId })
         .then(() => reloadEvents())
-        .catch((e: unknown) => toast.error(errorText(e, 'Could not undo the assignment.')));
+        .catch((e: unknown) =>
+          toast.error(errorText(e, 'Could not undo the assignment.')),
+        );
     },
     [patchContact, reloadEvents],
   );
@@ -198,7 +231,9 @@ export function FxConversationDrawer({
         .then(() => {
           toast.fxDone({ what, byWhom: me, undo: undoOwner(prev) });
         })
-        .catch((e: unknown) => toast.error(errorText(e, 'Could not update the assignment.')));
+        .catch((e: unknown) =>
+          toast.error(errorText(e, 'Could not update the assignment.')),
+        );
     },
     [owner, me, undoOwner],
   );
@@ -207,14 +242,20 @@ export function FxConversationDrawer({
     setStatus('SNOOZED')
       .then(() =>
         toast.fxDone({
-          what: `${fxConversationOf(name)} snoozed`.replace(/^./, (c) => c.toUpperCase()),
+          what: `${fxConversationOf(name)} snoozed`.replace(/^./, (c) =>
+            c.toUpperCase(),
+          ),
           byWhom: me,
           undo: () => {
-            setStatus('OPEN').catch((e: unknown) => toast.error(errorText(e, 'Could not undo the snooze.')));
+            setStatus('OPEN').catch((e: unknown) =>
+              toast.error(errorText(e, 'Could not undo the snooze.')),
+            );
           },
         }),
       )
-      .catch((e: unknown) => toast.error(errorText(e, 'Could not snooze this conversation.')));
+      .catch((e: unknown) =>
+        toast.error(errorText(e, 'Could not snooze this conversation.')),
+      );
   }, [setStatus, name, me]);
 
   const [reopening, setReopening] = useState(false);
@@ -225,18 +266,26 @@ export function FxConversationDrawer({
       await setStatus('OPEN');
       await reloadEvents();
       toast.fxDone({
-        what: `${fxConversationOf(name)} reopened`.replace(/^./, (c) => c.toUpperCase()),
+        what: `${fxConversationOf(name)} reopened`.replace(/^./, (c) =>
+          c.toUpperCase(),
+        ),
         byWhom: me,
         // Back to snoozed is one PATCH; back to closed needs a close reason.
         undo:
           from === 'SNOOZED'
             ? () => {
-                setStatus('SNOOZED').catch((e: unknown) => toast.error(errorText(e, 'Could not undo the reopen.')));
+                setStatus('SNOOZED').catch((e: unknown) =>
+                  toast.error(errorText(e, 'Could not undo the reopen.')),
+                );
               }
             : undefined,
       });
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : 'Could not reopen this conversation.');
+      toast.error(
+        e instanceof ApiError
+          ? e.message
+          : 'Could not reopen this conversation.',
+      );
     } finally {
       setReopening(false);
     }
@@ -248,14 +297,17 @@ export function FxConversationDrawer({
       await reloadEvents();
       const reason = closeReasons.find((r) => r.id === closeReasonId)?.name;
       toast.fxDone({
-        what: `${fxConversationOf(name)} closed${reason ? ` as ${reason}` : ''}`.replace(/^./, (c) =>
-          c.toUpperCase(),
+        what: `${fxConversationOf(name)} closed${reason ? ` as ${reason}` : ''}`.replace(
+          /^./,
+          (c) => c.toUpperCase(),
         ),
         byWhom: me,
         undo: () => {
           setStatus('OPEN')
             .then(() => reloadEvents())
-            .catch((e: unknown) => toast.error(errorText(e, 'Could not undo the close.')));
+            .catch((e: unknown) =>
+              toast.error(errorText(e, 'Could not undo the close.')),
+            );
         },
       });
     },
@@ -263,12 +315,20 @@ export function FxConversationDrawer({
   );
 
   // ── The one red action ───────────────────────────────────────────────────
-  const openClose = useCallback(() => setCloseDialogOpen(true), [setCloseDialogOpen]);
+  const openClose = useCallback(
+    () => setCloseDialogOpen(true),
+    [setCloseDialogOpen],
+  );
   const reopenClick = useCallback(() => void reopen(), [reopen]);
   const mainAction = useMemo(
     () =>
       thread && !compact
-        ? fxPaneMainAction(thread.status, thread.name, { close: openClose, reopen: reopenClick }, reopening)
+        ? fxPaneMainAction(
+            thread.status,
+            thread.name,
+            { close: openClose, reopen: reopenClick },
+            reopening,
+          )
         : null,
     [thread, compact, openClose, reopenClick, reopening],
   );
@@ -279,14 +339,20 @@ export function FxConversationDrawer({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   const [newBelow, setNewBelow] = useState(false);
-  const seen = useRef<{ contactId: string | null; count: number }>({ contactId: null, count: 0 });
+  const seen = useRef<{ contactId: string | null; count: number }>({
+    contactId: null,
+    count: 0,
+  });
 
   const toBottom = useCallback(
     (smooth: boolean) => {
       const el = scrollerRef.current;
       if (!el) return;
       if (typeof el.scrollTo === 'function') {
-        el.scrollTo({ top: el.scrollHeight, behavior: smooth && !reduced ? 'smooth' : 'auto' });
+        el.scrollTo({
+          top: el.scrollHeight,
+          behavior: smooth && !reduced ? 'smooth' : 'auto',
+        });
       } else {
         el.scrollTop = el.scrollHeight;
       }
@@ -299,7 +365,8 @@ export function FxConversationDrawer({
   const onScroll = useCallback(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_PX;
+    const atBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_PX;
     atBottomRef.current = atBottom;
     if (atBottom) setNewBelow(false);
   }, []);
@@ -326,7 +393,10 @@ export function FxConversationDrawer({
   // ── States before a thread shows ─────────────────────────────────────────
   if (!contactId || erased) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-(--fx-ink-3)" data-testid="drawer-empty">
+      <div
+        className="flex h-full flex-col items-center justify-center gap-2 text-(--fx-ink-3)"
+        data-testid="drawer-empty"
+      >
         <Inbox className="size-8" aria-hidden="true" />
         <p className="text-sm">{emptyHint}</p>
       </div>
@@ -335,7 +405,10 @@ export function FxConversationDrawer({
 
   if (isLoading || !thread) {
     return (
-      <div className="flex h-full flex-col gap-3 p-4" data-testid="drawer-loading">
+      <div
+        className="flex h-full flex-col gap-3 p-4"
+        data-testid="drawer-loading"
+      >
         {error ? (
           <p role="alert" className="text-sm text-(--fx-act)">
             {error}
@@ -358,7 +431,11 @@ export function FxConversationDrawer({
   const canSnooze = thread.status !== 'SNOOZED' && thread.status !== 'CLOSED';
 
   return (
-    <div className="flex h-full flex-col bg-(--fx-surface)" data-testid="conversation-drawer" data-fx-pane="">
+    <div
+      className="flex h-full flex-col bg-(--fx-surface)"
+      data-testid="conversation-drawer"
+      data-fx-pane=""
+    >
       {!compact && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-(--fx-line) px-4 py-3">
           <Avatar className="size-10">
@@ -366,15 +443,26 @@ export function FxConversationDrawer({
           </Avatar>
           <div className="min-w-0 flex-1 basis-40">
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="truncate font-semibold text-(--fx-ink)" data-testid="drawer-contact-name">
+              <span
+                className="truncate font-semibold text-(--fx-ink)"
+                data-testid="drawer-contact-name"
+              >
                 {thread.name}
               </span>
               <Badge variant="secondary" appearance="light" size="sm">
                 <capabilities.icon className="size-3" />
                 {capabilities.label}
               </Badge>
-              <StatusBadge status={thread.priority} registry={THREAD_PRIORITY_REGISTRY} size="sm" />
-              <StatusBadge status={thread.status} registry={THREAD_STATUS_REGISTRY} size="sm" />
+              <StatusBadge
+                status={thread.priority}
+                registry={THREAD_PRIORITY_REGISTRY}
+                size="sm"
+              />
+              <StatusBadge
+                status={thread.status}
+                registry={THREAD_STATUS_REGISTRY}
+                size="sm"
+              />
             </div>
             <div className="truncate text-xs text-(--fx-ink-3)">
               <span className="tabular-nums">{thread.phone}</span>
@@ -385,17 +473,29 @@ export function FxConversationDrawer({
             </div>
           </div>
 
-          <div className="ms-auto flex flex-wrap items-center justify-end gap-1.5" data-fx-pane-actions="">
+          <div
+            className="ms-auto flex flex-wrap items-center justify-end gap-1.5"
+            data-fx-pane-actions=""
+          >
             <DropdownMenu>
               <FxTooltip label="Assign">
                 <DropdownMenuTrigger asChild>
-                  <FxIconActionButton label="Assign" icon="assign" data-testid="assign-trigger" />
+                  <FxIconActionButton
+                    label="Assign"
+                    icon="assign"
+                    data-testid="assign-trigger"
+                  />
                 </DropdownMenuTrigger>
               </FxTooltip>
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>Assign to</DropdownMenuLabel>
                 <DropdownMenuItem
-                  onClick={() => runAssign(assignToMe, `${thread.name} assigned to ${me ?? 'you'}`)}
+                  onClick={() =>
+                    runAssign(
+                      assignToMe,
+                      `${thread.name} assigned to ${me ?? 'you'}`,
+                    )
+                  }
                   data-testid="assign-me"
                 >
                   Assign to me
@@ -404,14 +504,21 @@ export function FxConversationDrawer({
                 {members.map((m) => (
                   <DropdownMenuItem
                     key={m.userId}
-                    onClick={() => runAssign(() => assign(m.userId), `${thread.name} assigned to ${m.name ?? m.email}`)}
+                    onClick={() =>
+                      runAssign(
+                        () => assign(m.userId),
+                        `${thread.name} assigned to ${m.name ?? m.email}`,
+                      )
+                    }
                   >
                     {m.name ?? m.email}
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => runAssign(() => assign(null), `${thread.name} unassigned`)}
+                  onClick={() =>
+                    runAssign(() => assign(null), `${thread.name} unassigned`)
+                  }
                   data-testid="assign-clear"
                 >
                   Unassign
@@ -423,7 +530,12 @@ export function FxConversationDrawer({
                     {teams.map((t) => (
                       <DropdownMenuItem
                         key={t.id}
-                        onClick={() => runAssign(() => assignTeam(t.id), `${thread.name} assigned to ${t.name}`)}
+                        onClick={() =>
+                          runAssign(
+                            () => assignTeam(t.id),
+                            `${thread.name} assigned to ${t.name}`,
+                          )
+                        }
                         data-testid={`assign-team-${t.id}`}
                       >
                         {t.name}
@@ -465,8 +577,12 @@ export function FxConversationDrawer({
                   label="Search in conversation"
                   icon="search"
                   aria-pressed={searchOpen}
-                  onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
-                  className={cn(searchOpen && 'border-(--fx-link) text-(--fx-link)')}
+                  onClick={() =>
+                    searchOpen ? closeSearch() : setSearchOpen(true)
+                  }
+                  className={cn(
+                    searchOpen && 'border-(--fx-link) text-(--fx-link)',
+                  )}
                   data-testid="thread-search-toggle"
                 />
               </FxTooltip>
@@ -479,7 +595,9 @@ export function FxConversationDrawer({
                 iconNode={<PanelRight className="size-[18px]" />}
                 aria-pressed={contactPanelOpen}
                 onClick={toggleContactPanel}
-                className={cn(contactPanelOpen && 'border-(--fx-link) text-(--fx-link)')}
+                className={cn(
+                  contactPanelOpen && 'border-(--fx-link) text-(--fx-link)',
+                )}
                 data-testid="contact-panel-toggle"
               />
             </FxTooltip>
@@ -487,7 +605,12 @@ export function FxConversationDrawer({
             <ShortcutMenu contactId={contactId} />
 
             {!fxPageHeader && mainAction && (
-              <span data-testid={thread.status === 'OPEN' ? 'thread-close' : 'thread-reopen'} className="contents">
+              <span
+                data-testid={
+                  thread.status === 'OPEN' ? 'thread-close' : 'thread-reopen'
+                }
+                className="contents"
+              >
                 <FxMainAction
                   key={mainAction.id}
                   label={mainAction.label}
@@ -518,7 +641,10 @@ export function FxConversationDrawer({
           </Tabs>
 
           {searchOpen && (
-            <div className="flex w-full items-center gap-1.5" data-testid="thread-search-bar">
+            <div
+              className="flex w-full items-center gap-1.5"
+              data-testid="thread-search-bar"
+            >
               <Input
                 autoFocus
                 placeholder="Search in this conversation"
@@ -532,8 +658,13 @@ export function FxConversationDrawer({
                 className="h-9 min-w-0 flex-1"
                 data-testid="thread-search-input"
               />
-              <span className="shrink-0 text-xs tabular-nums text-(--fx-ink-3)" data-testid="thread-search-count">
-                {activeSearch ? `${matchIds.length ? matchCursor + 1 : 0} of ${matchIds.length}` : ''}
+              <span
+                className="shrink-0 text-xs tabular-nums text-(--fx-ink-3)"
+                data-testid="thread-search-count"
+              >
+                {activeSearch
+                  ? `${matchIds.length ? matchCursor + 1 : 0} of ${matchIds.length}`
+                  : ''}
               </span>
               <FxIconActionButton
                 label="Older match"
@@ -577,72 +708,87 @@ export function FxConversationDrawer({
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="relative flex min-h-0 flex-1 flex-col">
-          <div
-            ref={scrollerRef}
-            onScroll={onScroll}
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-(--fx-bg)"
-            data-testid="thread-scroller"
-          >
-            <div className="flex flex-col gap-2.5 p-4" data-testid="thread-window">
-              {tab === 'activities' ? (
-                <ActivityFeed
-                  messages={messages}
-                  events={events}
-                  contactName={thread.name}
-                  formatTime={formatTime}
-                  timeZone={timeZone}
-                />
-              ) : (
-                <>
-                  {visibleMessages.length === 0 && (
-                    <p className="py-8 text-center text-sm text-(--fx-ink-3)">No messages yet.</p>
-                  )}
-                  {visibleMessages.map((m, i) => (
-                    <Fragment key={m.id}>
-                      {(i === 0 ||
-                        dateKey(visibleMessages[i - 1].createdAt, { timeZone }) !==
-                          dateKey(m.createdAt, { timeZone })) && <FxDayLine iso={m.createdAt} />}
-                      <div
-                        ref={(el) => {
-                          if (el) messageRefs.current.set(m.id, el);
-                          else messageRefs.current.delete(m.id);
-                        }}
-                      >
-                        <MessageBubble
-                          message={m}
-                          contactName={thread.name}
-                          formatTime={formatTime}
-                          highlight={activeSearch || undefined}
-                          isActiveMatch={m.id === activeMatchId || m.id === focusMsgId}
-                          onReply={(msg) => {
-                            setReplyTo(msg);
-                          }}
-                          onReact={
-                            m.senderType !== 'SYSTEM' && windowOpen && capabilities.outboundReaction
-                              ? (msg, emoji) => void react(msg.id, emoji)
-                              : undefined
-                          }
-                        />
-                      </div>
-                    </Fragment>
-                  ))}
-                </>
-              )}
-            </div>
-          </div>
-
-          {newBelow && tab === 'messages' && (
-            <button
-              type="button"
-              onClick={() => toBottom(true)}
-              className={cn(PRESSED_CLASS, "absolute inset-x-0 bottom-3 z-(--fx-z-pop) mx-auto inline-flex min-h-9 w-fit items-center gap-1.5 rounded-(--fx-r-pill) bg-(--fx-link) px-3.5 text-sm font-semibold text-(--fx-surface) shadow-[0_6px_18px_var(--fx-shade)] transition-[translate,scale] duration-(--fx-t-hover) ease-(--fx-ease-out) animate-in fade-in-0 slide-in-from-bottom-1 hover:-translate-y-0.5 active:scale-[0.97] motion-reduce:animate-none motion-reduce:hover:translate-y-0")}
-              data-testid="new-messages-pill"
-              data-fx-new-messages=""
+            <div
+              ref={scrollerRef}
+              onScroll={onScroll}
+              className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-(--fx-bg)"
+              data-testid="thread-scroller"
             >
-              <ArrowDown className="size-4" aria-hidden="true" />
-              New messages
-            </button>
-          )}
+              <div
+                className="flex flex-col gap-2.5 p-4"
+                data-testid="thread-window"
+              >
+                {tab === 'activities' ? (
+                  <ActivityFeed
+                    messages={messages}
+                    events={events}
+                    contactName={thread.name}
+                    formatTime={formatTime}
+                    timeZone={timeZone}
+                  />
+                ) : (
+                  <>
+                    {visibleMessages.length === 0 && (
+                      <p className="py-8 text-center text-sm text-(--fx-ink-3)">
+                        No messages yet.
+                      </p>
+                    )}
+                    {visibleMessages.map((m, i) => (
+                      <Fragment key={m.id}>
+                        {(i === 0 ||
+                          dateKey(visibleMessages[i - 1].createdAt, {
+                            timeZone,
+                          }) !== dateKey(m.createdAt, { timeZone })) && (
+                          <FxDayLine iso={m.createdAt} />
+                        )}
+                        <div
+                          ref={(el) => {
+                            if (el) messageRefs.current.set(m.id, el);
+                            else messageRefs.current.delete(m.id);
+                          }}
+                        >
+                          <MessageBubble
+                            message={m}
+                            contactName={thread.name}
+                            formatTime={formatTime}
+                            highlight={activeSearch || undefined}
+                            isActiveMatch={
+                              m.id === activeMatchId || m.id === focusMsgId
+                            }
+                            onReply={(msg) => {
+                              setReplyTo(msg);
+                            }}
+                            onReact={
+                              m.senderType !== 'SYSTEM' &&
+                              windowOpen &&
+                              capabilities.outboundReaction
+                                ? (msg, emoji) => void react(msg.id, emoji)
+                                : undefined
+                            }
+                          />
+                        </div>
+                      </Fragment>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {newBelow && tab === 'messages' && (
+              <button
+                type="button"
+                onClick={() => toBottom(true)}
+                className={cn(
+                  PRESSED_CLASS,
+                  'absolute inset-x-0 bottom-3 z-(--fx-z-pop) mx-auto inline-flex min-h-9 w-fit items-center gap-1.5 rounded-(--fx-r-pill) bg-(--fx-link) px-3.5 text-sm font-semibold text-(--fx-surface) shadow-[0_6px_18px_var(--fx-shade)] transition-[translate,scale] duration-(--fx-t-hover) ease-(--fx-ease-out) animate-in fade-in-0 slide-in-from-bottom-1 hover:-translate-y-0.5 active:scale-[0.97] motion-reduce:animate-none motion-reduce:hover:translate-y-0',
+                )}
+                data-testid="new-messages-pill"
+                data-fx-new-messages=""
+              >
+                <ArrowDown className="size-4" aria-hidden="true" />
+                New messages
+              </button>
+            )}
           </div>
 
           <Composer
@@ -669,20 +815,38 @@ export function FxConversationDrawer({
         </div>
 
         {!compact && contactPanelOpen && isDesktopPanel && (
-          <div className="w-80 shrink-0 border-s border-(--fx-line)" data-testid="contact-panel-pane">
-            <ContactPanel thread={thread} onPatchContact={patchContact} onMoveLifecycle={moveLifecycle} />
+          <div
+            className="w-80 shrink-0 border-s border-(--fx-line)"
+            data-testid="contact-panel-pane"
+          >
+            <ContactPanel
+              thread={thread}
+              onPatchContact={patchContact}
+              onMoveLifecycle={moveLifecycle}
+            />
           </div>
         )}
       </div>
 
       {!compact && (
-        <Sheet open={contactPanelOpen && !isDesktopPanel} onOpenChange={(open) => setPanelOpen(open)}>
-          <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-sm" data-testid="contact-panel-sheet">
+        <Sheet
+          open={contactPanelOpen && !isDesktopPanel}
+          onOpenChange={(open) => setPanelOpen(open)}
+        >
+          <SheetContent
+            side="right"
+            className="w-full gap-0 p-0 sm:max-w-sm"
+            data-testid="contact-panel-sheet"
+          >
             <SheetHeader className="border-b border-(--fx-line) px-4 py-3">
               <SheetTitle>Contact</SheetTitle>
             </SheetHeader>
             <div className="min-h-0 flex-1">
-              <ContactPanel thread={thread} onPatchContact={patchContact} onMoveLifecycle={moveLifecycle} />
+              <ContactPanel
+                thread={thread}
+                onPatchContact={patchContact}
+                onMoveLifecycle={moveLifecycle}
+              />
             </div>
           </SheetContent>
         </Sheet>

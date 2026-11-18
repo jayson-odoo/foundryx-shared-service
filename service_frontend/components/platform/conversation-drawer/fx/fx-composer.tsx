@@ -26,11 +26,10 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
-
-import { useHideMainAction } from '@/components/fx/actions/page-actions-context';
-import { FxIconActionButton } from '@/components/fx/actions/icon-action';
-import { FxBlockedArea } from '@/components/fx/banners/blocked-area';
-import { FxTooltip } from '@/components/fx/fx-tooltip';
+import type { MediaKind } from '@/types/omnichannel';
+import { CHANNEL_CAPABILITIES } from '@/lib/channel-capabilities';
+import { EMOJI_GROUPS } from '@/lib/emoji';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -48,15 +47,18 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Textarea } from '@/components/ui/textarea';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { Textarea } from '@/components/ui/textarea';
+import { FxIconActionButton } from '@/components/fx/actions/icon-action';
+import { useHideMainAction } from '@/components/fx/actions/page-actions-context';
+import { FxBlockedArea } from '@/components/fx/banners/blocked-area';
+import { FxTooltip } from '@/components/fx/fx-tooltip';
 import { channelsListPath } from '@/app/(protected)/omnichannel/settings/channels/components/paths';
-import { CHANNEL_CAPABILITIES } from '@/lib/channel-capabilities';
-import { EMOJI_GROUPS } from '@/lib/emoji';
-import { cn } from '@/lib/utils';
-import type { MediaKind } from '@/types/omnichannel';
-
 import {
   ATTACH_OPTIONS,
   PendingThumb,
@@ -103,7 +105,9 @@ export function FxComposer({
   const [quickOpen, setQuickOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
-  const [structured, setStructured] = useState<'interactive' | 'location' | 'contacts' | null>(null);
+  const [structured, setStructured] = useState<
+    'interactive' | 'location' | 'contacts' | null
+  >(null);
   const [pending, setPending] = useState<PendingFile[]>([]);
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -123,21 +127,29 @@ export function FxComposer({
   const hasWindow = capabilities.reengageMode !== 'none';
   const extendedOpen = !windowOpen && humanAgentWindowOpen;
   const showNoChannel = !isNote && !!noChannel;
-  const locked = showNoChannel || (!isNote && hasWindow && !windowOpen && !extendedOpen);
-  const showWindowMarker = !showNoChannel && !isNote && hasWindow && !windowOpen;
+  const locked =
+    showNoChannel || (!isNote && hasWindow && !windowOpen && !extendedOpen);
+  const showWindowMarker =
+    !showNoChannel && !isNote && hasWindow && !windowOpen;
   const showPresenceMarker = !isNote && !hasWindow;
   const canAttach = !isNote && !locked && !!onSendMedia;
-  const availableAttachOptions = ATTACH_OPTIONS.filter((o) => capabilities.media[o.kind]);
+  const availableAttachOptions = ATTACH_OPTIONS.filter(
+    (o) => capabilities.media[o.kind],
+  );
   const canRecordVoice = canAttach && capabilities.media.voice;
-  const canInteractive = !isNote && !locked && capabilities.quickReplies && !!onSendInteractive;
-  const canLocation = !isNote && !locked && capabilities.location && !!onSendLocation;
-  const canContacts = !isNote && !locked && capabilities.contacts && !!onSendContacts;
+  const canInteractive =
+    !isNote && !locked && capabilities.quickReplies && !!onSendInteractive;
+  const canLocation =
+    !isNote && !locked && capabilities.location && !!onSendLocation;
+  const canContacts =
+    !isNote && !locked && capabilities.contacts && !!onSendContacts;
   const canStructured = canInteractive || canLocation || canContacts;
 
   useEffect(() => {
     return () => {
       pending.forEach((p) => p.preview && URL.revokeObjectURL(p.preview));
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+      if (streamRef.current)
+        streamRef.current.getTracks().forEach((t) => t.stop());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -160,7 +172,9 @@ export function FxComposer({
       kind,
       caption: '',
       preview:
-        kind === 'image' || kind === 'sticker' || kind === 'video' ? URL.createObjectURL(file) : undefined,
+        kind === 'image' || kind === 'sticker' || kind === 'video'
+          ? URL.createObjectURL(file)
+          : undefined,
     }));
     setPending((prev) => [...prev, ...additions]);
     e.target.value = '';
@@ -199,7 +213,11 @@ export function FxComposer({
     try {
       const ok = isNote
         ? await onAddNote?.('' + text)
-        : await onSend({ messageType: 'TEXT', body: text, replyToMessageId: replyId });
+        : await onSend({
+            messageType: 'TEXT',
+            body: text,
+            replyToMessageId: replyId,
+          });
       if (ok) {
         // Clear only what was sent; anything typed meanwhile stays.
         setBody((current) => (current === sent ? '' : current));
@@ -242,8 +260,12 @@ export function FxComposer({
     recorder.onstop = () => {
       stopStream();
       if (send && chunksRef.current.length && onSendMedia) {
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' });
-        const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type });
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || 'audio/webm',
+        });
+        const file = new File([blob], `voice-${Date.now()}.webm`, {
+          type: blob.type,
+        });
         void onSendMedia({ kind: 'voice', file });
       }
       chunksRef.current = [];
@@ -263,7 +285,11 @@ export function FxComposer({
   const sendDisabled = locked || isSending || (!body.trim() && !hasPending);
 
   return (
-    <div className="border-t border-(--fx-line) bg-(--fx-surface) p-3" data-testid="composer" data-fx-composer="">
+    <div
+      className="border-t border-(--fx-line) bg-(--fx-surface) p-3"
+      data-testid="composer"
+      data-fx-composer=""
+    >
       <input
         ref={fileInputRef}
         type="file"
@@ -275,7 +301,9 @@ export function FxComposer({
       />
       {showNoChannel && (
         <div className="mb-2" data-testid="no-channel-banner">
-          <FxBlockedArea action={{ label: 'Connect channel', href: channelsListPath }}>
+          <FxBlockedArea
+            action={{ label: 'Connect channel', href: channelsListPath }}
+          >
             No channel is connected to this workspace.
           </FxBlockedArea>
         </div>
@@ -285,7 +313,10 @@ export function FxComposer({
           <FxBlockedArea
             action={
               locked && capabilities.template
-                ? { label: 'Choose template', onClick: () => setTemplateOpen(true) }
+                ? {
+                    label: 'Choose template',
+                    onClick: () => setTemplateOpen(true),
+                  }
                 : undefined
             }
           >
@@ -294,16 +325,26 @@ export function FxComposer({
         </div>
       )}
       {showPresenceMarker && (
-        <div className="mb-2 flex items-center gap-2 text-xs text-(--fx-ink-3)" data-testid="presence-marker">
+        <div
+          className="mb-2 flex items-center gap-2 text-xs text-(--fx-ink-3)"
+          data-testid="presence-marker"
+        >
           <span
-            className={cn('size-1.5 rounded-full', visitorPresence?.online ? 'bg-(--fx-ok)' : 'bg-(--fx-line-2)')}
+            className={cn(
+              'size-1.5 rounded-full',
+              visitorPresence?.online ? 'bg-(--fx-ok)' : 'bg-(--fx-line-2)',
+            )}
             aria-hidden="true"
           />
           {visitorPresence?.label ?? 'Awaiting first message'}
         </div>
       )}
       {sendError && !locked && (
-        <p role="alert" className="mb-2 text-sm text-(--fx-act)" data-testid="send-error">
+        <p
+          role="alert"
+          className="mb-2 text-sm text-(--fx-act)"
+          data-testid="send-error"
+        >
           {sendError}
         </p>
       )}
@@ -312,10 +353,16 @@ export function FxComposer({
           className="mb-2 flex items-start gap-2 rounded-(--fx-r-m) border-s-2 border-(--fx-link) bg-(--fx-surface-2) px-3 py-2 text-xs"
           data-testid="reply-strip"
         >
-          <Reply className="mt-0.5 size-3.5 shrink-0 text-(--fx-link)" aria-hidden="true" />
+          <Reply
+            className="mt-0.5 size-3.5 shrink-0 text-(--fx-link)"
+            aria-hidden="true"
+          />
           <div className="min-w-0 flex-1">
             <div className="font-semibold text-(--fx-link)">
-              Replying to {replyTo.senderType === 'CONTACT' ? 'customer' : (replyTo.senderName ?? 'agent')}
+              Replying to{' '}
+              {replyTo.senderType === 'CONTACT'
+                ? 'customer'
+                : (replyTo.senderName ?? 'agent')}
             </div>
             <p className="line-clamp-2 text-(--fx-ink-2)">{replyTo.body}</p>
           </div>
@@ -333,14 +380,25 @@ export function FxComposer({
       {hasPending && (
         <div className="mb-2 space-y-2" data-testid="attach-tray">
           {pending.map((item) => (
-            <div key={item.id} className="flex items-center gap-2 rounded-(--fx-r-m) border border-(--fx-line) p-2">
+            <div
+              key={item.id}
+              className="flex items-center gap-2 rounded-(--fx-r-m) border border-(--fx-line) p-2"
+            >
               <PendingThumb item={item} />
               <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-semibold">{item.file.name}</div>
+                <div className="truncate text-xs font-semibold">
+                  {item.file.name}
+                </div>
                 <Input
                   value={item.caption}
                   onChange={(e) =>
-                    setPending((prev) => prev.map((p) => (p.id === item.id ? { ...p, caption: e.target.value } : p)))
+                    setPending((prev) =>
+                      prev.map((p) =>
+                        p.id === item.id
+                          ? { ...p, caption: e.target.value }
+                          : p,
+                      ),
+                    )
                   }
                   placeholder="Caption"
                   aria-label={`Caption for ${item.file.name}`}
@@ -367,14 +425,28 @@ export function FxComposer({
           className="mb-2 flex items-center gap-3 rounded-(--fx-r-m) bg-(--fx-surface-2) px-3 py-2"
           data-testid="voice-recording"
         >
-          <span className="flex size-3 animate-pulse rounded-full bg-(--fx-act)" aria-hidden="true" />
+          <span
+            className="flex size-3 animate-pulse rounded-full bg-(--fx-act)"
+            aria-hidden="true"
+          />
           <span className="flex-1 text-sm tabular-nums">
-            Recording · {Math.floor(recordSeconds / 60)}:{String(recordSeconds % 60).padStart(2, '0')}
+            Recording · {Math.floor(recordSeconds / 60)}:
+            {String(recordSeconds % 60).padStart(2, '0')}
           </span>
-          <Button variant="fx-text" size="sm" onClick={() => finishRecording(false)} data-testid="voice-cancel">
+          <Button
+            variant="fx-text"
+            size="sm"
+            onClick={() => finishRecording(false)}
+            data-testid="voice-cancel"
+          >
             Discard recording
           </Button>
-          <Button variant="fx-quiet" size="sm" onClick={() => finishRecording(true)} data-testid="voice-send">
+          <Button
+            variant="fx-quiet"
+            size="sm"
+            onClick={() => finishRecording(true)}
+            data-testid="voice-send"
+          >
             <Send className="size-4" /> Send recording
           </Button>
         </div>
@@ -398,23 +470,36 @@ export function FxComposer({
               <DropdownMenuContent align="start">
                 {canAttach &&
                   availableAttachOptions.map(({ kind, label, Icon }) => (
-                    <DropdownMenuItem key={kind} onSelect={() => openPicker(kind)} data-testid={`attach-${kind}`}>
+                    <DropdownMenuItem
+                      key={kind}
+                      onSelect={() => openPicker(kind)}
+                      data-testid={`attach-${kind}`}
+                    >
                       <Icon className="size-4" /> {label}
                     </DropdownMenuItem>
                   ))}
                 {canAttach && canStructured && <DropdownMenuSeparator />}
                 {canInteractive && (
-                  <DropdownMenuItem onSelect={() => setStructured('interactive')} data-testid="attach-interactive">
+                  <DropdownMenuItem
+                    onSelect={() => setStructured('interactive')}
+                    data-testid="attach-interactive"
+                  >
                     <LayoutList className="size-4" /> Interactive
                   </DropdownMenuItem>
                 )}
                 {canLocation && (
-                  <DropdownMenuItem onSelect={() => setStructured('location')} data-testid="attach-location">
+                  <DropdownMenuItem
+                    onSelect={() => setStructured('location')}
+                    data-testid="attach-location"
+                  >
                     <MapPin className="size-4" /> Location
                   </DropdownMenuItem>
                 )}
                 {canContacts && (
-                  <DropdownMenuItem onSelect={() => setStructured('contacts')} data-testid="attach-contact">
+                  <DropdownMenuItem
+                    onSelect={() => setStructured('contacts')}
+                    data-testid="attach-contact"
+                  >
                     <ContactIcon className="size-4" /> Contact
                   </DropdownMenuItem>
                 )}
@@ -436,13 +521,18 @@ export function FxComposer({
                 <div className="max-h-64 space-y-2 overflow-y-auto">
                   {EMOJI_GROUPS.map((group) => (
                     <div key={group.label}>
-                      <div className="px-1 pb-1 text-xs font-semibold text-(--fx-ink-3)">{group.label}</div>
+                      <div className="px-1 pb-1 text-xs font-semibold text-(--fx-ink-3)">
+                        {group.label}
+                      </div>
                       <div className="grid grid-cols-8 gap-0.5">
                         {group.emojis.map((emoji, i) => (
                           <button
                             key={`${group.label}-${i}`}
                             type="button"
-                            className={cn(PRESSED_CLASS, 'rounded p-1 text-lg hover:bg-(--fx-surface-2)')}
+                            className={cn(
+                              PRESSED_CLASS,
+                              'rounded p-1 text-lg hover:bg-(--fx-surface-2)',
+                            )}
                             onClick={() => setBody((prev) => prev + emoji)}
                             data-testid="emoji-item"
                           >
@@ -467,7 +557,13 @@ export function FxComposer({
               void submit();
             }
           }}
-          placeholder={isNote ? 'Internal note' : locked ? 'Free-form messages are locked' : 'Message'}
+          placeholder={
+            isNote
+              ? 'Internal note'
+              : locked
+                ? 'Free-form messages are locked'
+                : 'Message'
+          }
           aria-label={isNote ? 'Internal note' : 'Message'}
           disabled={locked || recording}
           className="min-h-11 max-h-40 flex-1 resize-none"
@@ -476,7 +572,9 @@ export function FxComposer({
 
         {!isNote && (
           <Popover open={quickOpen} onOpenChange={setQuickOpen}>
-            <FxTooltip label={locked ? 'Free-form messages are locked' : 'Quick replies'}>
+            <FxTooltip
+              label={locked ? 'Free-form messages are locked' : 'Quick replies'}
+            >
               <PopoverTrigger asChild>
                 <FxIconActionButton
                   label="Quick replies"
@@ -499,12 +597,18 @@ export function FxComposer({
                         key={qr.id}
                         value={`${qr.shortcut ?? ''} ${qr.body}`}
                         onSelect={() => {
-                          setBody((prev) => (prev ? `${prev} ${qr.body}` : qr.body));
+                          setBody((prev) =>
+                            prev ? `${prev} ${qr.body}` : qr.body,
+                          );
                           setQuickOpen(false);
                         }}
                       >
                         <div>
-                          {qr.shortcut && <div className="text-xs font-semibold text-(--fx-ink-3)">{qr.shortcut}</div>}
+                          {qr.shortcut && (
+                            <div className="text-xs font-semibold text-(--fx-ink-3)">
+                              {qr.shortcut}
+                            </div>
+                          )}
                           <div className="line-clamp-2 text-sm">{qr.body}</div>
                         </div>
                       </CommandItem>
@@ -538,7 +642,9 @@ export function FxComposer({
               data-testid={isNote ? 'note-send' : 'message-send'}
             >
               <Send className="size-4" aria-hidden="true" />
-              <span className="max-sm:sr-only">{isNote ? 'Add note' : 'Send'}</span>
+              <span className="max-sm:sr-only">
+                {isNote ? 'Add note' : 'Send'}
+              </span>
             </Button>
           )
         )}

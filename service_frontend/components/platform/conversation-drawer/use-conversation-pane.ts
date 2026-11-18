@@ -10,7 +10,15 @@
  * Moved here unchanged from `conversation-drawer.tsx`; only the looks differ.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
+import type {
+  ConversationMessage,
+  QuickReply,
+  WhatsAppTemplate,
+  WorkspaceMember,
+} from '@/types/omnichannel';
+import { ApiError } from '@/lib/api-client';
+import { channelCapabilities } from '@/lib/channel-capabilities';
+import { toast } from '@/lib/toast';
 import { useCan } from '@/hooks/use-can';
 import { useCloseReasons } from '@/hooks/use-close-reasons';
 import { useDatetime } from '@/hooks/use-datetime';
@@ -20,17 +28,8 @@ import { useMyTeams } from '@/hooks/use-my-teams';
 import { useTeams } from '@/hooks/use-teams';
 import { useThreadEvents } from '@/hooks/use-thread-events';
 import { useWorkspaceHasActiveChannel } from '@/hooks/use-workspace-has-active-channel';
-import { ApiError } from '@/lib/api-client';
-import { channelCapabilities } from '@/lib/channel-capabilities';
-import { toast } from '@/lib/toast';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
-import type {
-  ConversationMessage,
-  QuickReply,
-  WhatsAppTemplate,
-  WorkspaceMember,
-} from '@/types/omnichannel';
 
 /** Contact panel open/closed persists per browser (plan 25, AC-CDM-34). */
 const CONTACT_PANEL_STORAGE_KEY = 'omnichannel:contact-panel-open';
@@ -41,7 +40,9 @@ export function useConversationPane(contactId: string | null) {
   const messagesState = useMessages(contactId);
   const { thread, messages, setStatus } = messagesState;
   const { events, reload: reloadEvents } = useThreadEvents(contactId);
-  const { reasons: closeReasons } = useCloseReasons(thread?.workspaceId ?? null);
+  const { reasons: closeReasons } = useCloseReasons(
+    thread?.workspaceId ?? null,
+  );
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
 
   // F8 (round-3 codex triage) - `setStatus` (`useMessages`) has no internal
@@ -56,7 +57,11 @@ export function useConversationPane(contactId: string | null) {
       await setStatus('OPEN');
       await reloadEvents();
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Could not reopen this conversation.');
+      toast.error(
+        error instanceof ApiError
+          ? error.message
+          : 'Could not reopen this conversation.',
+      );
     }
   }, [setStatus, reloadEvents]);
 
@@ -90,7 +95,11 @@ export function useConversationPane(contactId: string | null) {
   const handleAssignTeam = useCallback(
     (teamId: string | null) => {
       assignTeam(teamId).catch((e: unknown) => {
-        toast.error(e instanceof Error ? e.message : 'Could not update the team assignment.');
+        toast.error(
+          e instanceof Error
+            ? e.message
+            : 'Could not update the team assignment.',
+        );
       });
     },
     [assignTeam],
@@ -103,7 +112,9 @@ export function useConversationPane(contactId: string | null) {
   const isDesktopPanel = useMediaQuery(CONTACT_PANEL_BREAKPOINT);
   useEffect(() => {
     try {
-      setContactPanelOpen(window.localStorage.getItem(CONTACT_PANEL_STORAGE_KEY) === '1');
+      setContactPanelOpen(
+        window.localStorage.getItem(CONTACT_PANEL_STORAGE_KEY) === '1',
+      );
     } catch {
       // localStorage unavailable (private browsing etc.) - default closed.
     }
@@ -158,9 +169,17 @@ export function useConversationPane(contactId: string | null) {
   // active channel (null = unknown keeps the window-driven composer).
   const hasActiveChannel = useWorkspaceHasActiveChannel(thread?.workspaceId);
   const windowOpen = useMemo(() => {
-    const iso = thread?.channelType === 'WHATSAPP' ? thread?.cswExpiresAt : thread?.windowExpiresAt;
+    const iso =
+      thread?.channelType === 'WHATSAPP'
+        ? thread?.cswExpiresAt
+        : thread?.windowExpiresAt;
     return !!iso && Date.parse(iso) > nowTick;
-  }, [thread?.channelType, thread?.cswExpiresAt, thread?.windowExpiresAt, nowTick]);
+  }, [
+    thread?.channelType,
+    thread?.cswExpiresAt,
+    thread?.windowExpiresAt,
+    nowTick,
+  ]);
   const humanAgentWindowOpen = useMemo(() => {
     if (capabilities.reengageMode !== 'human_agent') return false;
     const iso = thread?.humanAgentExpiresAt;
@@ -176,18 +195,35 @@ export function useConversationPane(contactId: string | null) {
     const iso = thread?.visitorLastSeenAt;
     if (!iso) return null;
     const online = nowTick - Date.parse(iso) < 2 * 60_000;
-    return { online, label: online ? 'Online now' : `Last seen ${formatDateTime(iso)}` };
-  }, [capabilities.reengageMode, thread?.visitorLastSeenAt, nowTick, formatDateTime]);
+    return {
+      online,
+      label: online ? 'Online now' : `Last seen ${formatDateTime(iso)}`,
+    };
+  }, [
+    capabilities.reengageMode,
+    thread?.visitorLastSeenAt,
+    nowTick,
+    formatDateTime,
+  ]);
 
   useEffect(() => {
     if (!thread?.channelId) return setTemplates([]);
-    conversationService.listTemplates(thread.channelId).then(setTemplates).catch(() => setTemplates([]));
+    conversationService
+      .listTemplates(thread.channelId)
+      .then(setTemplates)
+      .catch(() => setTemplates([]));
   }, [thread?.channelId]);
 
   useEffect(() => {
     if (!thread?.workspaceId) return;
-    conversationService.listQuickReplies(thread.workspaceId).then(setQuickReplies).catch(() => setQuickReplies([]));
-    workspaceService.getMembers(thread.workspaceId).then(setMembers).catch(() => setMembers([]));
+    conversationService
+      .listQuickReplies(thread.workspaceId)
+      .then(setQuickReplies)
+      .catch(() => setQuickReplies([]));
+    workspaceService
+      .getMembers(thread.workspaceId)
+      .then(setMembers)
+      .catch(() => setMembers([]));
   }, [thread?.workspaceId]);
 
   // Plan 27: the Activities tab renders <ActivityFeed> (notes + events
@@ -205,7 +241,8 @@ export function useConversationPane(contactId: string | null) {
       .map((m) => m.id)
       .reverse();
   }, [visibleMessages, activeSearch]);
-  const activeMatchId = matchIds[Math.min(matchCursor, Math.max(matchIds.length - 1, 0))] ?? null;
+  const activeMatchId =
+    matchIds[Math.min(matchCursor, Math.max(matchIds.length - 1, 0))] ?? null;
   useEffect(() => setMatchCursor(0), [activeSearch]);
 
   const stepMatch = useCallback(
@@ -219,7 +256,9 @@ export function useConversationPane(contactId: string | null) {
   const messageRefs = useRef(new Map<string, HTMLDivElement>());
   useEffect(() => {
     if (activeMatchId) {
-      messageRefs.current.get(activeMatchId)?.scrollIntoView({ block: 'center' });
+      messageRefs.current
+        .get(activeMatchId)
+        ?.scrollIntoView({ block: 'center' });
     }
   }, [activeMatchId]);
 
