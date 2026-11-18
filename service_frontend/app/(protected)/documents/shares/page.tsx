@@ -11,6 +11,9 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { File as FileIcon, Folder, Slash } from 'lucide-react';
 import type { ShareRow } from '@/types/documents';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { toast } from '@/lib/toast';
+import { fxLinks, useFxActorName } from '@/components/platform/document-drive/fx-drive-words';
 import { documentService } from '@/services/document-service';
 import { Badge } from '@/components/ui/badge';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
@@ -37,6 +40,10 @@ const ACCESS_LABEL: Record<ShareRow['generalAccess'], string> = {
 
 export default function DocumentSharesPage() {
   const { formatDate } = useDatetime();
+  // Foundryx UIUX (slice W3-DOCS): the playbook's words for the same actions.
+  // With the switch off every value below is today's.
+  const fx = useFx();
+  const byWhom = useFxActorName();
 
   const actions = useMemo<ResourceAction<ShareRow>[]>(
     () => [
@@ -52,7 +59,12 @@ export default function DocumentSharesPage() {
         // server-side).
         surfaces: { row: true },
         permission: 'documents.share',
-        deferred: { actionKey: 'document_shares.revoke', entityType: 'document_share' },
+        deferred: {
+          actionKey: 'document_shares.revoke',
+          entityType: 'document_share',
+          fxName: (rows) =>
+            rows.length === 1 && rows[0].targetName ? `link to ${rows[0].targetName}` : undefined,
+        },
       },
       {
         // Fix round 2, S1: the bulk revoke's typed confirmation is a
@@ -72,22 +84,37 @@ export default function DocumentSharesPage() {
         surfaces: { bulk: true },
         permission: 'documents.share',
         confirm: {
-          title: 'Revoke link(s)?',
-          description:
-            'Revoked links stop working immediately. This keeps the audit trail.',
-          confirmLabel: 'Revoke',
+          // Foundryx UIUX (owner decision Q-BULK): the typed confirm types how
+          // many links; with the switch off every value is today's.
+          title: fx ? (rows) => `Revoke ${fxLinks(rows.length)}?` : 'Revoke link(s)?',
+          description: fx
+            ? (rows) => `${rows.length === 1 ? 'It stops' : 'They stop'} working at once. The audit trail stays.`
+            : 'Revoked links stop working immediately. This keeps the audit trail.',
+          confirmLabel: fx ? (rows) => `Revoke ${fxLinks(rows.length)}` : 'Revoke',
           input: {
             expected: () => 'REVOKE',
             hint: () => 'Type REVOKE to confirm',
+            fxExpected: (rows) => String(rows.length),
           },
+          fxKeepLabel: (rows) => (rows.length === 1 ? 'Keep link' : 'Keep links'),
         },
         run: async (rows, runtime) => {
           await documentService.revokeShares(rows.map((r) => r.id));
           runtime.reload();
+          // No Undo: re-enabling a revoked link would widen access again.
+          if (fx) {
+            toast.fxDone({
+              what:
+                rows.length === 1 && rows[0].targetName
+                  ? `Link to ${rows[0].targetName} revoked`
+                  : `${fxLinks(rows.length)} revoked`,
+              byWhom,
+            });
+          }
         },
       },
     ],
-    [],
+    [fx, byWhom],
   );
 
   const config = useMemo<ResourceListConfig<ShareRow>>(() => {
@@ -280,6 +307,11 @@ export default function DocumentSharesPage() {
         { id: 'createdAt', label: 'Created' },
       ],
       actions,
+      fx: {
+        noun: 'shared links',
+        phoneHidden: ['capability', 'creator', 'createdAt'],
+        cardLines: [['target'], ['access', 'expiry']],
+      },
     };
   }, [actions, formatDate]);
 
