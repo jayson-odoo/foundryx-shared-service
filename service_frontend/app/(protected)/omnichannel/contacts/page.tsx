@@ -172,10 +172,12 @@ export default function ContactsPage() {
     <Fragment>
       {workspaces.length > 1 && (
         <div data-fx-branch-picker="" className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-(--fx-ink-3)">Workspace</span>
+          {/* Phones keep the picker and drop its caption, so the header row
+              (picker, More, Add contact) fits 375px without scrolling sideways. */}
+          <span className="text-xs font-semibold text-(--fx-ink-3) max-sm:hidden">Workspace</span>
           <SearchSelect
             ariaLabel="Workspace"
-            className="w-48 max-sm:w-36"
+            className="w-48 max-sm:w-28"
             value={workspaceId}
             onChange={setWorkspaceId}
             options={workspaces.map((w) => ({ label: w.name, value: w.id }))}
