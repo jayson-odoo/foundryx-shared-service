@@ -83,7 +83,8 @@ export default function LeadCaptureConnectPage() {
 
   return (
     <main className="flex min-h-screen justify-center bg-background px-4 py-6 sm:py-10">
-      <div className="flex w-full max-w-2xl flex-col gap-4">
+      {/* min-w-0: a one-line URL must clamp, never widen the page (375 px, crew pass 8fc0c469). */}
+      <div className="flex w-full min-w-0 max-w-2xl flex-col gap-4">
         <header className="flex items-center justify-between gap-3">
           {context ? (
             <BrandMark branding={brandingOf(context.branding.name, context.branding.logoUrl)} />

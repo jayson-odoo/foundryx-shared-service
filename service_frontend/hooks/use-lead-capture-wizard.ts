@@ -132,6 +132,9 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
   const [testWaiting, setTestWaiting] = useState(false);
   const [done, setDone] = useState<WizardDone | null>(null);
   const opened = useRef(false);
+  /** Google: the newest test lead when the URL + key were shown. A test lead
+   * Google sends after that (even before Continue) passes the Test step. */
+  const googleBaseline = useRef<string | null | undefined>(undefined);
   const pollTimer = useRef<number | null>(null);
   /** False once the wizard closed, unmounted or its session ended: a poll
    * in flight checks it after every await and stops. */
@@ -217,6 +220,11 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     () =>
       run('copy', async (t) => {
         const made = await svc.googleSource(t);
+        try {
+          googleBaseline.current = (await svc.lastTestLead(t, made.source.id)).leadId;
+        } catch {
+          googleBaseline.current = undefined; // read again at Continue; never blocks the URL + key
+        }
         setSource(made.source);
         setState((s) => ({
           ...s,
@@ -416,7 +424,10 @@ export function useLeadCaptureWizard(): UseLeadCaptureWizard {
     () =>
       run('test', async (t) => {
         if (!state.sourceId) return;
-        const baseline = (await svc.lastTestLead(t, state.sourceId)).leadId;
+        const baseline =
+          googleBaseline.current !== undefined
+            ? googleBaseline.current
+            : (await svc.lastTestLead(t, state.sourceId)).leadId;
         polling.current = true;
         setTestWaiting(true);
         poll(t, state.sourceId, baseline, GOOGLE_POLL_LIMIT);
