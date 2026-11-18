@@ -270,6 +270,14 @@
   /* The rail's icon column: the rail less the scrollbar gutter on both edges
      (`scrollbar-gutter: stable both-edges`), so icons sit centred. */
   --fx-rail-icon-col: calc(var(--fx-rail-w) - 2 * var(--fx-scroll-size, 4px));
+  /* Where the frozen page header sits: under the top bar, or at the very top
+     once the bar has merged into it. Anything frozen under the page header
+     (a list's header row) counts from here, so it follows the merge. */
+  --fx-head-top: calc(var(--header-height) + var(--shell-top-offset, 0px));
+}
+
+:root[data-fx='on']:has(.fx-topbar[data-merged]) {
+  --fx-head-top: var(--shell-top-offset, 0px);
 }
 
 /* The page makes room for the rail (and for the full panel while pinned). The
@@ -611,7 +619,7 @@
 }
 
 :root[data-fx='on'] body:has(.fx-topbar[data-merged]) [data-fx-header] {
-  top: var(--shell-top-offset, 0px);
+  top: var(--fx-head-top);
 }
 
 /* The moved search box, wherever it sits. */
