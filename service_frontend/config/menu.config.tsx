@@ -404,6 +404,9 @@ export const MENU_SIDEBAR: MenuConfig = [
     children: [
       { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
       { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
+      { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
+      { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
+      { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
     ],
   },
   // Meetings (sprint-5 S0) - module menu block, visible only while the
@@ -598,6 +601,9 @@ export const MENU_MEGA: MenuConfig = [
             children: [
               { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
               { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
+              { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
+              { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
+              { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
             ],
           },
         ],
@@ -806,6 +812,9 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
     children: [
       { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
       { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
+      { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
+      { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
+      { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
     ],
   },
   // Meetings (sprint-5 S0) - third menu copy; same module + permission tags so

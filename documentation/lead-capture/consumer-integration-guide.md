@@ -21,8 +21,10 @@ Every gateway call carries a Lead Capture key:
 Authorization: Bearer fxl_live_<secret>
 ```
 
-- A Shared Service admin creates the key (Lead Capture > Keys, or `POST /lead-capture/keys` while signed in). The
-  full key is shown once; afterwards only `fxl_live_****` + its last 4 characters is shown.
+- A Shared Service admin creates the first key (Lead Capture > Keys, or `POST /lead-capture/keys` while signed in).
+  After that, a key holder can list, create and revoke the product's keys itself (`/keys`, section 3), so the
+  product can show a Keys screen in its own app. The full key is shown once; afterwards only `fxl_live_****` + its
+  last 4 characters is shown.
 - The key decides the tenant. Nothing in a request body or query chooses it.
 - A missing, malformed, unknown or revoked key answers `401 invalid_api_key`. Too many `401`s from one IP answer
   `429 rate_limited` with `Retry-After`. Each key has a request budget (600 calls per 5 minutes by default); over it
@@ -57,14 +59,16 @@ Every gateway error has one shape:
 | 422 | `invalid_code` | Facebook login: `code` is empty or too long |
 | 502 | `subscribe_failed` | Connect: Meta could not be reached, or refused the Page's lead subscription; try again |
 | 404 | `delivery_not_found` | Delivery id not found for this tenant |
+| 404 | `key_not_found` | Key id not found for this tenant |
 | 400 | `token_invalid` | Meta no longer accepts the source's Page token (or it has none): reconnect the Page |
 | 400 | `meta_refused` | Meta refused the form, form-list or test-lead call; `message` is Meta's reason, cleaned |
 | 409 | `endpoint_limit` | Already 5 webhook endpoints |
 | 409 | `source_not_connected` | Test lead or backfill for a source that is not receiving leads (`NEEDS_RECONNECT`, `DISCONNECTED`, `DRAFT`): reconnect first |
 | 409 | `test_lead_exists` | Meta still holds the form's previous test lead after clearing it; delete it in Meta's Lead Ads Testing Tool, then retry |
 | 409 | `lead_purged` | Redeliver of a lead whose personal data was deleted |
+| 409 | `key_in_use` | Revoke of the key the request itself uses: revoke it with another key |
 | 422 | `invalid_request` | Body or query fails validation (e.g. `limit=500`, no `url`); `details` lists the fields |
-| 422 | `invalid_url` | Callback URL is not public `https://` |
+| 422 | `invalid_url` | The receiver URL is not public `https://` (message names it "The URL") |
 | 422 | `invalid_fields` | Field list: bad key, repeated key, unknown type, more than 50 |
 | 422 | `invalid_field_map` | Field map: bad form id, target not in your field list |
 | 422 | `invalid_events` | No event, or an unknown event |
@@ -106,6 +110,10 @@ Every gateway error has one shape:
 | GET | `/webhooks` | - | `{"data": [Webhook]}` |
 | POST | `/webhooks` | `{"url", "events"}` | `201` `Webhook` + `secret` (shown once) |
 | DELETE | `/webhooks/{id}` | - | `204` |
+| POST | `/webhooks/{id}/test` | - | `202` `Delivery` (one signed sample lead, `isTest: true`, to that endpoint only) |
+| GET | `/keys` | - | `{"data": [Key]}` (newest first, revoked keys included) |
+| POST | `/keys` | `{"name"}` | `201` `Key` + `key` (the full key, shown once) |
+| DELETE | `/keys/{id}` | - | `204` (revoked at once; `409 key_in_use` for the calling key) |
 | GET | `/leads` | `since`, `cursor`, `source`, `limit` (1-100, default 50) | `{"data": [Lead], "nextCursor", "hasMore"}` |
 | POST | `/deliveries/{id}/redeliver` | - | `Delivery` |
 
@@ -183,6 +191,8 @@ Your CRM's own lead fields are the targets:
 - `key`: letters, digits, `_`, starting with a letter, at most 64; unique. `type`: `name`, `phone`, `email`,
   `notes` or `text`. At most 50 fields.
 - With no list published, the targets are `name` (name), `phone` (phone), `email` (email), `notes` (notes).
+- Saving the field list (`PUT /fields`, `[]` included) removes every field-map line whose field is no longer in the
+  list, on every source, in the same call; a form left with no line loses its map.
 - A source's field map says which form question fills which field: `"*"` applies to every form, a form's own map
   wins over it. Question keys are the Facebook form's question keys (as in `answers[].key`); a `null` or `""` target
   removes that entry; an empty `map` removes the form's map.
@@ -322,6 +332,27 @@ with the key id.
 An endpoint registered with only `lead.created` receives no `source.updated`: add it to `events` (delete the
 endpoint and register it again with both) to be told about reconnects and disconnects.
 
+### Test push
+
+`POST /webhooks/{id}/test` queues ONE delivery of a sample lead to that endpoint only, signed like any real
+delivery and sent through the same retry ladder. The event is `lead.created` when the endpoint subscribes to it,
+otherwise its first event. The body is the section 4 lead shape with `"isTest": true`, `sourceId: "test"`,
+`platform: "test"` and `fields` holding every key of your field list with a sample value per type (name
+`Test Lead`, phone `+60000000000`, email `test.lead@example.com`, notes and text sample text). Answers the
+`Delivery` (`404 endpoint_not_found` for an unknown or removed endpoint). Use it to check the receiver and its
+signature check before real leads arrive.
+
+### Key
+
+```json
+{"id": "5c2b...", "name": "CRM sync", "keyMasked": "fxl_live_****Jk4Q", "createdAt": "2026-11-17T02:00:00Z",
+ "lastUsedAt": "2026-11-17T07:40:00Z", "revokedAt": null}
+```
+
+`POST /keys` also returns `"key": "fxl_live_..."` once. A blank or missing `name` is saved as "Lead Capture key". A revoked key stays listed with `revokedAt` set and answers
+`401 invalid_api_key` from then on. To rotate: create the new key, switch your backend to it, then revoke the old
+key with the new one (a key cannot revoke itself). Every key call is audited with the calling key id.
+
 ### Delivery
 
 ```json
@@ -451,7 +482,8 @@ def verify(secret: str, header: str, raw_body: bytes) -> bool:
 ## 6. Pulling leads
 
 `GET /leads?since=2026-11-15T00:00:00Z` returns leads in `receivedAt`, then `id`, order. Keep `nextCursor` and call
-`GET /leads?cursor=<nextCursor>` next time: it resumes right after the last lead you received. An empty page keeps
+`GET /leads?cursor=<nextCursor>` next time: it resumes right after the last lead you received. `nextCursor` is
+that resume point, so it is set even when `hasMore` is `false`. An empty page keeps
 the cursor you sent; an empty first `since` page has `nextCursor: null`, so call with the same `since` again.
 `hasMore: true` means call again now. `source=<sourceId>` limits to one source. `cursor` wins over `since`. A lead
 appears in the pull about 5 seconds after it is stored (so a cursor never passes a lead that is still being saved);

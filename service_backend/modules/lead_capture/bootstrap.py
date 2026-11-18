@@ -39,6 +39,10 @@ def register_engine_entities() -> None:
     register_meta_change_handler("page", LEADGEN_FIELD, MODULE_NAME, handle_leadgen_change)
     register_page_fields(MODULE_NAME, [LEADGEN_FIELD])
 
+    from .deferred_actions import register_lead_capture_deferred_actions
+
+    register_lead_capture_deferred_actions()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Idempotent. Postgres: schema first; tables via create_all (the module

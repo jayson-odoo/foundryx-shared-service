@@ -6,7 +6,7 @@
  * a `ctx` (or with `restoreFromCtx` left off, the embedded-list default), it
  * falls back to the hook's usual defaults.
  */
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { useResourceList } from './use-resource-list';
 import { encodeListQuery } from '@/lib/list-context';
@@ -70,4 +70,25 @@ describe('AC-DLA-30 useResourceList ctx restore', () => {
     expect(result.current.page).toBe(0);
     expect(result.current.pageSize).toBe(25);
   });
+
+  it('re-setting an EQUAL sort after mount keeps the restored page (reload on page 2 stays on page 2)', () => {
+    const query: ListQuery = {
+      page: 1,
+      pageSize: 10,
+      search: '',
+      sort: { id: 'created', desc: true },
+      filter: null,
+      statusView: 'active',
+      segment: undefined,
+    };
+    useSearchParams.mockReturnValue(new URLSearchParams({ ctx: encodeListQuery(query) }));
+    const { result } = renderHook(() =>
+      useResourceList<Row>({ fetcher: neverResolves, restoreFromCtx: true }),
+    );
+    act(() => result.current.setSort({ id: 'created', desc: true }));
+    expect(result.current.page).toBe(1);
+    act(() => result.current.setSort({ id: 'created', desc: false }));
+    expect(result.current.page).toBe(0);
+  });
 });
+
