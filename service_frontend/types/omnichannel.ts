@@ -795,6 +795,10 @@ export interface PatchContactInput {
    *  A8) - rides the same `PATCH /omnichannel/contacts/{id}` the rest of this
    *  input does; native-only (403 for an embed/external-agent token). */
   assignedTeamId?: string | null;
+  /** The assignee, sent together with `assignedTeamId` to put a thread's
+   *  owner back exactly (the Foundryx UIUX assign toast's Undo). Same PATCH,
+   *  same `conversations.assign` gate as `assign()`. */
+  assignedUserId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
