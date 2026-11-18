@@ -67,14 +67,16 @@ export function PublicBrandedShell({ children, initialBranding }: PublicBrandedS
   if (ownsChromePath(pathname)) {
     return (
       <PublicPageBrandingContext.Provider value={branding}>
-        <div className="flex h-full min-h-full grow flex-col">{children}</div>
+        {/* min-w-0: <body> is a flex row; without it a long unbreakable line (a
+            one-line URL) widens the whole page past a 375 px screen. */}
+        <div className="flex h-full min-h-full min-w-0 grow flex-col">{children}</div>
       </PublicPageBrandingContext.Provider>
     );
   }
 
   return (
     <PublicPageBrandingContext.Provider value={branding}>
-      <div className="flex min-h-full grow flex-col">
+      <div className="flex min-h-full min-w-0 grow flex-col">
         <header className="border-b border-border">
           <div className="mx-auto flex w-full max-w-3xl items-center px-4 py-4 sm:px-6">
             <BrandMark branding={branding} />
