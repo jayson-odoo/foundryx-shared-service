@@ -126,10 +126,15 @@ class Settings(BaseSettings):
     throttle_idea_portal_comment_max: int = 20
     throttle_idea_portal_comment_window_minutes: int = 60
     throttle_idea_portal_submit_max: int = 10
+    throttle_idea_portal_upload_max: int = 100
     # Personal feedback link exchange (lane PUBLIC-IDEAS-BOARD): failed
     # (unknown / cancelled) link exchanges per client IP; window-throttle.
     throttle_idea_feedback_link_max_fails: int = 20
     throttle_idea_feedback_link_window_minutes: int = 15
+    # Share-link phone step (lane FEEDBACK-SUBSCRIBE): send/verify requests per
+    # client IP and per phone; window-throttle (the product also locks a phone).
+    throttle_idea_follow_phone_max: int = 10
+    throttle_idea_follow_phone_window_minutes: int = 15
     throttle_pull_key_window_minutes: int = 5
     # Lead Capture gateway (plan 64 AC-64-72): 401s per IP, requests per key.
     throttle_lead_gateway_max_fails: int = 30

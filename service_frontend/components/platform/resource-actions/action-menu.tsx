@@ -64,6 +64,8 @@ export interface ActionMenuProps<T> {
    * ANOTHER surface re-seeds after this one's commit).
    */
   onDeferredCommitted?: (action: ResourceAction<T>, entityIds: string[]) => void;
+  /** Opens the menu on mount (the row right-click menu, anchored at the cursor). */
+  defaultOpen?: boolean;
 }
 
 /**
@@ -101,8 +103,9 @@ export function ActionMenu<T>({
   getEntityId = defaultEntityId,
   onDeferredStart,
   onDeferredCommitted,
+  defaultOpen = false,
 }: ActionMenuProps<T>) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [pending, setPending] = useState<ResourceAction<T> | null>(null);
   const { can } = useCan();
 

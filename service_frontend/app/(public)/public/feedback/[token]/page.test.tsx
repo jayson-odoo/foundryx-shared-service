@@ -31,6 +31,7 @@ vi.mock('@/hooks/use-datetime', () => ({
   useDatetime: () => ({
     formatDate: (v: string) => v.slice(0, 10),
     formatDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
+    formatDmyDateTime: (v: string) => `DT:${v.slice(0, 10)}`,
     formatTime: (v: string) => v.slice(11, 16),
   }),
 }));
