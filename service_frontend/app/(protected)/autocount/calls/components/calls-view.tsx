@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Container } from '@/components/common/container';
 import { ResourceList } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useDatetime } from '@/hooks/use-datetime';
@@ -63,9 +64,19 @@ export function CallsView() {
   const fx = useFx();
   const config = useCallsListConfig({ onOpenCall: setOpen });
 
+  // Foundryx UIUX switch on: the list sits in the page container like the
+  // other lists, so it keeps the side gutter (16px on phones).
+  const list = fx ? (
+    <Container width="fluid">
+      <ResourceList config={config} />
+    </Container>
+  ) : (
+    <ResourceList config={config} />
+  );
+
   return (
     <>
-      <ResourceList config={config} />
+      {list}
       <Dialog open={open !== null} onOpenChange={(next) => !next && setOpen(null)}>
         <DialogContent className="sm:max-w-2xl">
           {open && (

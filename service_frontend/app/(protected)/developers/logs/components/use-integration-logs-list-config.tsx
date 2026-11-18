@@ -183,7 +183,11 @@ export function useIntegrationLogsListConfig(): ResourceListConfig<IntegrationLo
         noun: 'logs',
         copyable: ['operation', 'workspace'],
         phoneHidden: ['workspace'],
-        cardLines: [['operation'], ['latencyMs', 'createdAt']],
+        // A phone card's status is the first status column, so Source is
+        // declared plain to leave that place to the outcome (Status). Source
+        // keeps its filter in the Filters panel.
+        columnKind: { source: 'text', status: 'status' },
+        cardLines: [['source', 'latencyMs', 'createdAt']],
       },
     };
   }, [filterFields, formatDateTime, fx]);
