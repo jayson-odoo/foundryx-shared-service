@@ -444,6 +444,63 @@ class IdeaActionService:
             idea, voter_id, tenant_id=tenant_id, actor=actor
         )
 
+    def mark_real(
+        self,
+        tenant_id: str,
+        idea_id: str,
+        history_actor: HistoryActor,
+        voter_id: Optional[str] = None,
+    ) -> IdeaOut:
+        """Turn a wrongly flagged test item into a real one (lane
+        FEEDBACK-WA-TEST-FLAG). ``is_test`` is otherwise stamped once at intake
+        and never cleared, so a real filing that arrived flagged could never be
+        shared or followed. Clears the flag on the item and its merged children
+        (a merge group is one lane), puts it at the bottom of the real priority
+        lane, and records one History row. Refused (409, plain words): already
+        real, a merged child (act on its survivor), or linked to a test business
+        requirement (a real item never sits on a test BR)."""
+        from ..models import BusinessRequirement, IdeaBusinessRequirement
+        from .history import record
+
+        idea = self._idea_or_404(tenant_id, idea_id)
+        self._refuse_if_merged_child(idea)
+        if not idea.is_test:
+            raise HTTPException(409, "This feedback is already a real item.")
+        group = [idea] + (
+            self.db.query(Idea)
+            .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id == idea.id)
+            .all()
+        )
+        group_ids = [i.id for i in group]
+        on_test_br = (
+            self.db.query(IdeaBusinessRequirement.id)
+            .join(
+                BusinessRequirement,
+                BusinessRequirement.id == IdeaBusinessRequirement.business_requirement_id,
+            )
+            .filter(
+                IdeaBusinessRequirement.tenant_id == tenant_id,
+                IdeaBusinessRequirement.idea_id.in_(group_ids),
+                BusinessRequirement.tenant_id == tenant_id,
+                BusinessRequirement.is_test.is_(True),
+            )
+            .first()
+        )
+        if on_test_br is not None:
+            raise HTTPException(
+                409, "This feedback is linked to a test business requirement. Remove that link first."
+            )
+        idea.priority = next_capture_priority(self.db, tenant_id, is_test=False)
+        for row in group:
+            row.is_test = False
+        record(
+            self.db, tenant_id, idea.id, "Marked as real item", history_actor,
+            from_value="Test item", to_value="Real item",
+        )
+        self.db.commit()
+        self.db.refresh(idea)
+        return self._reader.serialize_one(idea, voter_id, tenant_id=tenant_id)
+
     def delete(self, tenant_id: str, idea_id: str) -> None:
         """Hard-delete the idea and its vote + comment rows (no soft delete). AC-94-10:
         deleting a survivor restores its children FIRST (unmerge, votes moved

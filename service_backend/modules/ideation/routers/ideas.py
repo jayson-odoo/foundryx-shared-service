@@ -375,6 +375,24 @@ def unmerge_idea(
     )
 
 
+@router.post("/{idea_id}/mark-real", response_model=IdeaOut)
+def mark_idea_real(
+    idea_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    db: Session = Depends(get_db),
+) -> IdeaOut:
+    """Turn a wrongly flagged test item into a real one (lane
+    FEEDBACK-WA-TEST-FLAG): it then shares and follows like any real item.
+    409 in plain words when already real, a merged child, or on a test BR."""
+    return IdeaActionService(db).mark_real(
+        current_user.tenant_id,
+        idea_id,
+        request_actor(request, current_user),
+        voter_id=current_user.id,
+    )
+
+
 @router.post("/{idea_id}/vote", response_model=IdeaOut)
 def vote_idea(
     idea_id: str,
