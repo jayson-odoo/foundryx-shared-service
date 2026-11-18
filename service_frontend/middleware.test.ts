@@ -176,3 +176,16 @@ describe('middleware frame-ancestors (feedback board)', () => {
     expect(config.matcher).not.toContain('/public/feedback/:path*');
   });
 });
+
+describe('middleware: hosted Lead Capture wizard (plan 64 L-C)', () => {
+  it('can never be framed and sends no referrer', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const res = await middleware(new NextRequest('http://localhost:3001/public/lead-capture/connect'));
+    expect(res.headers.get('Content-Security-Policy')).toBe("frame-ancestors 'none'");
+    expect(res.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(res.headers.get('Referrer-Policy')).toBe('no-referrer');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});

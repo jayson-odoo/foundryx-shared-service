@@ -241,6 +241,10 @@ def _authorize(
                 visitor_channel=SimpleNamespace(widget_config_json=channel.widget_config_json),
                 visitor_channel_id=channel.id,
             )
+        # Any typed token (scoped: embed, Lead Capture wizard, ...) is never a
+        # staff user, whatever its `sub` says (app/scoped_tokens.py).
+        if payload.get("typ"):
+            return None
         user = db.query(User).filter(User.id == payload.get("sub")).first()
         if (
             user is None

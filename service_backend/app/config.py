@@ -390,6 +390,10 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_graph_version: str = "v19.0"
     meta_es_config_id: str = ""
+    # Lead Capture: Facebook Login for Business configuration id for the hosted
+    # connect wizard (plan 64 AC-64-20). Unset with META_APP_ID set = the
+    # Facebook channel is not offered (AC-64-13); META_APP_ID unset = simulated.
+    lead_capture_login_config_id: str = ""
     # Fernet key for encrypting channel credentials at rest. A throwaway dev
     # key is generated per-process if unset (NEVER rely on that in prod - set
     # OMNICHANNEL_FERNET_KEY so encrypted credentials survive a restart).

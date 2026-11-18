@@ -12,8 +12,12 @@ from app.schemas.base import ApiModel
 
 
 class ConnectFacebookRequest(BaseModel):
+    """``systemUserToken`` (script / server path) OR ``loginId`` (from
+    ``POST /facebook/login``, a product's own wizard): exactly one."""
+
     pageId: str = Field(min_length=1, max_length=64)
-    systemUserToken: str = Field(min_length=1, max_length=4096)
+    systemUserToken: Optional[str] = Field(default=None, max_length=4096)
+    loginId: Optional[str] = Field(default=None, max_length=64)
     formsMode: str = "all"
 
     def __repr__(self) -> str:  # the token never reaches a repr / log line
@@ -102,12 +106,18 @@ class SettingsUpdate(BaseModel):
 
 class KeyCreate(BaseModel):
     name: str = Field(default="", max_length=200)
+    allowedOrigins: List[str] = Field(default_factory=list, max_length=10)
+
+
+class KeyOriginsUpdate(BaseModel):
+    allowedOrigins: List[str] = Field(default_factory=list, max_length=10)
 
 
 class KeyItem(ApiModel):
     id: str
     name: str
     keyMasked: str
+    allowedOrigins: List[str] = []
     createdAt: datetime
     lastUsedAt: Optional[datetime] = None
     revokedAt: Optional[datetime] = None
@@ -203,3 +213,145 @@ class SourceEventItem(ApiModel):
 
 class SourceEventList(BaseModel):
     data: List[SourceEventItem]
+
+
+
+# ── lane L-C: connect sessions, hosted wizard, Facebook login ────────────────
+
+class ConnectSessionCreate(BaseModel):
+    returnOrigin: Optional[str] = Field(default=None, max_length=255)
+    sourceId: Optional[str] = Field(default=None, max_length=64)
+
+
+class ConnectSessionCreated(ApiModel):
+    url: str
+    expiresAt: datetime
+
+
+class ConnectSessionRedeem(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
+class Channel(BaseModel):
+    key: str
+    label: str
+    setup: str  # automatic | guided
+
+
+class ChannelList(BaseModel):
+    data: List[Channel]
+
+
+class LoginConfig(BaseModel):
+    available: bool
+    simulated: bool
+    appId: Optional[str] = None
+    configId: Optional[str] = None
+    graphVersion: str
+    scopes: List[str]
+
+
+class FacebookLoginRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=2048)
+    redirectUri: Optional[str] = Field(default=None, max_length=2048)
+
+    def __repr__(self) -> str:  # the code never reaches a repr / log line
+        return "FacebookLoginRequest(code=***)"
+
+    __str__ = __repr__
+
+
+class FacebookPage(BaseModel):
+    id: str
+    name: str
+
+
+class FacebookPageList(BaseModel):
+    data: List[FacebookPage]
+
+
+class FacebookLogin(ApiModel):
+    loginId: str
+    pages: List[FacebookPage]
+    expiresAt: datetime
+
+
+class WizardBranding(BaseModel):
+    name: str
+    logoUrl: Optional[str] = None
+
+
+class WizardSession(ApiModel):
+    accessToken: str
+    expiresAt: datetime
+    returnOrigin: Optional[str] = None
+    sourceId: Optional[str] = None
+
+
+class WizardContext(BaseModel):
+    branding: WizardBranding
+    channels: List[Channel]
+    login: LoginConfig
+    returnOrigin: Optional[str] = None
+    source: Optional[SourceItem] = None
+
+
+class WizardConnect(BaseModel):
+    pageId: str = Field(min_length=1, max_length=64)
+
+
+class WizardTestLead(ApiModel):
+    leadId: Optional[str] = None
+    receivedAt: Optional[datetime] = None
+
+
+class WizardDone(ApiModel):
+    source: SourceItem
+    connectedBy: Optional[str] = None
+    connectedAt: Optional[datetime] = None
+    testLeadAt: Optional[datetime] = None
+    testLeadFormName: Optional[str] = None
+    waitingForRealLead: bool
+
+
+# ── lane L-C: staff Sources + Leads lists (AC-64-05/53) ─────────────────────
+
+class StaffSourceItem(SourceItem):
+    leads7d: int = 0
+
+
+class StaffSourcePage(BaseModel):
+    data: List[StaffSourceItem]
+    total: int
+
+
+class StaffLeadItem(ApiModel):
+    id: str
+    sourceId: str
+    sourceName: str
+    platform: str
+    formId: Optional[str] = None
+    formName: Optional[str] = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    isTest: bool
+    duplicateOf: Optional[str] = None
+    receivedAt: datetime
+    deliveryStatus: Optional[str] = None  # worst of the lead's deliveries; None = no receiver
+
+
+class StaffLeadPage(BaseModel):
+    data: List[StaffLeadItem]
+    total: int
+
+
+class DeliveryAttemptItem(DeliveryItem):
+    endpointUrl: Optional[str] = None
+    lastAttemptAt: Optional[datetime] = None
+    createdAt: Optional[datetime] = None
+
+
+class StaffLeadDetail(ApiModel):
+    lead: Dict[str, Any]
+    deliveries: List[DeliveryAttemptItem]
