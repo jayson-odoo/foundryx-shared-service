@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lead Capture Error States</title>
+<style>
+:root{--bg:#f8fafc;--card:#fff;--text:#0f172a;--muted:#64748b;--line:#e2e8f0;--primary:#dc2626;--primary-text:#fff;--warn-bg:#fef3c7;--warn:#92400e;--bad-bg:#fee2e2;--bad:#991b1b;--ok-bg:#dcfce7;--ok:#166534;--chip:#f1f5f9}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1120;--card:#111827;--text:#e5e7eb;--muted:#94a3b8;--line:#1f2937;--primary:#ef4444;--primary-text:#fff;--warn-bg:#422006;--warn:#fcd34d;--bad-bg:#450a0a;--bad:#fca5a5;--ok-bg:#052e16;--ok:#86efac;--chip:#1f2937}}
+:root[data-theme="dark"]{--bg:#0b1120;--card:#111827;--text:#e5e7eb;--muted:#94a3b8;--line:#1f2937;--primary:#ef4444;--primary-text:#fff;--warn-bg:#422006;--warn:#fcd34d;--bad-bg:#450a0a;--bad:#fca5a5;--ok-bg:#052e16;--ok:#86efac;--chip:#1f2937}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
+.tabs button{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:999px;padding:6px 12px;cursor:pointer;font:inherit}
+.tabs button[aria-selected="true"]{background:var(--text);color:var(--bg);border-color:var(--text)}
+.frame{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.bar b{font-size:15px}
+.crumb{color:var(--muted);font-size:13px}
+.steps{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);overflow-x:auto}
+.steps span{white-space:nowrap;font-size:12px;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--muted)}
+.steps span.on{background:var(--text);color:var(--bg)}
+.body{padding:20px 16px}
+.q{font-size:16px;font-weight:600;margin:0 0 8px}
+.note{border-radius:8px;padding:12px;margin:0 0 14px}
+.warn{background:var(--warn-bg);color:var(--warn)}
+.bad{background:var(--bad-bg);color:var(--bad)}
+.ok{background:var(--ok-bg);color:var(--ok)}
+.btn{display:inline-block;border:0;border-radius:8px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer;background:var(--primary);color:var(--primary-text)}
+.btn2{background:transparent;color:var(--text);border:1px solid var(--line);font-weight:500}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.guide{border:1px dashed var(--line);border-radius:8px;padding:14px;margin:0 0 14px;color:var(--muted)}
+.guide ol{margin:6px 0 0 18px;padding:0}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+th{font-size:12px;color:var(--muted);font-weight:600}
+.pill{font-size:12px;padding:2px 8px;border-radius:999px;font-weight:600}
+.scroll{overflow-x:auto}
+.cap{color:var(--muted);font-size:12px;margin-top:10px}
+[hidden]{display:none!important}
+.theme{position:fixed;right:12px;bottom:12px}
+.sw{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border:1px solid var(--line);border-radius:8px;padding:14px;margin:0 0 14px}
+.sw small{display:block;color:var(--muted)}
+.tog{flex:none;width:40px;height:22px;border-radius:999px;background:var(--chip);border:1px solid var(--line);position:relative;cursor:pointer;padding:0}
+.tog::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--muted);transition:left .15s}
+.tog[aria-checked="true"]{background:var(--primary);border-color:var(--primary)}
+.tog[aria-checked="true"]::after{left:20px;background:#fff}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Lead Capture: screens the wizard mock does not have yet</h1>
+  <p class="sub">Fake data only. Every other screen comes from the existing Lead Capture Wizard artifact unchanged.</p>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-s="e1">E1 Permission declined</button>
+    <button role="tab" aria-selected="false" data-s="e2">E2 No Page shared</button>
+    <button role="tab" aria-selected="false" data-s="e3">E3 Leads Access</button>
+    <button role="tab" aria-selected="false" data-s="e4">E4 Page in use</button>
+    <button role="tab" aria-selected="false" data-s="e5">E5 Reconnect</button>
+    <button role="tab" aria-selected="false" data-s="e6">E6 New form found</button>
+    <button role="tab" aria-selected="false" data-s="e8">Page sharing switch</button>
+  </div>
+
+  <!-- E1 -->
+  <section class="frame" data-p="e1">
+    <div class="bar"><b>Connect a lead source</b><span class="crumb">Company Settings &gt; Lead Capture</span></div>
+    <div class="steps"><span>Channel</span><span class="on">Sign in</span><span>Page</span><span>Forms</span><span>Fields</span><span>Test</span></div>
+    <div class="body">
+      <p class="q">Sign in to Facebook</p>
+      <div class="note bad">Facebook did not give permission to read leads. Leave every permission ticked on the Facebook screen.</div>
+      <div class="row"><button class="btn">Try again</button></div>
+    </div>
+  </section>
+
+  <!-- E2 -->
+  <section class="frame" data-p="e2" hidden>
+    <div class="bar"><b>Connect a lead source</b><span class="crumb">Company Settings &gt; Lead Capture</span></div>
+    <div class="steps"><span>Channel</span><span>Sign in</span><span class="on">Page</span><span>Forms</span><span>Fields</span><span>Test</span></div>
+    <div class="body">
+      <p class="q">Which Page do the leads come from?</p>
+      <div class="note warn">No Page was shared. You need to be an admin of the Page that runs the ads.</div>
+      <div class="row"><button class="btn">Try again</button></div>
+    </div>
+  </section>
+
+  <!-- E3 -->
+  <section class="frame" data-p="e3" hidden>
+    <div class="bar"><b>Connect a lead source</b><span class="crumb">Company Settings &gt; Lead Capture</span></div>
+    <div class="steps"><span>Channel</span><span>Sign in</span><span>Page</span><span class="on">Forms</span><span>Fields</span><span>Test</span></div>
+    <div class="body">
+      <p class="q">Which lead forms?</p>
+      <div class="note warn">Sample Home Page only lets chosen apps read its leads. Add Lead Capture under Leads Access.</div>
+      <div class="guide">Animated guide (same player as the artifact)
+        <ol><li>Open Meta Business settings</li><li>Integrations, then Leads Access</li><li>Pick the Page, open CRMs</li><li>Assign Lead Capture</li></ol>
+      </div>
+      <div class="row"><button class="btn">Check again</button><button class="btn btn2">Open Meta Business settings</button></div>
+    </div>
+  </section>
+
+  <!-- E4 -->
+  <section class="frame" data-p="e4" hidden>
+    <div class="bar"><b>Connect a lead source</b><span class="crumb">Company Settings &gt; Lead Capture</span></div>
+    <div class="steps"><span>Channel</span><span>Sign in</span><span class="on">Page</span><span>Forms</span><span>Fields</span><span>Test</span></div>
+    <div class="body">
+      <p class="q">Which Page do the leads come from?</p>
+      <div class="note bad">Sample Home Page is already connected to another account. Ask Foundryx support if this Page is yours.</div>
+      <div class="row"><button class="btn">Choose another Page</button></div>
+    </div>
+  </section>
+
+  <!-- E5 -->
+  <section class="frame" data-p="e5" hidden>
+    <div class="bar"><b>Company Settings</b><span class="crumb">Lead Capture</span></div>
+    <div class="body">
+      <div class="note bad">Facebook stopped sharing leads for Sample Home Page. New leads are waiting and arrive after you reconnect.</div>
+      <div class="scroll"><table>
+        <thead><tr><th>Source</th><th>Account</th><th>Status</th><th>Last lead</th><th>Leads (7 days)</th></tr></thead>
+        <tbody>
+          <tr><td>Facebook</td><td>Sample Home Page</td><td><span class="pill bad">Reconnect</span></td><td>12/11/2026, 4:18 pm</td><td>14</td></tr>
+          <tr><td>Google Ads</td><td>Sample campaign form</td><td><span class="pill ok">Live</span></td><td>14/11/2026, 9:02 am</td><td>6</td></tr>
+        </tbody>
+      </table></div>
+      <div class="row" style="margin-top:14px"><button class="btn">Reconnect</button></div>
+      <p class="cap">Reconnect opens the wizard at Sign in, keeps the Page, forms, field map and every lead.</p>
+    </div>
+  </section>
+
+  <!-- E6 -->
+  <section class="frame" data-p="e6" hidden>
+    <div class="bar"><b>Company Settings</b><span class="crumb">Lead Capture</span></div>
+    <div class="body">
+      <div class="note warn">New form "Year-end promo" found. 2 answers go to Lead notes until they are mapped.</div>
+      <div class="scroll"><table>
+        <thead><tr><th>Source</th><th>Account</th><th>Status</th><th>Last lead</th><th>Leads (7 days)</th></tr></thead>
+        <tbody>
+          <tr><td>Facebook</td><td>Sample Home Page</td><td><span class="pill warn">Map fields</span></td><td>14/11/2026, 10:41 am</td><td>21</td></tr>
+        </tbody>
+      </table></div>
+      <div class="row" style="margin-top:14px"><button class="btn">Map fields</button></div>
+      <p class="cap">Leads keep arriving meanwhile. Map fields opens the Fields step for the new form only.</p>
+    </div>
+  </section>
+  <!-- E8 -->
+  <section class="frame" data-p="e8" hidden>
+    <div class="bar"><b>Company Settings</b><span class="crumb">Lead Capture</span></div>
+    <div class="body">
+      <div class="sw"><div><b>Share Facebook Pages with other products</b><small>When on, a Page you connect here can also send its leads to another product that has this switched on.</small><small id="shared">Shared with 1 other product: Sample Home Page</small></div>
+        <button class="tog" role="switch" aria-checked="true" id="tog" aria-label="Share Facebook Pages with other products"></button></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Source</th><th>Account</th><th>Status</th><th>Last lead</th><th>Leads (7 days)</th></tr></thead>
+        <tbody><tr><td>Facebook</td><td>Sample Home Page</td><td><span class="pill ok">Live</span></td><td>14/11/2026, 10:41 am</td><td>21</td></tr></tbody>
+      </table></div>
+      <p class="cap">Off: other products can no longer join your Pages. Pages already shared stay connected.</p>
+    </div>
+  </section>
+</div>
+<button class="btn btn2 theme" id="theme">Light / Dark</button>
+<script>
+document.querySelectorAll('[role=tab]').forEach(function(t){t.addEventListener('click',function(){
+  document.querySelectorAll('[role=tab]').forEach(function(x){x.setAttribute('aria-selected',x===t?'true':'false')});
+  document.querySelectorAll('[data-p]').forEach(function(p){p.hidden=p.getAttribute('data-p')!==t.getAttribute('data-s')});
+})});
+document.getElementById('tog').addEventListener('click',function(){var t=this,on=t.getAttribute('aria-checked')!=='true';t.setAttribute('aria-checked',on);});
+document.getElementById('theme').addEventListener('click',function(){
+  var r=document.documentElement,d=r.getAttribute('data-theme')==='dark'||(!r.getAttribute('data-theme')&&matchMedia('(prefers-color-scheme: dark)').matches);
+  r.setAttribute('data-theme',d?'light':'dark');
+});
+</script>
+</body>
+</html>
