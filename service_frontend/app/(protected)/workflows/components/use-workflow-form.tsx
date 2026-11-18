@@ -628,6 +628,9 @@ export function useWorkflowForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<Workflow> | null>(() => {
     if (!isNew && !workflow) return null;
     const editorWorkflow = workflow ?? blankWorkflow();
@@ -738,7 +741,7 @@ export function useWorkflowForm(
       editable: true,
       editPermission: 'workflows.manage',
       initialEditing: isNew ? true : initialEditing,
-      isDirty: docDirty || form.formState.isDirty,
+      isDirty: docDirty || formDirty,
       onSave,
       onCancel,
       onReload: workflowId ? () => void refresh(workflowId) : undefined,
@@ -747,6 +750,7 @@ export function useWorkflowForm(
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
+    formDirty,
     actions,
     busy,
     canManage,

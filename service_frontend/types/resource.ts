@@ -47,6 +47,13 @@ export interface FilterFieldDef {
   options?: { label: string; value: string }[];
   /** Restrict the operators offered for this field (default: every operator of its type). */
   operators?: FilterOperator[];
+  /**
+   * `date` fields only: the values are calendar days (a contact's birthday),
+   * not moments, so a filter sends the days as picked. Every other `date`
+   * field is a moment (created, last sign-in) and its day filters are sent as
+   * the user's own local days (`lib/date-filter.ts`).
+   */
+  calendarDate?: boolean;
 }
 
 /** Which records are in scope (soft-trash aware). */

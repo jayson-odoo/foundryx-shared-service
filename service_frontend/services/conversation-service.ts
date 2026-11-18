@@ -81,8 +81,15 @@ export interface ConversationService {
   /**
    * Subscribe to realtime events for a workspace. Returns an unsubscribe fn.
    * Phase B: WebSocket + Redis pub/sub; Phase A: mock timer emitter.
+   * `onConnectionChange` (optional) only hears whether the live feed is
+   * connected (the Foundryx UIUX lost-connection banner); it never changes
+   * what is delivered or when.
    */
-  subscribe(workspaceId: string, handler: (event: ConversationSocketEvent) => void): () => void;
+  subscribe(
+    workspaceId: string,
+    handler: (event: ConversationSocketEvent) => void,
+    onConnectionChange?: (connected: boolean) => void,
+  ): () => void;
 
   // -- Plan 27 additions (§5.1) -----------------------------------------
   /** Close with a required reason + optional note (AC-IVE-28/29/30). */
