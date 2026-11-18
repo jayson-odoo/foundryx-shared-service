@@ -30,6 +30,7 @@ from ..security import decrypt_credentials, encrypt_credentials
 from . import statuses
 from .channel_service import ChannelService
 from .onboarding_service import WorkspaceNotFound
+from .channel_events import emit_channel_updated
 
 # Single-use, 5-minute TTL (D-A7-15) - long enough for a user to pick a page,
 # short enough that a stale session is not a meaningful attack surface.
@@ -315,4 +316,5 @@ class MetaConnectService:
         except Exception:  # noqa: BLE001 - subscription failure shouldn't block onboarding
             pass
 
+        emit_channel_updated(self.db, channel)
         return ChannelService(self.db)._items([channel], tenant_id)[0]

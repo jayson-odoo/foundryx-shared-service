@@ -8,7 +8,7 @@ lifecycle promote gate (S4) rides a SEPARATE ``.promote`` (AC-BI-19).
 """
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -30,6 +30,7 @@ from ..schemas import (
 from ..services.br_templates import br_template_is_active
 from ..services.build_handoff import BuildHandoffService
 from ..services.business_requirements import BusinessRequirementService
+from .history_actor import request_actor
 
 router = APIRouter()
 
@@ -167,6 +168,7 @@ def list_br_ideas(
 def link_br_ideas(
     br_id: str,
     body: BrLinkIdeasIn,
+    request: Request,
     current_user: User = Depends(
         require_permission("ideation.business_requirements.manage")
     ),
@@ -174,7 +176,7 @@ def link_br_ideas(
 ) -> List[IdeaOut]:
     """Link ideas to the BR (tenant-scoped + same-product, AC-BI-17)."""
     return BusinessRequirementService(db).link_ideas(
-        current_user.tenant_id, br_id, body.ideaIds
+        current_user.tenant_id, br_id, body.ideaIds, request_actor(request, current_user)
     )
 
 
@@ -182,6 +184,7 @@ def link_br_ideas(
 def unlink_br_idea(
     br_id: str,
     idea_id: str,
+    request: Request,
     current_user: User = Depends(
         require_permission("ideation.business_requirements.manage")
     ),
@@ -189,7 +192,7 @@ def unlink_br_idea(
 ) -> List[IdeaOut]:
     """Unlink one idea from the BR."""
     return BusinessRequirementService(db).unlink_idea(
-        current_user.tenant_id, br_id, idea_id
+        current_user.tenant_id, br_id, idea_id, request_actor(request, current_user)
     )
 
 

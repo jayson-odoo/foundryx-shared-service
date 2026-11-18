@@ -50,6 +50,38 @@ class WriteActionRepository:
         row.operation_id, row.step, row.request_method, row.request_path = operation_id, step, method, path
         return True
 
+    def of_single_operation(
+        self, tenant_id: str, company_id: str, operation_id: str, *, key_id: Optional[str], doc_type: str,
+        doc_key: Optional[int], action: str, since: datetime, until: datetime, owned: bool = False,
+    ) -> List[AcWriteAction]:
+        """The write action(s) of one single-document operation (AUTOCOUNT-STRANDED-OPS-B): the newest action
+        it carries; ``owned`` (its actions carry it) and none -> []; else (a row written before actions carried
+        it) the unowned in-flight / pending actions of the same key, kind, document and primitive created inside
+        the operation's window. Several, or none for an unowned row = cannot tell."""
+        own = (
+            self.db.query(AcWriteAction)
+            .filter(AcWriteAction.tenant_id == tenant_id, AcWriteAction.company_id == company_id,
+                    AcWriteAction.operation_id == operation_id)
+            .order_by(AcWriteAction.created_at.desc(), AcWriteAction.id)
+            .first()
+        )
+        if own is not None or owned:  # ``owned``: the row's actions carry it, so none = nothing was sent
+            return [own] if own is not None else []
+        query = self.db.query(AcWriteAction).filter(
+            AcWriteAction.tenant_id == tenant_id,
+            AcWriteAction.company_id == company_id,
+            AcWriteAction.operation_id.is_(None),
+            AcWriteAction.doc_type == doc_type,
+            AcWriteAction.doc_key == doc_key,
+            AcWriteAction.action == action,
+            # only an unknown outcome is a candidate: a finished action belongs to a request that answered
+            AcWriteAction.outcome.in_((OUTCOME_IN_FLIGHT, OUTCOME_PENDING)),
+            AcWriteAction.created_at >= since,
+            AcWriteAction.created_at <= until,
+        )
+        query = query.filter(AcWriteAction.key_id.is_(None) if key_id is None else AcWriteAction.key_id == key_id)
+        return query.order_by(AcWriteAction.created_at, AcWriteAction.id).all()
+
     def has_open(
         self, tenant_id: str, company_id: str, doc_key: int, since: datetime,
         *, standalone_only: bool = False,

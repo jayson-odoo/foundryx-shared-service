@@ -36,6 +36,7 @@ from app.services.url_guard import validate_public_https_url as _core_validate_u
 
 from ..models import Channel, WebhookDelivery, WebhookEndpoint, Workspace, WorkspaceApiKey
 from ..security import encrypt_secret
+from . import payload_version as pv
 
 SECRET_SCHEME = "whsec_"
 
@@ -47,6 +48,9 @@ EVENT_TYPES = (
     "contact.updated",
     "message.reaction",
     "contact.erased",
+    # Track A S9, opt-in like every type here (no wildcard subscription):
+    # only endpoints that list it receive it.
+    "channel.updated",
 )
 
 # Auto-disable after this many consecutive dead-lettered deliveries.
@@ -131,6 +135,7 @@ def webhook_endpoint_item(row: "WebhookEndpoint"):
         disabledReason=row.disabled_reason,
         createdAt=row.created_at,
         updatedAt=row.updated_at,
+        payloadVersion=pv.effective(row.payload_version),
     )
 
 
@@ -162,6 +167,14 @@ def _validate_events(events: List[str]) -> List[str]:
         raise WebhookError(f"Unknown event type(s): {', '.join(unknown)}.")
     # De-dup, preserve canonical order.
     return [e for e in EVENT_TYPES if e in events]
+
+
+def _validate_payload_version(version: Optional[int]) -> Optional[int]:
+    """None (not sent) passes; otherwise a version this service serves."""
+    if version is None or pv.is_known(version):
+        return version
+    known = ", ".join(str(v) for v in pv.VERSIONS)
+    raise WebhookError(f"Unknown payloadVersion '{version}'. Use one of: {known}.")
 
 
 class WebhookService:
@@ -225,6 +238,7 @@ class WebhookService:
         events: List[str],
         created_by: Optional[str],
         strict_dns: bool = False,
+        payload_version: Optional[int] = None,
     ) -> Tuple[WebhookEndpoint, str]:
         """Register an endpoint. Returns (row, plaintext_secret) - the secret is
         shown ONCE for the consumer to configure signature verification."""
@@ -234,6 +248,7 @@ class WebhookService:
         release_read_transactions()  # the URL check resolves a host: hold no transaction
         clean_url = validate_callback_url(url, strict_dns=strict_dns)
         clean_events = _validate_events(events)
+        clean_version = _validate_payload_version(payload_version)
         # Serialise registrations on this channel so the count below stays true.
         self.db.query(Channel).filter(
             Channel.id == channel.id, Channel.tenant_id == tenant_id
@@ -253,7 +268,8 @@ class WebhookService:
                 "webhook endpoints. Delete one before adding another."
             )
         return self._insert(
-            tenant_id, channel.workspace_id, channel.id, name, clean_url, clean_events, created_by
+            tenant_id, channel.workspace_id, channel.id, name, clean_url, clean_events, created_by,
+            clean_version,
         )
 
     def require_active_channel(self, tenant_id: str, workspace_id: str) -> None:
@@ -282,6 +298,7 @@ class WebhookService:
         created_by: Optional[str],
         strict_dns: bool = False,
         key_id: Optional[str] = None,
+        payload_version: Optional[int] = None,
     ) -> Tuple[WebhookEndpoint, str]:
         """Register an endpoint that covers every channel of the workspace
         (``channel_id`` NULL). Returns (row, plaintext_secret). With ``key_id``
@@ -289,6 +306,7 @@ class WebhookService:
         release_read_transactions()  # the URL check resolves a host: hold no transaction
         clean_url = validate_callback_url(url, strict_dns=strict_dns)
         clean_events = _validate_events(events)
+        clean_version = _validate_payload_version(payload_version)
         if key_id is not None:
             self._hold_live_key(tenant_id, workspace_id, key_id)
         # Serialise registrations in this workspace so the count below stays true.
@@ -311,7 +329,7 @@ class WebhookService:
                 "all-channels webhook endpoints. Delete one before adding another."
             )
         return self._insert(
-            tenant_id, workspace_id, None, name, clean_url, clean_events, created_by
+            tenant_id, workspace_id, None, name, clean_url, clean_events, created_by, clean_version
         )
 
     def _insert(
@@ -323,8 +341,10 @@ class WebhookService:
         clean_url: str,
         clean_events: List[str],
         created_by: Optional[str],
+        clean_version: Optional[int] = None,
     ) -> Tuple[WebhookEndpoint, str]:
-        """Insert and commit (releases the registration lock)."""
+        """Insert and commit (releases the registration lock). ``clean_version``
+        None stores NULL: the endpoint gets version 1 payloads."""
         secret = _new_secret()
         row = WebhookEndpoint(
             tenant_id=tenant_id,
@@ -336,6 +356,7 @@ class WebhookService:
             events_json=clean_events,
             status="ACTIVE",
             created_by=created_by,
+            payload_version=clean_version,
         )
         self.db.add(row)
         self.db.commit()
@@ -477,15 +498,18 @@ class WebhookService:
         events: Optional[List[str]] = None,
         strict_dns: bool = False,
         key_id: Optional[str] = None,
+        payload_version: Optional[int] = None,
     ) -> WebhookEndpoint:
         """``key_id`` (an API key making the change) makes that key the row's
         owner when a value really changes, and refuses the write
-        (``WebhookKeyRevoked``) if it is revoked."""
+        (``WebhookKeyRevoked``) if it is revoked. ``payload_version`` None
+        leaves the stored version as it is."""
         row = self._get(tenant_id, endpoint_id)
         self._refuse_if_staff_paused(row, key_id)
         release_read_transactions()  # the URL check resolves a host: hold no transaction
         clean_url = validate_callback_url(url, strict_dns=strict_dns) if url is not None else None
         clean_events = _validate_events(events) if events is not None else None
+        clean_version = _validate_payload_version(payload_version)
         row = self._hold_key_write(row, key_id)
         changed = False
         if name is not None:
@@ -496,6 +520,8 @@ class WebhookService:
             row.url, changed = clean_url, True
         if clean_events is not None and clean_events != row.events_json:
             row.events_json, changed = clean_events, True
+        if clean_version is not None and clean_version != row.payload_version:
+            row.payload_version, changed = clean_version, True
         if changed:
             self._own_by_key(row, key_id)
         self.db.commit()

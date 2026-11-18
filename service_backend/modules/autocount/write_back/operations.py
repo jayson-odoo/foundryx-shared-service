@@ -60,6 +60,8 @@ from modules.autocount.write_back.link_index import refresh_po_links_from_doc
 from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.primitives import (
+    LOOKUP_FAILED,
+    LOOKUP_FAILED_MESSAGE,
     ROW_NEEDS_ATTENTION,
     VENDOR_REFUSED,
     PrimitiveResult,
@@ -84,6 +86,19 @@ VENDOR_ERROR = "vendor_error"
 
 IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
 OPERATION_IN_PROGRESS = "OPERATION_IN_PROGRESS"
+IN_PROGRESS_MESSAGE = "This change is still being saved in AutoCount. Please check again in a moment."
+# AUTOCOUNT-STRANDED-OPS-B: the single-document writes whose unknown outcome a same-key resend looks up
+LOOKUP_PRIMITIVES = ("edit_doc", "add_line", "delete_line", "cancel_doc")
+OWNED_ACTIONS = "actionsCarryOperation"  # snapshot_json marker: this row's actions carry its id
+# "not in AutoCount" is trusted only once the latest possible PUT has had time to finish: the action row is made
+# before the reads that precede the PUT, the PUT may go out up to the action deadline later, then run up to the
+# vendor's write timeout. A fresh run before then could write twice. Stays under the busy window, so a row the
+# crash sweep flipped is always settled.
+VENDOR_WRITE_TIMEOUT_SECONDS = 90  # = AutoCountWriteClient's default timeout
+LOOKUP_SETTLE_SECONDS = int(frame.ACTION_DEADLINE_SECONDS) + VENDOR_WRITE_TIMEOUT_SECONDS + 60
+LEGACY_MATCH_SLACK_SECONDS = 5  # app clock vs database clock, for rows written before actions carried them
+NOT_CHECKABLE_MESSAGE = ("This change could not be checked automatically. Check the document in AutoCount "
+                         "before changing it again.")
 UNKNOWN_OPERATION = "UNKNOWN_OPERATION"
 OPERATION_NOT_RESUMABLE = "OPERATION_NOT_RESUMABLE"
 INVALID_PARAMS = "INVALID_PARAMS"
@@ -205,6 +220,17 @@ def _doc_no(document: Optional[Doc], snapshot: Optional[Doc]) -> Optional[str]:
     return str(number) if number else None
 
 
+def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
+    """Plan 66: the pool location an unlinked PO row returns to (the caller's ``pool_location``, an
+    exact Location code). Other operations, or none given, keep today's behaviour."""
+    if defn.kind != "PO" or defn.mode != "unlink":
+        return None
+    value = params.get("pool_location")
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
@@ -294,6 +320,7 @@ class OperationService:
         self._base_url = ""
         self._row: Optional[AcWriteOperation] = None
         self._op_deadline = 0.0
+        self._pool_location: Optional[str] = None  # plan 66: the unlink's pool location (the caller's)
         # (kind, doc_key) -> (date, document | the read's exception): a side read made beside another
         # GET, consumed by the next ``_read`` of that document (SS-AUTOCOUNT-SPEEDUP).
         self._prefetched: Dict[Tuple[str, int], Tuple[date, Any]] = {}
@@ -369,6 +396,7 @@ class OperationService:
             return OperationResult(None, REFUSED, DOC_BUSY)  # not stored: the key stays usable
         self._steps, self._warnings = [], []
         self._mail_allowed = True
+        self._pool_location = None  # set per run by ``_execute_unlocked`` (plan 66)
         self._row = row
         self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
         return self._guarded(row, company, lambda: self._execute(row, company, op, spec, params))
@@ -385,7 +413,7 @@ class OperationService:
                 self.db.commit()
                 self.db.refresh(row)
         if row.status == IN_PROGRESS:
-            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
+            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
         if row.op != SPLIT_LINK and row.op != LINK_BATCH and row.op not in OPS:
             return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
         if self._never_applied(row):
@@ -411,7 +439,7 @@ class OperationService:
                 self.db.rollback()
                 return OperationResult(row.id, REFUSED, DOC_BUSY)
             if not claimed:  # a concurrent resume won the conditional update
-                return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
+                return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
             self.db.refresh(row)
             self._mail_allowed = was != NEEDS_ATTENTION  # a failed resume never mails again
             self._row = row
@@ -524,7 +552,7 @@ class OperationService:
         self.db.refresh(row)
         if not settled:
             return self._from_row(row) if row.status != IN_PROGRESS else OperationResult(
-                row.id, REFUSED, OPERATION_IN_PROGRESS)
+                row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
         logger.warning("autocount operation %s ended before its snapshot: settled as not applied", row.id)
         return result
 
@@ -532,7 +560,7 @@ class OperationService:
         if row.op != op or row.request_hash != request_hash:
             return OperationResult(None, REFUSED, IDEMPOTENCY_CONFLICT)
         if row.status == IN_PROGRESS:
-            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS)
+            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
         return self._from_row(row)
 
     @staticmethod
@@ -625,6 +653,7 @@ class OperationService:
         defn = OPS[op]
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
+        self._pool_location = _pool_of(defn, params)
         self._check_not_busy(company, spec.doc_key, defn.kind)
         doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date,
                                    beside=self._target_beside(company, defn, spec))
@@ -769,8 +798,9 @@ class OperationService:
             row = payloads.check_row(defn.kind, doc, spec.dtl_key)  # kind, cancelled, row exists
         except WriteRefusal as exc:
             raise _Done(REFUSED, exc.code, str(exc)) from None
-        if defn.kind == "PO" and self._spo_ref(company, spec.dtl_key):
-            raise _Done(REFUSED, "ROW_ON_SPO")
+        spo_ref = self._spo_ref(company, spec.dtl_key) if defn.kind == "PO" else None
+        if spo_ref:
+            raise _Done(REFUSED, "ROW_ON_SPO", payloads.on_spo_message(spo_ref))
         linked = _link_of(defn.kind, row)
         if defn.mode == "link" and linked:
             raise _Done(REFUSED, "ROW_ALREADY_LINKED")
@@ -799,17 +829,27 @@ class OperationService:
         """Plan 62 D7: the DtlKey of the FIRST free row (row order) the unlinked quantity can join:
         same item, unit, location, price and delivery date, not linked, no SPO row pointing at it,
         no known receipt above zero. An UNKNOWN receipt (the vendor hides it) allows the merge, like the
-        linked row's own receipt check. None = no merge (today's new free row)."""
+        linked row's own receipt check. None = no merge (today's new free row).
+
+        Plan 66 (owner 17 Nov): with a pool location the free row must sit AT the pool location (exact
+        code) and match on item and unit ONLY. Unit price and delivery date are not matched (the date is
+        the SO's, meaningless once unlinked; owner: "unit price also can ignore"): the pool row keeps its
+        own price and date, only its Qty goes up."""
         if defn.kind != "PO" or defn.mode != "unlink":
             return None
+        pool = self._pool_location
+        same = ("ItemCode", "UOM") if pool else ("ItemCode", "UOM", "Location")
+        values: Tuple[str, ...] = () if pool else ("UnitPrice", "DeliveryDate")
         for cand in doc.get("Details") or []:
             if cand.get("DtlKey") == row.get("DtlKey") or _link_of("PO", cand):
                 continue
             if cand.get("FromDocType") not in ("", None):
                 continue
-            if any(cand.get(k) != row.get(k) for k in ("ItemCode", "UOM", "Location")):
+            if pool and cand.get("Location") != pool:
                 continue
-            if not all(payloads.same_row_value(k, row.get(k), cand.get(k)) for k in ("UnitPrice", "DeliveryDate")):
+            if any(cand.get(k) != row.get(k) for k in same):
+                continue
+            if not all(payloads.same_row_value(k, row.get(k), cand.get(k)) for k in values):
                 continue
             if self._spo_ref(company, int(cand["DtlKey"])):
                 continue
@@ -889,7 +929,9 @@ class OperationService:
         if target is not None:
             new_link = {"FromDocType": defn.target, "FromDocNo": target.get("DocNo"),
                         "FromDocDtlKey": spec.target_dtl_key}
-        move_to = row.get("Location")  # unlink / SPO: the line stays where it was
+        move_to = row.get("Location")  # unlink / SPO: the line stays where it was ...
+        if defn.mode == "unlink" and self._pool_location:
+            move_to = self._pool_location  # ... plan 66: an unlinked PO row goes back to the pool
         so_link: Optional[Doc] = None
         if target is not None and defn.target == "SO":
             trow = next((r for r in target.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), {})
@@ -996,7 +1038,8 @@ class OperationService:
             self._abort_unless_done(res)
             raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
         self.prims._stage(company, snap["kind"], res.document, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document,
+                            detail=_row_in(res.document, free_key))
 
     def _replace_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int) -> OperationResult:
         """Plan 61: ONE PUT [row "D", new row with the new link or none], then the move.
@@ -1269,7 +1312,8 @@ class OperationService:
         if not landed:
             return self._needs_attention(row, company, snap, "RESUMED")
         self.prims._stage(company, snap["kind"], doc, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc,
+                            detail=_row_in(doc, free_key))
 
     def _resume_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, key: int, doc: Doc,
                      location: Optional[str]) -> Doc:
@@ -1349,8 +1393,9 @@ class OperationService:
             payloads._refuse_other_transfer(old)
         except WriteRefusal as exc:
             raise _Done(REFUSED, exc.code, str(exc)) from None
-        if self._spo_ref(company, spec.dtl_key):
-            raise _Done(REFUSED, "ROW_ON_SPO")
+        spo_ref = self._spo_ref(company, spec.dtl_key)
+        if spo_ref:
+            raise _Done(REFUSED, "ROW_ON_SPO", payloads.on_spo_message(spo_ref))
         if _link_of("PO", old):
             raise _Done(REFUSED, "ROW_ALREADY_LINKED")
         mode, _received = self._receipt(company, defn, doc, old)
@@ -1708,11 +1753,13 @@ class OperationService:
     def run_primitive(
         self, *, tenant_id: str, company_id: str, key_id: Optional[str], idempotency_key: str,
         name: str, kind: str, doc_key: Optional[int], params: Dict[str, Any],
-        call: Callable[[], PrimitiveResult],
+        call: Callable[[], PrimitiveResult], frame: Optional[PrimitiveService] = None,
     ) -> Dict[str, Any]:
         """One primitive under an idempotency key: the stored answer on a replay,
         ``IDEMPOTENCY_CONFLICT`` for another body, else run ``call`` and store the
-        answer. Returns the answer dict (the gateway body)."""
+        answer. Returns the answer dict (the gateway body). ``frame``: the service ``call`` runs on; its
+        action rows and GETs then carry this operation, and an unknown outcome of a single-document write is
+        looked up through it on a same-key resend (``_look_up_primitive``)."""
         label = f"{name}:{kind}"
         if CompanyRepository(self.db).get(tenant_id, company_id) is None:
             return primitive_answer(PrimitiveResult(None, OUTCOME_REFUSED, WRITE_DISABLED), doc_key)
@@ -1724,7 +1771,8 @@ class OperationService:
             if row.op != label or row.request_hash != request_hash:
                 return primitive_answer(PrimitiveResult(None, OUTCOME_REFUSED, IDEMPOTENCY_CONFLICT), doc_key)
             if row.status == IN_PROGRESS or not row.result_json:
-                return primitive_answer(PrimitiveResult(None, OUTCOME_REFUSED, OPERATION_IN_PROGRESS), doc_key)
+                return primitive_answer(PrimitiveResult(
+                    None, OUTCOME_REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE), doc_key)
             return dict(row.result_json)
 
         existing = self.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
@@ -1739,6 +1787,10 @@ class OperationService:
                 # plan 62 D6: run fresh. A create stored before its first attempt was recorded cannot be
                 # looked up, so only SS's own refusal releases it; a vendor failure stays locked
                 self._release_key(existing)
+            elif frame is not None and name.split(":")[0] in LOOKUP_PRIMITIVES:
+                looked = self._look_up_primitive(existing, label, request_hash, name, frame, call, replay)
+                if looked is not None:
+                    return looked
             else:
                 return replay(existing)
         if doc_key is not None:  # a crashed run of ANY kind no longer holds the document (AC-57-43)
@@ -1746,10 +1798,11 @@ class OperationService:
             if self.ops.expire_stale_in_progress(tenant_id, company_id, kind, doc_key, window):
                 self.db.commit()
         info = _create_info(kind, params, datetime.now(timezone.utc)) if name == "create_doc" else None
+        marker = {OWNED_ACTIONS: True} if frame is not None and info is None else None
         row = AcWriteOperation(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id, idempotency_key=idempotency_key,
             request_hash=request_hash, op=label, doc_type=kind, doc_key=doc_key, status=IN_PROGRESS,
-            snapshot_json=info,
+            snapshot_json=info or marker,
         )
         try:
             self.ops.add(row)
@@ -1764,7 +1817,11 @@ class OperationService:
         status, code = PENDING, INTERNAL_ERROR
         answer = primitive_answer(PrimitiveResult(None, OUTCOME_PENDING, INTERNAL_ERROR), doc_key)
         try:
-            result = call()
+            if frame is not None:
+                with frame.under_operation(row.id):
+                    result = call()
+            else:
+                result = call()
             answer = primitive_answer(result, doc_key)
             status, code = result.outcome, result.error_code
             vendor_class = result.vendor_class
@@ -1781,6 +1838,90 @@ class OperationService:
                     row.snapshot_json = dict(info, end=datetime.now(timezone.utc).isoformat(),
                                              vendorClass=vendor_class)
             self.db.commit()
+        return answer
+
+    # ── single-document resend (AUTOCOUNT-STRANDED-OPS-B): look the outcome up before answering ──
+
+    def _look_up_primitive(
+        self, existing: AcWriteOperation, label: str, request_hash: str, name: str, frame: PrimitiveService,
+        call: Callable[[], PrimitiveResult], replay: Callable[[AcWriteOperation], Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """The answer for a same-key resend of an edit / add line / delete line / cancel whose outcome is
+        unknown, or None when its key was released and it must run fresh (owner rule, 11 Nov: an unknown
+        outcome is checked before retrying; only a confirmed success locks). A stale ``in_progress`` run (its
+        worker died) is first flipped to ``pending_verification``. Then: nothing sent -> released; the change
+        found in AutoCount -> ``done`` (locked); not found -> released; unreadable -> the pending answer, never
+        "in progress" for ever."""
+        if existing.op != label or existing.request_hash != request_hash:
+            return replay(existing)
+        tenant_id, company_id = existing.tenant_id, existing.company_id
+        if existing.status == IN_PROGRESS:
+            window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
+            if not self.ops.expire_stale_operation(tenant_id, company_id, existing.id, window):
+                return replay(existing)  # a live run: in progress
+            self.db.commit()
+            self.db.refresh(existing)
+        if existing.status != PENDING:
+            return replay(existing)
+        owned = bool((existing.snapshot_json or {}).get(OWNED_ACTIONS))
+        started = existing.created_at
+        found = self.prims.actions.of_single_operation(
+            tenant_id, company_id, existing.id, key_id=existing.key_id, doc_type=existing.doc_type or "",
+            doc_key=existing.doc_key, action=name.split(":")[0], owned=owned,
+            since=started - timedelta(seconds=LEGACY_MATCH_SLACK_SECONDS),
+            until=started + timedelta(seconds=BUSY_WINDOW_SECONDS),
+        )
+        if len(found) > 1 or (not found and not owned):
+            # a row written before actions carried their operation: no single action proves either way
+            return self._unconfirmed(existing, replay, NOT_CHECKABLE_MESSAGE)
+        action = found[0] if found else None
+        if action is not None and action.outcome in (OUTCOME_DONE, OUTCOME_MISMATCH):
+            # the write itself confirmed it (the worker died before the operation stored it): only that locks
+            return self._store_primitive_answer(existing, PrimitiveResult(
+                action.id, action.outcome, action.error_code, "",
+                doc_key=existing.doc_key, document=action.after_json if isinstance(action.after_json, dict) else None,
+                doc_no=(action.after_json or {}).get("DocNo") if isinstance(action.after_json, dict) else None))
+        never_sent = action is None or action.outcome == OUTCOME_REFUSED or (
+            action.outcome == OUTCOME_VENDOR_ERROR and action.error_code == VENDOR_REFUSED)
+        if not never_sent:
+            assert action is not None
+            settled = (datetime.now(timezone.utc) - action.created_at).total_seconds() >= LOOKUP_SETTLE_SECONDS
+            try:
+                with frame.looking_up(action, existing.id, trust_absent=settled):
+                    res = call()
+            except Exception:  # noqa: BLE001 - a lookup that breaks decides nothing
+                logger.exception("autocount look-up of operation %s failed", existing.id)
+                self.db.rollback()
+                return self._unconfirmed(existing, replay, LOOKUP_FAILED_MESSAGE)
+            if res.outcome != OUTCOME_REFUSED:  # done (locked) or still unknown
+                if res.outcome == OUTCOME_DONE:
+                    return self._store_primitive_answer(existing, res)
+                return self._unconfirmed(existing, replay, res.message or LOOKUP_FAILED_MESSAGE)
+        logger.warning("autocount primitive %s did not change AutoCount: key released for a fresh run", existing.id)
+        existing.status, existing.error_code = RECOVERED, NOT_APPLIED
+        existing.result_json = _json_safe(primitive_answer(PrimitiveResult(
+            None, RECOVERED, NOT_APPLIED, "Nothing was changed in AutoCount. Please try again.",
+            doc_key=existing.doc_key), existing.doc_key))
+        self.db.commit()
+        self._release_key(existing)
+        return None
+
+    @staticmethod
+    def _unconfirmed(existing: AcWriteOperation, replay: Callable[[AcWriteOperation], Dict[str, Any]],
+                     message: str) -> Dict[str, Any]:
+        """The pending answer when the lookup decided nothing: the stored row stays as it was (the next resend
+        looks again), and the caller gets a plain reason, never "in progress" for ever."""
+        answer = dict(existing.result_json) if existing.result_json else primitive_answer(
+            PrimitiveResult(None, OUTCOME_PENDING, LOOKUP_FAILED), existing.doc_key)
+        answer.update(outcome=OUTCOME_PENDING, message=message)
+        if not answer.get("errorCode"):
+            answer["errorCode"] = LOOKUP_FAILED
+        return answer
+
+    def _store_primitive_answer(self, row: AcWriteOperation, res: PrimitiveResult) -> Dict[str, Any]:
+        answer = primitive_answer(res, row.doc_key)
+        row.status, row.error_code, row.result_json = res.outcome, res.error_code, _json_safe(answer)
+        self.db.commit()
         return answer
 
     # ── create resend (plan 62 review): look the document up before re-running ──
@@ -1834,6 +1975,7 @@ class OperationService:
         document to a later list), at most ``LOOKUP_MAX_DAYS`` back; an attempt older than that and not found
         stays locked. A document another done create of this company already owns is never adopted. Every GET
         is logged under the stored operation (``key_id``, ``operation_id``)."""
+        from modules.autocount.doc_feed import clock
         from modules.autocount.doc_feed.clock import MYT
 
         base_url, _refusal = self.prims._resolve_write_base_url(company)
@@ -1881,7 +2023,7 @@ class OperationService:
             low = (start - timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
             high = (end + timedelta(seconds=LOOKUP_WINDOW_SECONDS)).astimezone(MYT)
             matches: List[Doc] = []
-            today = datetime.now(timezone.utc).astimezone(MYT).date()
+            today = clock.myt_today()
             oldest = today - timedelta(days=LOOKUP_MAX_DAYS)
             day = max(low.date(), oldest)
             too_old = low.date() < oldest

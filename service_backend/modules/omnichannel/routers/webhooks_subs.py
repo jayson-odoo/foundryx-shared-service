@@ -112,7 +112,8 @@ def create_webhook(
 ) -> WebhookEndpointMintResponse:
     try:
         row, secret = WebhookService(db).create(
-            user.tenant_id, channel_id, payload.name, payload.url, payload.events, actor_id
+            user.tenant_id, channel_id, payload.name, payload.url, payload.events, actor_id,
+            payload_version=payload.payloadVersion,
         )
     except WebhookError as exc:
         raise _bad(exc)
@@ -129,7 +130,8 @@ def update_webhook(
 ) -> WebhookEndpointItem:
     try:
         row = WebhookService(db).update(
-            user.tenant_id, endpoint_id, payload.name, payload.url, payload.events
+            user.tenant_id, endpoint_id, payload.name, payload.url, payload.events,
+            payload_version=payload.payloadVersion,
         )
     except WebhookNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc))

@@ -132,3 +132,24 @@ class UserRepository:
         user.last_sign_in_at = datetime.now(timezone.utc)
         self.db.add(user)
         self.db.commit()
+
+    def users_with_permission(self, tenant_id: str, permission_key: str) -> List[User]:
+        """Active, non-trashed users of THIS tenant holding ``permission_key``
+        through a role of this same tenant (notification recipients). The one
+        shared form of the query modules used to copy."""
+        from app.models.permission import Permission
+        from app.models.role import Role
+
+        return (
+            self.db.query(User)
+            .join(User.roles)
+            .filter(
+                User.tenant_id == tenant_id,
+                User.is_trashed.is_(False),
+                User.status == "ACTIVE",
+                Role.tenant_id == tenant_id,
+                Role.permissions.any(Permission.key == permission_key),
+            )
+            .distinct()
+            .all()
+        )

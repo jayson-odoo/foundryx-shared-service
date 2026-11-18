@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from jose import JWTError, jwt
+from fastapi import HTTPException
 from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -57,11 +58,15 @@ from app.models.user import User
 from ..models import (
     Idea,
     IdeaActivity,
+    IdeaAttachment,
     IdeaComment,
     IdeaCommentLike,
     IdeaStatusEvent,
     IdeaVote,
 )
+from . import followers, history
+from .history import HistoryActor
+from .attachments import IdeaAttachmentService
 from .comments import AUTHOR_CONTACT, AUTHOR_EMBED, AUTHOR_USER, CommentViewer, IdeaCommentService
 from .ownership import SubmitterIdentity, owned_filter
 from .public_status import PublicIdeaStatusService, project_first_name
@@ -90,6 +95,11 @@ KIND_CONTACT = "contact"
 DEALER_ROLE = "Dealer"
 ROLE_BY_KIND = {KIND_STAFF: "Staff", KIND_CRM: "Staff", KIND_CONTACT: DEALER_ROLE}
 STAFF_ROLE = "Staff"
+# Lane FEEDBACK-SUBSCRIBE: anyone opening one item's read-only share link. Never
+# in ``ROLE_BY_KIND`` on purpose: no portal token is ever minted for it, so a
+# token claiming this kind is refused by ``resolve_portal_token``.
+KIND_SHARE = "share"
+SHARE_ROLE = "Visitor"
 
 VIEW_PERMISSION = "ideation.ideas.view"
 MANAGE_PERMISSION = "ideation.triage.manage"
@@ -123,7 +133,10 @@ MAX_PAGE_SIZE = 100
 WITHHELD_CARD_KEYS = ("submittedAt", "productName")
 WITHHELD_DETAIL_KEYS = WITHHELD_CARD_KEYS + (
     "problem", "desiredOutcome", "useCases", "currentWorkaround", "submitterFirstName",
+    "attachments",
 )
+# Where the board serves a file (the manifest mounts the portal router here).
+PORTAL_CONTENT_PREFIX = "/portal/ideas"
 
 
 def as_use_case_list(value: Any) -> Optional[List[str]]:
@@ -160,12 +173,17 @@ def _not_found() -> PortalError:
     return PortalError(404, "not_found", "Feedback not found.")
 
 
+TEST_NOT_SHAREABLE = "Test items cannot be shared."
+TEST_NOT_FOLLOWABLE = "Test items cannot be followed."
+
+
 def _forbidden() -> PortalError:
     return PortalError(403, "forbidden", "Only managers can change this.")
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
 
 
 # ── principal + token ─────────────────────────────────────────────────────────
@@ -186,7 +204,7 @@ class PortalPrincipal:
 
     @property
     def role(self) -> str:
-        return ROLE_BY_KIND[self.kind]
+        return ROLE_BY_KIND.get(self.kind, SHARE_ROLE)
 
     @property
     def voter_id(self) -> str:
@@ -199,6 +217,9 @@ class PortalPrincipal:
             # The bare contact id: the SAME voter id the WhatsApp intake upvote
             # uses, so a dealer has one vote per item everywhere.
             return self.subject
+        if self.kind == KIND_SHARE:
+            # Matches no vote / like / comment author: the share view is read-only.
+            return f"share:{self.subject}"
         return f"embed-user:{self.subject}"
 
     @property
@@ -328,6 +349,27 @@ def resolve_portal_token(db: Session, token: str) -> PortalPrincipal:
         p.phone = claims.get("ph")
         p.can_manage = claims.get("mg") is True
     return p
+
+
+def share_principal(db: Session, token: str) -> Tuple[PortalPrincipal, str]:
+    """``(read-only principal, idea id)`` for a live share link (lane
+    FEEDBACK-SUBSCRIBE), else a uniform 404. Scoped to the link's own tenant
+    and the item's product; the tenant must be active with the module on."""
+    from .share_links import resolve_share
+
+    resolved = resolve_share(db, token)
+    if resolved is None:
+        raise _not_found()
+    link, idea = resolved
+    if not _tenant_ok(db, link.tenant_id):
+        raise _not_found()
+    p = PortalPrincipal(
+        tenant_id=link.tenant_id,
+        kind=KIND_SHARE,
+        subject=link.id,
+        product_id=idea.product_id,
+    )
+    return p, idea.id
 
 
 # ── sessions ──────────────────────────────────────────────────────────────────
@@ -836,6 +878,16 @@ class IdeaPortalService:
         for wire, attr in CORE_FIELDS:
             out[wire] = self._core_field(idea, attr)
         out["note"] = idea.portal_note
+        out["attachments"] = IdeaAttachmentService(self.db).report_level(
+            idea.tenant_id, idea.id, PORTAL_CONTENT_PREFIX
+        )
+        # Lane FEEDBACK-SUBSCRIBE: follower count + "Following" for this viewer.
+        # crew s4: the board hides Share / Follow on a test item.
+        out["isTest"] = bool(idea.is_test)
+        out["followerCount"] = followers.follower_count(self.db, self.p.tenant_id, idea.id)
+        out["following"] = self.p.kind == KIND_CONTACT and followers.is_following(
+            self.db, self.p.tenant_id, idea.id, self._my_voter_ids()
+        )
         if self._text_withheld(card["isMine"]):
             # Owner ruling (b), strict (15 Nov + crew-pass): a dealer sees the
             # full text only on their own items; on everyone else's ONLY title,
@@ -844,6 +896,67 @@ class IdeaPortalService:
             for key in WITHHELD_DETAIL_KEYS:
                 out.pop(key, None)
         return out
+
+    # ---- follow + share (lane FEEDBACK-SUBSCRIBE) -------------------------
+
+    def _follow_target(self, idea_id: str) -> Idea:
+        if self.p.kind != KIND_CONTACT:
+            # Updates go to a phone: only a contact (personal link) follows
+            # here; staff add followers on the operator idea page.
+            raise _forbidden()
+        idea = self._resolve(idea_id, follow_merge=True)
+        if idea.is_test:
+            raise PortalError(409, "test_item", TEST_NOT_FOLLOWABLE)
+        return idea
+
+    def _follow_state(self, idea: Idea) -> Dict[str, Any]:
+        return {
+            "following": followers.is_following(
+                self.db, self.p.tenant_id, idea.id, self._my_voter_ids()
+            ),
+            "followerCount": followers.follower_count(self.db, self.p.tenant_id, idea.id),
+        }
+
+    def _history_actor(self) -> HistoryActor:
+        """The viewer as the History tab names them (a contact's full name)."""
+        if self.p.kind == KIND_CONTACT:
+            return HistoryActor(name=followers.contact_name_by_id(self.db, self.p.tenant_id, self.p.subject))
+        return HistoryActor(name=self.p.name)
+
+    def follow(self, idea_id: str) -> Dict[str, Any]:
+        idea = self._follow_target(idea_id)
+        mine = self._my_voter_ids()
+        if not followers.is_following(self.db, self.p.tenant_id, idea.id, mine):
+            if followers.follow(self.db, self.p.tenant_id, idea, self.p.subject):
+                actor = self._history_actor()
+                history.record(
+                    self.db, self.p.tenant_id, idea.id, history.ACTION_FOLLOWER_ADDED, actor, to_value=actor.name
+                )
+            self.db.commit()
+        return self._follow_state(idea)
+
+    def unfollow(self, idea_id: str) -> Dict[str, Any]:
+        idea = self._follow_target(idea_id)
+        if followers.unfollow(self.db, self.p.tenant_id, idea.id, self._my_voter_ids()):
+            actor = self._history_actor()
+            history.record(
+                self.db, self.p.tenant_id, idea.id, history.ACTION_FOLLOWER_REMOVED, actor, from_value=actor.name
+            )
+        self.db.commit()
+        return self._follow_state(idea)
+
+    def share(self, idea_id: str) -> Dict[str, Any]:
+        """The item's read-only share link (any signed-in portal viewer)."""
+        from .share_links import get_or_create_share_link, share_url
+
+        if self.p.kind == KIND_SHARE:
+            raise _forbidden()
+        idea = self._resolve(idea_id, follow_merge=True)
+        row = get_or_create_share_link(self.db, idea, self._history_actor())
+        if row is None:  # a test item (the only refusal): say why
+            raise PortalError(409, "test_item", TEST_NOT_SHAREABLE)
+        self.db.commit()
+        return {"url": share_url(self.db, row)}
 
     def _is_owned(self, idea_id: str) -> bool:
         return self._owned_q().filter(Idea.id == idea_id).first() is not None
@@ -872,7 +985,7 @@ class IdeaPortalService:
     def _text_withheld(self, is_mine: bool) -> bool:
         """A dealer on a personal link never reads another submitter's free
         text (owner ruling (b), security review #3)."""
-        return self.p.kind == KIND_CONTACT and not is_mine
+        return self.p.kind in (KIND_CONTACT, KIND_SHARE) and not is_mine
 
     def set_hidden(self, idea_id: str, hidden: bool) -> Dict[str, Any]:
         """Q5: managers hide/show an idea on the portal."""
@@ -994,7 +1107,7 @@ class IdeaPortalService:
     # ---- comments ----------------------------------------------------------
 
     def _comment_rows(self, idea: Idea) -> List[Dict[str, Any]]:
-        rows = IdeaCommentService(self.db).list(
+        rows = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).list(
             idea.tenant_id, idea.id, self.p.viewer, project_names=True
         )
         ids = [r.id for r in rows]
@@ -1039,7 +1152,7 @@ class IdeaPortalService:
             throttle.enforce_idea_portal_comment(principal_key=key)
         except Throttled as exc:
             raise PortalError(429, "too_many_comments", "Too many comments. Try again later.", exc.retry_after_seconds)
-        created = IdeaCommentService(self.db).create(
+        created = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).create(
             idea.tenant_id,
             idea.id,
             body=body,
@@ -1053,6 +1166,97 @@ class IdeaPortalService:
         d = created.model_dump()
         d.update(authorRole=self.p.role, likeCount=0, likedByMe=False)
         return d
+
+    def begin_upload(self, idea_id: str, comment_id: Optional[str] = None) -> Idea:
+        """Authorise + throttle an upload BEFORE its body is read: a report file
+        needs its owner or a manager, a comment file the comment's author. Every
+        attempt counts against the caller's upload bucket (refused ones too)."""
+        from app.services.throttle import Throttled, ThrottleService
+
+        idea = self._resolve(idea_id, follow_merge=False)
+        if comment_id:
+            IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).assert_author(
+                idea.tenant_id, idea.id, comment_id, self.p.viewer
+            )
+        elif not (self.p.can_manage or self._is_owned(idea.id)):
+            raise _forbidden()
+        throttle = ThrottleService(self.db)
+        key = hashlib.sha256(f"{self.p.tenant_id}:{self.p.voter_id}".encode("utf-8")).hexdigest()
+        try:
+            throttle.enforce_idea_portal_upload(principal_key=key)
+        except Throttled as exc:
+            raise PortalError(429, "too_many_uploads", "Too many uploads. Try again later.", exc.retry_after_seconds)
+        throttle.record_idea_portal_upload(principal_key=key)
+        return idea
+
+    def store_upload(
+        self, idea: Idea, filename: str, content: bytes, comment_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Store a file authorised by :meth:`begin_upload` through the ONE
+        ``IdeaAttachmentService.upload`` (same sniff / caps / storage as staff)."""
+        return IdeaAttachmentService(self.db).upload(
+            idea.tenant_id,
+            idea.id,
+            filename,
+            content,
+            content_prefix=PORTAL_CONTENT_PREFIX,
+            comment_id=comment_id or None,
+        )
+
+    def attachment_content(
+        self, idea_id: str, attachment_id: str, variant: Optional[str] = None
+    ) -> Tuple[str, str, str]:
+        """``(storage_key, mime, filename)`` of a file the caller may read: a
+        report file only where the report text is not withheld from them, a
+        comment file only while its comment is live."""
+        idea = self._resolve(idea_id, follow_merge=True)
+        files = IdeaAttachmentService(self.db)
+        owner_id = (
+            self.db.query(IdeaAttachment.idea_id)
+            .filter(IdeaAttachment.id == attachment_id, IdeaAttachment.tenant_id == idea.tenant_id)
+            .scalar()
+        )
+        if owner_id is not None and owner_id != idea.id:
+            # A merged child's comment thread shows on its survivor; its comment
+            # files are served there too (never the child's report files).
+            merged_child = (
+                self.db.query(Idea.id)
+                .filter(
+                    Idea.id == owner_id,
+                    Idea.tenant_id == idea.tenant_id,
+                    Idea.merged_into_id == idea.id,
+                )
+                .first()
+            )
+            if merged_child is None or files.comment_id_of(idea.tenant_id, owner_id, attachment_id) is None:
+                raise _not_found()
+        source_id = owner_id or idea.id
+        # Refuse BEFORE any file work (a thumbnail is generated on first read, so
+        # a viewer who may not see the file must never trigger it).
+        comment_id = files.comment_id_of(idea.tenant_id, source_id, attachment_id)
+        if comment_id is None:
+            if self._text_withheld(self._is_owned(idea.id)):
+                raise _not_found()
+        else:
+            live = (
+                self.db.query(IdeaComment.id)
+                .filter(
+                    IdeaComment.id == comment_id,
+                    IdeaComment.idea_id == source_id,
+                    IdeaComment.tenant_id == idea.tenant_id,
+                    IdeaComment.deleted_at.is_(None),
+                )
+                .first()
+            )
+            if live is None:
+                raise _not_found()
+        try:
+            found = files.content(idea.tenant_id, source_id, attachment_id, variant)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise _not_found()
+            raise
+        return found
 
     def delete_comment(self, idea_id: str, comment_id: str) -> None:
         idea = self._resolve(idea_id, follow_merge=True)
@@ -1252,6 +1456,7 @@ def record_status_activity(
     from_label: Optional[str],
     to_label: Optional[str],
     to_color: Optional[str] = None,
+    actor_name: Optional[str] = None,
 ) -> None:
     db.add(
         IdeaActivity(
@@ -1261,6 +1466,7 @@ def record_status_activity(
             from_label=from_label,
             to_label=to_label,
             to_color=to_color,
+            actor_name=actor_name,
             created_at=_now(),
         )
     )
@@ -1297,6 +1503,8 @@ def on_domain_event(db: Session, ev: Dict[str, Any]) -> None:
         from_label=from_status.label,
         to_label=extra.get("to_status_label") or (to_status.label if to_status else None),
         to_color=to_status.color if to_status else None,
+        # Who moved it, for the operator History tab (lane FEEDBACK-SUBSCRIBE).
+        actor_name=((ev.get("actor") or {}).get("name") or None),
     )
     db.commit()
 

@@ -13,6 +13,7 @@ import {
   type IdeaPortalRuntime,
   type UsePortalSession,
 } from '@/hooks/use-idea-portal';
+import type { PortalPrincipal } from '@/types/idea-portal';
 import { PortalShell } from './portal-shell';
 import { PortalSignIn } from './sign-in-view';
 import { PortalLoading, PortalMessage } from './portal-states';
@@ -81,5 +82,34 @@ export function LinkPortalRoot({ linkToken, children }: { linkToken: string; chi
     <Gate session={session} mode="link" paths={paths}>
       {children}
     </Gate>
+  );
+}
+
+const SHARE_PRINCIPAL: PortalPrincipal = {
+  kind: 'share',
+  name: null,
+  role: 'Visitor',
+  productId: null,
+  canManage: false,
+};
+
+/** One item's read-only share link (`/public/feedback/share/{shareToken}`, lane
+ * FEEDBACK-SUBSCRIBE): no session; the page reads through the share token and
+ * every action goes through the phone step. */
+export function ShareItemRoot({ shareToken, children }: { shareToken: string; children: ReactNode }) {
+  const runtime = useMemo<IdeaPortalRuntime>(
+    () => ({
+      mode: 'share',
+      shareToken,
+      paths: linkPortalPaths(shareToken),
+      principal: SHARE_PRINCIPAL,
+      signOut: () => undefined,
+    }),
+    [shareToken],
+  );
+  return (
+    <IdeaPortalContext.Provider value={runtime}>
+      <PortalShell>{children}</PortalShell>
+    </IdeaPortalContext.Provider>
   );
 }

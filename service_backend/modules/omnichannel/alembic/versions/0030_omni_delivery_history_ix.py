@@ -11,15 +11,15 @@ autocommit block (no write lock on a live outbox table). An INVALID index left
 by an earlier interrupted concurrent build is dropped first, so a retried
 deploy finishes the job. No data change, no backfill. Revision id <= 32 chars.
 
-Revision ID: 0027_omni_delivery_history_ix
-Revises: 0026_omni_contact_erasures
+Revision ID: 0030_omni_delivery_history_ix
+Revises: 0029_omni_strict_number_window
 Create Date: 2026-11-18
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0027_omni_delivery_history_ix"
-down_revision = "0026_omni_contact_erasures"
+revision = "0030_omni_delivery_history_ix"
+down_revision = "0029_omni_strict_number_window"
 branch_labels = None
 depends_on = None
 

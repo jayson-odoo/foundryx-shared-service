@@ -91,3 +91,19 @@ describe('idea upload media types (AC-52-05)', () => {
     expect(created[0].type).toBe(type);
   });
 });
+
+describe('preview title on a phone (crew pass r2)', () => {
+  it('shows the whole file name: it wraps, never cut to "..."', async () => {
+    const long = 'showroom-display-unit-cracked-front-glass-panel-close-up-front-view.png';
+    render(
+      <IdeaAttachmentPreviewDialog
+        attachment={{ id: 'a9', kind: 'image', name: long, url: 'https://cdn.example/x.png' }}
+        onClose={() => {}}
+      />,
+    );
+    const title = await screen.findByRole('heading', { name: long });
+    expect(title.className).not.toMatch(/\btruncate\b/);
+    expect(title.className).toMatch(/\bbreak-all\b/);
+  });
+});
+

@@ -19,6 +19,7 @@ from ..repositories.channel_repository import ChannelRepository
 from ..schemas import ChannelItem, ChannelUpdate, TestConnectionResult
 from ..security import decrypt_credentials
 from . import statuses
+from .channel_events import emit_channel_updated
 
 
 class ChannelNotFound(Exception):
@@ -123,7 +124,8 @@ class ChannelService:
             raise ChannelNotFound()
         if payload.name is not None:
             c.name = payload.name.strip()
-        if payload.isActive is not None and payload.isActive != c.is_active:
+        state_changed = payload.isActive is not None and payload.isActive != c.is_active
+        if state_changed:
             # ERROR is a health label owned by the token check (plan 42): a
             # pause or resume changes the flag and leaves the label alone.
             statuses.ensure_statuses(self.db, tenant_id)
@@ -135,6 +137,8 @@ class ChannelService:
                 c.status_id = statuses.status_id_for(self.db, tenant_id, "CHANNEL", key)
         self.db.commit()
         self.db.refresh(c)
+        if state_changed:
+            emit_channel_updated(self.db, c)
         return self._items([c], tenant_id)[0]
 
     def test_connection(
@@ -158,24 +162,32 @@ class ChannelService:
         statuses.ensure_statuses(self.db, tenant_id)
         inactive = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "INACTIVE")
         error = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ERROR")
+        changed = []
         for c in self.repo.get_many(ids, tenant_id):
             c.is_trashed = True
             c.is_active = False
             # ERROR is the token check's label (plan 42): a disconnect leaves it.
             if c.status_id != error:
                 c.status_id = inactive
+            changed.append(c)
         self.db.commit()
+        for c in changed:
+            emit_channel_updated(self.db, c)
 
     def restore(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:
         statuses.ensure_statuses(self.db, tenant_id)
         active = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ACTIVE")
         error = statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ERROR")
+        changed = []
         for c in self.repo.get_many(ids, tenant_id):
             c.is_trashed = False
             c.is_active = True
             if c.status_id != error:
                 c.status_id = active
+            changed.append(c)
         self.db.commit()
+        for c in changed:
+            emit_channel_updated(self.db, c)
 
     def remove(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:
         """Hard-delete channels. The FKs pointing at ``channels.id`` have no

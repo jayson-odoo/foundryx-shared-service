@@ -271,3 +271,105 @@
     --material-edge: var(--color-zinc-500);
   }
 }
+
+/**
+ * Foundryx UIUX switch - the global look (playbook 0.71.0 "Theme", "Settings";
+ * playbook-uiux.md). Every rule sits under `data-fx="on"` on <html>, so with
+ * the switch off (the default) none of it applies (css/fx-scope.inventory
+ * test pins that). Unlayered on purpose: it must win over the layered base
+ * rules above for a browser that opted in. Tokens: config.reui.css and
+ * foundryx-tokens.css.
+ *
+ * Size: the root font size is today's 16px base times the Theme panel size
+ * (`--fx-scale`, 0.9 = the playbook's "Normal (90%)"), so every rem follows.
+ */
+:root[data-fx='on'] {
+  font-size: calc(16px * var(--fx-scale, 0.9));
+}
+
+/* One font for everything (playbook "Font"): body text and the two font
+   utilities SS uses for UI and headings. */
+:root[data-fx='on'] body,
+:root[data-fx='on'] .font-sans,
+:root[data-fx='on'] .font-heading {
+  font-family: var(--fx-font);
+}
+
+/* Headings never end on one orphan word. */
+:root[data-fx='on'] :is(h1, h2, h3, h4, h5, h6) {
+  text-wrap: balance;
+}
+
+/* Focus is always visible: a 2px link-coloured ring on keyboard focus. */
+:root[data-fx='on'] :focus-visible {
+  outline: 2px solid var(--fx-link);
+  outline-offset: 2px;
+}
+
+/* Slim scrollbars (setting "Slim scrollbars", thickness `--fx-scroll-size`).
+   The universal selector reaches portalled menus and dialogs too. WebKit and
+   Blink read the pseudo-elements; Firefox only the standard properties, kept
+   in a Firefox-only block because setting them in Chromium would switch off
+   the pseudo-elements there. */
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar {
+  width: var(--fx-scroll-size, 4px);
+  height: var(--fx-scroll-size, 4px);
+}
+
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar-track,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar-track,
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar-corner,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar-thumb,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--fx-ink-3) 45%, transparent);
+  border-radius: var(--fx-r-pill);
+}
+
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar-thumb:hover,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar-thumb:hover {
+  background-color: var(--fx-ink-3);
+}
+
+@supports (-moz-appearance: none) {
+  :root[data-fx='on']:not([data-fx-scroll='off']),
+  :root[data-fx='on']:not([data-fx-scroll='off']) * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--fx-ink-3) 45%, transparent) transparent;
+  }
+}
+
+/* See-through surfaces (anything floating over content): 50% surface with a
+   light 6px blur. Used only by fx components, which render only while the
+   switch is on. */
+@utility fx-see-through {
+  background-color: color-mix(in srgb, var(--fx-surface) 50%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+/* Reduced transparency or more contrast: see-through fx surfaces turn solid
+   (this also covers the Hold to Copy tip and the right-click tool once those
+   are built on the same utility). */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root[data-fx='on'] .fx-see-through {
+    background-color: var(--fx-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Reduced motion under the switch: fx transitions and animations keep only
+   their end state, except the panel and layout moves that show where
+   something went (their tokens stay timed in config.reui.css). Components opt
+   a decorative animation in with `data-fx-decor`. */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-fx='on'] [data-fx-decor] {
+    animation: none;
+    transition: none;
+  }
+}
