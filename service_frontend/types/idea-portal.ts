@@ -93,6 +93,8 @@ export interface PortalIdea extends PortalCard {
   note: string | null;
   /** Lane FEEDBACK-SUBSCRIBE: contacts following it (the submitter not counted). */
   followerCount?: number;
+  /** A test item (crew s4): Share and Follow are not offered. */
+  isTest?: boolean;
   /** This viewer gets its WhatsApp status updates (submitter or follower). */
   following?: boolean;
   /** Report-level files (comment files ride their comment). Omitted for a

@@ -469,8 +469,10 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
                 <FollowShareBar
                   following={Boolean(idea.following)}
                   followerCount={idea.followerCount ?? 0}
-                  onFollow={shareView ? ask('follow') : principal.kind === 'contact' ? toggleFollow : null}
-                  onShare={shareView ? null : page.shareUrl}
+                  onFollow={
+                    idea.isTest ? null : shareView ? ask('follow') : principal.kind === 'contact' ? toggleFollow : null
+                  }
+                  onShare={shareView || idea.isTest ? null : page.shareUrl}
                   busy={followBusy}
                 />
               </div>

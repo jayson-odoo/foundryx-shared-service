@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { ApiError } from '@/lib/api-client';
 
 export interface ShareLinkDialogProps {
   open: boolean;
@@ -27,6 +28,8 @@ export interface ShareLinkDialogProps {
 export function ShareLinkDialog({ open, onClose, loadUrl }: ShareLinkDialogProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** A plain-words refusal (409, e.g. a test item) is final: no Try again. */
+  const [refused, setRefused] = useState(false);
   const [tick, setTick] = useState(0);
   const { isCopied, error: copyError, copyToClipboard } = useCopyToClipboard();
 
@@ -35,9 +38,17 @@ export function ShareLinkDialog({ open, onClose, loadUrl }: ShareLinkDialogProps
     let active = true;
     setUrl(null);
     setError(null);
+    setRefused(false);
     loadUrl()
-      .then((u) => active && setUrl(u))
-      .catch(() => active && setError('Could not get the link.'));
+      .then((u) => {
+        if (active) setUrl(u);
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        const final = err instanceof ApiError && err.status === 409 && Boolean(err.message);
+        setRefused(final);
+        setError(final ? (err as ApiError).message : 'Could not get the link.');
+      });
     return () => {
       active = false;
     };
@@ -58,9 +69,11 @@ export function ShareLinkDialog({ open, onClose, loadUrl }: ShareLinkDialogProps
           {error && (
             <div className="flex items-center gap-2 text-sm text-destructive" role="alert">
               <span>{error}</span>
-              <Button mode="link" size="sm" onClick={() => setTick((t) => t + 1)}>
-                Try again
-              </Button>
+              {!refused && (
+                <Button mode="link" size="sm" onClick={() => setTick((t) => t + 1)}>
+                  Try again
+                </Button>
+              )}
             </div>
           )}
           {url && (

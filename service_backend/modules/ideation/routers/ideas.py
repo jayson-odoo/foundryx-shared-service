@@ -44,7 +44,7 @@ from ..services.clustering import ClusteringService
 from ..services import followers as follower_service
 from ..services import history as history_service
 from ..services.feedback_links import cancel_feedback_link_for_idea
-from ..services.share_links import staff_share_url, staff_stop_sharing
+from ..services.share_links import ShareRefusedTestItem, staff_share_url, staff_stop_sharing
 from ..services.comments import AUTHOR_USER, CommentViewer, IdeaCommentService
 from ..services.idea_types import list_idea_types
 from ..services.ideas import IdeaReadService
@@ -467,8 +467,11 @@ def get_share_link(
     db: Session = Depends(get_db),
 ) -> ShareLinkOut:
     """The item's read-only share link, minted on first use. 404 when the idea
-    is not in the tenant or is a test item."""
-    url = staff_share_url(db, current_user.tenant_id, idea_id, _actor(request, current_user))
+    is not in the tenant; 409 in plain words for a test item."""
+    try:
+        url = staff_share_url(db, current_user.tenant_id, idea_id, _actor(request, current_user))
+    except ShareRefusedTestItem as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, exc.message)
     if url is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Idea not found.")
     return ShareLinkOut(url=url)

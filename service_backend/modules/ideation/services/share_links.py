@@ -10,7 +10,9 @@ write). Contract: ``documentation/plans/ideation/feedback-subscribe-behaviour-ca
   staff "Stop sharing" (``revoked_at``); the next Share mints a fresh token;
 - the token lookup is the only cross-tenant read (the token IS the
   credential); the idea is then resolved WITH the row's own ``tenant_id``;
-- test items are never shared.
+- test items are never shared;
+- the link opens on the shared-service frontend (``ss_feedback_base``): the
+  product's CRM has no share page (lane FEEDBACK-SHARE-LIVE-FIX).
 Writes flush; the caller commits.
 """
 import secrets
@@ -23,7 +25,7 @@ from sqlalchemy.orm import Session
 from ..models import Idea, IdeaShareLink
 from . import history
 from .history import HistoryActor
-from .feedback_links import LINK_TOKEN_RE, feedback_base
+from .feedback_links import LINK_TOKEN_RE, ss_feedback_base
 
 
 def _now() -> datetime:
@@ -75,7 +77,7 @@ def get_or_create_share_link(
 
 
 def share_url(db: Session, row: IdeaShareLink) -> str:
-    return f"{feedback_base(db, row.tenant_id)}/share/{row.token}"
+    return f"{ss_feedback_base(db, row.tenant_id)}/share/{row.token}"
 
 
 def stop_sharing(db: Session, tenant_id: str, idea_id: str) -> int:
@@ -118,13 +120,21 @@ def resolve_share(db: Session, token: str) -> Optional[Tuple[IdeaShareLink, Idea
 # ── operator idea page (staff) ────────────────────────────────────────────────
 
 
+class ShareRefusedTestItem(Exception):
+    """A test item: refused in plain words, never as "not found"."""
+
+    message = "Test items cannot be shared."
+
+
 def staff_share_url(db: Session, tenant_id: str, idea_id: str, actor: HistoryActor) -> Optional[str]:
     """The item's share link (minted on first use), ``None`` when the idea is
-    not in the tenant or is a test item. Commits."""
+    not in the tenant; ``ShareRefusedTestItem`` for a test item. Commits."""
     idea = db.query(Idea).filter(Idea.id == idea_id, Idea.tenant_id == tenant_id).first()
-    row = get_or_create_share_link(db, idea, actor) if idea is not None else None
-    if row is None:
+    if idea is None:
         return None
+    row = get_or_create_share_link(db, idea, actor)
+    if row is None:
+        raise ShareRefusedTestItem()
     db.commit()
     return share_url(db, row)
 

@@ -971,6 +971,9 @@ class PortalIdeaOut(PortalCardOut):
     # viewer (a contact: submitter or follower) gets its WhatsApp updates.
     followerCount: int = 0
     following: bool = False
+    # A test item (crew s4): Share and Follow are hidden; the API refuses both
+    # in plain words.
+    isTest: bool = False
     # Report-level files only (comment files ride their comment). Omitted for a
     # dealer on an item they did not file (WITHHELD_DETAIL_KEYS).
     attachments: Optional[List[IdeaAttachmentOut]] = None
