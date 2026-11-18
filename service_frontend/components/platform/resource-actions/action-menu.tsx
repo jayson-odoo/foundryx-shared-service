@@ -24,6 +24,7 @@ import type {
 } from '@/components/platform/resource-list/types';
 import { ConfirmActionDialog } from './confirm-action-dialog';
 import { deferredToast, dismissDeferredToast } from './deferred-toast';
+import { runResourceAction } from './run-action';
 
 export interface ActionMenuProps<T> {
   actions: ResourceAction<T>[];
@@ -175,7 +176,7 @@ export function ActionMenu<T>({
       await parkDeferred(action, entityIds);
       return;
     }
-    await action.run(rows, runtime);
+    await runResourceAction(action, rows, runtime);
   }
 
   async function parkDeferred(

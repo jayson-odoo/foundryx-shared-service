@@ -23,6 +23,7 @@ import type {
 } from '@/components/platform/resource-list/types';
 import { ConfirmActionDialog } from './confirm-action-dialog';
 import { deferredToast, dismissDeferredToast } from './deferred-toast';
+import { runResourceAction } from './run-action';
 
 export interface BulkActionsProps<T> {
   actions: ResourceAction<T>[];
@@ -140,7 +141,7 @@ export function BulkActions<T>({
       }
       return;
     }
-    await action.run(rows, runtime);
+    await runResourceAction(action, rows, runtime);
   }
 
   return (
