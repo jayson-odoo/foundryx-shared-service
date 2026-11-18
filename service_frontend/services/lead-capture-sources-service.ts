@@ -11,8 +11,8 @@ import type { LeadDelivery, StaffLead, StaffLeadDetail, StaffSource } from '@/ty
 const BASE = '/lead-capture';
 
 /** Sort ids the server sorts on (anything else falls back to its default). */
-const SOURCE_SORTS = new Set(['name', 'platform', 'pageName', 'status', 'lastLeadAt', 'createdAt', 'leads7d']);
-const LEAD_SORTS = new Set(['receivedAt', 'sourceName', 'platform', 'formName', 'email', 'phone', 'isTest']);
+const SOURCE_SORTS = new Set(['name', 'platform', 'pageName', 'status', 'lastLeadAt', 'createdAt', 'leads7d', 'needsMapping']);
+const LEAD_SORTS = new Set(['receivedAt', 'sourceName', 'platform', 'formName', 'email', 'phone', 'isTest', 'deliveryStatus']);
 
 function conditions(group: FilterGroup | null | undefined): FilterRule[] {
   if (!group || group.combinator !== 'and') return [];

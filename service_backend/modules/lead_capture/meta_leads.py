@@ -55,6 +55,7 @@ _TEXT_CAP = 500
 PAGE_SIZE = 100
 MAX_PAGES = 20  # 2,000 rows per call at most; the next backfill run continues
 DEV_FORM_ID = "100000000000000"
+DEV_FORM_NAME = "Sample lead form"
 # Simulated Pages (no Meta app configured: dev + tests) - digits like real
 # Page ids, neutral names (white-label). The hosted wizard lists them and the
 # dev connect names the source after them.
@@ -231,7 +232,7 @@ class MetaLeadClient(MetaGraphMixin):
         if not form_id:
             return None
         if not self._configured or dev:
-            return f"Dev form {form_id}"
+            return DEV_FORM_NAME
         try:
             resp = self._get(form_id, page_token, {"fields": "name"})
         except MetaLeadError:
@@ -265,7 +266,7 @@ class MetaLeadClient(MetaGraphMixin):
         """``{"formName", "questions": [{key, label, type, options}]}`` read with
         ``GET /{form}?fields=name,questions`` (Page token). Raises MetaLeadError."""
         if not self._configured or dev:
-            return {"formName": f"Dev form {form_id}", "questions": dev_questions()}
+            return {"formName": DEV_FORM_NAME, "questions": dev_questions()}
         resp = self._get(form_id, page_token, {"fields": "name,questions"})
         if resp.status_code != 200:
             raise _error(resp, "Meta refused the form read.")
@@ -298,7 +299,7 @@ class MetaLeadClient(MetaGraphMixin):
         (``GET /{page}/leadgen_forms``, Page token, every page of the list up
         to ``MAX_PAGES``). Raises MetaLeadError."""
         if not self._configured or dev:
-            return [{"id": DEV_FORM_ID, "name": f"Dev form {DEV_FORM_ID}", "status": "ACTIVE", "createdTime": None}]
+            return [{"id": DEV_FORM_ID, "name": DEV_FORM_NAME, "status": "ACTIVE", "createdTime": None}]
         forms: List[Dict[str, Any]] = []
         after = ""
         for _ in range(MAX_PAGES):

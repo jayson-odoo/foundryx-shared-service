@@ -656,3 +656,53 @@ def test_plain_http_origins_only_outside_production(monkeypatch):
     assert sessions.normalize_origin("http://100.127.79.93:3109") is None
     assert sessions.normalize_origin("http://localhost:3001") == "http://localhost:3001"
     assert sessions.normalize_origin("https://crm.example.com") == "https://crm.example.com"
+
+
+def test_unmapped_forms_and_delivery_columns_sort_on_the_server(client, lc):
+    """Crew pass (owner rule: every header sorts, on the server)."""
+    from app.secrets import encrypt_secret
+    from modules.lead_capture.models import LcDelivery, LcWebhookEndpoint
+
+    admin = _login(client)
+    res = client.post("/lead-capture/connect-sessions", json={}, headers=admin)
+    wiz = {"Authorization": f"Bearer {_redeem(client, _secret(res.json()['url'])).json()['accessToken']}"}
+    client.post("/public/lead-capture/wizard/facebook/login", json={"code": "dev"}, headers=wiz)
+    first = client.post("/public/lead-capture/wizard/facebook/connect", json={"pageId": DEV_PAGE}, headers=wiz).json()["id"]
+    res = client.post("/lead-capture/connect-sessions", json={}, headers=admin)
+    wiz2 = {"Authorization": f"Bearer {_redeem(client, _secret(res.json()['url'])).json()['accessToken']}"}
+    client.post("/public/lead-capture/wizard/facebook/login", json={"code": "dev"}, headers=wiz2)
+    second = client.post(
+        "/public/lead-capture/wizard/facebook/connect", json={"pageId": sessions.DEV_PAGES[1]["id"]}, headers=wiz2
+    ).json()["id"]
+    _seed_leads(lc, first)
+    db = lc()
+    try:
+        src = db.get(LcSource, second)
+        src.needs_mapping_json = {"1": {"formId": "1", "formName": "F", "unmappedCount": 2}}
+        endpoint = LcWebhookEndpoint(
+            tenant_id=DEFAULT_TENANT_ID, url="https://crm.example.com/h", events_json=["lead.created"],
+            secret_encrypted=encrypt_secret({"secret": "x"}),
+        )
+        db.add(endpoint)
+        db.flush()
+        leads = {l.email: l.id for l in db.query(LcLead).all()}
+        for email, status in (("a@x.example", "SUCCESS"), ("b@x.example", "FAILED"), ("b@x.example", "SUCCESS")):
+            db.add(LcDelivery(
+                tenant_id=DEFAULT_TENANT_ID, endpoint_id=endpoint.id, lead_id=leads[email], event="lead.created",
+                body_encrypted=encrypt_secret({"b": 1}), status=status,
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+    by_mapping = client.get("/lead-capture/sources/list", params={"sort": "needsMapping", "order": "desc"}, headers=admin)
+    assert [s["id"] for s in by_mapping.json()["data"]] == [second, first]
+    assert [s["id"] for s in client.get(
+        "/lead-capture/sources/list", params={"sort": "needsMapping", "order": "asc"}, headers=admin
+    ).json()["data"]] == [first, second]
+
+    worst_first = client.get("/lead-capture/leads", params={"sort": "deliveryStatus", "order": "desc"}, headers=admin).json()
+    assert [r["email"] for r in worst_first["data"]] == ["b@x.example", "a@x.example", "c@x.example"]
+    assert [r["deliveryStatus"] for r in worst_first["data"]] == ["FAILED", "SUCCESS", None]
+    asc = client.get("/lead-capture/leads", params={"sort": "deliveryStatus", "order": "asc", "pageSize": 1, "page": 2}, headers=admin)
+    assert [r["email"] for r in asc.json()["data"]] == ["b@x.example"]

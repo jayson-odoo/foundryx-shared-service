@@ -107,7 +107,7 @@ export function useLeadsListConfig(sourceId: string | null): ResourceListConfig<
             <span className="text-sm text-muted-foreground">-</span>
           ),
         size: 130,
-        enableSorting: false,
+        enableSorting: true,
       },
     ];
 
@@ -121,6 +121,7 @@ export function useLeadsListConfig(sourceId: string | null): ResourceListConfig<
       filterFields,
       exportColumns: [],
       enableStatusViews: false,
+      urlState: true,
       actions: [],
       searchPlaceholder: 'Search email, phone, form or source',
       defaultSort: { id: 'receivedAt', desc: true },

@@ -106,7 +106,7 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
         header: ({ column }) => <DataGridColumnHeader title="Unmapped forms" column={column} />,
         cell: ({ row }) => <span className="text-sm">{row.original.needsMapping.length || '-'}</span>,
         size: 140,
-        enableSorting: false,
+        enableSorting: true,
       },
       {
         id: 'leads7d',
@@ -164,6 +164,7 @@ export function useSourcesListConfig(openWizard: (sourceId?: string) => void): R
       filterFields: FILTER_FIELDS,
       exportColumns: [],
       enableStatusViews: false,
+      urlState: true,
       actions,
       searchPlaceholder: 'Search sources',
       defaultSort: { id: 'createdAt', desc: true },

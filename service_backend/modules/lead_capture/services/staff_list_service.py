@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from app.secrets import decrypt_secret
@@ -106,10 +106,18 @@ def list_sources(
     if platform_list:
         q = q.filter(LcSource.platform.in_(platform_list))
     total = q.count()
-    column = leads7d if sort == "leads7d" else _SOURCE_SORT.get(sort or "", LcSource.created_at)
-    primary = column.asc() if order == "asc" else column.desc()
     offset, size = _page(page, page_size)
-    rows = q.order_by(primary, LcSource.id.asc()).offset(offset).limit(size).all()
+    if sort == "needsMapping":
+        # A JSON map's size has no portable SQL sort; a tenant has few
+        # sources, so this one column sorts the whole (filtered) set here.
+        everything = q.all()
+        everything.sort(key=lambda r: r[0].id)
+        everything.sort(key=lambda r: len(r[0].needs_mapping_json or {}), reverse=order != "asc")
+        rows = everything[offset: offset + size]
+    else:
+        column = leads7d if sort == "leads7d" else _SOURCE_SORT.get(sort or "", LcSource.created_at)
+        primary = column.asc() if order == "asc" else column.desc()
+        rows = q.order_by(primary, LcSource.id.asc()).offset(offset).limit(size).all()
     data = [schemas.StaffSourceItem(**source_item(src).model_dump(), leads7d=int(n or 0)) for src, n in rows]
     return schemas.StaffSourcePage(data=data, total=total)
 
@@ -210,7 +218,28 @@ def list_leads(
     if end is not None:
         q = q.filter(LcLead.received_at < end)
     total = q.count()
-    column = _LEAD_SORT.get(sort or "", LcLead.received_at)
+    if sort == "deliveryStatus":
+        # The lead's worst delivery (Failed > Sending > Delivered > none),
+        # the same rule the column shows (_delivery_status).
+        rank = (
+            db.query(
+                LcDelivery.lead_id.label("lead_id"),
+                func.max(
+                    case(
+                        (LcDelivery.status == DELIVERY_FAILED, 3),
+                        (LcDelivery.status == DELIVERY_PENDING, 2),
+                        else_=1,
+                    )
+                ).label("rank"),
+            )
+            .filter(LcDelivery.tenant_id == tenant_id)
+            .group_by(LcDelivery.lead_id)
+            .subquery()
+        )
+        q = q.outerjoin(rank, rank.c.lead_id == LcLead.id)
+        column = func.coalesce(rank.c.rank, 0)
+    else:
+        column = _LEAD_SORT.get(sort or "", LcLead.received_at)
     primary = column.asc() if order == "asc" else column.desc()
     offset, size = _page(page, page_size)
     rows = q.order_by(primary, LcLead.id.asc()).offset(offset).limit(size).all()
