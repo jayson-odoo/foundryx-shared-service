@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useReducedMotion } from '@/lib/motion';
+import { useFx } from '@/hooks/use-fx';
+import { FxDeferredCountdown } from '@/components/fx/toast/fx-deferred-countdown';
 
 export interface DeferredCountdownProps {
   /** Verb-first copy: "Deleting" reads as "Deleting in 10s". */
@@ -15,6 +17,10 @@ export interface DeferredCountdownProps {
   noun?: string;
   onCancel: () => void;
   className?: string;
+  /** Foundryx UIUX switch only: `toast` when the countdown rides a toast (a
+   *  list row or bulk action), for the playbook toast look. Ignored while
+   *  off. */
+  fxSurface?: 'toast';
   // No `cancelling` prop (fix round 1 item 9): `useDeferredAction.cancel()`
   // now leaves `pending` SYNCHRONOUSLY on the caller's very next render, so
   // this whole countdown unmounts on the SAME click - there is never a
@@ -38,7 +44,14 @@ function asUtc(iso: string): string {
  * button (never a keyboard shortcut fires it, per the no-motion-on-a-
  * keyboard-action rule).
  */
-export function DeferredCountdown({
+export function DeferredCountdown(props: DeferredCountdownProps) {
+  // Foundryx UIUX switch (playbook-uiux.md): same window, same server clock,
+  // the playbook's words ("Deleting 12 contacts in 8 s", "Undo"). Off renders
+  // the legacy body below, unchanged.
+  return useFx() ? <FxDeferredCountdown {...props} /> : <DeferredCountdownLegacy {...props} />;
+}
+
+function DeferredCountdownLegacy({
   verb,
   commitAt,
   windowSeconds,

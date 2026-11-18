@@ -29,6 +29,8 @@ import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
 import { RecordNav } from './record-nav';
+import { useFx } from '@/hooks/use-fx';
+import { FxDiscardDialog } from '@/components/fx/actions/confirm-dialog';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
 import type { ResourceFormConfig } from './types';
 
@@ -509,10 +511,48 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         ))}
       </Tabs>
 
-      <AlertDialog
+      <DiscardChangesDialog
         open={pendingAction !== null}
+        name={
+          config.fx?.discardName ??
+          (typeof config.title === 'string' ? config.title : undefined)
+        }
+        onKeep={() => setPendingAction(null)}
+        onDiscard={() => {
+          pendingAction?.();
+          setPendingAction(null);
+        }}
+      />
+    </div>
+  );
+}
+
+interface DiscardChangesDialogProps {
+  open: boolean;
+  name?: string;
+  onKeep: () => void;
+  onDiscard: () => void;
+}
+
+/**
+ * The dirty guard. Foundryx UIUX switch on (playbook-uiux.md): "Discard
+ * changes to <name>?" with "Keep editing" and a red single-click "Discard
+ * changes". Off: the original dialog, markup unchanged.
+ */
+function DiscardChangesDialog(props: DiscardChangesDialogProps) {
+  return useFx() ? (
+    <FxDiscardDialog {...props} />
+  ) : (
+    <DiscardChangesDialogLegacy {...props} />
+  );
+}
+
+function DiscardChangesDialogLegacy({ open, onKeep, onDiscard }: DiscardChangesDialogProps) {
+  return (
+      <AlertDialog
+        open={open}
         onOpenChange={(open) => {
-          if (!open) setPendingAction(null);
+          if (!open) onKeep();
         }}
       >
         <AlertDialogContent className="md:max-w-[400px]">
@@ -525,16 +565,12 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
           <AlertDialogFooter>
             <AlertDialogCancel>Keep editing</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                pendingAction?.();
-                setPendingAction(null);
-              }}
+              onClick={onDiscard}
             >
               Discard changes
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
   );
 }
