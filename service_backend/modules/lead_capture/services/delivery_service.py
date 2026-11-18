@@ -35,7 +35,7 @@ from app.models.tenant import Tenant
 from app.repositories.module_repository import ModuleRepository
 from app.secrets import decrypt_secret, encrypt_secret
 from app.services import webhook_post
-from app.services.url_guard import GuardedAsyncTransport, UrlGuardError
+from app.services.url_guard import GuardedAsyncTransport, UnparseableUrlError, UrlGuardError
 from app.services.url_guard import assert_deliverable as core_assert_deliverable
 from app.services.url_guard import validate_public_https_url
 
@@ -93,6 +93,12 @@ def verify(secret: str, header: str, body: bytes, *, tolerance: int = 300, now: 
 
 # ── Endpoints (AC-64-60) ────────────────────────────────────────────────────
 
+# The screens call an endpoint a "receiver" (crew pass on #259).
+RECEIVER_GONE = "This receiver was already removed."
+# An id this company never had (e.g. a mistyped id on the gateway).
+RECEIVER_UNKNOWN = "This receiver does not exist."
+
+
 def _validate_events(events: List[str]) -> List[str]:
     clean = list(dict.fromkeys(e for e in events or [] if isinstance(e, str)))
     if not clean:
@@ -106,7 +112,10 @@ def _validate_events(events: List[str]) -> List[str]:
 def create_endpoint(db: Session, tenant_id: str, url: str, events: List[str]) -> Tuple[LcWebhookEndpoint, str]:
     """Returns ``(row, secret)``; the secret is shown ONCE."""
     try:
-        clean_url = validate_public_https_url(url, strict_dns=False, subject="Callback URL")
+        # The Add receiver screen calls the field "URL": the refusal uses that word.
+        clean_url = validate_public_https_url(url, strict_dns=False, subject="The URL")
+    except UnparseableUrlError:
+        raise DeliveryError(422, "invalid_url", "Enter a valid URL.") from None
     except UrlGuardError as exc:
         raise DeliveryError(422, "invalid_url", str(exc)) from None
     clean_events = _validate_events(events)
@@ -116,7 +125,7 @@ def create_endpoint(db: Session, tenant_id: str, url: str, events: List[str]) ->
         .count()
     )
     if count >= MAX_ENDPOINTS:
-        raise DeliveryError(409, "endpoint_limit", f"At most {MAX_ENDPOINTS} endpoints.")
+        raise DeliveryError(409, "endpoint_limit", f"At most {MAX_ENDPOINTS} receivers.")
     secret = SECRET_SCHEME + pysecrets.token_urlsafe(32)
     row = LcWebhookEndpoint(
         tenant_id=tenant_id,
@@ -146,8 +155,10 @@ def delete_endpoint(db: Session, tenant_id: str, endpoint_id: str) -> None:
         .filter(LcWebhookEndpoint.id == endpoint_id, LcWebhookEndpoint.tenant_id == tenant_id)
         .first()
     )
-    if row is None or not row.active:
-        raise DeliveryError(404, "endpoint_not_found", "Endpoint not found.")
+    if row is None:
+        raise DeliveryError(404, "endpoint_not_found", RECEIVER_UNKNOWN)
+    if not row.active:
+        raise DeliveryError(404, "endpoint_not_found", RECEIVER_GONE)
     row.active = False
     # Pending deliveries to it stop here (never sent to a removed endpoint).
     db.query(LcDelivery).filter(
@@ -175,6 +186,18 @@ def queue_event(db: Session, tenant_id: str, event: str, data: Dict[str, Any], l
     """One PENDING delivery per active endpoint subscribed to ``event``. Flushes,
     never commits. Returns the new delivery ids."""
     endpoints = [e for e in list_endpoints(db, tenant_id) if event in (e.events_json or [])]
+    return _queue_to(db, tenant_id, endpoints, event, data, lead_id)
+
+
+def _queue_to(
+    db: Session,
+    tenant_id: str,
+    endpoints: List[LcWebhookEndpoint],
+    event: str,
+    data: Dict[str, Any],
+    lead_id: Optional[str],
+) -> List[str]:
+    """One PENDING delivery per given endpoint. Flushes, never commits."""
     if not endpoints:
         return []
     body = json.dumps(envelope(event, data), separators=(",", ":"), ensure_ascii=False)
@@ -194,6 +217,67 @@ def queue_event(db: Session, tenant_id: str, event: str, data: Dict[str, Any], l
         db.flush()
         ids.append(row.id)
     return ids
+
+
+# Fake values per field TYPE for a test push (never real personal data).
+_TEST_VALUES = {
+    "name": "Test Lead",
+    "phone": "+60000000000",
+    "email": "test.lead@example.com",
+    "notes": "Test push from Lead Capture.",
+    "text": "Test",
+}
+
+
+def get_endpoint(db: Session, tenant_id: str, endpoint_id: str) -> LcWebhookEndpoint:
+    """An ACTIVE endpoint of this tenant, else ``endpoint_not_found``."""
+    row = (
+        db.query(LcWebhookEndpoint)
+        .filter(LcWebhookEndpoint.id == endpoint_id, LcWebhookEndpoint.tenant_id == tenant_id)
+        .first()
+    )
+    if row is None:
+        raise DeliveryError(404, "endpoint_not_found", RECEIVER_UNKNOWN)
+    if not row.active:
+        raise DeliveryError(404, "endpoint_not_found", RECEIVER_GONE)
+    return row
+
+
+def send_test_push(db: Session, tenant_id: str, endpoint_id: str) -> LcDelivery:
+    """Queue ONE signed delivery of a sample lead (``isTest: true``) to this
+    endpoint only, through the same queue + dispatch as a real lead (AC-64-57).
+    The event is ``lead.created`` when subscribed, else the endpoint's first."""
+    from ..mapping import lead_body
+    from .field_service import targets
+
+    endpoint = get_endpoint(db, tenant_id, endpoint_id)
+    events = list(endpoint.events_json or [])
+    event = EVENT_LEAD_CREATED if EVENT_LEAD_CREATED in events or not events else events[0]
+    now = datetime.now(timezone.utc)
+    fields = {key: _TEST_VALUES.get(typ, "Test") for key, typ in targets(db, tenant_id)}
+    data = lead_body(
+        lead_id=f"test_{uuid.uuid4().hex[:12]}",
+        source_id="test",
+        source_name="Test push",
+        platform="test",
+        platform_lead_id="test",
+        page_id=None,
+        form_id=None,
+        form_name=None,
+        received_at=now,
+        platform_created_at=now,
+        is_test=True,
+        duplicate_of=None,
+        fields=fields,
+        answers=[],
+        attribution={},
+    )
+    [delivery_id] = _queue_to(db, tenant_id, [endpoint], event, data, None)
+    db.commit()
+    enqueue([delivery_id])
+    row = db.query(LcDelivery).filter(LcDelivery.id == delivery_id, LcDelivery.tenant_id == tenant_id).first()
+    db.refresh(row)
+    return row
 
 
 def enqueue(delivery_ids: List[str]) -> None:
@@ -217,7 +301,7 @@ def _service_enabled(db: Session, tenant_id: str) -> bool:
 
 
 def _assert_deliverable(url: str) -> None:
-    core_assert_deliverable(url, subject="Callback URL")
+    core_assert_deliverable(url, subject="The URL")
 
 
 def _check_address(url: str, budget: float) -> float:
@@ -228,7 +312,7 @@ def _post(url: str, *, content: bytes, headers: Dict[str, str], timeout: float) 
     """Module-level so a test can replace the outbound call."""
     return webhook_post.run_under_deadline(
         lambda: webhook_post.post_async(
-            url, content, headers, timeout, lambda: GuardedAsyncTransport(subject="Callback URL")
+            url, content, headers, timeout, lambda: GuardedAsyncTransport(subject="The URL")
         ),
         timeout,
     )

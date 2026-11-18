@@ -1,0 +1,8 @@
+{
+  "_note": "Real Graph API v25.0 error bodies seen in S-META (15/11/2026); fbtrace_id removed. Keys = the call that produced them.",
+  "POST /{form_id}/test_leads while a test lead exists": {"error": {"message": "Service temporarily unavailable", "type": "OAuthException", "is_transient": false, "code": 2, "error_subcode": 1892058, "error_user_title": "Test lead already exists for this form.", "error_user_msg": "A test lead was already created for this lead gen form. Delete the existing lead before creating a new one. To retrieve the lead ID, use the GET call on /test_leads"}},
+  "DELETE /{lead_id} with the Page token (the lead IS deleted anyway; seen twice)": {"error": {"message": "Service temporarily unavailable", "type": "OAuthException", "is_transient": false, "code": 2, "error_subcode": 1892035, "error_user_title": "Could Not Delete Lead", "error_user_msg": "There was an error when attempting to delete the lead."}},
+  "DELETE /{lead_id} with the system-user token": {"error": {"message": "(#110) Can only delete leads owned by session user.", "type": "OAuthException", "code": 110}},
+  "GET /{page_id}/leadgen_forms with the system-user token": {"error": {"message": "(#190) This method must be called with a Page Access Token", "type": "OAuthException", "code": 190}},
+  "GET /{page_id}/leadgen_forms, system user without the Page asset": {"error": {"message": "(#10) User has insufficient privileges on the page.", "type": "OAuthException", "code": 10}}
+}
