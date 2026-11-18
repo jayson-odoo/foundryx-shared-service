@@ -446,6 +446,8 @@ class DocFeedService:
             # backfilled from an older (later) floor accepts ONE run from the
             # new, earlier floor; a second one from the same day is refused.
             # No completed live row on record (legacy stamp) = refuse, as before.
+            # (Days before the floor already 422 above, so in practice this
+            # branch is reached only by a live start ON the floor day.)
             done_from = self.backfills.earliest_completed_live_from_day(tenant_id, row.id)
             if done_from is None or from_day_value >= done_from:
                 raise DocFeedConflictError(

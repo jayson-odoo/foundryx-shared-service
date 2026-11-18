@@ -159,9 +159,13 @@ retried; batches <= 1000; dry run never advances cursors or ledgers.
   Stop is cooperative at the next day boundary (status `stopped`); Resume continues at `nextDay`;
   a worker crash (orphaned job) leaves the backfill `stopped` and resumable; Discard closes a
   stopped backfill.
-- **AC-14-62** `[BE]` Given a completed live backfill whose `fromDay` <= 2023-01-01, When another
-  live backfill starting <= 2023-01-01 is requested, Then 409 `BACKFILL_ALREADY_DONE`. A live
-  backfill starting later, and any dry-run backfill, is allowed.
+- **AC-14-62** `[BE]` Given a completed live backfill whose `fromDay` <= the floor, When another
+  live backfill starting <= the floor is requested, Then 409 `BACKFILL_ALREADY_DONE`. A live
+  backfill starting later, and any dry-run backfill, is allowed. **Amended by SLOW-MOVING-BACKFILL
+  (18/11/2026):** the floor is 2019-01-01, and the 409 applies only when the requested `fromDay`
+  is not earlier than the earliest `fromDay` a completed live (non-dry-run, non-discarded)
+  backfill of that feed ran from, so a feed done from the old 2023 floor accepts exactly one run
+  from 2019.
 - **AC-14-63** `[BE]` Only one open (running, stopping or stopped) backfill per feed (409
   `BACKFILL_OPEN`); a live backfill needs the feed in `push` (422 `mode`); `branches` has no
   backfill (422); `toDay` after today or `fromDay` after `toDay` is 422.

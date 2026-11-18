@@ -38,7 +38,7 @@ Scope rules (each violation is a flat `422 INVALID_REQUEST` naming the field):
 - `docNo` alone: the range defaults to the **31 MYT days ending today** (today and the 30
   days before it); the vendor has no by-DocNo door, so the number is a filter over that range.
 - `fromDay <= toDay`; the range is at most **31 days** inclusive (the feed's own catch-up cap);
-  `toDay` <= MYT today; `fromDay` >= `2023-01-01` (the feed's backfill floor).
+  `toDay` <= MYT today; `fromDay` >= `2019-01-01` (the feed's backfill floor, `BACKFILL_FROM_DEFAULT`; 2023-01-01 until SLOW-MOVING-BACKFILL, 18/11/2026).
 - `docNo` with a range: the range is read and only records whose `DocNo` matches are kept.
   No match = a `ready` snapshot with `recordCount: 0` (never an error).
 - `fromDay` / `toDay` / `docNo` are ignored (and must be absent, else 422 `INVALID_REQUEST`)

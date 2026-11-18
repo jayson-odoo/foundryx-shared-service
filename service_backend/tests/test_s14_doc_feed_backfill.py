@@ -1225,3 +1225,24 @@ def test_s03_the_feed_view_carries_the_floor_and_the_completed_from_day(session_
     view = DocFeedService(db).view(co.tenant_id, co.id)
     item = next(i for i in view.feeds if i.feed == "delivery_orders")
     assert item.fullBackfillFromDay == date(2023, 1, 1)
+
+
+def test_s03_the_guard_query_is_tenant_scoped(session_factory):
+    """A row carrying another tenant's id (even on the same feed id) never
+    counts as this feed's completed run."""
+    from modules.autocount.repositories.doc_feed_repository import DocFeedBackfillRepository
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+    planted = _backfill(
+        db, do_feed, from_day=date(2019, 1, 1), to_day=date(2026, 9, 29), status="done",
+    )
+    planted.tenant_id = "another-tenant"
+    db.commit()
+
+    repo = DocFeedBackfillRepository(db)
+    assert repo.earliest_completed_live_from_day(co.tenant_id, do_feed.id) == date(2023, 1, 1)
+    assert repo.earliest_completed_live_from_day("another-tenant", do_feed.id) == date(2019, 1, 1)
+    assert _start_from_floor(db, co) is not None
