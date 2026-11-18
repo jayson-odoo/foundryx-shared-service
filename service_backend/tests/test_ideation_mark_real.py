@@ -163,7 +163,7 @@ def test_mark_real_needs_triage_permission(setup):
     s = setup
     iid = _idea(s, 812)
     _set(s, iid, is_test=True)
-    _make_user(s["factory"], "viewer-mr@example.com", "Viewer1234!", ["ideation.ideas.read"])
+    _make_user(s["factory"], "viewer-mr@example.com", "Viewer1234!", ["ideation.ideas.view"])
     h = _auth(s["client"], email="viewer-mr@example.com", password="Viewer1234!")
     assert _mark(s, iid, h).status_code == 403
     assert _row(s, iid)["is_test"] is True
