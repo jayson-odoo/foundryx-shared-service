@@ -13,11 +13,15 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { useCan } from '@/hooks/use-can';
+import { KeyRound, PlugZap, PowerOff, RotateCcw } from 'lucide-react';
 import { CHANNEL_TYPES, channelCapabilities } from '@/lib/channel-capabilities';
 import type { FilterFieldDef } from '@/types/resource';
 import type { Channel } from '@/types/omnichannel';
 import { CHANNEL_STATUS_REGISTRY, CHANNEL_TYPE_LABELS, CHANNEL_TYPE_REGISTRY } from './channel-status';
 import { useChannelActions } from './use-channel-actions';
+import { FxChannelCard } from './fx-channel-card';
 import { channelFormPath } from './paths';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -52,16 +56,23 @@ export interface UseChannelsListConfigOptions {
   onConnect: () => void;
   /** Triggered by a row's Replace token action - the page owns the dialog. */
   onReplaceToken: (channel: Channel) => void;
+  /** Foundryx UIUX switch only: called after a Disconnect, Delete or other
+   *  grace-window action commits (the page refreshes its service cards). */
+  onFxChanged?: () => void;
 }
 
 export function useChannelsListConfig({
   onConnect,
   onReplaceToken,
+  onFxChanged,
 }: UseChannelsListConfigOptions): ResourceListConfig<Channel> {
   const { formatDate } = useDatetime();
   const actions = useChannelActions({ onReplaceToken });
+  const fx = useFx();
+  const { can } = useCan();
+  const canManage = can('channels.manage');
 
-  return useMemo<ResourceListConfig<Channel>>(() => {
+  const config = useMemo<ResourceListConfig<Channel>>(() => {
     const columns: ColumnDef<Channel>[] = [
       {
         id: 'select',
@@ -204,4 +215,42 @@ export function useChannelsListConfig({
       onCreate: onConnect,
     };
   }, [actions, onConnect, formatDate]);
+
+  // Foundryx UIUX switch only (gap audit 12, "Connected services"): each
+  // channel is a card (logo, account, status chip, when last checked,
+  // Reconnect when it needs attention); Connect sits on the page's service
+  // cards instead of the list. The same fetcher, filters, actions and export.
+  return useMemo<ResourceListConfig<Channel>>(
+    () =>
+      fx
+        ? {
+            ...config,
+            cardRender: (c: Channel) => (
+              <FxChannelCard channel={c} canReconnect={canManage} onReconnect={onReplaceToken} />
+            ),
+            defaultView: 'card',
+            onCreate: undefined,
+            createLabel: undefined,
+            createPermission: undefined,
+            onDeferredCommitted: onFxChanged ? () => onFxChanged() : undefined,
+            fx: {
+              noun: 'channels',
+              copyable: ['displayPhoneNumber'],
+              phoneHidden: ['channelType', 'created'],
+              columnKind: { status: 'status' },
+              iconFor: FX_ICONS_FOR,
+            },
+          }
+        : config,
+    [fx, config, canManage, onReplaceToken, onFxChanged],
+  );
 }
+
+const FX_ICONS_FOR = {
+  edit: 'edit',
+  'test-connection': <PlugZap aria-hidden="true" className="size-[18px]" />,
+  'replace-token': <KeyRound aria-hidden="true" className="size-[18px]" />,
+  disconnect: <PowerOff aria-hidden="true" className="size-[18px]" />,
+  restore: <RotateCcw aria-hidden="true" className="size-[18px]" />,
+  delete: 'trash',
+} as const;

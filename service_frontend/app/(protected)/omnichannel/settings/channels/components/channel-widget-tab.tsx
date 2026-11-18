@@ -8,6 +8,7 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -25,6 +26,15 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { CopyField } from '@/app/(protected)/omnichannel/settings/embed/copy-field';
 import { SnippetCard } from '@/app/(protected)/omnichannel/settings/embed/snippet-card';
 import { useWebchatConfig } from '@/hooks/use-webchat-config';
+import { useFx } from '@/hooks/use-fx';
+import { FxConfirmDialog } from '@/components/fx/actions/confirm-dialog';
+import { FxSecretOnce } from '@/components/fx/fields';
+import {
+  FX_DIALOG_CLASS,
+  FX_DIALOG_TITLE_CLASS,
+  FxDialogFooter,
+  FxHideMainWhile,
+} from '@/components/platform/channel-connect-wizard/fx-dialog-parts';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import type { WebchatConfig } from '@/types/omnichannel';
 import type { ChannelDetailValues } from './channel-schema';
@@ -76,6 +86,9 @@ export function ChannelWidgetTab({ form, editing, channelId, webchatConfig }: Ch
   const { rotateSecret } = useWebchatConfig(channelId, false);
   const [rotating, setRotating] = useState(false);
   const [rotatedSecret, setRotatedSecret] = useState<string | null>(null);
+  // Foundryx UIUX switch only (gap audit 11 "Rotate"): asks first.
+  const fx = useFx();
+  const [confirmRotate, setConfirmRotate] = useState(false);
 
   const runRotate = async () => {
     setRotating(true);
@@ -316,7 +329,7 @@ export function ChannelWidgetTab({ form, editing, channelId, webchatConfig }: Ch
             </span>
           </div>
           <ActionMenu
-            actions={rotateSecretAction(() => void runRotate())}
+            actions={rotateSecretAction(fx ? () => setConfirmRotate(true) : () => void runRotate())}
             rows={[{ id: channelId }]}
             runtime={{ reload: () => undefined }}
             surface="form"
@@ -324,6 +337,32 @@ export function ChannelWidgetTab({ form, editing, channelId, webchatConfig }: Ch
         </CardContent>
       </Card>
 
+      {fx ? (
+        <>
+          <FxConfirmDialog
+            open={confirmRotate}
+            title="Rotate the widget secret?"
+            line="Identity assertions signed with the old secret will fail."
+            keepLabel="Keep secret"
+            actionLabel="Rotate secret"
+            destructive
+            onKeep={() => setConfirmRotate(false)}
+            onConfirm={() => {
+              setConfirmRotate(false);
+              void runRotate();
+            }}
+          />
+          <Dialog open={!!rotatedSecret} onOpenChange={(o) => !o && setRotatedSecret(null)}>
+            <FxHideMainWhile open={!!rotatedSecret} />
+            <DialogContent className={FX_DIALOG_CLASS}>
+              <DialogTitle className={FX_DIALOG_TITLE_CLASS}>New widget secret</DialogTitle>
+              <DialogDescription className="sr-only">New widget secret</DialogDescription>
+              {rotatedSecret && <FxSecretOnce value={rotatedSecret} label="Widget secret" />}
+              <FxDialogFooter action={{ label: 'Done', onClick: () => setRotatedSecret(null), disabled: rotating }} />
+            </DialogContent>
+          </Dialog>
+        </>
+      ) : (
       <Dialog open={!!rotatedSecret} onOpenChange={(o) => !o && setRotatedSecret(null)}>
         <DialogContent>
           <DialogHeader>
@@ -342,6 +381,7 @@ export function ChannelWidgetTab({ form, editing, channelId, webchatConfig }: Ch
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
     </div>
   );
 }
