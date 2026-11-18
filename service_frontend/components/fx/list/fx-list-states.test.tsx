@@ -358,6 +358,45 @@ describe('phone cards', () => {
     expect(nav.push).toHaveBeenCalledWith(expect.stringContaining('/records/r2'));
   });
 
+  it('sizes the table columns when a list first shown as cards widens past the phone breakpoint', async () => {
+    let narrow = true;
+    const listeners = new Set<() => void>();
+    window.matchMedia = ((query: string) => ({
+      get matches() {
+        return narrow && query.includes('max-width: 719px');
+      },
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: (_type: string, cb: () => void) => listeners.add(cb),
+      removeEventListener: (_type: string, cb: () => void) => listeners.delete(cb),
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    const { container } = setup();
+    await waitFor(() => expect(container.querySelector('[data-fx-phone-cards]')).not.toBeNull());
+
+    narrow = false;
+    act(() => listeners.forEach((cb) => cb()));
+    await waitFor(() => expect(container.querySelector('table')).not.toBeNull());
+    // Every column has a measured width, not the browser's equal split.
+    await waitFor(() => {
+      const cols = Array.from(container.querySelectorAll('table colgroup col'));
+      expect(cols.length).toBeGreaterThan(0);
+      for (const col of cols) expect(col.getAttribute('style') ?? '').toMatch(/width:/);
+    });
+  });
+
+  it('freezes the header row under the page header wherever the shell puts it', async () => {
+    const { container } = setup();
+    await waitFor(() => expect(within(scroller(container)).getByText('Charlie Ng')).toBeInTheDocument());
+    const head = container.querySelector('[data-fx-list-head]') as HTMLElement;
+    // `--fx-head-top` follows the top bar merging into the page header.
+    expect(head.className).toContain(
+      'top-[calc(var(--fx-head-top,calc(var(--header-height,0px)+var(--shell-top-offset,0px)))+var(--fx-page-head-h,0px))]',
+    );
+  });
+
   it('card layout: top line, status, then the rest or the page card lines (pure)', () => {
     const opts = {
       primaryId: 'name',
