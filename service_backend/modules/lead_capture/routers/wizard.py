@@ -129,6 +129,15 @@ def facebook_login(
     return schemas.FacebookPageList(data=[schemas.FacebookPage(**p) for p in pages])
 
 
+@router.post("/wizard/google/source", response_model=schemas.GuidedSourceCreated, status_code=201)
+def google_source(principal: WizardPrincipal = Depends(get_wizard), db: Session = Depends(get_db)) -> schemas.GuidedSourceCreated:
+    try:
+        row, url, key = sessions.wizard_google_source(db, principal)
+    except sessions.SessionError as exc:
+        raise _api(exc)
+    return schemas.GuidedSourceCreated(source=read_service.source_item(row), url=url, key=key)
+
+
 @router.get("/wizard/facebook/pages", response_model=schemas.FacebookPageList)
 def facebook_pages(principal: WizardPrincipal = Depends(get_wizard)) -> schemas.FacebookPageList:
     try:

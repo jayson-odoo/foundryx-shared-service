@@ -638,7 +638,7 @@ def test_last_test_lead_read_is_scoped_and_moves_on_a_new_test_lead(client, lc):
     client.post(f"{base}/facebook/login", json={"code": "dev"}, headers=wiz)
     sid = client.post(f"{base}/facebook/connect", json={"pageId": DEV_PAGE}, headers=wiz).json()["id"]
     before = client.get(f"{base}/sources/{sid}/test-lead", headers=wiz)
-    assert before.status_code == 200 and before.json() == {"leadId": None, "receivedAt": None}
+    assert before.status_code == 200 and before.json() == {"leadId": None, "receivedAt": None, "formId": None}
     form_id = client.get(f"{base}/sources/{sid}/forms", headers=wiz).json()["data"][0]["id"]
     client.post(f"{base}/sources/{sid}/test-lead", json={"formId": form_id}, headers=wiz)
     after = client.get(f"{base}/sources/{sid}/test-lead", headers=wiz).json()

@@ -497,7 +497,8 @@ the hosted wizard is the reference UI).
 
 4. The wizard runs on its own scoped token (30 minutes; it can do the wizard's steps for this session's source and
    nothing else; every other route answers 401). It shows your tenant's name and logo (Shared Service > Settings >
-   Branding), never the platform's. Steps: Channel (Facebook) -> Sign in -> Page -> Forms -> Fields -> Test -> Done.
+   Branding), never the platform's. Steps: Channel (Facebook) -> Sign in -> Page -> Forms -> Fields -> Test -> Done;
+   Channel (Google Ads) -> Copy (URL + key) -> Test -> Fields -> Done (section 8).
 5. When the person finishes or closes it, the wizard posts ONE message to `window.opener` with `targetOrigin` =
    your `returnOrigin` (never `*`), then closes:
 
@@ -512,7 +513,7 @@ the hosted wizard is the reference UI).
 
 | Step | Call |
 |---|---|
-| Channel | `GET /channels` -> `{"data": [{"key": "facebook", "label": "Facebook", "setup": "automatic"}]}`; only channels set up on this server are listed |
+| Channel | `GET /channels` -> `{"data": [{"key": "facebook", "label": "Facebook", "setup": "automatic"}, {"key": "google", "label": "Google Ads", "setup": "guided"}]}`; Facebook is listed only when it is set up on this server; Google Ads (guided, section 8) always |
 | Sign in | `GET /facebook/login-config` -> `{"available", "simulated", "appId", "configId", "graphVersion", "scopes"}`. Open Facebook Login for Business with `appId` + `configId` (`response_type=code`, your registered redirect URI). Then `POST /facebook/login {"code", "redirectUri"}` -> `{"loginId", "pages": [{"id", "name"}], "expiresAt"}`. The Facebook token stays on the server; `loginId` is opaque, works for 30 minutes, for this key only. `simulated: true` = no Meta app on this server (development): any non-empty `code` works and two sample Pages come back |
 | Page | Pick from `pages` (one Page = choose it for the person). `GET /facebook/logins/{loginId}/pages` lists them again |
 | Connect | `POST /sources/facebook {"pageId", "loginId", "formsMode": "all"}` -> `201 Source` (`WAITING_FOR_TEST`). `409 PAGE_IN_USE`: the Page belongs to another product |
@@ -535,6 +536,7 @@ Error screens your wizard should have (the hosted one's wording, plain words onl
 The hosted page calls `/public/lead-capture/*` with its scoped token; you never call these with a key:
 `POST /connect/redeem {"token": "<secret>"}` (once; `410 SESSION_EXPIRED` after), `GET /wizard/context`,
 `POST /wizard/facebook/login`, `GET /wizard/facebook/pages`, `POST /wizard/facebook/connect {"pageId"}`,
+`POST /wizard/google/source` (`201 {"source", "url", "key"}`; again in the same session = same source, new key),
 `GET /wizard/sources/{id}`, `GET|PUT /wizard/sources/{id}/forms`, `GET /wizard/fields`,
 `GET /wizard/sources/{id}/forms/{formId}/questions`, `PUT /wizard/sources/{id}/field-map`,
 `POST /wizard/sources/{id}/test-lead`, `GET /wizard/sources/{id}/test-lead` (newest test lead: the Test step passes on a NEW one), `POST /wizard/finish`.
@@ -558,6 +560,9 @@ https://developers.google.com/google-ads/webhook/docs/implementation).
    its `column_name` when Google sends none.
 5. `POST /sources/{id}/rotate-key` gives a new key; the old one is refused from that moment and the `url` stays.
    Your customer pastes the new key into Google Ads. History shows `key_rotated`.
+6. The Fields step for a Google form: `GET /sources/{id}/forms/{formId}/questions` lists the columns of the newest
+   lead Google sent for that form, with Google's labels (`[]` until the first lead). The `formId` comes from the
+   lead (`GET /leads` or the push).
 
 A Google lead's `pageId` is `null`; `formId` is Google's form id; `attribution` holds `formId`, `campaignId`,
 `adgroupId`, `creativeId` and `gclid` (each `null` when Google sends none). Google re-sending the same `lead_id`

@@ -317,6 +317,7 @@ class WizardConnect(BaseModel):
 class WizardTestLead(ApiModel):
     leadId: Optional[str] = None
     receivedAt: Optional[datetime] = None
+    formId: Optional[str] = None
 
 
 class WizardDone(ApiModel):
