@@ -284,6 +284,7 @@ export function useTracesListConfig(): ResourceListConfig<AiTrace> {
       fx: {
         noun: 'traces',
         phoneHidden: ['tokens', 'error'],
+        columnKind: { status: 'status' },
         cardLines: [['agentName'], ['model', 'latencyMs'], ['created']],
         iconFor: { flag: <Flag aria-hidden="true" className="size-[18px]" /> },
       },

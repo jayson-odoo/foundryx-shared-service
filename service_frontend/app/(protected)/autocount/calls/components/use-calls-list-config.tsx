@@ -262,9 +262,10 @@ export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}):
       fx: {
         noun: 'calls',
         copyable: ['path', 'docNo', 'requestId'],
-        // The document type is left off phone cards so the outcome takes the
-        // card's status place (the first status column wins it).
+        // The outcome is the card's status; the document type stays off
+        // phone cards.
         phoneHidden: ['book', 'method', 'docType', 'responseStatus', 'durationMs', 'requestId', 'errorCode'],
+        columnKind: { outcome: 'status' },
         cardLines: [['path'], ['docNo'], ['companyName'], ['actingUserName']],
       },
     };

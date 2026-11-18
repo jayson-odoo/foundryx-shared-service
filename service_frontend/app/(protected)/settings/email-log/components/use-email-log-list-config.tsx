@@ -154,6 +154,7 @@ export function useEmailLogListConfig(): ResourceListConfig<EmailLogListItem> {
         noun: 'emails',
         copyable: ['templateKey'],
         phoneHidden: ['attempts', 'sentAt'],
+        columnKind: { status: 'status' },
         cardLines: [['subject'], ['toEmail'], ['templateKey', 'createdAt']],
         iconFor: EMAIL_LOG_FX_ICONS,
       },
