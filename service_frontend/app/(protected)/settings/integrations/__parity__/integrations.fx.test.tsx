@@ -276,6 +276,9 @@ describe('the new look', () => {
     const bad = document.querySelector('[data-fx-connection-card="con-2"]') as HTMLElement;
     expect(within(bad).getByText('Needs attention')).toBeInTheDocument();
     expect(within(bad).getByText('The access key was refused.')).toBeInTheDocument();
+    // The tenant's own connections come before the catalog.
+    const services = screen.getByRole('region', { name: 'Connect a service' });
+    expect(bad.compareDocumentPosition(services) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const good = document.querySelector('[data-fx-connection-card="con-1"]') as HTMLElement;
     expect(within(good).getByText('Connected')).toBeInTheDocument();
     expect(within(good).queryByRole('button', { name: /Reconnect/ })).toBeNull();
@@ -296,6 +299,8 @@ describe('the new look', () => {
     fireEvent.click(screen.getByRole('button', { name: /Send test email/ }));
     await settle();
     expect(screen.getByRole('alert')).toHaveTextContent('The server refused the password.');
+    // A failed plain test whose reason is already the record's last error says it once.
+    answers.connection = connection({ status: 'ERROR', lastError: 'The server refused the password.' });
     expect(calls.filter((c) => String(c[0]).startsWith('toast.'))).toEqual([]);
   });
 

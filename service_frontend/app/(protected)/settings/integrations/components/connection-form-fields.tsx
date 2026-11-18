@@ -370,7 +370,10 @@ function FxHealthCard({ connection, provider, canManage, onChanged }: HealthCard
         <FormRow label="Status">
           <div className="flex flex-col gap-1">
             <FxConnectionChip status={connection.status} className="w-fit" />
-            <FxTestResultLine result={plain} />
+            {/* Its reason already sits in Last error below; never twice. */}
+            {!(plain && plain !== 'testing' && !plain.ok && plain.message === connection.lastError) && (
+              <FxTestResultLine result={plain} />
+            )}
           </div>
         </FormRow>
         <FormRow label="Last tested">

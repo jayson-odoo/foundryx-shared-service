@@ -68,7 +68,8 @@ export function FxConnectionCard({
           {connection.lastTestedAt ? `Last tested ${formatRelative(connection.lastTestedAt)}` : 'Never tested'}
         </span>
       </div>
-      {needsAttention && connection.lastError && (
+      {/* A fresh test result says it better; never the same reason twice. */}
+      {needsAttention && connection.lastError && !result && (
         <p className="text-sm text-(--fx-warn-ink) [overflow-wrap:anywhere]">{connection.lastError}</p>
       )}
       <FxTestResultLine result={result} />

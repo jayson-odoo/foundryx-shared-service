@@ -2,8 +2,8 @@
 
 /**
  * The integrations page with the Foundryx UIUX switch on (gap audit 12,
- * "Connected services"): a card per service in the catalog with its own
- * Connect, then the connections as cards (the list's search, filters, export
+ * "Connected services"): the connections as cards, then a card per service
+ * in the catalog with its own Connect (the list's search, filters, export
  * and actions unchanged). Connect opens the same new connection form a
  * module's settings page deep-links to, with the provider already picked;
  * every request is the legacy page's.
@@ -65,6 +65,9 @@ export function FxIntegrationsPage() {
     <Container width="fluid">
       <div className="flex flex-col gap-4">
         <PageHeader />
+        {/* The tenant's own connections first; the catalog (15+ services)
+            would otherwise push them below the fold, worst on phones. */}
+        <ResourceList config={config} hideHeader restoreFromCtx />
         <FxIntegrationServices
           providers={providers}
           counts={counts}
@@ -72,7 +75,6 @@ export function FxIntegrationsPage() {
           canConnect={can('integrations.manage')}
           onConnect={(p) => router.push(`${connectionNewPath}?provider=${encodeURIComponent(p.provider)}`)}
         />
-        <ResourceList config={config} hideHeader restoreFromCtx />
       </div>
     </Container>
   );

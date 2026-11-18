@@ -64,6 +64,7 @@ export const FX_TYPE_LABELS: Record<string, string> = {
   calendar: 'Calendar',
   meeting_bot: 'Meeting bot',
   migration: 'Migration',
+  scm: 'Source control',
 };
 
 export interface UseConnectionsListConfigOptions {
