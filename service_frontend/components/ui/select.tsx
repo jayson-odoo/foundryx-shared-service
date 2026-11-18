@@ -6,6 +6,8 @@ import { cn } from '@/lib/utils';
 import { cva, VariantProps } from 'class-variance-authority';
 import { Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { Select as SelectPrimitive } from 'radix-ui';
+import { useFx } from '@/hooks/use-fx';
+import { FxSelectContent, FxSelectItem, FxSelectTrigger } from '@/components/fx/fields/fx-select';
 
 // Create a Context for `indicatorPosition` and `indicator` control
 const SelectContext = React.createContext<{
@@ -74,7 +76,12 @@ export interface SelectTriggerProps
   extends React.ComponentProps<typeof SelectPrimitive.Trigger>,
     VariantProps<typeof selectTriggerVariants> {}
 
-function SelectTrigger({ className, children, size, ...props }: SelectTriggerProps) {
+// Foundryx UIUX switch: the playbook look while on; today's while off.
+function SelectTrigger(props: SelectTriggerProps) {
+  return useFx() ? <FxSelectTrigger {...props} /> : <SelectTriggerLegacy {...props} />;
+}
+
+function SelectTriggerLegacy({ className, children, size, ...props }: SelectTriggerProps) {
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
@@ -116,7 +123,12 @@ function SelectScrollDownButton({
   );
 }
 
-function SelectContent({
+// Foundryx UIUX switch: the playbook look while on; today's while off.
+function SelectContent(props: React.ComponentProps<typeof SelectPrimitive.Content>) {
+  return useFx() ? <FxSelectContent {...props} /> : <SelectContentLegacy {...props} />;
+}
+
+function SelectContentLegacy({
   className,
   children,
   position = 'popper',
@@ -181,7 +193,12 @@ function SelectLabel({ className, ...props }: React.ComponentProps<typeof Select
   );
 }
 
-function SelectItem({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Item>) {
+// Foundryx UIUX switch: the playbook look while on; today's while off.
+function SelectItem(props: React.ComponentProps<typeof SelectPrimitive.Item>) {
+  return useFx() ? <FxSelectItem {...props} /> : <SelectItemLegacy {...props} />;
+}
+
+function SelectItemLegacy({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Item>) {
   const { indicatorPosition, indicatorVisibility, indicator } = React.useContext(SelectContext);
 
   return (

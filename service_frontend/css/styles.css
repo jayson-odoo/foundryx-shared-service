@@ -374,6 +374,30 @@
   }
 }
 
+/* Foundryx UIUX fields (slice F4). Never browser up/down arrows on a number
+   field (playbook "Fields"); the fx field also lets go of focus when the
+   wheel turns over it, so scrolling never changes a value. */
+:root[data-fx='on'] input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+:root[data-fx='on'] input[type='number']::-webkit-inner-spin-button,
+:root[data-fx='on'] input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* A segmented toggle's thumb slides from its old option to the new one
+   (playbook "Toggles", 0.4 s). Placed without motion the first time, so it
+   never grows from the left edge. The curve lives here because components
+   name only the ease-out curve. */
+:root[data-fx='on'] [data-fx-thumb-animate] {
+  transition:
+    translate var(--fx-t-toggle) var(--fx-ease-in-out),
+    width var(--fx-t-toggle) var(--fx-ease-in-out);
+}
+
 /* Attention pulse (playbook "Blocked red action"): the element a blocked
    action waits for swells to x1.08 and settles, with a soft red glow behind
    it shaped like the element, over 1.8 s. Set by pulseFxTarget()
