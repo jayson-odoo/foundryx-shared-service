@@ -635,6 +635,17 @@ class LifecycleMoveRequest(ApiModel):
 
 
 # ── Conversations (plan 05) ──────────────────────────────────────────────────
+class MessageSenderItem(ApiModel):
+    """Who sent a message (payload version 2 `MessageItem.sender`).
+    `type`: CUSTOMER | AGENT | SYSTEM | API | WORKFLOW | BROADCAST."""
+
+    type: str
+    externalId: Optional[str] = None
+    displayName: Optional[str] = None
+    avatarUrl: Optional[str] = None
+    userId: Optional[str] = None
+
+
 class ReplyRefItem(ApiModel):
     id: str
     body: Optional[str] = None
@@ -651,7 +662,7 @@ class MessagePricingItem(ApiModel):
     type: Optional[str] = None
 
 
-class MessageItem(ApiModel):
+class MessageItem(VersionedPayload, ApiModel):
     id: str
     contactId: str
     channelId: Optional[str] = None
@@ -695,6 +706,9 @@ class MessageItem(ApiModel):
     pricing: Optional[MessagePricingItem] = None
     replyTo: Optional[ReplyRefItem] = None
     createdAt: datetime
+    # Payload version 2 and up only (services/payload_version.py GATED_KEYS).
+    # `senderName` / `senderAvatarUrl` / `senderType` above are unchanged.
+    sender: Optional[MessageSenderItem] = None
 
 
 class ChannelWindowItem(ApiModel):
@@ -1487,6 +1501,58 @@ class PublicMediaBody(ApiModel):
     filename: Optional[str] = None
 
 
+_SENDER_EXTERNAL_ID = re.compile(r"[A-Za-z0-9._:@-]{1,128}")
+
+
+class PublicSenderAttribution(ApiModel):
+    """Who on the consumer's side wrote a public send (Track A S3). Stored on
+    the message only; the customer never sees it and the send stays an API
+    send (`senderId` stays `apikey:<id>`)."""
+
+    externalId: str
+    displayName: str
+    avatarUrl: Optional[str] = None
+
+    @field_validator("externalId")
+    @classmethod
+    def _external_id(cls, v: str) -> str:
+        if not _SENDER_EXTERNAL_ID.fullmatch(v):
+            raise ValueError("externalId must be 1-128 characters of A-Z a-z 0-9 . _ : @ -")
+        return v
+
+    @field_validator("displayName")
+    @classmethod
+    def _display_name(cls, v: str) -> str:
+        v = v.strip()
+        if not 1 <= len(v) <= 120:
+            raise ValueError("displayName must be 1-120 characters after trimming")
+        return v
+
+    @field_validator("avatarUrl")
+    @classmethod
+    def _avatar_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(v)
+        if (
+            len(v) > 2048
+            or parts.scheme != "https"
+            or not parts.netloc
+            or any(ch.isspace() for ch in v)
+        ):
+            raise ValueError("avatarUrl must be an https URL of at most 2048 characters")
+        return v
+
+    def stored(self) -> Dict[str, str]:
+        """The `metadata_json["senderAttribution"]` value."""
+        out = {"externalId": self.externalId, "displayName": self.displayName}
+        if self.avatarUrl:
+            out["avatarUrl"] = self.avatarUrl
+        return out
+
+
 class PublicReactionBody(ApiModel):
     messageId: str  # OUR durable message id (never a raw wamid - AC-12-21)
     emoji: str = ""  # empty removes
@@ -1514,6 +1580,9 @@ class PublicSendRequest(ApiModel):
     reaction: Optional[PublicReactionBody] = None
     # Quote one of OUR durable message ids (plan 38 gap 4).
     replyToMessageId: Optional[str] = None
+    # Optional consumer-side author of this send (Track A S3); stored on the
+    # message, returned as `sender` at payload version 2. Not used on a reaction.
+    sender: Optional[PublicSenderAttribution] = None
 
 
 class PublicSendResponse(ApiModel):

@@ -33,6 +33,7 @@ from ..schemas import (
     PublicCommentRequest,
     PublicContactUpdateRequest,
     PublicSendRequest,
+    PublicSenderAttribution,
     PublicSendResponse,
     BusinessHoursUpdate,
     PublicBusinessHoursResponse,
@@ -217,6 +218,17 @@ async def send_message(
         reply_to = payload_obj.get("replyToMessageId")
         if reply_to is not None and not isinstance(reply_to, str):
             raise ApiError(422, "invalid_request", "replyToMessageId must be a string.")
+        sender = None
+        if payload_obj.get("sender") is not None:
+            try:
+                sender = PublicSenderAttribution.model_validate(payload_obj["sender"])
+            except ValidationError as exc:
+                if version != payload_version.V1:
+                    errors = exc.errors(include_url=False, include_context=False)
+                    for e in errors:
+                        e["loc"] = ("payload", "sender", *e.get("loc", ()))
+                    raise RequestValidationError(errors) from None
+                # Version 1: a malformed `sender` is ignored, as before it existed.
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
@@ -237,6 +249,7 @@ async def send_message(
             channel_id=channel_id,
             reply_to_message_id=reply_to,
             version=version,
+            sender=sender,
         )
     else:
         try:
@@ -247,8 +260,20 @@ async def send_message(
             raise RequestValidationError(
                 [{"type": "dict_type", "loc": ("body",), "msg": "Input should be an object", "input": None}]
             )
+        v1_sender = None
+        if version == payload_version.V1 and "sender" in body:
+            # Version 1 callers never get a new 422 from `sender`: a malformed
+            # one is dropped (the send goes through as it did before the key
+            # existed); a well-formed one is kept as attribution.
+            try:
+                v1_sender = PublicSenderAttribution.model_validate(body["sender"])
+            except ValidationError:
+                v1_sender = None
+            body = {k: v for k, v in body.items() if k != "sender"}
         try:
             payload = PublicSendRequest(**body)
+            if v1_sender is not None:
+                payload.sender = v1_sender
         except ValidationError as exc:
             errors = exc.errors(include_url=False, include_context=False)
             if any(tuple(e.get("loc", ())[:2]) == ("media", "url") for e in errors):
@@ -463,12 +488,14 @@ def get_contact_message(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Get one message on a contact's thread (full fidelity, any type).
     `MessageItem` by default; `RioMessageItem` with `?format=rio`."""
-    return PublicGatewayService(db).get_contact_message(
+    item = PublicGatewayService(db).get_contact_message(
         api_ws.tenant_id, api_ws.workspace_id, identifier, message_id, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 # ── Conversation lifecycle ───────────────────────────────────────────────────
@@ -517,10 +544,12 @@ def add_comment(
     payload: PublicCommentRequest,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> MessageItem:
-    return PublicGatewayService(db).add_comment(
+    item = PublicGatewayService(db).add_comment(
         api_ws.tenant_id, api_ws.workspace_id, identifier, payload.body
     )
+    return versioned(item, version, status_code=status.HTTP_201_CREATED)
 
 
 # ── Mark a contact read (resets unread; WhatsApp read receipts) ──────────────

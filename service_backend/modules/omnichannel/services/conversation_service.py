@@ -21,6 +21,7 @@ from ..schemas import (
     ContactLifecycleSummary,
     ContactTagRefItem,
     MessageItem,
+    MessageSenderItem,
     ReplyRefItem,
     ThreadDetailItem,
     ThreadItem,
@@ -114,6 +115,37 @@ def _window_items(identities, now: datetime) -> List[ChannelWindowItem]:
             )
         )
     return items
+
+
+def _message_sender(m: ConversationMessage, meta: dict, agent, user_name: Optional[str]) -> MessageSenderItem:
+    """Payload version 2 `MessageItem.sender`. Same discrimination as
+    `MessageService._outbound_source` (broadcast marker, federated agent,
+    `apikey:` attribution, no sender = workflow); an API send shows the
+    consumer's own `senderAttribution` when it sent one."""
+    if m.sender_type == "CONTACT":
+        return MessageSenderItem(type="CUSTOMER")
+    if m.sender_type == "SYSTEM":
+        return MessageSenderItem(type="SYSTEM")
+    if meta.get("broadcast"):
+        return MessageSenderItem(type="BROADCAST")
+    if m.sender_external_agent_id:
+        return MessageSenderItem(
+            type="AGENT",
+            displayName=agent.name if agent is not None else None,
+            avatarUrl=agent.avatar_url if agent is not None else None,
+        )
+    if m.sender_id is None:
+        return MessageSenderItem(type="WORKFLOW")
+    if str(m.sender_id).startswith("apikey:"):
+        attribution = meta.get("senderAttribution")
+        attribution = attribution if isinstance(attribution, dict) else {}
+        return MessageSenderItem(
+            type="API",
+            externalId=attribution.get("externalId"),
+            displayName=attribution.get("displayName"),
+            avatarUrl=attribution.get("avatarUrl"),
+        )
+    return MessageSenderItem(type="AGENT", displayName=user_name, userId=m.sender_id)
 
 
 def contact_display_name(c: Contact) -> str:
@@ -434,6 +466,9 @@ class ConversationService:
                     pricing=sanitise_stored_pricing(pricing),
                     replyTo=ReplyRefItem(**reply) if reply else None,
                     createdAt=m.created_at,
+                    sender=_message_sender(
+                        m, meta, agent, names.get(m.sender_id) if m.sender_id else None
+                    ),
                 )
             )
         return items
