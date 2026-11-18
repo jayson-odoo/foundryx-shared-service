@@ -19,7 +19,8 @@
 # Lead Capture and mints a gateway key listing SS_FRONTEND, so the wizard runs
 # exactly as a partner's "Connect" button opens it. The key and tokens live in
 # this process's environment only (never on a command line, never on disk) and
-# the key is revoked at the end. Output is staged and only replaces the
+# the key is revoked at the end. The capture tenant itself stays in the local
+# database as residue (local only, its key revoked, its Page released). Output is staged and only replaces the
 # committed files when every step and the 5 MB video gate passed.
 set -euo pipefail
 
