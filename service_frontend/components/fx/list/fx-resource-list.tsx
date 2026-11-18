@@ -427,7 +427,9 @@ export function FxResourceList<T extends object>({
   useEffect(() => {
     const head = document.querySelector<HTMLElement>('[data-fx-header]');
     if (!head || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => setPageHeadH(Math.ceil(head.getBoundingClientRect().height)));
+    // Rounded down: the header row tucks a fraction of a pixel under the page
+    // header rather than leaving a hairline gap the rows show through.
+    const ro = new ResizeObserver(() => setPageHeadH(Math.floor(head.getBoundingClientRect().height)));
     ro.observe(head);
     return () => ro.disconnect();
   }, []);
