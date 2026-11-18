@@ -131,3 +131,8 @@ revoke/remove through the core grace-window engine.
   onClick, then skips its navigation because the event is already default-prevented, so the URL never loses `ctx`
   whatever the route timing. Links to other pages, modified clicks, new tabs and downloads are untouched.
 
+## Round 11 (crew-pass 03f97ef6 NOT READY)
+- The same-page click guard compares the whole query, not just the path: a click counts as "the page you are on"
+  only when the link differs from the current URL by `ctx` alone. A link that drops or changes another parameter
+  (the sidebar "Leads" on L-C's `?source=<id>`) navigates as before.
+

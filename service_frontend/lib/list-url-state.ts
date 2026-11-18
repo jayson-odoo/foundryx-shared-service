@@ -44,9 +44,16 @@ export function liveListCtx(listKey: string | undefined): string | null {
  * onClick (e.g. closing the mobile sidebar), then skips its navigation because
  * the event is already default-prevented (`next/dist/client/app-dir/link.js`).
  * The URL never loses `ctx`, whatever the route timing. Only a plain left click
- * on a same-origin link to this exact path without its own `ctx` is affected.
+ * on a same-origin link to this exact URL apart from `ctx` is affected.
  * Returns the cleanup.
  */
+function queryWithoutCtx(search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete('ctx');
+  params.sort();
+  return params.toString();
+}
+
 export function keepListCtxOnSamePathClick(): () => void {
   if (typeof window === 'undefined') return () => {};
   const onClick = (event: MouseEvent) => {
@@ -57,6 +64,10 @@ export function keepListCtxOnSamePathClick(): () => void {
     const to = new URL(anchor.href, window.location.href);
     if (to.origin !== window.location.origin || to.pathname !== window.location.pathname) return;
     if (to.searchParams.has('ctx') || to.hash) return;
+    // Only the page you are on: the link differs from this URL by `ctx` alone.
+    // A link that drops or changes any other parameter (the sidebar "Leads" on
+    // `?source=<id>`) is a real navigation (crew pass 03f97ef6).
+    if (queryWithoutCtx(to.search) !== queryWithoutCtx(window.location.search)) return;
     event.preventDefault();
   };
   document.addEventListener('click', onClick, true);
