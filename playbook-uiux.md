@@ -110,6 +110,17 @@ Each is still with the owner; the build uses the default shown until answered.
 
 Also in place as build defaults, still open with the owner: the switch and theme are per browser (Q-SYNC); sign-in, public portal and embedded pages stay outside the switch (Q-SCOPE); fx CSS stays in the four sanctioned CSS files (Q-CSS); Advanced settings are per browser (Q-ADV).
 
+## Fields (slice F4)
+
+Built defaults for the field rules, each kept in one place so it is easy to change:
+
+- **Every dropdown is searchable**, whatever its size (SS's own rule; Q-DD default). The playbook's ~12-option threshold is not used.
+- **Moments** use a 12-hour clock while the switch is on: "14 Nov 2026, 2:14 pm"; dates read "14 Nov 2026"; recent ones in lists read "now", "5 min", "3 h", "Yesterday", then "14 Nov". `useDatetime()` switches by itself, so every page that already goes through it gets this. The zone line under a time picker reads "Kuala Lumpur time (GMT+8)".
+- **Day totals and quick picks** count in the report's own zone (the picker's `timeZone`), since SS has no organisation zone yet (Q-TZ default). The range quick picks are the playbook's (Today, This week, This month, Last month, This year) plus SS's Last 7 days and Last 30 days; weeks start on Monday.
+- **Money:** "RM" only when the currency is MYR; every other currency shows its ISO code, whatever the tenant default (Q-CUR default; `FX_HOME_CURRENCY` in `service_frontend/lib/money.ts`). `formatMoney` is unchanged; `formatMoneyFx` is the new formatter.
+- **Secret fields:** the show/hide eye is reachable by Tab and carries `aria-pressed` while the switch is on (today it is skipped by Tab).
+- **The bare `Select`** (a few screens) gets the playbook look only; it does not switch to the phone's own picker on touch, because its options are not known to the field.
+
 ## Final confirmation
 
 Final confirmation of the design, in words: not yet. Until then the switch stays off by default, and the original UI is not replaced.

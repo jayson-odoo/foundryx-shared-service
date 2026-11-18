@@ -16,6 +16,8 @@ import {
   TimeField as TimeFieldRa,
   TimeValue as TimeValueRa,
 } from 'react-aria-components';
+import { useFx } from '@/hooks/use-fx';
+import { FX_FIELD_BOX } from '@/components/fx/fields/classes';
 
 function DateField<T extends DateValueRa>({ className, children, ...props }: DateFieldProps<T>) {
   return (
@@ -73,7 +75,39 @@ interface DateInputProps extends DateInputPropsRa, VariantProps<typeof inputVari
   variant?: VariantProps<typeof inputVariants>['variant'];
 }
 
-function DateInput({ className, variant = 'md', ...props }: Omit<DateInputProps, 'children'>) {
+// Foundryx UIUX switch: the playbook field look while on; today's while off.
+function DateInput(props: Omit<DateInputProps, 'children'>) {
+  return useFx() ? <FxDateInput {...props} /> : <DateInputLegacy {...props} />;
+}
+
+const FX_DATE_INPUT_SIZE = {
+  sm: 'h-7 px-2.5 text-xs pointer-coarse:text-base',
+  md: 'h-8.5 px-3 text-[0.8125rem] pointer-coarse:text-base',
+  lg: 'h-10 px-4 text-sm pointer-coarse:text-base',
+} as const;
+
+/** The segmented date input with the fx field box (hover lift, one focus ring). */
+function FxDateInput({ className, variant = 'md', ...props }: Omit<DateInputProps, 'children'>) {
+  return (
+    <DateInputRa
+      data-slot="input"
+      data-fx-field=""
+      className={composeRenderProps(className, (className) =>
+        cn(
+          FX_FIELD_BOX,
+          FX_DATE_INPUT_SIZE[variant ?? 'md'],
+          'relative w-full overflow-hidden whitespace-nowrap tabular-nums data-focus-within:border-(--fx-link) data-focus-within:ring-[3px] data-focus-within:ring-(--fx-link)/20',
+          className,
+        ),
+      )}
+      {...props}
+    >
+      {(segment) => <DateSegment segment={segment} />}
+    </DateInputRa>
+  );
+}
+
+function DateInputLegacy({ className, variant = 'md', ...props }: Omit<DateInputProps, 'children'>) {
   return (
     <DateInputRa
       data-slot="input"

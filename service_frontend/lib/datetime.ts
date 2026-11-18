@@ -228,3 +228,154 @@ export function formatDmyDate(dayKey: string | null | undefined): string {
   const m = (dayKey ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[3]}/${m[2]}/${m[1]}` : '-';
 }
+
+/* ───────────── Foundryx UIUX switch: moments (playbook-uiux.md) ─────────────
+ * New functions only; everything above is untouched, so with the switch off
+ * no string changes. `useDatetime()` swaps to these while the switch is on.
+ * Playbook 0.71.0 "Date fields" plus the gap audit's "Times and time zones":
+ * dates read "14 Nov 2026", moments "14 Nov 2026, 2:14 pm" on a 12-hour
+ * clock, recent ones in lists read relative, long feeds get day lines.
+ */
+
+const FX_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+interface FxParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: string;
+}
+
+const fxPartsCache = new Map<string, Intl.DateTimeFormat>();
+
+/** The instant's wall-clock parts in `timeZone` (null/invalid = browser zone). */
+function fxParts(d: Date, timeZone?: string | null): FxParts {
+  const key = timeZone ?? '';
+  let formatter = fxPartsCache.get(key);
+  if (!formatter) {
+    const opts: Intl.DateTimeFormatOptions = {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    };
+    try {
+      formatter = new Intl.DateTimeFormat('en-GB', { ...opts, timeZone: timeZone ?? undefined });
+    } catch {
+      formatter = new Intl.DateTimeFormat('en-GB', opts);
+    }
+    fxPartsCache.set(key, formatter);
+  }
+  const parts = formatter.formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '0';
+  return {
+    year: Number(get('year')),
+    month: Number(get('month')),
+    day: Number(get('day')),
+    hour: Number(get('hour')) % 24,
+    minute: get('minute').padStart(2, '0'),
+  };
+}
+
+function fxDayText(p: Pick<FxParts, 'year' | 'month' | 'day'>, withYear = true): string {
+  const base = `${p.day} ${FX_MONTHS[p.month - 1]}`;
+  return withYear ? `${base} ${p.year}` : base;
+}
+
+function fxClock(p: FxParts): string {
+  const hour12 = p.hour % 12 === 0 ? 12 : p.hour % 12;
+  return `${hour12}:${p.minute} ${p.hour < 12 ? 'am' : 'pm'}`;
+}
+
+/** Whole days from calendar day `a` to `b` (both y/m/d), ignoring zones. */
+function fxDayDiff(a: Pick<FxParts, 'year' | 'month' | 'day'>, b: Pick<FxParts, 'year' | 'month' | 'day'>): number {
+  return Math.round((Date.UTC(b.year, b.month - 1, b.day) - Date.UTC(a.year, a.month - 1, a.day)) / 86_400_000);
+}
+
+export interface FxMomentOptions extends DatetimeFormatOptions {
+  /** The clock to compare against (tests pin it); default now. */
+  now?: Date;
+}
+
+/** "14 Nov 2026" from a calendar-day key ("2026-11-14"); a pure string rewrite. */
+export function formatFxDayKey(dayKey: string | null | undefined): string {
+  const m = (dayKey ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '-';
+  const month = Number(m[2]);
+  if (month < 1 || month > 12) return '-';
+  return fxDayText({ year: Number(m[1]), month, day: Number(m[3]) });
+}
+
+/** "14 Nov 2026" in the viewer's zone. */
+export function formatFxDate(iso: string | null | undefined, options?: DatetimeFormatOptions): string {
+  const d = parseUtc(iso);
+  return d ? fxDayText(fxParts(d, options?.timeZone)) : '-';
+}
+
+/** "2:14 pm" in the viewer's zone (12-hour clock). */
+export function formatFxTime(iso: string | null | undefined, options?: DatetimeFormatOptions): string {
+  const d = parseUtc(iso);
+  return d ? fxClock(fxParts(d, options?.timeZone)) : '-';
+}
+
+/** "14 Nov 2026, 2:14 pm" in the viewer's zone. */
+export function formatFxDateTime(iso: string | null | undefined, options?: DatetimeFormatOptions): string {
+  const d = parseUtc(iso);
+  if (!d) return '-';
+  const p = fxParts(d, options?.timeZone);
+  return `${fxDayText(p)}, ${fxClock(p)}`;
+}
+
+/**
+ * A recent moment in a list or feed: "now" (under a minute), "5 min", "3 h"
+ * (under a day), "Yesterday" (older, on the calendar day before today), then "14 Nov"
+ * ("14 Nov 2025" in another year). A future moment reads in full. Show the
+ * full form (`formatFxDateTime`) as its tooltip.
+ */
+export function formatFxRelative(iso: string | null | undefined, options?: FxMomentOptions): string {
+  const d = parseUtc(iso);
+  if (!d) return '-';
+  const now = options?.now ?? new Date();
+  const seconds = (now.getTime() - d.getTime()) / 1000;
+  if (seconds < -60) return formatFxDateTime(iso, options);
+  if (seconds < 60) return 'now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)} h`;
+  const p = fxParts(d, options?.timeZone);
+  const today = fxParts(now, options?.timeZone);
+  if (fxDayDiff(p, today) === 1) return 'Yesterday';
+  return fxDayText(p, p.year !== today.year);
+}
+
+/** The line between days in a long feed: "Today", "Yesterday", "14 Nov 2026". */
+export function formatFxDayLine(iso: string | null | undefined, options?: FxMomentOptions): string {
+  const d = parseUtc(iso);
+  if (!d) return '-';
+  const p = fxParts(d, options?.timeZone);
+  const diff = fxDayDiff(p, fxParts(options?.now ?? new Date(), options?.timeZone));
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return fxDayText(p);
+}
+
+/**
+ * The zone line under a time picker: "Kuala Lumpur time (GMT+8)". The place is
+ * the zone's own city; the offset is the one in force at `at` (default now).
+ */
+export function formatFxZoneLine(timeZone?: string | null, at: Date = new Date()): string {
+  const tz = timeZone || browserTimeZone();
+  let offset = 'GMT';
+  try {
+    const part = new Intl.DateTimeFormat('en-GB', { timeZone: tz, timeZoneName: 'shortOffset' })
+      .formatToParts(at)
+      .find((p) => p.type === 'timeZoneName')?.value;
+    if (part) offset = part.replace(/^UTC/, 'GMT').replace(/^GMT[+-]0$/, 'GMT');
+  } catch {
+    return `${tz} time`;
+  }
+  const city = tz === 'UTC' || tz === 'Etc/UTC' ? 'UTC' : (tz.split('/').pop() ?? tz).replace(/_/g, ' ');
+  return `${city} time (${offset})`;
+}

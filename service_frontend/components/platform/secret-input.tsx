@@ -4,6 +4,8 @@ import { forwardRef, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useFx } from '@/hooks/use-fx';
+import { FxSecretInput } from '@/components/fx/fields/fx-secret';
 
 export type SecretInputProps = Omit<React.ComponentProps<typeof Input>, 'type'>;
 
@@ -14,6 +16,13 @@ export type SecretInputProps = Omit<React.ComponentProps<typeof Input>, 'type'>;
  */
 export const SecretInput = forwardRef<HTMLInputElement, SecretInputProps>(
   function SecretInput(props, ref) {
+    // Foundryx UIUX switch: the playbook password field while on; today's while off.
+    return useFx() ? <FxSecretInput ref={ref} {...props} /> : <SecretInputLegacy ref={ref} {...props} />;
+  },
+);
+
+const SecretInputLegacy = forwardRef<HTMLInputElement, SecretInputProps>(
+  function SecretInputLegacy(props, ref) {
     const [revealed, setRevealed] = useState(false);
     return (
       <div className="relative">
