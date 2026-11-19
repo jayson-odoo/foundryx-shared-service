@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from modules.autocount.models import (
@@ -392,13 +392,25 @@ class OperationRepository:
             AcWriteOperation.doc_type == "PO",
             AcWriteOperation.doc_key == doc_key,
             AcWriteOperation.status.in_((OUTCOME_PENDING, "needs_attention")),
-            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
+            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link", "link_doc_batch")),
         )
-        if dtl_key is not None:
-            query = query.filter(AcWriteOperation.dtl_key == dtl_key)
+        if dtl_key is not None:  # a document batch (plan 69) covers several rows: its snapshot says which
+            query = query.filter(or_(AcWriteOperation.dtl_key == dtl_key, AcWriteOperation.op == "link_doc_batch"))
         if exclude_id is not None:
             query = query.filter(AcWriteOperation.id != exclude_id)
         return query.all()
+
+    def link_results_on_doc(self, tenant_id: str, company_id: str, doc_key: int) -> List[AcWriteOperation]:
+        """Plan 69: the batch link operations on one PO that linked something (``done`` / ``needs_attention``):
+        their stored answers say which PO row each new linked row came from."""
+        return self.db.query(AcWriteOperation).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.doc_type == "PO",
+            AcWriteOperation.doc_key == doc_key,
+            AcWriteOperation.status.in_(("done", "needs_attention")),
+            AcWriteOperation.op.in_(("link_batch", "link_doc_batch")),
+        ).all()
 
     def claim(self, tenant_id: str, company_id: str, operation_id: str, from_statuses: "tuple[str, ...]") -> bool:
         """Conditional update to ``in_progress``: True only for the one caller whose

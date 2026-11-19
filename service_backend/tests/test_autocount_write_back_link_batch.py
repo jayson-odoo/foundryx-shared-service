@@ -214,7 +214,7 @@ REFUSALS = [
     ("one_above_outstanding", _outstanding, {}, "ALL_LINKS_SKIPPED"),
     ("duplicate_so_dtl_key", lambda h, r: ([(7005, r.s5[0], 1), (7005, r.s5[0], 1)], {}), {}, None),
     ("empty_links", lambda h, r: ([], {}), {}, None),
-    ("more_than_20_links", lambda h, r: ([(7005, 100000 + i, 1) for i in range(21)], {}), {}, None),
+    ("21_unknown_so_rows", lambda h, r: ([(7005, 100000 + i, 1) for i in range(21)], {}), {}, "ALL_LINKS_SKIPPED"),  # plan 69: no size cap
     ("qty_zero", lambda h, r: ([(7005, r.s5[0], 0)], {}), {}, "ALL_LINKS_SKIPPED"),
     ("qty_negative", lambda h, r: ([(7005, r.s5[0], -1)], {}), {}, "ALL_LINKS_SKIPPED"),
 ]
