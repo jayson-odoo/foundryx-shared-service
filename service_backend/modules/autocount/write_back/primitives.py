@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from sqlalchemy.exc import IntegrityError
 
@@ -145,6 +145,8 @@ class _Call:
     stage: bool = True
     doc_no: Optional[str] = None
     merge_key: Optional[int] = None  # unlink_merge: the free row that takes the quantity
+    # plan 69 D1: batch_link over several rows of ONE document: ((row DtlKey, [new rows]), ...)
+    groups: Optional[Sequence[Tuple[int, Sequence[Dict[str, Any]]]]] = None
     # SS-AUTOCOUNT-SPEEDUP: the document as the previous step of the SAME operation just read
     # it back (no vendor call since). It stands in for the fresh GET; None = read it.
     fresh_doc: Optional[Dict[str, Any]] = None
@@ -218,6 +220,13 @@ def is_business_refusal(status: int, body: Any) -> bool:
             message = "" if body.get("Message") == _GENERIC else str(body.get("Message") or "")
         return bool(message.strip())
     return isinstance(body, str) and 400 <= status < 500 and bool(body.strip())
+
+
+def _groups_of(call: "_Call") -> List[Tuple[int, Sequence[Dict[str, Any]]]]:
+    """The rows a batch link changes: ``groups`` (plan 69), else the one row and its lines (plan 62)."""
+    if call.groups is not None:
+        return [(int(k), v) for k, v in call.groups]
+    return [(int(call.dtl_key or 0), call.lines or [])]
 
 
 def _unchanged(before: Doc, after: Doc) -> bool:
@@ -321,12 +330,15 @@ class PrimitiveService(WriteFrame):
         lines: Sequence[Dict[str, Any]], doc_date: Optional[date] = None,
         expected_last_modified: Optional[str] = None, key_id: Optional[str] = None,
         operation_id: Optional[str] = None, step: Optional[str] = None, stage: bool = True,
+        groups: Optional[Sequence[Tuple[int, Sequence[Dict[str, Any]]]]] = None,
     ) -> PrimitiveResult:
         """Plan 62 D3: ONE PUT ``[row dtl_key "D" or cut to the rest, one new linked row per
-        line]``; done = every new row read back with its link and quantity."""
+        line]``; done = every new row read back with its link and quantity. Plan 69 D1: ``groups``
+        = several rows of the same document in the same ONE PUT (``dtl_key`` / ``lines`` = the first)."""
         call = _Call(BATCH_LINK, kind, tenant_id, doc_key=doc_key, dtl_key=dtl_key, key_id=key_id,
                      operation_id=operation_id, step=step, doc_date=doc_date,
-                     expected_last_modified=expected_last_modified, lines=lines, stage=stage)
+                     expected_last_modified=expected_last_modified, lines=lines, stage=stage,
+                     groups=None if groups is None else [(int(k), list(v)) for k, v in groups])
         return self._run(call, company_id)
 
     def unlink_merge(
@@ -634,7 +646,9 @@ class PrimitiveService(WriteFrame):
     def _build(call: _Call, doc: Doc) -> VendorRequest:
         if call.operation_id is None:  # plan 66: only an operation's link step may carry the note
             call = replace(call, line=_no_note(call.line),
-                           lines=None if call.lines is None else [_no_note(x) for x in call.lines])
+                           lines=None if call.lines is None else [_no_note(x) for x in call.lines],
+                           groups=None if call.groups is None else [(k, [_no_note(x) for x in v])
+                                                                    for k, v in call.groups])
         if call.primitive == EDIT:
             return payloads.build_edit(call.kind, doc, call.header_changes, call.line_changes,
                                        restore=call.restore)
@@ -645,7 +659,7 @@ class PrimitiveService(WriteFrame):
         if call.primitive == REPLACE_LINE:
             return payloads.build_row_replace(call.kind, doc, {"DtlKey": call.dtl_key}, call.line or {})
         if call.primitive == BATCH_LINK:
-            return payloads.build_link_batch(call.kind, doc, int(call.dtl_key or 0), call.lines or [])
+            return payloads.build_link_doc(call.kind, doc, _groups_of(call))
         if call.primitive == UNLINK_MERGE:
             return payloads.build_unlink_merge(call.kind, doc, int(call.dtl_key or 0), int(call.merge_key or 0))
         if call.primitive == CANCEL:
@@ -910,7 +924,7 @@ class PrimitiveService(WriteFrame):
             ok = v.outcome == payloads.DONE
             return (None if ok else v.code), "", [], (added[0] if ok and added else None)
         if call.primitive == BATCH_LINK:
-            v = payloads.verify_link_batch(call.kind, before, int(call.dtl_key or 0), call.lines or [], after)
+            v = payloads.verify_link_doc(call.kind, before, _groups_of(call), after)
             return (v.code if v.outcome == payloads.MISMATCH else None), "", [], None
         if call.primitive == UNLINK_MERGE:
             v = payloads.verify_unlink_merge(
