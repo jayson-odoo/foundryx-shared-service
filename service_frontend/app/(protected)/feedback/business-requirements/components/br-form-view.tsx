@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { LoaderCircleIcon } from 'lucide-react';
+import { useFx } from '@/hooks/use-fx';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { ResourceForm } from '@/components/platform/resource-form';
@@ -28,13 +29,15 @@ export function BrFormView({ brId, initialEditing, initialTab }: BrFormViewProps
   // Send to build: the header CTA / issue chip + reason line ride the shell's
   // `primaryAction` / `actionsNote`; the confirm dialog renders beside the form.
   const build = useBrBuild(br, { onChanged: onBrChanged });
+  const fx = useFx();
   const config = useMemo(
     () =>
       baseConfig
         ? {
             ...baseConfig,
             primaryAction: build.primaryAction,
-            actionsNote: build.actionsNote,
+            // The reason it cannot be sent shows once, on the red action itself.
+            actionsNote: fx ? undefined : build.actionsNote,
             // Foundryx UIUX switch only: Send to build is the red action when
             // it is offered, else Edit / Save.
             fx: {
@@ -43,7 +46,7 @@ export function BrFormView({ brId, initialEditing, initialTab }: BrFormViewProps
             },
           }
         : null,
-    [baseConfig, build.primaryAction, build.actionsNote],
+    [baseConfig, build.primaryAction, build.actionsNote, fx],
   );
 
   if (isLoading) {
