@@ -22,6 +22,7 @@ product tag. No product-specific code. Keys never logged.
 """
 import hashlib
 import hmac
+import math
 import logging
 import secrets
 import uuid
@@ -72,8 +73,17 @@ def _not_set_up() -> PortalError:
     return PortalError(503, "not_set_up", "Phone check is not set up for this product yet.")
 
 
+def _too_many(retry_after_seconds: int) -> PortalError:
+    """Same words as the CRM sign-in: the wait in whole minutes."""
+    minutes = max(1, math.ceil(retry_after_seconds / 60))
+    unit = "minute" if minutes == 1 else "minutes"
+    return PortalError(
+        429, "too_many_attempts", f"Too many tries. Try again in {minutes} {unit}.", retry_after_seconds
+    )
+
+
 def _throttled(exc: Throttled) -> PortalError:
-    return PortalError(429, "too_many_attempts", "Too many attempts. Try again later.", exc.retry_after_seconds)
+    return _too_many(exc.retry_after_seconds)
 
 
 def product_target(db: Session, tenant_id: str, product_id: Optional[str]) -> Optional[Tuple[str, str]]:
@@ -164,8 +174,16 @@ def _phone_key(tenant_id: str, digits: str) -> str:
     return f"{tenant_id}:{digits}"
 
 
-def _wrong_code() -> PortalError:
-    return PortalError(400, "wrong_code", "That code is not right. Check WhatsApp and try again.")
+def _wrong_code(tries_left: int) -> PortalError:
+    """Same words as the CRM sign-in: how many tries this code has left."""
+    if tries_left <= 0:
+        return PortalError(400, "wrong_code", "That code is not right.")
+    unit = "try" if tries_left == 1 else "tries"
+    return PortalError(400, "wrong_code", f"That code is not right. {tries_left} {unit} left.")
+
+
+def _code_expired() -> PortalError:
+    return PortalError(400, "code_expired", "That code has expired. Send a new one.")
 
 
 def _call(target: Tuple[str, str], path: str, body: Dict[str, Any]) -> httpx.Response:
@@ -214,7 +232,7 @@ class PhoneStep:
         if res.status_code == 404:
             raise self._not_registered()
         if res.status_code == 429:
-            raise PortalError(429, "too_many_attempts", "Too many attempts. Try again later.", 900)
+            raise _too_many(900)
         if res.status_code == 403:
             raise _not_set_up()
 
@@ -297,6 +315,7 @@ class PhoneStep:
         # Claim one try atomically (``attempts < MAX`` in the UPDATE itself):
         # concurrent guesses can never exceed the cap, whatever the interleave.
         claimed = 0
+        used_before = row.attempts if row is not None else 0
         if row is not None:
             claimed = (
                 self.db.query(IdeaPhoneCode)
@@ -309,14 +328,14 @@ class PhoneStep:
             )
             self.db.commit()
         if not claimed:
-            raise PortalError(400, "code_expired", "This code has expired. Send a new code.")
+            raise _code_expired()
         if not (code.isdigit() and hmac.compare_digest(row.code_hash, _hash(row.id, code))):
             # The try that used up the last attempt ends the code.
             self.db.query(IdeaPhoneCode).filter(
                 IdeaPhoneCode.id == row.id, IdeaPhoneCode.attempts >= CODE_MAX_ATTEMPTS
             ).update({IdeaPhoneCode.used_at: _now()}, synchronize_session=False)
             self.db.commit()
-            raise _wrong_code()
+            raise _wrong_code(CODE_MAX_ATTEMPTS - (used_before + 1))
         # Single use, atomically: only the first correct request wins.
         won = (
             self.db.query(IdeaPhoneCode)
@@ -325,7 +344,7 @@ class PhoneStep:
         )
         if not won:
             self.db.commit()
-            raise PortalError(400, "code_expired", "This code has expired. Send a new code.")
+            raise _code_expired()
         contact = self._contact_for(digits, row.contact_name)
         return self._session(contact)
 

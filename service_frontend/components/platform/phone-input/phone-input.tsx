@@ -128,7 +128,13 @@ function parseRaw(raw: string, country: CountryCode): FieldState {
   const international = trimmed.startsWith('+') || digits.startsWith('00');
   if (digits.startsWith('00')) digits = digits.slice(2);
   const calling = getCountryCallingCode(country);
-  const ownPrefix = !international && digits.startsWith(calling) && isValidE164(`+${digits}`);
+  // Digits led by the own calling code read as international only when they
+  // are not also a valid national number (CRM sign-in rule).
+  const ownPrefix =
+    !international &&
+    digits.startsWith(calling) &&
+    isValidE164(`+${digits}`) &&
+    !isValidE164(toE164(country, trunkPrefix(country) === '0' ? digits.replace(/^0+/, '') : digits));
   if (international || ownPrefix) {
     const typer = new AsYouType();
     typer.input(`+${digits}`);

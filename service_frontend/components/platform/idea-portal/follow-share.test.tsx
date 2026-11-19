@@ -321,11 +321,11 @@ describe('the read-only share view', () => {
   it('a wrong code shows the server text verbatim, clears the code and refocuses', async () => {
     mockPage();
     svc.share.verifyCode.mockRejectedValue(
-      new ApiError('That code is not right. Check WhatsApp and try again.', 400, null, null),
+      new ApiError('That code is not right. 4 tries left.', 400, null, null),
     );
     const code = await reachCodeStep();
     await userEvent.type(code, '111111');
-    expect(await screen.findByRole('alert')).toHaveTextContent('That code is not right. Check WhatsApp and try again.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('That code is not right. 4 tries left.');
     await waitFor(() => expect(code).toHaveValue(''));
     expect(code).toHaveFocus();
     await userEvent.type(code, '2');

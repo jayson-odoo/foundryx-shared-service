@@ -933,6 +933,6 @@ def test_throttled_phone_step_names_the_minutes_like_the_crm(setup, product, mon
     assert _send(s, token, "+60123450002").status_code == 200
     res = _send(s, token, "+60123450002")
     assert res.status_code == 429
-    msg = res.json()["error"]["message"]
-    assert msg.startswith("Too many tries. Try again in ") and msg.endswith(" minutes.")
-    assert res.json()["error"]["code"] == "too_many_attempts"
+    # 429 wire unchanged: {detail} + Retry-After; only the words follow the CRM.
+    minutes = -(-int(res.headers["Retry-After"]) // 60)
+    assert res.json()["detail"] == f"Too many tries. Try again in {minutes} minute{'' if minutes == 1 else 's'}."
