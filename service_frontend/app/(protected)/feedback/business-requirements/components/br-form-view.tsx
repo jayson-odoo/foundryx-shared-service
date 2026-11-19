@@ -31,7 +31,17 @@ export function BrFormView({ brId, initialEditing, initialTab }: BrFormViewProps
   const config = useMemo(
     () =>
       baseConfig
-        ? { ...baseConfig, primaryAction: build.primaryAction, actionsNote: build.actionsNote }
+        ? {
+            ...baseConfig,
+            primaryAction: build.primaryAction,
+            actionsNote: build.actionsNote,
+            // Foundryx UIUX switch only: Send to build is the red action when
+            // it is offered, else Edit / Save.
+            fx: {
+              ...baseConfig.fx,
+              mainActionId: build.primaryAction?.id ?? 'save',
+            },
+          }
         : null,
     [baseConfig, build.primaryAction, build.actionsNote],
   );

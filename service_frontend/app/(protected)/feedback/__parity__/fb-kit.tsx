@@ -113,6 +113,44 @@ export const BR: BusinessRequirement = {
   updatedAt: T0,
 };
 
+export const BR_DETAIL = {
+  ...BR,
+  answers: { problem: 'Slow exports' },
+  templateDoc: {
+    schemaVersion: 1,
+    pages: [
+      {
+        id: 'p1',
+        sections: [
+          {
+            id: 's1',
+            fields: [
+              { id: 'f1', type: 'text', key: 'problem', label: 'Problem statement', placeholder: 'Describe the problem' },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  build: {
+    canSend: false,
+    sendEdgeAvailable: false,
+    fieldsDone: 1,
+    fieldsTotal: 1,
+    blockers: [],
+    repo: null,
+    issueUrl: null,
+    issueNumber: null,
+    state: 'none',
+    sentAt: null,
+    sentBy: null,
+    stage: null,
+    prUrl: null,
+    handtestUrl: null,
+    events: [],
+  },
+};
+
 export const CONNECTION_ROW = {
   connection_id: 'sorento-feedback',
   tenant_id: 't-1',
@@ -144,6 +182,9 @@ function read(path: string): unknown {
   if (p.endsWith('/comments')) return [COMMENT];
   if (p === '/ideation/embed-connections') return [CONNECTION_ROW];
   if (p === '/ideation/business-requirements') return [BR];
+  if (p === '/ideation/business-requirements/br-1') return BR_DETAIL;
+  if (p === '/ideation/business-requirements/status-graph')
+    return { entityType: 'ideation_business_requirement', source: 'tenant', statuses: [], transitions: [] };
   if (p === '/ideation/business-requirements/template-status') return { active: true };
   return null;
 }
@@ -158,6 +199,7 @@ function answer(method: string, path: string, body: unknown): unknown {
   if (path.endsWith('/comments') && method === 'POST') return { ...COMMENT, id: 'c-new', body: b.body };
   if (path.includes('/comments/') && method === 'PATCH') return { ...COMMENT, body: b.body };
   if (path === '/ideation/ideas/reorder') return IDEAS;
+  if (path === '/ideation/business-requirements/br-1' && method === 'PATCH') return { ...BR_DETAIL, ...b };
   if (path === '/ideation/business-requirements' && method === 'POST') return { ...BR, id: 'br-new', ...b };
   if (path === '/ideation/embed-connections' && method === 'POST')
     return { ...CONNECTION_ROW, connection_id: b.connection_id };

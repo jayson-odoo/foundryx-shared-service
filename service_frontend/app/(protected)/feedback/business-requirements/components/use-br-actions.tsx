@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { ApiError } from '@/lib/api-client';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import type { StatusGraph } from '@/types/status-engine';
@@ -58,6 +59,8 @@ export function useBrActions(
 ): ResourceAction<BusinessRequirementDetail>[] {
   const { onChanged, onFieldErrors } = handlers;
   const [graph, setGraph] = useState<StatusGraph | null>(null);
+  // Foundryx UIUX switch only: the done toast. Requests are the same in both looks.
+  const fx = useFx();
 
   // The BR entity's edge graph drives the buttons. Fail quiet - Delete stays.
   useEffect(() => {
@@ -103,7 +106,14 @@ export function useBrActions(
           try {
             const updated = await businessRequirementService.setStatus(br.id, targetKey);
             onChanged(updated);
-            toast.success(`Moved to ${target?.label ?? targetKey}.`);
+            if (fx) {
+              toast.fxDone({
+                what: `${updated.title || 'Requirement'} moved to ${target?.label ?? targetKey}`,
+                byWhom: 'you',
+              });
+            } else {
+              toast.success(`Moved to ${target?.label ?? targetKey}.`);
+            }
             rt.reload();
           } catch (e) {
             if (e instanceof ApiError && e.status === 422 && is422Detail(e.detail)) {
@@ -117,5 +127,5 @@ export function useBrActions(
         },
       } satisfies ResourceAction<BusinessRequirementDetail>;
     });
-  }, [graph, br, onChanged, onFieldErrors]);
+  }, [graph, br, onChanged, onFieldErrors, fx]);
 }
