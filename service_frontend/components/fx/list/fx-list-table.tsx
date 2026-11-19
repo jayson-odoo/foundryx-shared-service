@@ -361,11 +361,14 @@ export function FxListTable({
         </div>
       </DndContext>
 
+      {/* The rows are one layer under the frozen header row: nothing inside
+          a row (a badge, a cell's own layer, a row fading in) can paint over
+          the header row while it scrolls under it. */}
       <div
         ref={bodyRef}
         data-slot="data-grid-scroller"
         onScroll={view === 'table' ? syncHead : undefined}
-        className={cn(view === 'table' && 'overflow-x-auto overscroll-x-contain')}
+        className={cn('relative z-0', view === 'table' && 'overflow-x-auto overscroll-x-contain')}
       >
         <table
           className={cn(
@@ -444,6 +447,7 @@ function FxHeaderCell<TData>({
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
         'group/fxh relative h-10 px-3 text-start align-middle font-normal text-(--fx-ink-2)',
+        header.column.columnDef.meta?.fxAlign === 'end' && 'text-end',
         draggable && 'touch-none',
         'data-[dragging=true]:z-(--fx-z-pop) data-[dragging=true]:bg-(--fx-surface) data-[dragging=true]:shadow-[0_6px_18px_var(--fx-shade)]',
         header.column.columnDef.meta?.headerClassName,
@@ -575,6 +579,7 @@ function FxBodyRow<TData>({
               key={cell.id}
               className={cn(
                 'relative break-words px-3 align-middle',
+                cell.column.columnDef.meta?.fxAlign === 'end' && 'text-end tabular-nums',
                 infoCells.length ? 'pt-3 pb-1' : 'py-3',
                 cell.column.columnDef.meta?.cellClassName,
               )}

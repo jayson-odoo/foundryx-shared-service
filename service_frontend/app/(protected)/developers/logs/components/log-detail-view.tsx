@@ -12,9 +12,13 @@ import { Label } from '@/components/ui/label';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import { ResourceForm, type ResourceFormConfig } from '@/components/platform/resource-form';
+import { FormRow } from '@/components/platform/resource-form/form-row';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { FxHoldToCopy } from '@/components/fx/copy/hold-to-copy';
+import { FxDetailRow } from '@/components/fx/pages/w3-logs/fx-log-parts';
 import { useWorkspaceName } from '@/hooks/use-workspace-name';
 import { useIntegrationLogNav } from '@/hooks/use-integration-log-nav';
 import { integrationLogService } from '@/services/integration-log-service';
@@ -61,10 +65,93 @@ function JsonBlock({ value }: { value: Record<string, unknown> | null }) {
   );
 }
 
+/**
+ * The Overview tab with the Foundryx UIUX switch on: the same facts as plain
+ * text (a view-only page), Hold to Copy on identifiers and the time only.
+ * The error text stays as it is and never copies.
+ */
+function FxLogOverview({
+  log,
+  workspaceName,
+  onTrace,
+}: {
+  log: IntegrationLogDetail;
+  workspaceName: string | null | undefined;
+  onTrace: () => void;
+}) {
+  const { formatDateTime } = useDatetime();
+  return (
+    <div className="flex flex-col py-2">
+      <FormRow label="Source">
+        <StatusBadge status={log.source} registry={LOG_SOURCE_REGISTRY} size="sm" />
+      </FormRow>
+      <FxDetailRow label="Operation" copy>
+        {log.operation}
+      </FxDetailRow>
+      <FormRow label="Status">
+        <div className="flex items-center gap-2">
+          <StatusBadge status={log.status} registry={LOG_STATUS_REGISTRY} size="sm" />
+          {log.statusCode != null && (
+            <span className="text-xs text-(--fx-ink-3) tabular-nums">{log.statusCode}</span>
+          )}
+        </div>
+      </FormRow>
+      <FxDetailRow label="Latency">{log.latencyMs != null ? `${log.latencyMs} ms` : '-'}</FxDetailRow>
+      <FormRow label="Workspace">
+        {log.workspaceId ? (
+          <Link href={workspaceFormPath(log.workspaceId)} className="text-(--fx-link) hover:underline">
+            {workspaceName ?? log.workspaceId}
+          </Link>
+        ) : (
+          <span>-</span>
+        )}
+      </FormRow>
+      <FxDetailRow label="API key" copy={Boolean(log.apiKeyId)}>
+        {log.apiKeyId ?? '-'}
+      </FxDetailRow>
+      <FormRow label="Trace id">
+        {log.traceId ? (
+          <FxHoldToCopy text={log.traceId}>
+            <TraceLink label={log.traceId} onClick={onTrace} />
+          </FxHoldToCopy>
+        ) : (
+          <span>-</span>
+        )}
+      </FormRow>
+      <FxDetailRow label="External ref" copy={Boolean(log.externalRef)}>
+        {log.externalRef ?? '-'}
+      </FxDetailRow>
+      <FxDetailRow label="Time" copy>
+        {formatDateTime(log.createdAt)}
+      </FxDetailRow>
+      {log.status === 'error' && log.errorCode && (
+        <FormRow label="Error code">
+          <FxHoldToCopy>
+            <span data-testid="log-error-code" className="text-destructive">
+              {log.errorCode}
+            </span>
+          </FxHoldToCopy>
+        </FormRow>
+      )}
+      {log.errorMessage && (
+        <FormRow label="Error">
+          <pre
+            data-testid="log-error"
+            className="text-destructive bg-destructive/5 whitespace-pre-wrap rounded-md px-3 py-2 font-mono text-xs"
+          >
+            <ClampedText text={log.errorMessage} lines={4} />
+          </pre>
+        </FormRow>
+      )}
+    </div>
+  );
+}
+
 export function LogDetailView({ logId }: { logId: string }) {
   const [log, setLog] = useState<IntegrationLogDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const { formatDateTime } = useDatetime();
+  const fx = useFx();
   const router = useRouter();
   const form = useForm({ mode: 'onTouched' });
 
@@ -115,7 +202,10 @@ export function LogDetailView({ logId }: { logId: string }) {
           id: 'overview',
           label: 'Overview',
           icon: Info,
-          render: () => (
+          render: () =>
+            fx ? (
+              <FxLogOverview log={log} workspaceName={workspaceName} onTrace={goToTrace} />
+            ) : (
             <div className="flex flex-col gap-4 py-2">
               <OverviewRow label="Source">
                 <StatusBadge status={log.source} registry={LOG_SOURCE_REGISTRY} size="sm" />
@@ -174,7 +264,7 @@ export function LogDetailView({ logId }: { logId: string }) {
                 </OverviewRow>
               )}
             </div>
-          ),
+            ),
         },
         {
           id: 'trace',
@@ -224,7 +314,7 @@ export function LogDetailView({ logId }: { logId: string }) {
       onSave: () => true,
       onCancel: () => undefined,
     };
-  }, [log, formatDateTime, forcedTab, goToTrace, workspaceName, nav, router]);
+  }, [log, formatDateTime, forcedTab, goToTrace, workspaceName, nav, router, fx]);
 
   if (isLoading) {
     return (

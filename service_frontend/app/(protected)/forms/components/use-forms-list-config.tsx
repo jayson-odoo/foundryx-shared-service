@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { CloudOff, CloudUpload, RotateCcw } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
@@ -224,6 +225,20 @@ export function useFormsListConfig(): ResourceListConfig<FormRow> {
         { id: 'updatedAt', label: 'Updated' },
       ],
       actions,
+      // Foundryx UIUX switch only (ignored while off).
+      fx: {
+        noun: plural.toLowerCase(),
+        iconFor: {
+          edit: 'edit',
+          publish: <CloudUpload aria-hidden="true" className="size-[18px]" />,
+          unpublish: <CloudOff aria-hidden="true" className="size-[18px]" />,
+          archive: 'trash',
+          restore: <RotateCcw aria-hidden="true" className="size-[18px]" />,
+          delete: 'delete',
+        },
+        columnKind: { published: 'status' },
+        phoneHidden: ['updatedAt', 'window'],
+      },
     };
   }, [actions, router, formatDateTime, singular, plural]);
 }

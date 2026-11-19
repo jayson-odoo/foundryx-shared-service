@@ -27,6 +27,7 @@ import {
 import { buildListNav, encodeListQuery } from '@/lib/list-context';
 import { cn } from '@/lib/utils';
 import { useCan } from '@/hooks/use-can';
+import { useDatetime } from '@/hooks/use-datetime';
 import { useFx } from '@/hooks/use-fx';
 import { useResourceList } from '@/hooks/use-resource-list';
 import { useViewPreferences } from '@/hooks/use-view-preferences';
@@ -154,6 +155,8 @@ function ResourceListLegacy<T extends object>({
   const router = useRouter();
   const { can } = useCan();
   const { openImport } = useImportActivity();
+  // Day filters on moments go out as the user's own local days.
+  const { timeZone } = useDatetime();
   const list = useResourceList<T>({
     fetcher: config.fetcher,
     defaultSort: config.defaultSort,
@@ -161,6 +164,8 @@ function ResourceListLegacy<T extends object>({
       ? (config.defaultSegment ?? config.segments[0]?.id)
       : undefined,
     restoreFromCtx: restoreFromCtx ?? !hideHeader,
+    filterFields: config.filterFields,
+    timeZone,
   });
   const prefs = useViewPreferences(config.viewKey);
   // Right-click (long-press on touch) on a row opens that row's actions at
@@ -456,7 +461,7 @@ function ResourceListLegacy<T extends object>({
   async function handleExport(columnIds: string[]) {
     if (!config.exporter) return;
     const csv = await config.exporter(
-      list.query,
+      list.serverQuery,
       columnIds,
       selectedIds.length ? selectedIds : undefined,
     );

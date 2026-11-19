@@ -15,6 +15,7 @@ import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { MultiSelectProps } from '@/components/platform/multi-select/multi-select';
 import { FX_FIELD, FX_MENU, FX_MENU_ROW } from './classes';
+import { FxFieldContext, useFxControlName } from './fx-field-context';
 import { FX_MENU_COMMAND } from './fx-search-select';
 import {
   FX_MENU_LIMIT,
@@ -37,9 +38,12 @@ export function FxMultiSelect({
   className,
   disabled = false,
   onQueryChange,
+  ariaLabel,
+  id,
 }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const naming = useFxControlName({ id, ariaLabel, placeholder });
   const sendQuery = usePausedQuery(onQueryChange);
   useEffect(() => {
     if (!open) setQuery('');
@@ -60,6 +64,10 @@ export function FxMultiSelect({
         <button
           type="button"
           role="combobox"
+          // Named by `ariaLabel`, else the labelled FxField around it, else
+          // a `<Label htmlFor>` pointing at `id`; only last by what it asks
+          // for (FX-19, fx-field-context.ts).
+          {...naming}
           aria-expanded={open}
           disabled={disabled}
           data-fx-field=""
@@ -105,6 +113,7 @@ export function FxMultiSelect({
         className={cn(FX_MENU, 'w-auto min-w-(--radix-popover-trigger-width) max-w-[min(32rem,calc(100vw-2rem))] p-0')}
         align="start"
       >
+        <FxFieldContext.Provider value={null}>
         <Command shouldFilter={false} className={FX_MENU_COMMAND}>
           <CommandInput
             placeholder={searchPlaceholder}
@@ -161,6 +170,7 @@ export function FxMultiSelect({
             )}
           </CommandList>
         </Command>
+        </FxFieldContext.Provider>
       </PopoverContent>
     </Popover>
   );

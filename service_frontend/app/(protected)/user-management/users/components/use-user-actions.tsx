@@ -8,6 +8,7 @@ import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { userService } from '@/services/user-service';
 import { useImpersonation } from '@/hooks/use-impersonation';
+import { useFx } from '@/hooks/use-fx';
 import type { User } from '@/types/user';
 import { userFormHref } from './paths';
 
@@ -21,9 +22,13 @@ export function useUserActions(): ResourceAction<User>[] {
   const { data: session } = useSession();
   const { start } = useImpersonation();
   const selfId = session?.user?.id;
+  // Foundryx UIUX switch only: the confirm names who (FX-04) and the done
+  // toasts say what, for whom and by whom. Off keeps today's words exactly.
+  const fx = useFx();
 
   return useMemo<ResourceAction<User>[]>(() => {
     const ids = (rows: User[]) => rows.map((r) => r.id);
+    const who = (u: User) => u.name?.trim() || u.email;
 
     return [
       {
@@ -47,7 +52,17 @@ export function useUserActions(): ResourceAction<User>[] {
         run: async (rows, rt) => {
           const eligible = rows.filter((r) => r.status === 'INVITED');
           await userService.invite(eligible.map((r) => r.id));
-          toast.success(`Invitation sent to ${eligible.length} user(s).`);
+          if (fx) {
+            toast.fxDone({
+              what:
+                eligible.length === 1
+                  ? `Invitation sent to ${who(eligible[0])}`
+                  : `Invitations sent to ${eligible.length} users`,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success(`Invitation sent to ${eligible.length} user(s).`);
+          }
           rt.reload();
         },
       },
@@ -66,7 +81,12 @@ export function useUserActions(): ResourceAction<User>[] {
         // a record mutation the server can undo/redo the way trash/archive can).
         // Kept as a plain (non-typed) confirm rather than forced into `deferred`.
         confirm: {
-          title: 'Impersonate this user?',
+          title: fx
+            ? (rows) => {
+                const who = rows[0]?.name?.trim();
+                return who ? `Impersonate ${who}?` : 'Impersonate this user?';
+              }
+            : 'Impersonate this user?',
           description:
             'You’ll browse the system with this user’s permissions to test their access. Anything you create or change stays recorded under your own account. Exit anytime from the top banner.',
           confirmLabel: 'Impersonate',
@@ -87,7 +107,15 @@ export function useUserActions(): ResourceAction<User>[] {
         run: async ([user]) => {
           if (!user) return;
           await userService.resetPassword(user.id);
-          toast.success('Password reset link sent.');
+          if (fx) {
+            toast.fxDone({
+              what: `Password reset link sent to ${who(user)}`,
+              forWhom: user.name ? user.email : undefined,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success('Password reset link sent.');
+          }
         },
       },
       {
@@ -100,7 +128,15 @@ export function useUserActions(): ResourceAction<User>[] {
         run: async ([user]) => {
           if (!user) return;
           await userService.resendVerification(user.id);
-          toast.success('Verification email resent.');
+          if (fx) {
+            toast.fxDone({
+              what: `Verification email sent again to ${who(user)}`,
+              forWhom: user.name ? user.email : undefined,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success('Verification email resent.');
+          }
         },
       },
       {
@@ -115,7 +151,12 @@ export function useUserActions(): ResourceAction<User>[] {
         // dialog, no `run` (the registered `users.trash` handler commits it
         // server-side); a bulk trash parks ONE row per user behind one
         // countdown.
-        deferred: { actionKey: 'users.trash', entityType: 'user' },
+        // Switch on only: the one-user countdown names them (FX-03).
+        deferred: {
+          actionKey: 'users.trash',
+          entityType: 'user',
+          fxName: (rows) => rows[0]?.name || undefined,
+        },
       },
       {
         id: 'restore',
@@ -126,10 +167,17 @@ export function useUserActions(): ResourceAction<User>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((r) => r.isTrashed),
         run: async (rows, rt) => {
           await userService.restore(ids(rows));
-          toast.success(`Restored ${rows.length} user(s).`);
+          if (fx) {
+            toast.fxDone({
+              what: rows.length === 1 ? `${who(rows[0])} restored` : `${rows.length} users restored`,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success(`Restored ${rows.length} user(s).`);
+          }
           rt.reload();
         },
       },
     ];
-  }, [router, start, selfId]);
+  }, [router, start, selfId, fx]);
 }

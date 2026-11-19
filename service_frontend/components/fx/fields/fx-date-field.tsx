@@ -22,6 +22,7 @@ import { parseKey, localDateKey } from '@/components/platform/date-range-picker/
 import { FX_FIELD_BOX, FX_FIELD_INNER, FX_FIELD_SIZE, FX_MENU, type FxFieldSize } from './classes';
 import { FxCalendar } from './fx-calendar';
 import { FxFieldMessage } from './fx-input';
+import { FxFieldContext, fxControlName, useFxFieldIds } from './fx-field-context';
 
 export const FX_DATE_HINT = 'Enter a date, like 14 Nov 2026';
 
@@ -69,6 +70,19 @@ export function FxDateField({
   const [message, setMessage] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const messageId = useId();
+  // Inside a labelled FxField the input takes the field's id and label.
+  const field = useFxFieldIds();
+  const naming = field
+    ? fxControlName(
+        {
+          id,
+          ariaLabel: aria['aria-label'],
+          ariaLabelledBy: aria['aria-labelledby'],
+          ariaDescribedBy: message ? messageId : undefined,
+        },
+        field,
+      )
+    : null;
 
   useEffect(() => {
     setText(value ? formatFxDayKey(value) : '');
@@ -112,6 +126,7 @@ export function FxDateField({
           aria-invalid={message ? true : undefined}
           aria-describedby={message ? messageId : undefined}
           {...aria}
+          {...naming}
           onChange={(e) => setText(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
@@ -137,6 +152,7 @@ export function FxDateField({
             </button>
           </PopoverTrigger>
           <PopoverContent className={cn(FX_MENU, 'w-auto p-0')} align="end">
+            <FxFieldContext.Provider value={null}>
             <FxCalendar
               mode="single"
               selected={value ? parseKey(value) : undefined}
@@ -154,6 +170,7 @@ export function FxDateField({
                 setOpen(false);
               }}
             />
+            </FxFieldContext.Provider>
           </PopoverContent>
         </Popover>
       </div>

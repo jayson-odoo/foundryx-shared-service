@@ -14,6 +14,7 @@ import { ClampedText } from '@/components/platform/clamped-text';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import { toCsv } from '@/lib/csv';
 import {
   bulkRevokeGrants,
@@ -72,6 +73,11 @@ const EXPORT_COLUMNS = [
 
 /** Revoke registry - row + form (plain confirm) and bulk (typed REVOKE). */
 export function useConnectorGrantActions(): ResourceAction<ConnectorGrant>[] {
+  // Foundryx UIUX switch only: the done toasts say what, for whom and by
+  // whom, and the bulk confirm asks for the number of grants. No Undo: the
+  // API cannot restore a revoked grant (the user signs in again instead).
+  // Every request is the same in both looks.
+  const fx = useFx();
   return useMemo<ResourceAction<ConnectorGrant>[]>(
     () => [
       {
@@ -87,10 +93,22 @@ export function useConnectorGrantActions(): ResourceAction<ConnectorGrant>[] {
           description: (rows) =>
             `${rows[0]?.userName} loses Claude access to ${rows[0]?.productName} now. Connecting again asks them to sign in to ${rows[0]?.productName}.`,
           confirmLabel: 'Revoke',
+          fxKeepLabel: 'Keep access',
         },
         run: async (rows, runtime) => {
           for (const row of rows) await revokeGrant(row.id);
-          toast.success('Access revoked.');
+          if (fx) {
+            toast.fxDone(
+              rows.length === 1
+                ? {
+                    what: `${rows[0].userName}'s access to ${rows[0].productName} revoked`,
+                    byWhom: 'you',
+                  }
+                : { what: `Access revoked for ${rows.length} users`, byWhom: 'you' },
+            );
+          } else {
+            toast.success('Access revoked.');
+          }
           runtime.reload();
         },
       },
@@ -110,16 +128,28 @@ export function useConnectorGrantActions(): ResourceAction<ConnectorGrant>[] {
           input: {
             expected: () => 'REVOKE',
             hint: () => 'Type REVOKE to confirm.',
+            // Owner decision: type the number of records, not a code word.
+            fxExpected: (rows) => String(rows.length),
           },
+          fxKeepLabel: 'Keep access',
         },
         run: async (rows, runtime) => {
           const result = await bulkRevokeGrants(rows.map((r) => r.id));
-          toast.success(`Revoked ${result.revoked} grant(s).`);
+          if (fx) {
+            const products = Array.from(new Set(rows.map((r) => r.productName)));
+            toast.fxDone({
+              what: `Access revoked for ${result.revoked} ${result.revoked === 1 ? 'user' : 'users'}`,
+              forWhom: products.length === 1 ? products[0] : undefined,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success(`Revoked ${result.revoked} grant(s).`);
+          }
           runtime.reload();
         },
       },
     ],
-    [],
+    [fx],
   );
 }
 
@@ -330,6 +360,20 @@ export function useConnectorGrantListConfig(): ResourceListConfig<ConnectorGrant
       filterFields,
       exportColumns: EXPORT_COLUMNS,
       actions,
+      // Foundryx UIUX switch only (ignored while off). Only the status
+      // column gets a header filter: the API filters grants by status and
+      // product only, so a header search on any other column would do
+      // nothing.
+      fx: {
+        noun: 'grants',
+        columnKind: { status: 'status' },
+        iconFor: {
+          revoke: <Slash aria-hidden="true" className="size-[18px]" />,
+          'revoke-bulk': <Slash aria-hidden="true" className="size-[18px]" />,
+        },
+        copyable: ['productUserId'],
+        phoneHidden: ['productUserId', 'grantedAt'],
+      },
     }),
     [actions, formatDateTime, filterFields],
   );

@@ -26,7 +26,6 @@ import { ChevronDown } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { MENU_SIDEBAR } from '@/config/menu.config';
 import type { MenuConfig, MenuItem } from '@/config/types';
-import { toAbsoluteUrl } from '@/lib/helpers';
 import { filterMenu } from '@/lib/menu-filter';
 import { collectMenuPaths, matchesMenuPath } from '@/lib/menu-path-match';
 import { cn } from '@/lib/utils';
@@ -40,6 +39,7 @@ import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { FxIcon } from '@/components/fx/icons';
 import { FxTooltip } from '@/components/fx/fx-tooltip';
 import { useRail } from '@/components/fx/shell/use-rail';
+import { AppLogo } from '@/components/platform/branding/app-logo';
 
 /** The six side-menu hues (`--fx-menu-1` .. `--fx-menu-6`), by position. */
 const HUES = [
@@ -318,38 +318,16 @@ function NestedGroup({
 
 function RailLogo() {
   const { branding } = useTenantBranding();
-  const tile = branding.faviconUrl ?? branding.logoUrl;
+  // The tenant's own favicon/logo, else its name (or initial) or, unbranded,
+  // the inline wordmark: no static file that can 404 (`AppLogo`).
   return (
     <Link href="/" className="fx-rail-logo" aria-label="Home">
       <span className="fx-rail-tile">
-        <img
-          src={tile ?? toAbsoluteUrl('/media/app/mini-logo.svg')}
-          className="h-[20px] w-auto max-w-[24px] object-contain"
-          alt=""
-        />
+        <AppLogo branding={branding} variant="mini" />
       </span>
-      {branding.logoUrl ? (
-        <span className="fx-rail-label">
-          <img
-            src={branding.logoUrl}
-            className="h-[20px] w-auto max-w-[150px] object-contain"
-            alt=""
-          />
-        </span>
-      ) : (
-        <span className="fx-rail-label">
-          <img
-            src={toAbsoluteUrl('/media/app/default-logo.svg')}
-            className="h-[22px] max-w-none dark:hidden"
-            alt=""
-          />
-          <img
-            src={toAbsoluteUrl('/media/app/default-logo-dark.svg')}
-            className="hidden h-[22px] max-w-none dark:block"
-            alt=""
-          />
-        </span>
-      )}
+      <span className="fx-rail-label">
+        <AppLogo branding={branding} />
+      </span>
     </Link>
   );
 }
