@@ -283,7 +283,7 @@ write per chunk (section 4.1a "Two writes"). A 10-line press on one PO is 2 writ
 | `result` | Meaning | What the CRM does |
 |---|---|---|
 | `linked` | In AutoCount; `newPoDtlKey` is the new PO row that carries the link | show it linked |
-| `skipped` | Not sent: `code` says why (the section 4.1a line reasons, plus the PO-row reasons `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_HAS_OTHER_TRANSFER`, `ROW_RECEIVED`, `ROW_NOT_FOUND`, which here skip that row's lines only) | show the plain reason; the user fixes it and presses again |
+| `skipped` | Not sent: `code` says why (the section 4.1a line reasons; `ALREADY_LINKED` = an earlier call through SS already linked this PO row to this SO row and that linked row still stands, so a resend of the whole list never links a line twice; plus the PO-row reasons `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_HAS_OTHER_TRANSFER`, `ROW_RECEIVED`, `ROW_NOT_FOUND`, which here skip that row's lines only) | show the plain reason; the user fixes it and presses again |
 | `failed` | AutoCount refused its chunk (`code` `VENDOR_REFUSED`, AutoCount's text in `message`), or it was never sent because an earlier chunk stopped (`NOT_SENT`), or Resume proved it never landed (`OPERATION_NOT_APPLIED`) | show the reason and "Try again" (a new call with a new key, those lines only) |
 | `checking` | Its chunk's outcome is not known yet (operation `pending_verification` or `needs_attention`) | poll `GET /write-operations/{operationId}` / resume (section 4.0a) |
 

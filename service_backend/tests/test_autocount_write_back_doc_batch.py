@@ -277,3 +277,30 @@ def test_resume_finishes_only_the_chunk_in_doubt_and_leaves_later_chunks_not_sen
     assert [(x["result"], x["code"]) for x in back.batch["lines"]] == [
         ("linked", None), ("linked", None), ("failed", "NOT_SENT"), ("failed", "NOT_SENT")]
     assert len(puts(h)) == 2  # the first chunk's link PUT + its restore; the second chunk never sent
+
+
+def test_resending_the_whole_list_after_a_partial_result_never_links_a_landed_line_twice(h, rig):
+    h.vendor.refuse_json_next("PUT", EDIT, "refused", after=2)
+    first = h.run(OP, params(two_rows(rig), max_lines_per_put=2), key="d-part")
+    assert [x["result"] for x in first.batch["lines"]] == ["linked", "linked", "failed", "failed"]
+    again = h.run(OP, params(two_rows(rig), max_lines_per_put=2), key="d-part-2")  # the CRM resends everything
+    assert [(x["result"], x["code"]) for x in again.batch["lines"]] == [
+        ("skipped", "ALREADY_LINKED"), ("skipped", "ALREADY_LINKED"), ("linked", None), ("linked", None)]
+    on_so = [r for r in h.vendor.rows("PO", 7001) if r.get("FromSODtlKey") in (rig.s5[0], rig.s5[1])]
+    assert len(on_so) == 2  # still one PO row per SO row
+
+
+def test_the_guard_reads_stop_at_the_deadline_and_nothing_is_sent(h, rig, monkeypatch):
+    from modules.autocount.write_back import operations
+
+    svc = h.ops()
+    real = operations.OperationService._line_skip
+
+    def slow(self, *a, **kw):
+        self._op_deadline = 0.0  # the clock ran past the operation deadline during the guard reads
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(operations.OperationService, "_line_skip", slow)
+    res = h.run(OP, params(two_rows(rig)), key="d-deadline", svc=svc)
+    assert res.outcome in ("pending_verification", "refused", "recovered"), (res.outcome, res.error_code)
+    assert h.vendor.writes() == []

@@ -1814,7 +1814,9 @@ class OperationService:
         sources: Dict[int, Doc] = {}
         claimed: Dict[int, Decimal] = {}  # SO row -> qty earlier lines of THIS batch take (not in AutoCount yet)
         planned: List[Tuple[Doc, List[Doc]]] = []
+        repeats = self._doc_links_on_po(company, spec.doc_key, doc)
         for po_dtl, row_links in by_row.items():
+            self._check_deadline()  # the guard reads (SO docs, receipts) are bounded like the writes
             try:  # owner rule: a row that cannot be linked skips its own lines, never the batch
                 old, free = self._link_row_checks(company, defn, replace(spec, dtl_key=po_dtl), doc)
             except _Done as done:
@@ -1826,8 +1828,12 @@ class OperationService:
             running = Decimal(0)
             applied: List[Doc] = []
             for link in row_links:
-                code = link["skip"] or self._line_skip(company, doc, old, link, sources, free, running,
-                                                       claimed.get(link["so_dtl_key"], Decimal(0)))
+                self._check_deadline()
+                repeat = (po_dtl, link["so_dtl_key"])
+                code = link["skip"] or ("ALREADY_LINKED" if repeats.get(repeat) else None) or self._line_skip(
+                    company, doc, old, link, sources, free, running, claimed.get(link["so_dtl_key"], Decimal(0)))
+                if code == "ALREADY_LINKED":
+                    repeats[repeat] -= 1  # one PO row on the SO row answers for one repeated line only
                 if code:
                     answers[link["index"]] = self._doc_line(link, "skipped", code)
                     continue
@@ -1921,6 +1927,31 @@ class OperationService:
             snap, last = outcome
             landed_any = True
         return self._doc_stop(row, company, snap, results, DONE, None, last)
+
+    def _doc_links_on_po(self, company: AcCompany, doc_key: int, doc: Doc) -> Dict[Tuple[int, int], int]:
+        """Plan 69 (security review): ``{(origin PO row, SO row): count}`` of links an earlier batch operation of
+        SS made on this PO whose new row still stands, linked to that SO row. A line asking for that same pair
+        again is the resend of a line that already landed (a caller re-sending the whole list after a partial
+        result): it is skipped ``ALREADY_LINKED``, never linked twice. Links nobody made through SS, or
+        another PO row's links to the same SO row, never count."""
+        standing = {int(r.get("DtlKey") or 0): _link_of("PO", r) for r in doc.get("Details") or []}
+        found: Dict[Tuple[int, int], int] = {}
+        for op in self.ops.link_results_on_doc(company.tenant_id, company.id, doc_key):
+            batch = (op.result_json or {}).get("batch") if isinstance(op.result_json, dict) else None
+            if not isinstance(batch, dict):
+                continue
+            made: List[Tuple[int, int, int]] = []
+            for line in batch.get("lines") or []:  # a document batch: each line names its origin row
+                if isinstance(line, dict) and line.get("result") == "linked":
+                    made.append((int(line.get("poDtlKey") or 0), int(line.get("soDtlKey") or 0),
+                                 int(line.get("newPoDtlKey") or 0)))
+            for link in batch.get("links") or []:  # a one-row batch: the origin is the operation's row
+                if isinstance(link, dict):
+                    made.append((int(op.dtl_key or 0), int(link.get("soDtlKey") or 0), int(link.get("poDtlKey") or 0)))
+            for origin, so_row, new_key in made:
+                if so_row and standing.get(new_key) == so_row:
+                    found[(origin, so_row)] = found.get((origin, so_row), 0) + 1
+        return found
 
     @staticmethod
     def _doc_new_row(old: Doc, link: Doc) -> Doc:

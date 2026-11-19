@@ -400,6 +400,18 @@ class OperationRepository:
             query = query.filter(AcWriteOperation.id != exclude_id)
         return query.all()
 
+    def link_results_on_doc(self, tenant_id: str, company_id: str, doc_key: int) -> List[AcWriteOperation]:
+        """Plan 69: the batch link operations on one PO that linked something (``done`` / ``needs_attention``):
+        their stored answers say which PO row each new linked row came from."""
+        return self.db.query(AcWriteOperation).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.doc_type == "PO",
+            AcWriteOperation.doc_key == doc_key,
+            AcWriteOperation.status.in_(("done", "needs_attention")),
+            AcWriteOperation.op.in_(("link_batch", "link_doc_batch")),
+        ).all()
+
     def claim(self, tenant_id: str, company_id: str, operation_id: str, from_statuses: "tuple[str, ...]") -> bool:
         """Conditional update to ``in_progress``: True only for the one caller whose
         update matched a row still in ``from_statuses`` (resume claims, AC-57-47)."""
