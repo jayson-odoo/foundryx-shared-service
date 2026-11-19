@@ -1,6 +1,6 @@
 # Plan 69: Bulk PO-SO link, fast (lane BULK-LINK-FAST)
 
-Status: PLAN (19 Nov 2026), contract ask to crew. Size L. UAC: `69-autocount-bulk-link-fast-acceptance-criteria.md`.
+Status: BUILT (19 Nov 2026); contract approved by crew 19 Nov (option a). db3 probe F01/F02 pending (crew runs it). Size L. UAC: `69-autocount-bulk-link-fast-acceptance-criteria.md`.
 Branch off origin/main 8a33b0df. Public repo: no customer names, prices, keys or real document numbers.
 
 ## 1. Owner ask (19 Nov ~11:35)
@@ -142,3 +142,16 @@ DIFFERENT PO documents (D1), never two on the same document.)
 - Run 2-3 workers in parallel across different PO documents (never two on one document).
 - Store + show press time and `linkedAt` (dd/mm/yyyy, h:mm am/pm).
 - Behind the existing ERP write switch; every call already logged SS-side.
+
+## 7. As built (19 Nov)
+
+- Contract of record: `55-autocount-write-link-contract.md` section 4.1b (+ 4.5 times, changelog 2026-11-19).
+- Resume of a document batch repairs only the chunk in doubt (one restore PUT, never the link PUT again); later
+  chunks stay `NOT_SENT` because their guards were judged at the first run (a new press re-guards them).
+- A pending / needs_attention document batch holds its rows: `row_needs_attention` and `_po_row_pending_qty`
+  read its sent parts (each a one-row batch snapshot), `pending_po_row_links` lists `link_doc_batch`.
+- Two PO rows of one batch on the same SO row count each other against the SO row's outstanding (`claimed`).
+- db3 probe: `runner --suite bulk` (R00, R01, F01 first-write values, F02 document batch speed).
+- Reused (owner rule "one function"): `_link_row_checks` (shared with `po-links/batch`), `_line_skip`,
+  `_restore_rows`, `payloads.build_link_doc` / `verify_link_doc` (the one-row versions are wrappers),
+  `prims.batch_link`, `so_row_locks`, `refresh_po_links_from_doc`, `_batch_shape`, runner `_RestoreRun` setup.
