@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Archive, ArchiveRestore, CloudOff, CloudUpload, Pencil, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { FormPublishError, formService } from '@/services/form-service';
 import type { FormRow } from '@/types/forms';
@@ -11,10 +12,18 @@ import { formPath } from './paths';
 
 const publishable = (f: FormRow) => f.currentVersionNumber == null || f.hasUnpublishedChanges;
 
+/** "Site visit archived" / "3 forms archived", for the fx toasts. */
+function doneWhat(rows: FormRow[], verb: string): string {
+  return rows.length === 1 ? `${rows[0].name} ${verb}` : `${rows.length} forms ${verb}`;
+}
+
 /** ONE action registry - row `…`, bulk dropdown and form `…` share it
  * (workflow-list parity, D18). Visibility branches on Active vs Archived. */
 export function useFormActions(): ResourceAction<FormRow>[] {
   const router = useRouter();
+  // Foundryx UIUX switch only: done toasts say what, how many and by whom,
+  // with Undo where the API can reverse it. Off keeps today's words.
+  const fx = useFx();
 
   return useMemo<ResourceAction<FormRow>[]>(
     () => [
@@ -48,7 +57,16 @@ export function useFormActions(): ResourceAction<FormRow>[] {
               );
             }
           }
-          if (published) toast.success(`Published ${published} form${published === 1 ? '' : 's'}.`);
+          if (published) {
+            if (fx) {
+              toast.fxDone({
+                what: published === 1 && rows.length === 1 ? `${rows[0].name} published` : `${published} forms published`,
+                byWhom: 'you',
+              });
+            } else {
+              toast.success(`Published ${published} form${published === 1 ? '' : 's'}.`);
+            }
+          }
           runtime.reload();
         },
       },
@@ -62,7 +80,11 @@ export function useFormActions(): ResourceAction<FormRow>[] {
           rows.length > 0 && rows.every((f) => !f.isTrashed && f.status === 'published'),
         run: async (rows, runtime) => {
           for (const f of rows) await formService.unpublish(f.id);
-          toast.success(`Unpublished ${rows.length} form${rows.length === 1 ? '' : 's'}.`);
+          if (fx) {
+            toast.fxDone({ what: doneWhat(rows, 'unpublished'), byWhom: 'you' });
+          } else {
+            toast.success(`Unpublished ${rows.length} form${rows.length === 1 ? '' : 's'}.`);
+          }
           runtime.reload();
         },
       },
@@ -75,7 +97,21 @@ export function useFormActions(): ResourceAction<FormRow>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((f) => !f.isTrashed),
         run: async (rows, runtime) => {
           for (const f of rows) await formService.archive(f.id);
-          toast.success(`Archived ${rows.length} form${rows.length === 1 ? '' : 's'}.`);
+          if (fx) {
+            // Restore is the real reverse of archive, so Undo is offered.
+            toast.fxDone({
+              what: doneWhat(rows, 'archived'),
+              byWhom: 'you',
+              undo: () => {
+                void (async () => {
+                  for (const f of rows) await formService.restore(f.id);
+                  runtime.reload();
+                })();
+              },
+            });
+          } else {
+            toast.success(`Archived ${rows.length} form${rows.length === 1 ? '' : 's'}.`);
+          }
           runtime.reload();
         },
       },
@@ -88,7 +124,20 @@ export function useFormActions(): ResourceAction<FormRow>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((f) => f.isTrashed),
         run: async (rows, runtime) => {
           for (const f of rows) await formService.restore(f.id);
-          toast.success(`Restored ${rows.length} form${rows.length === 1 ? '' : 's'}.`);
+          if (fx) {
+            toast.fxDone({
+              what: doneWhat(rows, 'restored'),
+              byWhom: 'you',
+              undo: () => {
+                void (async () => {
+                  for (const f of rows) await formService.archive(f.id);
+                  runtime.reload();
+                })();
+              },
+            });
+          } else {
+            toast.success(`Restored ${rows.length} form${rows.length === 1 ? '' : 's'}.`);
+          }
           runtime.reload();
         },
       },
@@ -104,9 +153,14 @@ export function useFormActions(): ResourceAction<FormRow>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((f) => f.isTrashed),
         // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
         // no `run` (the registered `forms.delete` handler commits it).
-        deferred: { actionKey: 'forms.delete', entityType: 'form' },
+        deferred: {
+          actionKey: 'forms.delete',
+          entityType: 'form',
+          // Switch on only: the one-form countdown names it.
+          fxName: (rows) => rows[0]?.name || undefined,
+        },
       },
     ],
-    [router],
+    [fx, router],
   );
 }
