@@ -9,7 +9,7 @@
  */
 import type { ReactElement } from 'react';
 import { act, fireEvent, render as rtlRender, screen, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import { parityHtml as baseParityHtml } from '@/components/fx/__parity__/parity-utils';
 import { docCalls, docSearch, migration, recorded } from './doc-mocks';
@@ -248,6 +248,17 @@ describe('switch-off parity: drive', () => {
 });
 
 describe('switch-off parity: share dialog', () => {
+  // The old dialog renders today's UTC day as the date field's `min`, so the
+  // snapshot holds the day it was recorded. Pin the clock to that day: only
+  // `Date` is faked, the timers the rendering waits on stay real.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-18T04:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('renders a share with an expiry as today', async () => {
     render(<ShareDialog target={{ kind: 'folder', id: 'fld-1', name: 'Quotations' }} ceiling="view" canManage onClose={() => {}} />);
     const dialog = await screen.findByRole('dialog');
