@@ -225,7 +225,7 @@ Differences that came out of the build (each recorded in its pull request):
 - **Counts on the inbox rail:** see above.
 - **Company-wide admin settings and a synced switch** (Q-ADV, Q-SYNC): both need backend work; everything stays per browser.
 - **Storage migration wizard:** restyled and unit-tested, but no page mounts it, so it cannot be reached.
-- **The playbook's own audit script was not run** (Q-AUDIT is unanswered): it drives a browser tool this repo has retired and bans from every tracked file, and the owner has not said whether it may be run from outside the repo. The full check below was done by hand with the repo's allowed browser tool instead.
+- **The playbook's own audit script was skipped by the owner on 2026-11-19** (this settles Q-AUDIT): it drives a browser tool this repo has retired and bans from every tracked file. The full check below was done by hand with the repo's allowed browser tool instead.
 
 ## Full check (2026-11-19)
 
@@ -263,6 +263,6 @@ Closed during the programme: FX-01, FX-02, FX-03, FX-04, FX-09, FX-10, FX-11, FX
 
 ## Final confirmation
 
-Final confirmation: pending owner
+Final confirmation: confirmed by the owner on 2026-11-19
 
-Final confirmation of the design, in words: not yet. Until then the switch stays off by default, and the original UI is not replaced.
+Final confirmation of the design, in words: confirmed by the owner on 2026-11-19, after the owner tested the new look on a local build of `development` that included the two fixes #319 and #320 and the record #321. The switch still ships off by default, and this record changes no product code. FX-37, FX-38 and FX-39 from the full check stay open and unfixed.
