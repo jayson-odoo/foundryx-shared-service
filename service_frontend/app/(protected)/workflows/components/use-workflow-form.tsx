@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type {
   Workflow,
   WorkflowCatalogStatus,
@@ -166,6 +167,10 @@ export function useWorkflowForm(
   const [debugStale, setDebugStale] = useState<Set<string>>(new Set());
   const [debugBusy, setDebugBusy] = useState(false);
 
+  // Foundryx UIUX switch only: done toasts and the page's red action. Every
+  // request is the same in both looks.
+  const fx = useFx();
+
   const form = useForm<WorkflowFormValues>({
     defaultValues: { name: '', description: '' },
   });
@@ -296,13 +301,21 @@ export function useWorkflowForm(
     try {
       if (isNew) {
         const created = await workflowService.create(input);
-        toast.success(`Workflow "${created.name}" created.`);
+        if (fx) {
+          toast.fxDone({ what: `${created.name} created`, byWhom: 'you' });
+        } else {
+          toast.success(`Workflow "${created.name}" created.`);
+        }
         router.replace(workflowPath(created.id));
       } else {
         const updated = await workflowService.update(workflowId, input);
         setWorkflow(updated);
         form.reset({ name: updated.name, description: updated.description });
-        toast.success('Workflow saved.');
+        if (fx) {
+          toast.fxDone({ what: `${updated.name} saved`, byWhom: 'you' });
+        } else {
+          toast.success('Workflow saved.');
+        }
       }
       // Do not clear a newer edit made while the save was in flight.
       if (docRef.current === input.draftDefinition) setDocDirty(false);
@@ -311,7 +324,7 @@ export function useWorkflowForm(
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [form, isNew, metadata, router, workflowId]);
+  }, [form, fx, isNew, metadata, router, workflowId]);
 
   const onCancel = useCallback(() => {
     if (isNew) {
@@ -353,13 +366,17 @@ export function useWorkflowForm(
       }
       await workflowService.publish(workflowId);
       await refresh(workflowId);
-      toast.success('Published - the trigger can now fire this workflow.');
+      if (fx) {
+        toast.fxDone({ what: `${workflow?.name ?? 'Workflow'} published`, byWhom: 'you' });
+      } else {
+        toast.success('Published - the trigger can now fire this workflow.');
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Publish failed.');
     } finally {
       setBusy(false);
     }
-  }, [canCode, canHttp, workflowId, docDirty, metadata, onSave, refresh, workflow]);
+  }, [canCode, canHttp, fx, workflowId, docDirty, metadata, onSave, refresh, workflow]);
 
   const onUnpublish = useCallback(async () => {
     if (!workflowId) return;
@@ -367,13 +384,17 @@ export function useWorkflowForm(
     try {
       await workflowService.unpublish(workflowId);
       await refresh(workflowId);
-      toast.success('Unpublished - the trigger will no longer fire it.');
+      if (fx) {
+        toast.fxDone({ what: `${workflow?.name ?? 'Workflow'} unpublished`, byWhom: 'you' });
+      } else {
+        toast.success('Unpublished - the trigger will no longer fire it.');
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Unpublish failed.');
     } finally {
       setBusy(false);
     }
-  }, [workflowId, refresh]);
+  }, [fx, workflow?.name, workflowId, refresh]);
 
   const onSetActive = useCallback(
     async (active: boolean) => {
@@ -382,14 +403,21 @@ export function useWorkflowForm(
       try {
         await workflowService.setActive(workflowId, active);
         await refresh(workflowId);
-        toast.success(active ? 'Workflow activated.' : 'Workflow deactivated.');
+        if (fx) {
+          toast.fxDone({
+            what: `${workflow?.name ?? 'Workflow'} ${active ? 'turned on' : 'turned off'}`,
+            byWhom: 'you',
+          });
+        } else {
+          toast.success(active ? 'Workflow activated.' : 'Workflow deactivated.');
+        }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Update failed.');
       } finally {
         setBusy(false);
       }
     },
-    [workflowId, refresh],
+    [fx, workflow?.name, workflowId, refresh],
   );
 
   const trigger = useMemo(
@@ -748,6 +776,15 @@ export function useWorkflowForm(
       recordNav: isNew
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Edit / Save is the red
+      // action, the rest are icon actions.
+      fx: isNew
+        ? { mainActionId: 'save' }
+        : {
+            mainActionId: 'save',
+            fullLabel: (rows) => (rows[0]?.name ? `Save ${rows[0].name}` : ''),
+            iconFor: { duplicate: 'copy', archive: 'trash' },
+          },
     };
   }, [
     formDirty,

@@ -111,6 +111,15 @@ export function useAutocountCompaniesListConfig(): ResourceListConfig<AutocountC
       createLabel: 'Connect company',
       createPermission: AC_COMPANIES_MANAGE,
       onCreate: () => router.push(AC_COMPANY_NEW_PATH),
+      // Foundryx UIUX switch only (slice W5-AC-SETUP); ignored while off.
+      // Connect company stays the red action (the list's own Create).
+      fx: {
+        noun: 'companies',
+        columnKind: { status: 'status' },
+        copyable: ['databaseName'],
+        cardLines: [['name', 'status'], ['databaseName'], ['created']],
+        phoneHidden: ['created'],
+      },
     };
   }, [formatDate, router]);
 }

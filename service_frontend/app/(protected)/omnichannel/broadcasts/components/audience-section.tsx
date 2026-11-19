@@ -31,6 +31,7 @@ import { useContactFilterFields } from '@/hooks/use-contact-filter-fields';
 import { useContactPicker } from '@/hooks/use-contact-picker';
 import { useChannelTypeOptions } from '@/hooks/use-channel-type-options';
 import type { BroadcastAudience } from '@/types/omnichannel';
+import { useFx } from '@/hooks/use-fx';
 import { useAudiencePreview } from './use-audience-preview';
 
 const SOURCE_OPTIONS = [
@@ -44,9 +45,12 @@ export interface AudienceSectionProps {
   editing: boolean;
   value: BroadcastAudience;
   onChange: (next: BroadcastAudience) => void;
+  /** Foundryx UIUX only: `data-fx-pulse-target` on the field that picks who
+   *  gets it (segment, contacts or the filter button). */
+  pulseTarget?: string;
 }
 
-export function AudienceSection({ workspaceId, editing, value, onChange }: AudienceSectionProps) {
+export function AudienceSection({ workspaceId, editing, value, onChange, pulseTarget }: AudienceSectionProps) {
   const { segments } = useContactSegments(workspaceId);
   const { count } = useAudiencePreview(workspaceId, value);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -58,6 +62,9 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
   const channelTypeOptions = useChannelTypeOptions(workspaceId);
   const filterFields = useContactFilterFields({ tags, fields, stages, members, channelTypeOptions });
 
+  // Foundryx UIUX switch: each picker is named by its visible label
+  // (`htmlFor` + `id`); with the switch off the markup is as today.
+  const fx = useFx();
   const contactIds = value.kind === 'contacts' ? (value.contactIds ?? []) : [];
   const { options: contactOptions, setQuery: setContactQuery } = useContactPicker(workspaceId, contactIds);
 
@@ -76,23 +83,29 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
       <CardContent className="flex flex-col gap-4 py-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label className="text-sm text-muted-foreground">Source</label>
+            <label className="text-sm text-muted-foreground" htmlFor={fx ? 'bc-audience-source' : undefined}>
+              Source
+            </label>
             <SearchSelect
+              id={fx ? 'bc-audience-source' : undefined}
               options={SOURCE_OPTIONS}
               value={value.kind}
               onChange={(kind) =>
                 onChange({ kind: kind as BroadcastAudience['kind'] })
               }
               disabled={!editing}
-              ariaLabel="Audience source"
+              ariaLabel={fx ? undefined : 'Audience source'}
               className="w-full"
             />
           </div>
 
           {value.kind === 'segment' && (
-            <div className="space-y-1.5">
-              <label className="text-sm text-muted-foreground">Segment</label>
+            <div className="space-y-1.5" data-fx-pulse-target={pulseTarget}>
+              <label className="text-sm text-muted-foreground" htmlFor={fx ? 'bc-segment' : undefined}>
+                Segment
+              </label>
               <SearchSelect
+                id={fx ? 'bc-segment' : undefined}
                 options={segments.map((s) => ({ label: s.name, value: s.id }))}
                 value={value.segmentId ?? null}
                 onChange={(segmentId) => {
@@ -100,16 +113,19 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
                   onChange({ kind: 'segment', segmentId, segmentName: seg?.name });
                 }}
                 disabled={!editing}
-                ariaLabel="Segment"
+                ariaLabel={fx ? undefined : 'Segment'}
                 className="w-full"
               />
             </div>
           )}
 
           {value.kind === 'contacts' && (
-            <div className="space-y-1.5">
-              <label className="text-sm text-muted-foreground">Contacts</label>
+            <div className="space-y-1.5" data-fx-pulse-target={pulseTarget}>
+              <label className="text-sm text-muted-foreground" htmlFor={fx ? 'bc-contacts' : undefined}>
+                Contacts
+              </label>
               <MultiSelect
+                id={fx ? 'bc-contacts' : undefined}
                 options={contactOptions}
                 value={contactIds}
                 onChange={(ids) => onChange({ kind: 'contacts', contactIds: ids })}
@@ -122,7 +138,7 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
         </div>
 
         {value.kind === 'filter' && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" data-fx-pulse-target={pulseTarget}>
             <Popover open={filterOpen} onOpenChange={setFilterOpen}>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm" disabled={!editing}>

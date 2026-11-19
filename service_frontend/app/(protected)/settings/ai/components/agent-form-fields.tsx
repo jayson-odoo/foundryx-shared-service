@@ -14,6 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { FormRow } from '@/components/platform/resource-form';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { SearchSelect } from '@/components/platform/search-select';
+import { useFx } from '@/hooks/use-fx';
 import type { AiAgent, AiConnectionOption, AiModelOption, AiSkillOption } from '@/types/ai';
 
 export interface AgentFormValues {
@@ -52,6 +53,8 @@ export function AgentFormFields({
   modelsLive,
   hasConnection,
 }: AgentFormFieldsProps) {
+  // Foundryx UIUX switch only: the skills picker gets its accessible name.
+  const fx = useFx();
   const connectionId = form.watch('connectionId');
   const selectedConnection = connections.find((c) => c.id === connectionId);
 
@@ -241,6 +244,7 @@ export function AgentFormFields({
                         value={field.value ?? []}
                         onChange={field.onChange}
                         placeholder="Equip skills…"
+                        ariaLabel={fx ? 'Skills' : undefined}
                       />
                     </FormControl>
                     <FormMessage />
