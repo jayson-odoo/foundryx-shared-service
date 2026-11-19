@@ -4,18 +4,26 @@ import { useCallback, useEffect, useState } from 'react';
 import { Monitor, RefreshCw, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { TemplatePreview } from '@/services/template-service';
+import { useFx } from '@/hooks/use-fx';
+import { FxPreviewPane } from './fx-preview-pane';
 
 export interface PreviewPaneProps {
   /** Runs the render pipeline (mock now; POST /templates/preview in Phase B). */
   render: () => Promise<TemplatePreview>;
 }
 
-type PreviewWidth = 'desktop' | 'mobile';
+export type PreviewWidth = 'desktop' | 'mobile';
 
-const WIDTHS: Record<PreviewWidth, number> = { desktop: 600, mobile: 375 };
+export const WIDTHS: Record<PreviewWidth, number> = { desktop: 600, mobile: 375 };
 
-export function PreviewPane({ render }: PreviewPaneProps) {
-  const [width, setWidth] = useState<PreviewWidth>('desktop');
+export function PreviewPane(props: PreviewPaneProps) {
+  // Foundryx UIUX switch: the playbook toggle and icon actions while on;
+  // today's pane while off. Both render through `usePreviewRender`.
+  return useFx() ? <FxPreviewPane {...props} /> : <PreviewPaneLegacy {...props} />;
+}
+
+/** Runs the render pipeline on mount and on Refresh (both looks). */
+export function usePreviewRender(render: () => Promise<TemplatePreview>) {
   const [preview, setPreview] = useState<TemplatePreview | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +40,13 @@ export function PreviewPane({ render }: PreviewPaneProps) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  return { preview, isLoading, error, refresh };
+}
+
+function PreviewPaneLegacy({ render }: PreviewPaneProps) {
+  const [width, setWidth] = useState<PreviewWidth>('desktop');
+  const { preview, isLoading, error, refresh } = usePreviewRender(render);
 
   return (
     <div data-testid="preview-pane" className="flex flex-col gap-3">

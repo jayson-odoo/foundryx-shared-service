@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { LayoutTemplate, Settings2 } from 'lucide-react';
+import { LayoutTemplate, RotateCcw, Settings2 } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
+import { useFxActor } from '@/components/fx/pages/w4-templates/use-fx-actor';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import { EmailEditor } from '@/components/platform/email-editor';
@@ -23,6 +25,13 @@ import {
   type TemplateDocument,
   type TemplateType,
 } from '@/types/templates';
+
+const FX_FORM_ICONS = {
+  duplicate: 'copy',
+  'test-send': 'email',
+  reset: <RotateCcw aria-hidden="true" className="size-[18px]" />,
+  delete: 'trash',
+} as const;
 
 /** Blank doc for a freshly-chosen surface type (create flow). */
 function blankDocForType(type: TemplateType): AnyTemplateDoc {
@@ -57,6 +66,8 @@ export function useTemplateForm(
   const router = useRouter();
   const actions = useTemplateActions();
   const isNew = templateId === undefined;
+  const fx = useFx();
+  const byWhom = useFxActor();
 
   const [template, setTemplate] = useState<Template | null>(null);
   const [contexts, setContexts] = useState<TemplateContext[]>([]);
@@ -212,13 +223,16 @@ export function useTemplateForm(
     try {
       if (isNew) {
         const created = await templateEngineService.createTemplate(input);
-        toast.success(`Template "${created.name}" created.`);
+        // Foundryx UIUX switch only: the done toast names what and who.
+        if (fx) toast.fxDone({ what: `${created.name} created`, byWhom });
+        else toast.success(`Template "${created.name}" created.`);
         router.replace(templatePath(created.id));
       } else {
         const updated = await templateEngineService.updateTemplate(templateId, input);
         setTemplate(updated);
         form.reset({ name: updated.name, subject: updated.subject, context: updated.context });
-        toast.success('Template saved.');
+        if (fx) toast.fxDone({ what: `${updated.name} saved`, byWhom });
+        else toast.success('Template saved.');
         if (updated.id !== templateId) {
           // First edit of a platform default FORKED a tenant copy (D6) -
           // follow the fork or the URL would reload the platform row.
@@ -231,7 +245,7 @@ export function useTemplateForm(
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [form, isNew, router, templateId]);
+  }, [form, isNew, router, templateId, fx, byWhom]);
 
   const onCancel = useCallback(() => {
     if (isNew) {
@@ -343,6 +357,14 @@ export function useTemplateForm(
       recordNav: isNew
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored with it off): Save / Edit is the
+      // red action; Duplicate, Send test email, Reset and Delete are icon
+      // actions.
+      fx: {
+        mainActionId: 'save',
+        discardName: isNew ? undefined : template?.name,
+        iconFor: FX_FORM_ICONS,
+      },
     };
   }, [
     formDirty,
