@@ -276,7 +276,9 @@ press. Header `Idempotency-Key` required (section 4.0): one key per call.
 
 **Any size, never refused for size.** SS sends one link write per chunk of up to 40 new rows (whole PO rows
 where they fit; a PO row with more lines spans chunks), each preceded by a fresh read of the PO, and one restore
-write per chunk (section 4.1a "Two writes"). A 10-line press on one PO is 2 writes, a 50-line press 4.
+write per chunk (section 4.1a "Two writes"). A 10-line press on one PO is 2 writes, a 50-line press 4. Two
+lines from different PO rows to the same SO row with the same quantity go in separate chunks (their new rows
+read back alike, and each must get its own row's restore values).
 
 **Every line answers its own result**, in request order, in `lines[]`:
 
@@ -288,7 +290,7 @@ write per chunk (section 4.1a "Two writes"). A 10-line press on one PO is 2 writ
 | `checking` | Its chunk's outcome is not known yet (operation `pending_verification` or `needs_attention`) | poll `GET /write-operations/{operationId}` / resume (section 4.0a) |
 
 Outcome of the whole call: `done` (200) when at least one line is linked and nothing is in doubt, even if
-other lines are `skipped` / `failed`; `refused` `ALL_LINKS_SKIPPED` (409) when every line was skipped (nothing
+other lines are `skipped` / `failed` (then `warnings` carries `SOME_LINES_NOT_LINKED`: read `lines`); `refused` `ALL_LINKS_SKIPPED` (409) when every line was skipped (nothing
 sent); `vendor_error` `VENDOR_REFUSED` (502) when AutoCount refused the FIRST chunk and nothing landed (key
 released); `pending_verification` (202) / `needs_attention` when a chunk is in doubt (its lines `checking`,
 later chunks `NOT_SENT`). The PO document itself being cancelled, stale (`expectedLastModified`) or busy refuses

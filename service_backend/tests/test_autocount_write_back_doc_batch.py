@@ -304,3 +304,23 @@ def test_the_guard_reads_stop_at_the_deadline_and_nothing_is_sent(h, rig, monkey
     res = h.run(OP, params(two_rows(rig)), key="d-deadline", svc=svc)
     assert res.outcome in ("pending_verification", "refused", "recovered"), (res.outcome, res.error_code)
     assert h.vendor.writes() == []
+
+
+def test_two_po_rows_on_the_same_so_row_and_qty_each_get_their_own_restore_values(h, rig):
+    """code review: two alike links (same SO row, item, unit, qty) from rows priced 5.0 and 7.0."""
+    h.seed_doc("PO", 7101, [_line("ITEM-A", 4, 5.0, "BR1"), _line("ITEM-A", 4, 7.0, "BR1")])
+    rows = [r["DtlKey"] for r in h.vendor.rows("PO", 7101)]
+    res = h.run(OP, params([(rows[0], 7006, rig.s6[0], 2), (rows[1], 7006, rig.s6[0], 2)], doc_key=7101),
+                key="d-alike")
+    assert res.outcome == "done", (res.outcome, res.error_code, res.message)
+    new_keys = [x["newPoDtlKey"] for x in res.batch["lines"]]
+    assert len(set(new_keys)) == 2
+    by_key = {r["DtlKey"]: r for r in h.vendor.rows("PO", 7101)}
+    assert [by_key[k]["UnitPrice"] for k in new_keys] == [5.0, 7.0]  # each from its own source row
+
+
+def test_a_done_batch_with_a_skipped_line_says_so_in_its_warnings(h, rig):
+    res = h.run(OP, params(two_rows(rig) + [(rig.w.p_spo, 7005, rig.s5[2], 1)]), key="d-warn")
+    assert res.outcome == "done" and "SOME_LINES_NOT_LINKED" in res.warnings
+    clean = h.run(OP, params([(rig.w.p_free, 7005, rig.s5[2], 1)]), key="d-clean")
+    assert clean.outcome == "done" and clean.warnings == []

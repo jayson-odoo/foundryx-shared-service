@@ -112,6 +112,7 @@ LINK_BATCH = "link_batch"  # plan 62: one PO row to N SO rows in one PUT
 LINK_DOC_BATCH = "link_doc_batch"  # plan 69: every linked row of ONE PO document, one PUT per chunk
 # Plan 69 D2: new linked rows per link PUT (a chunk); a longer document batch is split, never refused.
 MAX_LINES_PER_PUT = 40
+SOME_LINES_NOT_LINKED = "SOME_LINES_NOT_LINKED"  # plan 69: a done document batch with skipped / failed lines
 NOT_SENT = "NOT_SENT"  # plan 69: a document batch line whose chunk was never sent (an earlier chunk stopped)
 ALL_LINKS_SKIPPED = "ALL_LINKS_SKIPPED"
 RESTORE_NOT_LANDED = "RESTORE_NOT_LANDED"  # plan 65 D3: the batch's restore PUT did not land (resumable)
@@ -1853,15 +1854,23 @@ class OperationService:
         chunks: List[List[Doc]] = []
         current: List[Doc] = []
         count = 0
-        for old, applied in planned:  # whole rows where they fit; a row longer than a chunk spans chunks
-            rest = list(applied)
-            while rest:
-                if count == limit:
+        # Whole rows where they fit; a row longer than a chunk spans chunks. Two links whose new rows would read
+        # back alike (same SO row, item, unit and qty, from different PO rows) never share a chunk: each new row
+        # must be told apart from the read-back so it gets ITS source row's restore values (code review).
+        signs: set = set()
+        for old, applied in planned:
+            entry: Optional[Doc] = None
+            for link in applied:
+                sign = (int(link["soDtlKey"]), old.get("ItemCode"), old.get("UOM"), _dec(link["qty"]))
+                if count == limit or sign in signs:
                     chunks.append(current)
-                    current, count = [], 0
-                take, rest = rest[:limit - count], rest[limit - count:]
-                current.append({"rowKey": int(old["DtlKey"]), "links": take})
-                count += len(take)
+                    current, count, signs, entry = [], 0, set(), None
+                if entry is None:
+                    entry = {"rowKey": int(old["DtlKey"]), "links": []}
+                    current.append(entry)
+                entry["links"].append(link)
+                signs.add(sign)
+                count += 1
         if current:
             chunks.append(current)
         snapshot = _json_safe({
@@ -1970,19 +1979,14 @@ class OperationService:
         chunk, record the lines. A restore that did not land is ``needs_attention`` (Resume re-runs it)."""
         moves: List[Tuple[int, Optional[str], Optional[Doc], Doc]] = []
         found: List[Tuple[Doc, int]] = []
-        for part in [p for p in snap["parts"] if p.get("chunk") == ci]:
-            known = set(part["knownKeys"])
-            fresh = [r for r in document.get("Details") or [] if r.get("DtlKey") not in known]
-            for link in part["links"]:
-                match = next((r for r in fresh if _link_of("PO", r) == int(link["soDtlKey"])
-                              and _dec(r.get("Qty")) == _dec(link["qty"])), None)
-                if match is None:  # cannot happen after a verified PUT
-                    return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION, INTERNAL_ERROR, document,
-                                          checking=ci)
-                fresh.remove(match)
-                found.append((link, int(match["DtlKey"])))
-                moves.append((int(match["DtlKey"]), link.get("location"),
-                              {"soDeliveryDate": link.get("soDeliveryDate"), "note": link.get("note")}, part["row"]))
+        matched = self._chunk_matches([p for p in snap["parts"] if p.get("chunk") == ci], document)
+        if matched is None:  # cannot happen after a verified PUT
+            return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION, INTERNAL_ERROR, document,
+                                  checking=ci)
+        for part, link, new_row in matched:
+            found.append((link, int(new_row["DtlKey"])))
+            moves.append((int(new_row["DtlKey"]), link.get("location"),
+                          {"soDeliveryDate": link.get("soDeliveryDate"), "note": link.get("note")}, part["row"]))
         document, failed = self._restore_rows(row, company, snap, moves, document, deadline=deadline)
         for link, new_key in found:
             results[str(link["index"])] = self._doc_line(link, "linked", new_key=new_key)
@@ -2021,6 +2025,9 @@ class OperationService:
                     results[str(link["index"])] = self._doc_line(link, "checking", code)
         snap = _json_safe(dict(snap, lineResults=results, restoreOf=restore_of))
         row.snapshot_json = snap
+        if status == DONE and SOME_LINES_NOT_LINKED not in self._warnings and any(
+                v.get("result") != "linked" for v in self._doc_answer(snap, results, None)["lines"]):
+            self._warnings.append(SOME_LINES_NOT_LINKED)  # code review: never a bare "done" over failed lines
         landed = any(v.get("result") == "linked" for v in results.values())
         if landed and document is not None:
             self.prims._stage(company, "PO", document, None)
@@ -2044,7 +2051,7 @@ class OperationService:
                 return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
             return self._doc_stop(row, company, snap, results, DONE, None, doc)
         ci = int(open_parts[0]["chunk"])
-        landed = all(self._part_landed(part, doc) for part in open_parts)
+        landed = self._chunk_matches(open_parts, doc) is not None
         if landed:
             code = next((c for c in (self._batch_shape(part, doc) for part in open_parts) if c), None)
             if code:
@@ -2070,16 +2077,27 @@ class OperationService:
         return self._doc_stop(row, company, snap, results, DONE, None, doc)
 
     @staticmethod
-    def _part_landed(part: Doc, doc: Doc) -> bool:
-        known = set(part["knownKeys"])
+    def _chunk_matches(parts: List[Doc], doc: Doc) -> Optional[List[Tuple[Doc, Doc, Doc]]]:
+        """Every link of one chunk matched to its own new row, ``[(part, link, new row)]``, from ONE pool of the
+        chunk's new rows (a row taken is never matched twice); None when a link has no new row. The planner keeps
+        alike links in different chunks, so a match by SO row, item, unit and qty is the link's own row."""
+        if not parts:
+            return []
+        known = set(parts[0]["knownKeys"])
         pool = [r for r in doc.get("Details") or [] if r.get("DtlKey") not in known]
-        for link in part["links"]:
-            match = next((r for r in pool if _link_of("PO", r) == int(link["soDtlKey"])
-                          and _dec(r.get("Qty")) == _dec(link["qty"])), None)
-            if match is None:
-                return False
-            pool.remove(match)
-        return True
+        out: List[Tuple[Doc, Doc, Doc]] = []
+        for part in parts:
+            source = part.get("row") or {}
+            for link in part["links"]:
+                match = next((r for r in pool if _link_of("PO", r) == int(link["soDtlKey"])
+                              and _dec(r.get("Qty")) == _dec(link["qty"])
+                              and r.get("ItemCode") == source.get("ItemCode") and r.get("UOM") == source.get("UOM")),
+                             None)
+                if match is None:
+                    return None
+                pool.remove(match)
+                out.append((part, link, match))
+        return out
 
     @staticmethod
     def _part_untouched(part: Doc, doc: Doc) -> bool:

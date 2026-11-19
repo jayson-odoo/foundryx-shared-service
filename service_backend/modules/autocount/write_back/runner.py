@@ -2069,7 +2069,7 @@ _F_CASES = (
     ("R01", "Create the test PO (description, four different remarks, discount, FOC, price, date)", "r01"),
     ("F01", "P69-D4: one raw link PUT (row A qty 1) with Location, UnitPrice, DeliveryDate, Discount and "
             "FurtherDescription on the new row; which stick", "f01"),
-    ("F02", "Document batch: rows B and C (1 each) to the SO row in ONE operation: PUT count, time, lines", "f02"),
+    ("F02", "Document batch: rows B and C (1 each, same SO row) in ONE operation: distinct new rows, each restored", "f02"),
 )
 
 
@@ -2106,16 +2106,18 @@ class _BulkRun(_RestoreRun):
         case.status = PASS if response.ok and self.new_key else FAIL
 
     def f02(self, case: CaseResult) -> None:
-        case.expected = ("op done; ONE link PUT (+ at most ONE restore PUT) for two PO rows; every line linked "
-                         "with the SO row's location, the old row's price and the SO row's date")
+        case.expected = ("op done; each line its OWN new row (distinct newPoDtlKey), every new row restored to the SO "
+                         "row's location, its source row's price and the SO row's date; alike lines = one PUT pair each")
         if self.po is None or "SO" not in self.so:
             case.status, case.observed = SKIPPED, "R00/R01 did not pass"
             return
         so_doc = int(self.so["SO"].doc_key or 0)
+        # the real-world case: two PO rows to the same SO row with the SAME qty (alike new rows: plan 69 puts
+        # them in separate chunks, so each new row gets its own source row's values)
         links = [{"po_dtl_key": self.keys[name], "so_doc_key": so_doc, "so_dtl_key": self.so_row_key, "qty": 1}
                  for name in ("B", "C")]
         params = {"doc_key": int(self.po.doc_key or 0), "links": links, "doc_date": self.today}
-        res = self._timed(case, "document batch: 2 rows x 1 SO row", 2,
+        res = self._timed(case, "document batch: 2 rows to 1 SO row", 2,
                           lambda: self._run_op("link_doc_batch", "f02", params))
         timing = self.timings[-1]
         doc = self._read("PO", int(self.po.doc_key or 0))
@@ -2125,7 +2127,9 @@ class _BulkRun(_RestoreRun):
                              "lines": lines, "newRows": rows, "ms": timing["ms"], "puts": timing["puts"],
                              "logRows": timing["logRows"], "linkedAt": res.linked_at}
         case.observed = f"{res.outcome} {res.error_code or ''}; {timing['puts']} PUTs, {timing['ms']} ms"
-        good = (res.outcome == "done" and timing["puts"] <= 2 and len(rows) == 2
+        keys = [int(x.get("newPoDtlKey") or 0) for x in lines]
+        good = (res.outcome == "done" and timing["puts"] <= 4 and len(rows) == 2 and len(set(keys)) == 2
+                and all(keys)
                 and all(r["Location"] == _R_SO_LOCATION and _num(r["UnitPrice"]) == Decimal(str(_R_PRICE))
                         and day_of(r["DeliveryDate"]) == day_of(self.so_date) for r in rows))
         case.status = PASS if good else FAIL
