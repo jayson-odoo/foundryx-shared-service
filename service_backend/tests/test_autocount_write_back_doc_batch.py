@@ -265,3 +265,15 @@ def test_control_the_bulk_probe_suite_runs_on_db3_and_the_doc_batch_is_one_link_
     assert set(by_id) == {"R00", "R01", "F01", "F02"}
     assert h.vendor.calls, "the control suite sent no request, so the refusal test proves nothing"
     assert by_id["F02"].status == "PASS", by_id["F02"].observed
+
+
+def test_resume_finishes_only_the_chunk_in_doubt_and_leaves_later_chunks_not_sent(h, rig):
+    h.vendor.apply_then_500_next("PUT", EDIT)
+    res = h.run(OP, params(two_rows(rig), max_lines_per_put=2), key="d-resume-2")
+    assert res.outcome == "pending_verification"
+    assert [x["result"] for x in res.batch["lines"]] == ["checking", "checking", "failed", "failed"]
+    back = h.ops().resume(tenant_id=h.company.tenant_id, company_id=h.company.id, operation_id=res.operation_id)
+    assert back.outcome == "done", (back.outcome, back.error_code)
+    assert [(x["result"], x["code"]) for x in back.batch["lines"]] == [
+        ("linked", None), ("linked", None), ("failed", "NOT_SENT"), ("failed", "NOT_SENT")]
+    assert len(puts(h)) == 2  # the first chunk's link PUT + its restore; the second chunk never sent

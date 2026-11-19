@@ -2003,9 +2003,9 @@ class OperationService:
     def _resume_doc_batch(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc) -> OperationResult:
         """A pending / needs_attention document batch: only the chunk in doubt is repaired, never re-sent.
         Its link PUT landed in full (every link has its new row, each row as the chunk left it) -> the ONE
-        restore PUT, then the later chunks run; nothing of it landed (no new row on its SO rows, every row at
+        restore PUT; nothing of it landed (no new row on its SO rows, every row at
         its snapshot quantity) -> its lines fail ``NOT_APPLIED`` (retryable); anything in between needs a
-        person (no PUT)."""
+        person (no PUT). Later chunks stay ``NOT_SENT`` (a new press re-guards them)."""
         results: Dict[str, Doc] = dict(snap.get("lineResults") or {})
         open_parts = [p for p in snap.get("parts") or [] if p.get("sent") and not p.get("settled")]
         if not open_parts:
@@ -2022,8 +2022,8 @@ class OperationService:
             if isinstance(outcome, OperationResult):
                 return outcome
             snap, last = outcome
-            if ci + 1 < len(snap["chunks"]):
-                return self._doc_batch_chunks(row, company, snap, last, ci + 1)
+            # later chunks are never sent by a Resume: their guards were judged at the first run, so they stay
+            # NOT_SENT and a new press (re-read, re-guarded) links them
             return self._doc_stop(row, company, snap, results, DONE, None, last)
         untouched = all(self._part_untouched(part, doc) for part in open_parts)
         if not untouched:
