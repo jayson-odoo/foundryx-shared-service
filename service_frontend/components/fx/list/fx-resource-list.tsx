@@ -182,6 +182,8 @@ export function FxResourceList<T extends object>({
     defaultSegment: config.segments ? (config.defaultSegment ?? config.segments[0]?.id) : undefined,
     restoreFromCtx: restore,
     defaultPageSize: pageRows,
+    filterFields: config.filterFields,
+    timeZone,
   });
 
   const [rowMenu, setRowMenu] = useState<{ row: T; x: number; y: number; n: number } | null>(null);
@@ -427,7 +429,9 @@ export function FxResourceList<T extends object>({
   useEffect(() => {
     const head = document.querySelector<HTMLElement>('[data-fx-header]');
     if (!head || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => setPageHeadH(Math.ceil(head.getBoundingClientRect().height)));
+    // Rounded down: the header row tucks a fraction of a pixel under the page
+    // header rather than leaving a hairline gap the rows show through.
+    const ro = new ResizeObserver(() => setPageHeadH(Math.floor(head.getBoundingClientRect().height)));
     ro.observe(head);
     return () => ro.disconnect();
   }, []);
@@ -492,7 +496,7 @@ export function FxResourceList<T extends object>({
   async function handleExport(columnIds: string[]) {
     if (!config.exporter) return;
     const ids = !allMatching && selectedIds.length ? selectedIds : undefined;
-    const csv = await config.exporter(list.query, columnIds, ids);
+    const csv = await config.exporter(list.serverQuery, columnIds, ids);
     downloadCsv(`${config.exportFilename ?? 'export'}.csv`, csv);
     setRowSelection({});
     setAllMatching(false);
