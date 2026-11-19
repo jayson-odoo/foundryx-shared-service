@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { Plug } from 'lucide-react';
+import { CircleCheck, HardDriveDownload, Plug, PlugZap, Unplug } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
+import { useFxActor } from '@/components/fx/pages/w4-templates/use-fx-actor';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import { integrationService } from '@/services/integration-service';
@@ -21,6 +23,13 @@ import {
   valuesForConnection,
   type ConnectionFormValues,
 } from './connection-schema';
+
+const FX_FORM_ICONS = {
+  test: <PlugZap aria-hidden="true" className="size-[18px]" />,
+  'set-active': <CircleCheck aria-hidden="true" className="size-[18px]" />,
+  'migrate-storage': <HardDriveDownload aria-hidden="true" className="size-[18px]" />,
+  disconnect: <Unplug aria-hidden="true" className="size-[18px]" />,
+};
 
 const BLANK: ConnectionFormValues = { provider: '', name: '', config: {}, credentials: {} };
 
@@ -40,6 +49,8 @@ export function useConnectionForm(
   const router = useRouter();
   const actions = useConnectionActions();
   const creating = !connectionId;
+  const fx = useFx();
+  const byWhom = useFxActor();
 
   const [connection, setConnection] = useState<Connection | null>(null);
   const [providers, setProviders] = useState<IntegrationProvider[]>([]);
@@ -132,14 +143,17 @@ export function useConnectionForm(
       const input = toConnectionInput(values, provider);
       if (creating) {
         const created = await integrationService.create(input);
-        toast.success(`${created.name} connected - run a test to verify it.`);
+        // Foundryx UIUX switch only: the done toast names what and who.
+        if (fx) toast.fxDone({ what: `${created.name} connected`, byWhom });
+        else toast.success(`${created.name} connected - run a test to verify it.`);
         router.push(connectionFormPath(created.id));
         return true;
       }
       const updated = await integrationService.update(connection!.id, input);
       setConnection(updated);
       form.reset(valuesForConnection(provider, updated));
-      toast.success('Connection saved.');
+      if (fx) toast.fxDone({ what: `${updated.name} saved`, byWhom });
+      else toast.success('Connection saved.');
       return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Save failed.');
@@ -234,9 +248,19 @@ export function useConnectionForm(
       recordNav: creating
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored with it off): Save / Edit is the
+      // red action; Test connection, Set as active, Migrate storage and
+      // Disconnect are icon actions.
+      fx: {
+        mainActionId: 'save',
+        discardName: creating ? undefined : connection?.name,
+        iconFor: FX_FORM_ICONS,
+      },
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    fx,
+    byWhom,
     formDirty,
     isLoading,
     notFound,
