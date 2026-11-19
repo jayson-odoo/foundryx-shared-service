@@ -595,7 +595,8 @@ function stepError(err: unknown): string {
     if (err.status === 429) return 'Too many attempts. Try again later.';
     return err.message || 'Something went wrong. Try again.';
   }
-  return 'Something went wrong. Try again.';
+  // Same words as the CRM sign-in code step (lane FEEDBACK-SHARE-SS-HOST).
+  return 'Unable to reach the server. Please try again.';
 }
 
 export function useSharePhoneStep(shareToken: string): UseSharePhoneStep {

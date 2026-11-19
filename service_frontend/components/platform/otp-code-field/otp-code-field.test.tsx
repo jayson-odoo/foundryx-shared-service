@@ -53,9 +53,11 @@ describe('OtpCodeField', () => {
     const btn = screen.getByRole('button', { name: 'Resend code' });
     await userEvent.click(btn);
     expect(screen.getByRole('button', { name: 'Resend in 3s' })).toBeDisabled();
-    await act(async () => {
-      vi.advanceTimersByTime(3100);
-    });
+    for (let i = 0; i < 3; i += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+    }
     expect(screen.getByRole('button', { name: 'Resend code' })).toBeEnabled();
   });
 
