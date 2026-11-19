@@ -38,6 +38,10 @@ DEBTOR_PAGE_PATH = "/debtorbypage"
 DEBTOR_PAGE_SIZE = 1000
 DEBTOR_MAX_PAGES = 100  # 100k debtors; a book past that is refused READ_FAILED
 
+# Plan 70: the Location master door (a bare array of ``{Location, Description, ...}``), read once per
+# request that names a location, to refuse an unknown code before any write.
+LOCATION_PATH = "/location"
+
 
 
 def _by_modified_path(kind: str) -> Optional[str]:
@@ -199,6 +203,17 @@ class AutoCountDocReader:
         if len(matches) > 1:
             raise DocReadError(DOC_AMBIGUOUS)
         return matches[0]
+
+    def location_codes(self) -> Dict[str, str]:
+        """Plan 70: every Location code of this book, keyed trimmed + case-folded (AutoCount's SQL
+        collation) to AutoCount's own spelling. One logged GET; a failed or mis-shaped answer is
+        ``DocReadError(READ_FAILED)`` - never "unknown" (that would refuse a real code)."""
+        codes: Dict[str, str] = {}
+        for row in self._fetch(LOCATION_PATH, {}):
+            code = row.get("Location")
+            if isinstance(code, str) and code.strip():
+                codes.setdefault(code.strip().casefold(), code.strip())
+        return codes
 
     def debtor_term(
         self, debtor_code: str, *, before_page: Optional[Callable[[], None]] = None

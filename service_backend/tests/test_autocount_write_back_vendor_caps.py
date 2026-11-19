@@ -313,11 +313,15 @@ def test_split_put1_verify_ignores_the_new_rows_forced_location(h):
 
 # ---- 3. relocate ----------------------------------------------------------------------
 
-def test_relocate_signature_takes_no_location():
+def test_relocate_signature_takes_only_an_optional_location():
+    """Plan 55 pinned "no location: always the SO row's". Plan 70 (owner 19 Nov) lets the CRM name the
+    target; it stays optional, so a call without it is plan 55's move to the SO row's location."""
     params = inspect.signature(WriteBackService.relocate).parameters
     assert list(params) == [
         "self", "tenant_id", "company_id", "po_doc_key", "po_dtl_key", "expected_last_modified", "key_id",
+        "location",
     ]
+    assert params["location"].default is None
 
 
 def _relocate(h, dtl_key: int, **over):

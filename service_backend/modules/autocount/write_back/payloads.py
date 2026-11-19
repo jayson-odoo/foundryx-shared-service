@@ -214,12 +214,13 @@ def build_link(
     so_linked_qty: Decimal = Decimal(0),
     spo_ref: Optional[str] = None,
     note: Optional[str] = None,
+    location: Optional[str] = None,
 ) -> Doc:
     """Link ``qty`` of a PO row to an SO row in ONE PUT. AutoCount never links an
     existing row, so the whole row is replaced (the row ``"D"`` plus a new linked row,
     plan 61 F5) and part of it is split (the row cut to the rest plus a new linked row).
-    The new row asks for the SO row's location; AutoCount forces HQ and the caller
-    moves it back in a second write."""
+    The new row asks for the SO row's location (plan 70: the caller's ``location`` when given);
+    AutoCount forces HQ and the caller moves it back in a second write."""
     _check_doc(po, want_spo=False)
     if so.get("Cancelled") == "T":
         raise WriteRefusal("DOC_CANCELLED", "sales order is cancelled")
@@ -243,7 +244,7 @@ def build_link(
         "FromDocType": "SO",
         "FromDocNo": so.get("DocNo"),
         "FromDocDtlKey": so_dtl_key,
-        "Location": so_row.get("Location"),
+        "Location": location or so_row.get("Location"),
     }
     body = _header(po)
     new = _normal(_row_fields(po_row))
