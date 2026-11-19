@@ -1,13 +1,24 @@
 'use client';
 
+import { useFxActor } from './use-fx-actor';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { Settings as SettingsIcon, MessageSquareText, IdCard, Webhook, MessagesSquare } from 'lucide-react';
+import {
+  Settings as SettingsIcon,
+  MessageSquareText,
+  IdCard,
+  Webhook,
+  MessagesSquare,
+  KeyRound,
+  PlugZap,
+  PowerOff,
+} from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
 import { channelService } from '@/services/channel-service';
 import { webchatService } from '@/services/webchat-service';
 import { ApiError } from '@/lib/api-client';
@@ -20,6 +31,12 @@ import { ChannelWidgetTab } from './channel-widget-tab';
 import { useChannelActions } from './use-channel-actions';
 import { channelFormHref, channelsListPath } from './paths';
 import { channelDetailSchema, type ChannelDetailValues } from './channel-schema';
+
+const FX_FORM_ICONS = {
+  'test-connection': <PlugZap aria-hidden="true" className="size-[18px]" />,
+  'replace-token': <KeyRound aria-hidden="true" className="size-[18px]" />,
+  disconnect: <PowerOff aria-hidden="true" className="size-[18px]" />,
+};
 
 function toFormValues(
   channel: Channel | null,
@@ -69,6 +86,8 @@ export function useChannelForm(
   { onReplaceToken }: UseChannelFormOptions = {},
 ): UseChannelFormResult {
   const actions = useChannelActions({ onReplaceToken });
+  const fx = useFx();
+  const byWhom = useFxActor();
   const { can } = useCan();
   const canReadWebhooks = can('webhooks.read');
   const [channel, setChannel] = useState<Channel | null>(null);
@@ -145,6 +164,12 @@ export function useChannelForm(
   const config = useMemo<ResourceFormConfig<Channel> | null>(() => {
     if (isLoading || notFound) return null;
 
+    // Foundryx UIUX switch only: the done toast names the channel and who.
+    const savedToast = (name: string) => {
+      if (fx) toast.fxDone({ what: `${name} saved`, byWhom });
+      else toast.success('Channel saved.');
+    };
+
     const onSave = async (): Promise<boolean> => {
       let ok = false;
       await form.handleSubmit(async (values) => {
@@ -179,7 +204,7 @@ export function useChannelForm(
             });
             setWebchatConfig(updatedWidget);
             form.reset(toFormValues(updatedChannel, profile, updatedWidget));
-            toast.success('Channel saved.');
+            savedToast(updatedChannel.name);
             ok = true;
           } catch {
             toast.error('Could not save the widget settings. Your changes are kept - please retry.');
@@ -201,7 +226,7 @@ export function useChannelForm(
           });
           setProfile(updatedProfile);
           form.reset(toFormValues(updatedChannel, updatedProfile, webchatConfig));
-          toast.success('Channel saved.');
+          savedToast(updatedChannel.name);
           ok = true;
         } catch (err) {
           // Map server-side 422 field errors back onto the inputs (BR-8).
@@ -350,8 +375,18 @@ export function useChannelForm(
       onCancel,
       onReload: reloadChannel,
       recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored with it off): Save / Edit is the
+      // red action; Test connection, Replace token and Disconnect are icon
+      // actions.
+      fx: {
+        mainActionId: 'save',
+        discardName: channel?.name,
+        iconFor: FX_FORM_ICONS,
+      },
     };
   }, [
+    fx,
+    byWhom,
     formDirty,
     isLoading,
     notFound,

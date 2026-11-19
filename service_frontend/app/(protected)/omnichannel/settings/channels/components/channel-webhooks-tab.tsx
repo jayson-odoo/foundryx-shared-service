@@ -2,6 +2,8 @@
 
 import { useCallback, useState } from 'react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
+import { FxConfirmDialog } from '@/components/fx/actions/confirm-dialog';
 import { ResourceList } from '@/components/platform/resource-list';
 import type { WebhookEndpoint } from '@/types/whatsapp-webhook';
 import { useWebhookList } from './use-webhook-list';
@@ -41,6 +43,7 @@ export function WebhooksPanel({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<WebhookEndpoint | null>(null);
   const [rotatedSecret, setRotatedSecret] = useState<string | null>(null);
+  const [rotatedName, setRotatedName] = useState<string | undefined>(undefined);
   const [deliveriesOf, setDeliveriesOf] = useState<WebhookEndpoint | null>(null);
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
@@ -55,16 +58,26 @@ export function WebhooksPanel({
     setDialogOpen(true);
   }, []);
 
-  const onRotate = useCallback(
+  const doRotate = useCallback(
     async (endpoint: WebhookEndpoint) => {
       try {
         const result = await rotate(endpoint.id);
+        setRotatedName(endpoint.name);
         setRotatedSecret(result.signingSecret);
       } catch {
         toast.error('Could not rotate the secret. Please retry.');
       }
     },
     [rotate],
+  );
+
+  // Foundryx UIUX switch only (gap audit 11 "Rotate"): asks first, saying
+  // what stops working; the request is the same once confirmed.
+  const fx = useFx();
+  const [confirmRotate, setConfirmRotate] = useState<WebhookEndpoint | null>(null);
+  const onRotate = useCallback(
+    (endpoint: WebhookEndpoint) => (fx ? setConfirmRotate(endpoint) : doRotate(endpoint)),
+    [fx, doRotate],
   );
 
   const onViewDeliveries = useCallback((endpoint: WebhookEndpoint) => {
@@ -94,8 +107,26 @@ export function WebhooksPanel({
         onSaved={reload}
       />
 
+      {fx && (
+        <FxConfirmDialog
+          open={confirmRotate !== null}
+          title={`Rotate the signing secret for ${confirmRotate?.name ?? 'this endpoint'}?`}
+          line="Requests signed with the old secret will fail."
+          keepLabel="Keep secret"
+          actionLabel="Rotate secret"
+          destructive
+          onKeep={() => setConfirmRotate(null)}
+          onConfirm={() => {
+            const endpoint = confirmRotate;
+            setConfirmRotate(null);
+            if (endpoint) void doRotate(endpoint);
+          }}
+        />
+      )}
+
       <WebhookSecretDialog
         secret={rotatedSecret}
+        name={rotatedName}
         onOpenChange={(open) => !open && setRotatedSecret(null)}
       />
 
