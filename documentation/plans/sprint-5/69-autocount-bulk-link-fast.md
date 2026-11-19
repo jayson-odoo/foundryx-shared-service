@@ -51,17 +51,9 @@ That is exactly the owner's 11:02 call trace (GET PO, GET SO, GET PO, PUT, GET P
   -> carry on as success (restore, stage); anything else -> `needs_attention` (Resume repairs, plan 65 D5).
   No message-word list: the read decides, never the text. Cost: one GET on the failure path only.
 
-### Q2 - why 6 lines still showed "Checking with AutoCount..." after the 11:02 success
+### Q2 - dropped
 
-SS side: the one successful op covered ONE PO line (one `po-links/batch` call per CRM line,
-`po_link_service.py:988-1005` CRM, read-only). The other 6 lines of that OI were separate CRM jobs queued
-behind the single serial worker (`worker.py:148-151, :307` CRM) and/or the two 10:56/10:58 attempts the
-CRM's job state still marks in-flight. SS keeps every operation's state at `GET /write-operations/{id}`
-(`write_v1.py:542-554`); nothing in SS holds a line in "checking". So the label is CRM job state, not an SS
-operation. To confirm, crew data ask: the CRM link-job rows for that OI (status, operation id, timestamps)
-next to SS `ac_write_operations` for the same company in 10:50-11:10. Paired CRM lane fix: one job per PO
-document (D1), the CRM shows each line's own result from the answer, and polls `GET /write-operations/{id}`
-for any `pending_verification`.
+Owner correction 19 Nov ~11:40: the lines did show as linked after 11:02 (the screenshot was older).
 
 ### Q3 - the batched contract
 
