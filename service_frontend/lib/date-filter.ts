@@ -24,7 +24,7 @@ import type { FilterFieldDef, FilterGroup, FilterRule, FilterValue } from '@/typ
 
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 
-function nextDayKey(day: string): string {
+export function nextDayKey(day: string): string {
   const [y, m, d] = day.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
 }
