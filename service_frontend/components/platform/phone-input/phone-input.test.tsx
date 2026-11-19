@@ -1,0 +1,78 @@
+import { useState } from 'react';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+
+import { PhoneInput, type PhoneInputMeta } from './phone-input';
+
+/** Mirrors the CRM Dealer Access phone field (lane FEEDBACK-SHARE-SS-HOST).
+ * Every number here is made up. */
+function Harness({ onChange }: { onChange?: (e164: string, meta: PhoneInputMeta) => void }) {
+  const [value, setValue] = useState('');
+  return (
+    <>
+      <label htmlFor="p">Phone</label>
+      <PhoneInput
+        id="p"
+        value={value}
+        onChange={(e164, meta) => {
+          setValue(e164);
+          onChange?.(e164, meta);
+        }}
+      />
+    </>
+  );
+}
+
+describe('PhoneInput', () => {
+  it('defaults to Malaysia with the MY placeholder', () => {
+    render(<Harness />);
+    expect(screen.getByRole('button', { name: 'Country: Malaysia (+60)' })).toBeInTheDocument();
+    expect(screen.getByText('+60')).toBeInTheDocument();
+    expect(screen.getByLabelText('Phone')).toHaveAttribute('placeholder', '12-345 6789');
+    expect(screen.getByLabelText('Phone')).toHaveAttribute('type', 'tel');
+  });
+
+  it('formats as you type, drops the trunk 0 and emits E.164 + validity', async () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    await userEvent.type(screen.getByLabelText('Phone'), '0160000509');
+    expect(screen.getByLabelText('Phone')).toHaveValue('16-000 0509');
+    expect(onChange).toHaveBeenLastCalledWith('+60160000509', { valid: true, country: 'MY' });
+  });
+
+  it('typing an international prefix switches the country', async () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    await userEvent.type(screen.getByLabelText('Phone'), '+6581234567');
+    expect(screen.getByRole('button', { name: 'Country: Singapore (+65)' })).toBeInTheDocument();
+    expect(onChange).toHaveBeenLastCalledWith('+6581234567', { valid: true, country: 'SG' });
+  });
+
+  it('shows the error only after blur, never while typing', async () => {
+    render(<Harness />);
+    const field = screen.getByLabelText('Phone');
+    await userEvent.type(field, '0123');
+    expect(screen.queryByRole('alert')).toBeNull();
+    await userEvent.tab();
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a complete phone number.');
+  });
+
+  it('the country picker is searchable and keeps the digits', async () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    await userEvent.type(screen.getByLabelText('Phone'), '81234567');
+    await userEvent.click(screen.getByRole('button', { name: 'Country: Malaysia (+60)' }));
+    await userEvent.type(screen.getByPlaceholderText('Search...'), 'singa');
+    await userEvent.click(await screen.findByRole('option', { name: /Singapore/ }));
+    expect(screen.getByRole('button', { name: 'Country: Singapore (+65)' })).toBeInTheDocument();
+    expect(onChange).toHaveBeenLastCalledWith('+6581234567', { valid: true, country: 'SG' });
+  });
+
+  it('an unmatched search says so', async () => {
+    render(<Harness />);
+    await userEvent.click(screen.getByRole('button', { name: 'Country: Malaysia (+60)' }));
+    await userEvent.type(screen.getByPlaceholderText('Search...'), 'zzzz');
+    expect(await screen.findByText('No results found.')).toBeInTheDocument();
+  });
+});
