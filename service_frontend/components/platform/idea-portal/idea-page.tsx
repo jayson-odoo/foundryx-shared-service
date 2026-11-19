@@ -576,8 +576,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
           onClose={() => setPhoneAction(null)}
           onProven={(boardUrl) => {
             setPhoneAction(null);
-            if (boardUrl) navigateTop(boardUrl);
-            else page.idea.reload();
+            if (!boardUrl || !navigateTop(boardUrl)) page.idea.reload();
           }}
         />
       )}

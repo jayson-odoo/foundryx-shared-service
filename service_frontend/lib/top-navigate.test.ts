@@ -38,8 +38,17 @@ describe('navigateTop', () => {
 
   it('opens a new tab when the browser blocks top navigation', () => {
     const { win } = makeWin(true, true);
-    navigateTop('https://crm.example.test/feedback/board/t', win);
-    expect(win.open).toHaveBeenCalledWith('https://crm.example.test/feedback/board/t', '_blank', 'noopener');
+    const tab = { opener: 'parent' as unknown };
+    (win.open as ReturnType<typeof vi.fn>).mockReturnValue(tab);
+    expect(navigateTop('https://crm.example.test/feedback/board/t', win)).toBe(true);
+    expect(win.open).toHaveBeenCalledWith('https://crm.example.test/feedback/board/t', '_blank');
+    expect(tab.opener).toBeNull();
     expect(win.location.assign).not.toHaveBeenCalled();
+  });
+
+  it('reports false when the new tab is blocked too', () => {
+    const { win } = makeWin(true, true);
+    (win.open as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    expect(navigateTop('https://crm.example.test/feedback/board/t', win)).toBe(false);
   });
 });

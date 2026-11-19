@@ -7,15 +7,17 @@
  * itself. When framed, the TOP window navigates; if the browser refuses
  * (cross-origin top navigation without a recent click), it opens in a new tab
  * rather than nesting the CRM. Unframed = a plain navigation.
+ * Returns false when nothing could be opened (popup blocked) so the caller
+ * can refresh in place instead of leaving the visitor stuck.
  */
 export interface NavWindow {
   top: NavWindow | null;
   self: NavWindow;
   location: { assign(url: string): void; href?: string };
-  open(url: string, target?: string, features?: string): unknown;
+  open(url: string, target?: string): { opener: unknown } | null;
 }
 
-export function navigateTop(url: string, win: NavWindow = window as unknown as NavWindow): void {
+export function navigateTop(url: string, win: NavWindow = window as unknown as NavWindow): boolean {
   let framed = false;
   try {
     framed = win.top !== null && win.top !== win.self;
@@ -24,13 +26,22 @@ export function navigateTop(url: string, win: NavWindow = window as unknown as N
   }
   if (!framed || !win.top) {
     win.location.assign(url);
-    return;
+    return true;
   }
   try {
     win.top.location.href = url;
-    return;
+    return true;
   } catch {
     /* blocked by the browser: fall through */
   }
-  win.open(url, '_blank', 'noopener');
+  // No 'noopener' feature: with it `open` always returns null, hiding a
+  // blocked popup. The opener link is cut by hand instead.
+  const opened = win.open(url, '_blank');
+  if (!opened) return false;
+  try {
+    opened.opener = null;
+  } catch {
+    /* cross-origin already */
+  }
+  return true;
 }
