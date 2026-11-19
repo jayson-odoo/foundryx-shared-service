@@ -16,6 +16,7 @@ export const FX_FIELD =
   'rounded-(--fx-r-m) shadow-none outline-none ' +
   'transition-[translate,border-color,background-color,box-shadow] duration-(--fx-t-hover) ease-(--fx-ease-out) ' +
   'enabled:hover:-translate-y-0.5 enabled:hover:border-(--fx-ink-3) enabled:hover:bg-(--fx-surface-2) ' +
+  '[:root[data-fx-lift=off]_&]:hover:translate-y-0 ' +
   'enabled:hover:shadow-[0_4px_12px_var(--fx-shade)] ' +
   'focus-visible:border-(--fx-link) focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-(--fx-link)/20 ' +
   'disabled:cursor-not-allowed disabled:opacity-60 read-only:bg-(--fx-surface-2) ' +
@@ -29,6 +30,7 @@ export const FX_FIELD_BOX =
   'flex items-center border border-(--fx-line-2) bg-(--fx-surface) text-(--fx-ink) rounded-(--fx-r-m) ' +
   'transition-[translate,border-color,background-color,box-shadow] duration-(--fx-t-hover) ease-(--fx-ease-out) ' +
   'not-has-disabled:hover:-translate-y-0.5 not-has-disabled:hover:border-(--fx-ink-3) not-has-disabled:hover:bg-(--fx-surface-2) ' +
+  '[:root[data-fx-lift=off]_&]:hover:translate-y-0 ' +
   'not-has-disabled:hover:shadow-[0_4px_12px_var(--fx-shade)] ' +
   'has-focus-visible:border-(--fx-link) has-focus-visible:ring-[3px] has-focus-visible:ring-(--fx-link)/20 ' +
   'has-disabled:cursor-not-allowed has-disabled:opacity-60 ' +

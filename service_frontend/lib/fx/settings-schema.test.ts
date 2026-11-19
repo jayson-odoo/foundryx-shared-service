@@ -58,7 +58,28 @@ describe('Foundryx UIUX settings schema', () => {
   it('marks as built only the settings whose behaviour exists in merged slices', () => {
     expect(
       FX_SETTINGS.filter(fxSettingBuilt).map((setting) => setting.key),
-    ).toEqual(['motion', 'scroll', 'scroll-size']);
+    ).toEqual([
+      'motion',
+      'lift',
+      'lean',
+      'toast-time',
+      'hold',
+      'hold-time',
+      'tips',
+      'touch-tips',
+      'tip-delay',
+      'tip-fade',
+      'tip-bg',
+      'views',
+      'columns',
+      'col-drag',
+      'header-search',
+      'freeze',
+      'header-sort',
+      'page-rows',
+      'scroll',
+      'scroll-size',
+    ]);
     // F1 did not build the theme cross-fade, so its row stays hidden.
     expect(fxSettingBuilt(fxSetting('theme-fade')!)).toBe(false);
   });
