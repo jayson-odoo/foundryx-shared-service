@@ -1,5 +1,6 @@
 'use client';
 
+import { useFx } from '@/hooks/use-fx';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { KeyRound } from 'lucide-react';
@@ -34,6 +35,8 @@ export function BrView() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
   const { can } = useCan();
+  // Foundryx UIUX switch only: the done toast. Requests are the same in both looks.
+  const fx = useFx();
 
   // Remount the ResourceList on data change so the client fetcher re-pages.
   const [version, setVersion] = useState(0);
@@ -98,7 +101,15 @@ export function BrView() {
           onClose={() => setDialogOpen(false)}
           onCreate={async (input) => {
             const created = await create(input);
-            toast.success('Draft requirement created.');
+            if (fx) {
+              toast.fxDone({
+                what: `${created.title || 'Untitled requirement'} created as a draft`,
+                forWhom: created.productName,
+                byWhom: 'you',
+              });
+            } else {
+              toast.success('Draft requirement created.');
+            }
             router.push(brFormHref(created.id, { edit: true }));
             return created;
           }}
