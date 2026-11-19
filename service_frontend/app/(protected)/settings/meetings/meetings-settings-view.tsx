@@ -22,8 +22,10 @@ import {
   type MeetingsProviderKey,
 } from '@/hooks/use-meetings-connections';
 import { useBotRunsListConfig } from './use-bot-runs-list-config';
+import { useFx } from '@/hooks/use-fx';
+import { FxMeetingsSettingsView } from './fx-meetings-settings-view';
 
-const MINUTES_LANGUAGES = [
+export const MINUTES_LANGUAGES = [
   { value: 'en', label: 'English' },
   { value: 'ms', label: 'Malay' },
   { value: 'zh', label: 'Chinese' },
@@ -34,7 +36,7 @@ const MINUTES_LANGUAGES = [
 ];
 
 // Explicit choices only - "Keep" is an option, never a magic number to type.
-const RETENTION_OPTIONS = [
+export const RETENTION_OPTIONS = [
   { value: '30', label: '30 days' },
   { value: '60', label: '60 days' },
   { value: '90', label: '90 days' },
@@ -43,13 +45,13 @@ const RETENTION_OPTIONS = [
   { value: '0', label: 'Keep' },
 ];
 
-const CONNECTION_CARDS: { provider: MeetingsProviderKey; title: string }[] = [
+export const CONNECTION_CARDS: { provider: MeetingsProviderKey; title: string }[] = [
   { provider: 'google_dwd', title: 'Google Calendar' },
   { provider: 'meet_bot', title: 'Notetaker account' },
 ];
 
 // The one card that also carries a value the operator has to hand out.
-const SERVICE_ACCOUNT_CARD: MeetingsProviderKey = 'google_dwd';
+export const SERVICE_ACCOUNT_CARD: MeetingsProviderKey = 'google_dwd';
 
 /**
  * Settings → Meetings (S0 plan §4, AC-S0-4/5/14).
@@ -60,6 +62,10 @@ const SERVICE_ACCOUNT_CARD: MeetingsProviderKey = 'google_dwd';
  * the provider registry (reuse mandate).
  */
 export function MeetingsSettingsView() {
+  return useFx() ? <FxMeetingsSettingsView /> : <MeetingsSettingsViewLegacy />;
+}
+
+function MeetingsSettingsViewLegacy() {
   const { can } = useCan();
   const canManage = can('meetings.settings.manage');
   const { settings, loading, saving, save } = useMeetingsSettings();

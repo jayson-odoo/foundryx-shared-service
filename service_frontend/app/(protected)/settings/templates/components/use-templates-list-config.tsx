@@ -7,6 +7,8 @@ import { StatusBadge } from '@/components/platform/status-badge';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { RotateCcw } from 'lucide-react';
 import { templateEngineService } from '@/services/template-service';
 import type { TemplateListItem } from '@/types/templates';
 import { TEMPLATES_PATH, templatePath } from './paths';
@@ -17,8 +19,9 @@ export function useTemplatesListConfig(): ResourceListConfig<TemplateListItem> {
   const router = useRouter();
   const actions = useTemplateActions();
   const { formatDateTime } = useDatetime();
+  const fx = useFx();
 
-  return useMemo<ResourceListConfig<TemplateListItem>>(
+  const config = useMemo<ResourceListConfig<TemplateListItem>>(
     () => ({
       viewKey: 'templates',
       getRowId: (row) => row.id,
@@ -141,4 +144,30 @@ export function useTemplatesListConfig(): ResourceListConfig<TemplateListItem> {
     }),
     [actions, router, formatDateTime],
   );
+
+  // Foundryx UIUX switch only (ignored with it off): the list's own words,
+  // its status column (the tier) and the icons of its actions.
+  return useMemo<ResourceListConfig<TemplateListItem>>(
+    () =>
+      fx
+        ? {
+            ...config,
+            fx: {
+              noun: 'templates',
+              columnKind: { tier: 'status' },
+              phoneHidden: ['contextLabel', 'type'],
+              iconFor: FX_ICONS_FOR,
+            },
+          }
+        : config,
+    [fx, config],
+  );
 }
+
+const FX_ICONS_FOR = {
+  edit: 'edit',
+  duplicate: 'copy',
+  'test-send': 'email',
+  reset: <RotateCcw aria-hidden="true" className="size-[18px]" />,
+  delete: 'trash',
+} as const;
