@@ -758,17 +758,24 @@ class PrimitiveService(WriteFrame):
         linked = int(row.get("FromSODtlKey") or 0)
         for op in OperationRepository(self.db).pending_po_row_links(
                 company.tenant_id, company.id, doc_key, None, exclude_id=exclude_id):
-            if op.dtl_key == dtl_key:
-                return True
-            snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
-            if not linked or "knownKeys" not in snap or dtl_key in set(snap.get("knownKeys") or []):
-                continue
-            so_rows = {int(link.get("soDtlKey") or 0) for link in snap.get("links") or []}
-            new_link = snap.get("newLink") if isinstance(snap.get("newLink"), dict) else {}
-            if new_link.get("FromDocType") == "SO":
-                so_rows.add(int(new_link.get("FromDocDtlKey") or 0))
-            if linked in so_rows:
-                return True
+            whole = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
+            if whole.get("mode") == "doc_batch":  # plan 69: each sent part is a one-row batch snapshot
+                parts = [p for p in whole.get("parts") or [] if isinstance(p, dict) and p.get("sent")]
+                if any(int((p.get("row") or {}).get("DtlKey") or 0) == dtl_key for p in parts):
+                    return True
+            else:
+                if op.dtl_key == dtl_key:
+                    return True
+                parts = [whole]
+            for snap in parts:
+                if not linked or "knownKeys" not in snap or dtl_key in set(snap.get("knownKeys") or []):
+                    continue
+                so_rows = {int(link.get("soDtlKey") or 0) for link in snap.get("links") or []}
+                new_link = snap.get("newLink") if isinstance(snap.get("newLink"), dict) else {}
+                if new_link.get("FromDocType") == "SO":
+                    so_rows.add(int(new_link.get("FromDocDtlKey") or 0))
+                if linked in so_rows:
+                    return True
         return False
 
     def _guard_po_line(self, call: _Call, company: AcCompany, doc: Doc) -> None:

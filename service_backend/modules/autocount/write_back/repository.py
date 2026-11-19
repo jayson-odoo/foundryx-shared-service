@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from modules.autocount.models import (
@@ -392,10 +392,10 @@ class OperationRepository:
             AcWriteOperation.doc_type == "PO",
             AcWriteOperation.doc_key == doc_key,
             AcWriteOperation.status.in_((OUTCOME_PENDING, "needs_attention")),
-            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
+            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link", "link_doc_batch")),
         )
-        if dtl_key is not None:
-            query = query.filter(AcWriteOperation.dtl_key == dtl_key)
+        if dtl_key is not None:  # a document batch (plan 69) covers several rows: its snapshot says which
+            query = query.filter(or_(AcWriteOperation.dtl_key == dtl_key, AcWriteOperation.op == "link_doc_batch"))
         if exclude_id is not None:
             query = query.filter(AcWriteOperation.id != exclude_id)
         return query.all()
