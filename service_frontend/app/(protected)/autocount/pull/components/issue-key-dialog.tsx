@@ -15,6 +15,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
+import { useFx } from '@/hooks/use-fx';
+import { FxSecretOnce } from '@/components/fx/fields';
 import { useIssuePullKey } from '@/hooks/use-autocount-pull';
 import type { AutocountCompany } from '@/types/autocount';
 
@@ -37,6 +39,7 @@ export function IssueKeyDialog({ open, onOpenChange, companies, onIssued }: Issu
   const [companyIds, setCompanyIds] = useState<string[]>([]);
   const [plaintext, setPlaintext] = useState<string | null>(null);
   const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const fx = useFx();
 
   useEffect(() => {
     if (!open) {
@@ -110,28 +113,36 @@ export function IssueKeyDialog({ open, onOpenChange, companies, onIssued }: Issu
           </>
         ) : (
           <>
-            <DialogBody className="flex flex-col gap-3">
-              <div className="flex items-center gap-2">
-                <Input
-                  readOnly
-                  value={plaintext ?? ''}
-                  className="font-mono text-sm"
-                  aria-label="Plaintext key"
-                  onFocus={(e) => e.currentTarget.select()}
-                />
-                <Button
-                  variant="outline"
-                  mode="icon"
-                  onClick={() => copyToClipboard(plaintext ?? '')}
-                  aria-label="Copy key"
-                >
-                  {isCopied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
-                </Button>
-              </div>
-              <p className="text-sm font-medium text-destructive">
-                Copy this key now - it will not be shown again.
-              </p>
-            </DialogBody>
+            {fx ? (
+              // Foundryx UIUX switch only (slice W5-AC-OPS): the one-time key
+              // with its Copy button and the "won't be shown again" line.
+              <DialogBody className="flex flex-col gap-3">
+                <FxSecretOnce value={plaintext ?? ''} label="Plaintext key" />
+              </DialogBody>
+            ) : (
+              <DialogBody className="flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <Input
+                    readOnly
+                    value={plaintext ?? ''}
+                    className="font-mono text-sm"
+                    aria-label="Plaintext key"
+                    onFocus={(e) => e.currentTarget.select()}
+                  />
+                  <Button
+                    variant="outline"
+                    mode="icon"
+                    onClick={() => copyToClipboard(plaintext ?? '')}
+                    aria-label="Copy key"
+                  >
+                    {isCopied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
+                  </Button>
+                </div>
+                <p className="text-sm font-medium text-destructive">
+                  Copy this key now - it will not be shown again.
+                </p>
+              </DialogBody>
+            )}
             <DialogFooter>
               <Button variant="primary" onClick={() => onOpenChange(false)}>
                 Done

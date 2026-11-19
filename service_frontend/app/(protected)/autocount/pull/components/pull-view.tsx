@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { Container } from '@/components/common/container';
+import { useHideMainAction } from '@/components/fx/actions/page-actions-context';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useAutocountCompanies } from '@/hooks/use-autocount-pull';
 import { BuildSnapshotDialog } from './build-snapshot-dialog';
@@ -19,6 +20,8 @@ export function PullView() {
   const [buildOpen, setBuildOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+  // Foundryx UIUX: the page has one red action; a dialog's own button takes over.
+  useHideMainAction(issueOpen || buildOpen);
 
   const config = useAutocountPullListConfig({
     companies,
