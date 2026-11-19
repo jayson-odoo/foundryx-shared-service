@@ -80,7 +80,7 @@ import DocumentTypesPage from '../types/page';
 import DocumentSettingsPage from '../settings/page';
 import { documentSettingsBody } from '../settings/fx-document-settings';
 import { ShareDialog } from '@/components/platform/document-drive/share-dialog';
-import { shareExpiryInstant, shareExpiryMinDay } from '@/components/platform/document-drive/fx-share-advanced';
+import { shareExpiryInstant, shareExpiryMinDay } from '@/components/platform/document-drive/share-expiry';
 import { fxPurgeExpected, fxTargetsName } from '@/components/platform/document-drive/fx-drive-words';
 import { StorageMigrationWizard } from '@/components/platform/storage-migration-wizard';
 
@@ -391,11 +391,10 @@ describe('trash: same writes in both looks, typed confirm', () => {
 });
 
 describe('share dialog: expiry in the date field sends the same instant', () => {
-  it('shareExpiryInstant is what the date input sends; the bound is the UTC day', () => {
-    expect(shareExpiryInstant('2027-02-14')).toBe(new Date('2027-02-14T23:59:59Z').toISOString());
-    expect(shareExpiryInstant('2027-02-14')).toBe('2027-02-14T23:59:59.000Z');
-    expect(shareExpiryMinDay(new Date('2026-11-19T20:30:00Z'))).toBe('2026-11-19');
-    expect(shareExpiryMinDay(new Date('2026-11-19T16:30:00+08:00'))).toBe('2026-11-19');
+  it('shareExpiryInstant is the end of the day in the user\'s zone; the bound is today there', () => {
+    expect(shareExpiryInstant('2027-02-14', 'Asia/Kuala_Lumpur')).toBe('2027-02-14T16:00:00.000Z');
+    expect(shareExpiryMinDay('Asia/Kuala_Lumpur', new Date('2026-11-19T20:30:00Z'))).toBe('2026-11-20');
+    expect(shareExpiryMinDay('Asia/Kuala_Lumpur', new Date('2026-11-19T16:30:00+08:00'))).toBe('2026-11-19');
   });
 
   const target = { kind: 'folder' as const, id: 'fld-1', name: 'Quotations' };
@@ -414,7 +413,7 @@ describe('share dialog: expiry in the date field sends the same instant', () => 
       },
       () => screen.findByTestId('share-url'),
     );
-    expect(off).toEqual([['updateShare', 'shr-1', { expiresAt: '2027-02-14T23:59:59.000Z' }]]);
+    expect(off).toEqual([['updateShare', 'shr-1', { expiresAt: '2027-02-14T16:00:00.000Z' }]]);
     expect(on).toEqual(off);
   });
 
@@ -426,7 +425,7 @@ describe('share dialog: expiry in the date field sends the same instant', () => 
     docCalls.length = 0;
     fireEvent.click(day);
     await settle();
-    expect(writes()).toEqual([['updateShare', 'shr-1', { expiresAt: '2027-01-20T23:59:59.000Z' }]]);
+    expect(writes()).toEqual([['updateShare', 'shr-1', { expiresAt: '2027-01-20T16:00:00.000Z' }]]);
   });
 
   it('shows when the link stops working, 12-hour, in the viewer\'s zone', async () => {
@@ -447,7 +446,7 @@ describe('share dialog: expiry in the date field sends the same instant', () => 
     fireEvent.change(input, { target: { value: '14 Feb 2027' } });
     fireEvent.blur(input);
     await settle();
-    expect(writes()).toEqual([['updateShare', 'shr-1', { expiresAt: '2027-02-14T23:59:59.000Z' }]]);
+    expect(writes()).toEqual([['updateShare', 'shr-1', { expiresAt: '2027-02-14T16:00:00.000Z' }]]);
   });
 
   it('turning Expiry off clears it with today\'s request', async () => {

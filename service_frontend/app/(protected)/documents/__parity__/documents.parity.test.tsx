@@ -248,9 +248,11 @@ describe('switch-off parity: drive', () => {
 });
 
 describe('switch-off parity: share dialog', () => {
-  // The old dialog renders today's UTC day as the date field's `min`, so the
-  // snapshot holds the day it was recorded. Pin the clock to that day: only
-  // `Date` is faked, the timers the rendering waits on stay real.
+  // The old dialog renders today (in the user's zone) as the date field's
+  // `min`, so the snapshot holds the day it was recorded. Pin the clock to
+  // that day: only `Date` is faked, the timers the rendering waits on stay
+  // real. The expiry day and the instant sent are the user's own day
+  // (`share-expiry.ts`): that changed here on purpose, with the fix.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-18T04:00:00Z'));
@@ -267,13 +269,13 @@ describe('switch-off parity: share dialog', () => {
     expect(parityHtml(dialog)).toMatchSnapshot();
   });
 
-  it('a picked expiry day sends the same instant as today', async () => {
+  it('a picked expiry day sends the end of that day in the user\'s zone', async () => {
     render(<ShareDialog target={{ kind: 'folder', id: 'fld-1', name: 'Quotations' }} ceiling="view" canManage onClose={() => {}} />);
     const input = await screen.findByLabelText('Expiry date', { selector: 'input' });
     docCalls.length = 0;
     fireEvent.change(input, { target: { value: '2027-02-14' } });
     await settle();
-    expect(recorded()).toEqual([['updateShare', 'shr-1', { expiresAt: '2027-02-14T23:59:59.000Z' }]]);
+    expect(recorded()).toEqual([['updateShare', 'shr-1', { expiresAt: '2027-02-14T16:00:00.000Z' }]]);
     expect(share().id).toBe('shr-1');
   });
 });

@@ -24,9 +24,11 @@ import { Switch } from '@/components/ui/switch';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
+import { useDatetime } from '@/hooks/use-datetime';
 import { useFx } from '@/hooks/use-fx';
 import { documentService } from '@/services/document-service';
 import { FxShareAdvanced } from './fx-share-advanced';
+import { shareExpiryDay, shareExpiryInstant, shareExpiryMinDay } from './share-expiry';
 import type {
   PublicSharingPolicy,
   ShareCapability,
@@ -276,7 +278,8 @@ function Body({
 /**
  * Foundryx UIUX (slice W3-DOCS): expiry in the playbook date field (the same
  * instant for the same day), with the moment it stops working in 12-hour
- * form. Off renders the legacy body below, unchanged.
+ * form. Off renders the legacy body below. Both hold the expiry as a day in
+ * the user's zone (`share-expiry.ts`).
  */
 function AdvancedOptions(props: {
   share: ShareRow;
@@ -292,9 +295,14 @@ function AdvancedOptionsLegacy({
   share: ShareRow;
   patch: (body: ShareUpdatePayload) => Promise<void>;
 }) {
-  const [expiry, setExpiry] = useState(share.expiresAt ? share.expiresAt.slice(0, 10) : '');
+  const { timeZone } = useDatetime();
+  const [expiry, setExpiry] = useState(() => shareExpiryDay(share.expiresAt, timeZone) ?? '');
+  // The switches open their field; the request goes out once a day is picked
+  // or a password is set.
+  const [expiryOpen, setExpiryOpen] = useState(share.expiresAt !== null);
   const [password, setPassword] = useState('');
-  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const todayStr = useMemo(() => shareExpiryMinDay(timeZone), [timeZone]);
   const isPublicEdit = share.generalAccess === 'public' && share.capability === 'edit';
 
   return (
@@ -303,18 +311,19 @@ function AdvancedOptionsLegacy({
         <Label htmlFor="share-expiry" className="text-sm font-normal">Expiry date</Label>
         <Switch
           id="share-expiry"
-          checked={share.expiresAt !== null}
+          checked={expiryOpen}
           onCheckedChange={(on) => {
+            setExpiryOpen(on);
             if (!on) {
               setExpiry('');
-              void patch({ expiresAt: null });
+              if (share.expiresAt !== null) void patch({ expiresAt: null });
             } else if (expiry) {
-              void patch({ expiresAt: new Date(`${expiry}T23:59:59Z`).toISOString() });
+              void patch({ expiresAt: shareExpiryInstant(expiry, timeZone) });
             }
           }}
         />
       </div>
-      {share.expiresAt !== null && (
+      {expiryOpen && (
         <Input
           type="date"
           min={todayStr}
@@ -323,7 +332,7 @@ function AdvancedOptionsLegacy({
           onChange={(e) => {
             setExpiry(e.target.value);
             if (e.target.value >= todayStr) {
-              void patch({ expiresAt: new Date(`${e.target.value}T23:59:59Z`).toISOString() });
+              void patch({ expiresAt: shareExpiryInstant(e.target.value, timeZone) });
             }
           }}
         />
@@ -335,16 +344,17 @@ function AdvancedOptionsLegacy({
         </Label>
         <Switch
           id="share-pw"
-          checked={share.hasPassword}
+          checked={share.hasPassword || passwordOpen}
           onCheckedChange={(on) => {
+            setPasswordOpen(on && !share.hasPassword);
             if (!on) {
               setPassword('');
-              void patch({ password: null });
+              if (share.hasPassword) void patch({ password: null });
             }
           }}
         />
       </div>
-      {(share.hasPassword || password) && !share.hasPassword && (
+      {passwordOpen && !share.hasPassword && (
         <div className="flex items-center gap-2">
           <Input
             type="text"

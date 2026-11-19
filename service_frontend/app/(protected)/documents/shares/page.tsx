@@ -24,6 +24,7 @@ import {
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ClampedText } from '@/components/platform/clamped-text';
+import { shareLastMoment } from '@/components/platform/document-drive/share-expiry';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import {
   ResourceList,
@@ -229,7 +230,7 @@ export default function DocumentSharesPage() {
                   : 'text-sm text-foreground'
               }
             >
-              {formatDate(row.original.expiresAt)}
+              {formatDate(shareLastMoment(row.original.expiresAt))}
               {row.original.isExpired && ' (expired)'}
             </span>
           ) : (

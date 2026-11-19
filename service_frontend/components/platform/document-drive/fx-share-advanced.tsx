@@ -4,14 +4,14 @@
  * The share dialog's expiry, password and upload limits under the Foundryx
  * UIUX switch (slice W3-DOCS).
  *
- * - Expiry is a day in the playbook date field. A picked day is sent as the
- *   very instant today's date input sends for that day (`shareExpiryInstant`,
- *   23:59:59 UTC), and today's lower bound (the UTC day) is kept. The moment
- *   the link stops working is shown in the viewer's zone, 12-hour.
+ * - Expiry is a day in the playbook date field, in the user's zone
+ *   (`share-expiry.ts`): a picked day is sent as the instant that day ends
+ *   there, the earliest day is today there, and a share opened again shows
+ *   the same day. The moment the link stops working is shown in that zone,
+ *   12-hour.
  * - Turning Expiry or Password on opens its field; the request goes out only
- *   once a day is picked or a password is set, the same request today's
- *   controls send for the same input. (With the switch off those two switches
- *   cannot open their field: reported, not changed.)
+ *   once a day is picked or a password is set, the same request the old
+ *   look's controls send for the same input.
  * - The password field is masked and never shows a set password.
  * - Upload limits are today's fields and requests.
  */
@@ -24,17 +24,7 @@ import { Switch } from '@/components/ui/switch';
 import { FxDateField, FX_FIELD_LABEL } from '@/components/fx/fields';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { ShareRow, ShareUpdatePayload } from '@/types/documents';
-
-/** The instant a share expires for a picked day: what today's date input
- *  sends (`new Date(`${day}T23:59:59Z`).toISOString()`). */
-export function shareExpiryInstant(dayKey: string): string {
-  return new Date(`${dayKey}T23:59:59Z`).toISOString();
-}
-
-/** Today's lower bound for the expiry day: the UTC calendar day, as today. */
-export function shareExpiryMinDay(now: Date = new Date()): string {
-  return now.toISOString().slice(0, 10);
-}
+import { shareExpiryDay, shareExpiryInstant, shareExpiryMinDay } from './share-expiry';
 
 export function FxShareAdvanced({
   share,
@@ -43,12 +33,12 @@ export function FxShareAdvanced({
   share: ShareRow;
   patch: (body: ShareUpdatePayload) => Promise<void>;
 }) {
-  const { formatDateTime } = useDatetime();
-  const [expiry, setExpiry] = useState<string | null>(share.expiresAt ? share.expiresAt.slice(0, 10) : null);
+  const { formatDateTime, timeZone } = useDatetime();
+  const [expiry, setExpiry] = useState<string | null>(() => shareExpiryDay(share.expiresAt, timeZone));
   const [expiryOpen, setExpiryOpen] = useState(share.expiresAt !== null);
   const [password, setPassword] = useState('');
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const [todayKey] = useState(() => shareExpiryMinDay());
+  const [todayKey] = useState(() => shareExpiryMinDay(timeZone));
   const isPublicEdit = share.generalAccess === 'public' && share.capability === 'edit';
 
   // A share that gains or loses its expiry elsewhere follows here.
@@ -77,7 +67,7 @@ export function FxShareAdvanced({
               setExpiry(null);
               if (share.expiresAt !== null) void patch({ expiresAt: null });
             } else if (expiry) {
-              void patch({ expiresAt: shareExpiryInstant(expiry) });
+              void patch({ expiresAt: shareExpiryInstant(expiry, timeZone) });
             }
           }}
         />
@@ -88,9 +78,10 @@ export function FxShareAdvanced({
             aria-label="Expiry date"
             value={expiry}
             minDate={todayKey}
+            timeZone={timeZone}
             onChange={(day) => {
               setExpiry(day);
-              if (day && day >= todayKey) void patch({ expiresAt: shareExpiryInstant(day) });
+              if (day && day >= todayKey) void patch({ expiresAt: shareExpiryInstant(day, timeZone) });
             }}
           />
           {share.expiresAt && (
