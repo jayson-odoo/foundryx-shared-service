@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { KeyRound, Settings as SettingsIcon, Users as UsersIcon } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import { roleService } from '@/services/role-service';
@@ -16,6 +17,11 @@ import { PermissionsTab, AssignedUsersTab, SettingsTab } from './role-form-field
 import { useRoleActions } from './use-role-actions';
 import { roleFormHref, roleFormPath, rolesListPath } from './paths';
 import { roleFormSchema, type RoleFormValues } from './role-schema';
+
+/** "1 permission" / "12 permissions", for the fx done toasts. */
+function permissionsCount(keys: string[]): string {
+  return keys.length === 1 ? '1 permission' : `${keys.length} permissions`;
+}
 
 function toFormValues(role: RoleDetail | null): RoleFormValues {
   if (!role) return { name: '', description: '', permissionKeys: [], isSystem: false };
@@ -39,6 +45,9 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
   const router = useRouter();
   const actions = useRoleActions();
   const creating = !roleId;
+  // Foundryx UIUX switch only: done toasts. Every request is the same in
+  // both looks.
+  const fx = useFx();
 
   const [role, setRole] = useState<RoleDetail | null>(null);
   const [catalog, setCatalog] = useState<PermissionCatalog>([]);
@@ -113,13 +122,29 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
         };
         if (creating) {
           const created = await roleService.create(payload);
-          toast.success('Role created.');
+          if (fx) {
+            toast.fxDone({
+              what: `Role ${created.name} created`,
+              howMany: permissionsCount(created.permissionKeys ?? payload.permissionKeys),
+              byWhom: 'you',
+            });
+          } else {
+            toast.success('Role created.');
+          }
           router.push(roleFormPath(created.id));
         } else {
           const updated = await roleService.update(roleId, payload);
           setRole(updated);
           form.reset(toFormValues(updated));
-          toast.success('Role updated.');
+          if (fx) {
+            toast.fxDone({
+              what: `Role ${updated.name} saved`,
+              howMany: permissionsCount(updated.permissionKeys ?? payload.permissionKeys),
+              byWhom: 'you',
+            });
+          } else {
+            toast.success('Role updated.');
+          }
         }
         ok = true;
       })();
@@ -144,7 +169,9 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
         id: 'assigned',
         label: 'Assigned Users',
         icon: UsersIcon,
-        render: () => <AssignedUsersTab roleId={role?.id ?? null} creating={creating} />,
+        render: () => (
+          <AssignedUsersTab roleId={role?.id ?? null} creating={creating} roleName={role?.name} />
+        ),
       },
       {
         id: 'settings',
@@ -181,8 +208,18 @@ export function useRoleForm(roleId: string | undefined, initialEditing: boolean)
       recordNav: creating
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Edit / Save role is
+      // the red action, Delete an icon action.
+      fx: creating
+        ? { mainActionId: 'save' }
+        : {
+            mainActionId: 'save',
+            fullLabel: (rows) => (rows[0]?.name ? `Save ${rows[0].name}` : ''),
+            iconFor: { delete: 'delete' },
+          },
     };
   }, [
+    fx,
     formDirty,
     isLoading,
     notFound,

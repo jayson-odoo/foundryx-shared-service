@@ -22,12 +22,13 @@ export function useUserActions(): ResourceAction<User>[] {
   const { data: session } = useSession();
   const { start } = useImpersonation();
   const selfId = session?.user?.id;
-  // Foundryx UIUX switch only: the confirm names who (FX-04). Off keeps
-  // today's words exactly.
+  // Foundryx UIUX switch only: the confirm names who (FX-04) and the done
+  // toasts say what, for whom and by whom. Off keeps today's words exactly.
   const fx = useFx();
 
   return useMemo<ResourceAction<User>[]>(() => {
     const ids = (rows: User[]) => rows.map((r) => r.id);
+    const who = (u: User) => u.name?.trim() || u.email;
 
     return [
       {
@@ -51,7 +52,17 @@ export function useUserActions(): ResourceAction<User>[] {
         run: async (rows, rt) => {
           const eligible = rows.filter((r) => r.status === 'INVITED');
           await userService.invite(eligible.map((r) => r.id));
-          toast.success(`Invitation sent to ${eligible.length} user(s).`);
+          if (fx) {
+            toast.fxDone({
+              what:
+                eligible.length === 1
+                  ? `Invitation sent to ${who(eligible[0])}`
+                  : `Invitations sent to ${eligible.length} users`,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success(`Invitation sent to ${eligible.length} user(s).`);
+          }
           rt.reload();
         },
       },
@@ -96,7 +107,15 @@ export function useUserActions(): ResourceAction<User>[] {
         run: async ([user]) => {
           if (!user) return;
           await userService.resetPassword(user.id);
-          toast.success('Password reset link sent.');
+          if (fx) {
+            toast.fxDone({
+              what: `Password reset link sent to ${who(user)}`,
+              forWhom: user.name ? user.email : undefined,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success('Password reset link sent.');
+          }
         },
       },
       {
@@ -109,7 +128,15 @@ export function useUserActions(): ResourceAction<User>[] {
         run: async ([user]) => {
           if (!user) return;
           await userService.resendVerification(user.id);
-          toast.success('Verification email resent.');
+          if (fx) {
+            toast.fxDone({
+              what: `Verification email sent again to ${who(user)}`,
+              forWhom: user.name ? user.email : undefined,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success('Verification email resent.');
+          }
         },
       },
       {
@@ -140,7 +167,14 @@ export function useUserActions(): ResourceAction<User>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((r) => r.isTrashed),
         run: async (rows, rt) => {
           await userService.restore(ids(rows));
-          toast.success(`Restored ${rows.length} user(s).`);
+          if (fx) {
+            toast.fxDone({
+              what: rows.length === 1 ? `${who(rows[0])} restored` : `${rows.length} users restored`,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success(`Restored ${rows.length} user(s).`);
+          }
           rt.reload();
         },
       },
