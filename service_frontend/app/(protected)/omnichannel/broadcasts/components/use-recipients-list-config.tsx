@@ -106,6 +106,16 @@ export function useRecipientsListConfig(
       actions: [],
       searchPlaceholder: 'Search recipients…',
       enableStatusViews: false,
+      // Foundryx UIUX switch only (ignored while off): a list inside the
+      // broadcast's Recipients tab, so the smaller empty-state words.
+      fx: {
+        columnKind: { state: 'status' },
+        copyable: ['contact', 'phone'],
+        phoneHidden: ['attemptedAt'],
+        cardLines: [['contact', 'state'], ['phone'], ['error']],
+        noun: 'recipients',
+        compactStates: true,
+      },
     };
   }, [fetcher, formatDateTime]);
 

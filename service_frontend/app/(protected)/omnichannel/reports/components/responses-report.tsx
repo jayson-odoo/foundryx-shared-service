@@ -11,6 +11,8 @@ import { formatDuration } from '@/lib/duration';
 import type { DurationByUserRow, DurationStats, ReportFilters, ResponseBucketRow } from '@/types/omnichannel';
 import { DurationStatCard } from '../../components/duration-stat-card';
 import { ReportLoadingCard } from './report-loading-card';
+import { useFx } from '@/hooks/use-fx';
+import { FxBox } from '../../components/fx-report-parts';
 
 const BUCKET_COLUMNS: ColumnDef<ResponseBucketRow>[] = [
   { id: 'label', header: 'Response time', accessorFn: (r) => r.label, cell: ({ row }) => <span className="font-medium">{row.original.label}</span> },
@@ -42,7 +44,8 @@ export interface ResponsesReportProps {
 }
 
 export function ResponsesReport({ workspaceId, filters, groupBy, onGroupByChange }: ResponsesReportProps) {
-  const { report, loading, error } = useOmnichannelReport(workspaceId, 'responses', filters);
+  const { report, loading, error, reload } = useOmnichannelReport(workspaceId, 'responses', filters);
+  const fx = useFx();
 
   const grouped = groupBy === 'user';
   const bucketRows = (grouped ? undefined : (report?.rows as ResponseBucketRow[] | undefined)) ?? [];
@@ -59,8 +62,39 @@ export function ResponsesReport({ workspaceId, filters, groupBy, onGroupByChange
     [],
   );
 
+  if (fx && error) return <ReportLoadingCard errored onRetry={reload} />;
   if (loading || !report) return <ReportLoadingCard />;
   if (error) return <ReportLoadingCard errored />;
+
+  if (fx) {
+    return (
+      <div className="flex flex-col gap-4">
+        <DurationStatCard title="First response time" stats={report.totals as DurationStats} />
+        <FxBox
+          title="Response time breakdown"
+          aside={
+            <SearchSelect
+              ariaLabel="Group by"
+              className="w-40"
+              value={groupBy ?? 'none'}
+              onChange={(v) => onGroupByChange(v === 'none' ? null : v)}
+              options={groupByOptions}
+            />
+          }
+        >
+          {grouped ? (
+            <DataGrid table={userTable} recordCount={userRows.length} emptyMessage="Nothing in this range.">
+              <DataGridTable />
+            </DataGrid>
+          ) : (
+            <DataGrid table={bucketTable} recordCount={bucketRows.length} emptyMessage="Nothing in this range.">
+              <DataGridTable />
+            </DataGrid>
+          )}
+        </FxBox>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">

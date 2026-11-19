@@ -1,9 +1,11 @@
 'use client';
 
+import { useFxActor } from './use-fx-actor';
 import { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -29,6 +31,8 @@ export function ChannelTemplatesTab({ channelId }: { channelId: string }) {
   const [syncing, setSyncing] = useState(false);
   const [payloadOf, setPayloadOf] = useState<TemplateManageItem | null>(null);
   const [payloadJson, setPayloadJson] = useState('');
+  const fx = useFx();
+  const byWhom = useFxActor();
 
   const onSubmitTemplate = useCallback(
     () => router.push(templateNewPath(channelId)),
@@ -70,7 +74,8 @@ export function ChannelTemplatesTab({ channelId }: { channelId: string }) {
     setSyncing(true);
     try {
       await whatsappTemplateService.sync(channelId);
-      toast.success('Templates synced from Meta.');
+      if (fx) toast.fxDone({ what: 'Templates synced from Meta', byWhom: byWhom });
+      else toast.success('Templates synced from Meta.');
       setReloadKey((k) => k + 1);
     } catch {
       toast.error('Could not sync templates. Please try again.');
@@ -81,7 +86,21 @@ export function ChannelTemplatesTab({ channelId }: { channelId: string }) {
 
   return (
     <div className="flex flex-col gap-3">
-      {canManage && (
+      {canManage && fx && (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="fx-quiet"
+            className="h-auto min-h-9 px-4 text-(--fx-ink)"
+            onClick={() => !syncing && void runSync()}
+            aria-disabled={syncing || undefined}
+          >
+            {syncing ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : <RefreshCw aria-hidden="true" className="size-4" />}
+            Sync from Meta
+          </Button>
+        </div>
+      )}
+      {canManage && !fx && (
         <div className="flex justify-end">
           <Button variant="outline" size="sm" onClick={runSync} disabled={syncing}>
             {syncing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}

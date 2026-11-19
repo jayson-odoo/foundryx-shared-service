@@ -9,6 +9,8 @@ import { SearchSelect } from '@/components/platform/search-select';
 import { useOmnichannelReport } from '@/hooks/use-omnichannel-report';
 import type { MessageChannelRow, MessagesReportTotals, ReportFilters } from '@/types/omnichannel';
 import { ReportLoadingCard } from './report-loading-card';
+import { useFx } from '@/hooks/use-fx';
+import { FxBox } from '../../components/fx-report-parts';
 
 const CHANNEL_COLUMNS: ColumnDef<MessageChannelRow>[] = [
   { id: 'name', header: 'Channel', accessorFn: (r) => r.name, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
@@ -30,7 +32,8 @@ export interface MessagesReportProps {
 }
 
 export function MessagesReport({ workspaceId, filters, groupBy, onGroupByChange }: MessagesReportProps) {
-  const { report, loading, error } = useOmnichannelReport(workspaceId, 'messages', filters);
+  const { report, loading, error, reload } = useOmnichannelReport(workspaceId, 'messages', filters);
+  const fx = useFx();
 
   const grouped = groupBy === 'channel';
   const channelRows = (grouped ? (report?.rows as MessageChannelRow[] | undefined) : undefined) ?? [];
@@ -41,10 +44,44 @@ export function MessagesReport({ workspaceId, filters, groupBy, onGroupByChange 
     getCoreRowModel: getCoreRowModel(),
   });
 
+  if (fx && error) return <ReportLoadingCard errored onRetry={reload} />;
   if (loading || !report) return <ReportLoadingCard />;
   if (error) return <ReportLoadingCard errored />;
 
   const totals = report.totals as MessagesReportTotals;
+
+  const groupPicker = (
+    <SearchSelect
+      ariaLabel="Group by"
+      className="w-40"
+      value={groupBy ?? 'none'}
+      onChange={(v) => onGroupByChange(v === 'none' ? null : v)}
+      options={[
+        { label: 'Over time', value: 'none' },
+        { label: 'By channel', value: 'channel' },
+      ]}
+    />
+  );
+
+  if (fx) {
+    return (
+      <FxBox title={grouped ? 'Messages by channel' : 'Messages in and out'} aside={groupPicker}>
+        {grouped ? (
+          <DataGrid table={channelTable} recordCount={channelRows.length} emptyMessage="No messages in this range.">
+            <DataGridTable />
+          </DataGrid>
+        ) : (
+          <ReportChart
+            buckets={report.buckets}
+            series={report.series}
+            fxTotals={{ incoming: totals.incoming, outgoing: totals.outgoing }}
+            emptyMessage="No messages in this range."
+            className="h-72 w-full"
+          />
+        )}
+      </FxBox>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">

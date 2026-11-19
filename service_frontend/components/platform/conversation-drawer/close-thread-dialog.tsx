@@ -22,7 +22,9 @@ import {
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { ApiError } from '@/lib/api-client';
+import { useFx } from '@/hooks/use-fx';
 import type { CloseReason } from '@/types/omnichannel';
+import { FxCloseThreadDialog } from './fx/fx-close-thread-dialog';
 
 const NOTE_MAX = 2000;
 
@@ -31,9 +33,15 @@ export interface CloseThreadDialogProps {
   onOpenChange: (open: boolean) => void;
   reasons: CloseReason[];
   onClose: (closeReasonId: string, note: string) => Promise<unknown>;
+  /** Foundryx UIUX switch only: names the conversation in the question. */
+  contactName?: string;
 }
 
-export function CloseThreadDialog({ open, onOpenChange, reasons, onClose }: CloseThreadDialogProps) {
+export function CloseThreadDialog(props: CloseThreadDialogProps) {
+  return useFx() ? <FxCloseThreadDialog {...props} /> : <CloseThreadDialogLegacy {...props} />;
+}
+
+function CloseThreadDialogLegacy({ open, onOpenChange, reasons, onClose }: CloseThreadDialogProps) {
   const [reasonId, setReasonId] = useState('');
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
