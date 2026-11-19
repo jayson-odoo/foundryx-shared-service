@@ -131,7 +131,7 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
             <>
               <div className="flex flex-col items-start gap-1">
                 <p className="text-sm text-muted-foreground">
-                  We&apos;ll send a code to your WhatsApp {readable(phone)}
+                  We&apos;ll send a code to your WhatsApp <span className="whitespace-nowrap">{readable(phone)}</span>
                 </p>
                 <Button
                   type="button"

@@ -264,7 +264,9 @@ describe('the read-only share view', () => {
   it('code step reads like the CRM: number, Change number, resend countdown', async () => {
     mockPage();
     const code = await reachCodeStep();
-    expect(screen.getByText("We'll send a code to your WhatsApp +60 12 345 0002")).toBeInTheDocument();
+    expect(
+      screen.getByText((_, el) => el?.tagName === 'P' && el.textContent === "We'll send a code to your WhatsApp +60 12 345 0002"),
+    ).toBeInTheDocument();
     expect(code).toHaveAttribute('placeholder', '6-digit code');
     expect(code).toHaveAttribute('autocomplete', 'one-time-code');
     expect(screen.getByRole('button', { name: /^Resend in \d+s$/ })).toBeDisabled();
