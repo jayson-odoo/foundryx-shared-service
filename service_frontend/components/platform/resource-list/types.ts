@@ -64,6 +64,12 @@ interface ResourceActionCommon<T> {
   isVisible?: (rows: T[]) => boolean;
   /** Show but disable (e.g. "Send invitation" only for INVITED users). */
   isDisabled?: (rows: T[]) => boolean;
+  /**
+   * Foundryx UIUX switch only (F3b): why the action is greyed for these rows,
+   * shown as its tooltip in the selection bar ("2 are already sent").
+   * Ignored with the switch off.
+   */
+  fxDisabledReason?: (rows: T[]) => string | undefined;
 }
 
 /**
@@ -192,6 +198,10 @@ export interface FxListConfig<T> {
   columnKind?: Record<string, FxColumnKind>;
   /** Phone card lines (F3b): column ids per line, in order. */
   cardLines?: string[][];
+  /** What the list holds, plural and lower case ("products"), for its
+   *  empty, nothing-matches and couldn't-load words (F3b). Default: the
+   *  page title in lower case, else "records". */
+  noun?: string;
 }
 
 export interface ExportColumn {

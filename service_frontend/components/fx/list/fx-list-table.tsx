@@ -21,6 +21,10 @@
  *   of sideways movement (setting "Drag headers to move columns").
  * - **New rows fade in** (0.2 s) when the page, sort or filter changes; the
  *   old ones stay, dimmed, until the new ones arrive.
+ * - **Phones** (slice F3b): stacked cards instead of the table
+ *   (`FxPhoneCards`); **Hold to Copy** on the page's copyable columns; the
+ *   list's empty, nothing-matches and couldn't-load state in place of the
+ *   rows, under the header row.
  */
 import {
   Fragment,
@@ -64,7 +68,9 @@ import {
   useRowPendingDim,
 } from '@/components/ui/data-grid-table';
 import { Skeleton } from '@/components/ui/skeleton';
+import { FxHoldToCopy } from '@/components/fx/copy/hold-to-copy';
 import { FxColumnHeader } from './fx-column-header';
+import { FxPhoneCards } from './fx-phone-cards';
 import { FX_COLUMN_CAP, planSmartColumns, type FxColumnNeed } from './list-logic';
 
 /** Cell side padding (px-3, both sides). */
@@ -111,7 +117,21 @@ export interface FxListTableProps {
   /** Changes when a new page, sort or filter's rows arrive (fade-in key). */
   rowsKey: string;
   onMoveColumn: (activeId: string, overId: string) => void;
+  /** Phones: stacked cards instead of the table (F3b). */
+  phone?: boolean;
+  /** Columns whose values Hold to Copy copies (`fx.copyable`). */
+  copyable?: Set<string>;
+  /** Columns dropped from phone cards (`fx.phoneHidden`). */
+  phoneHidden?: Set<string>;
+  /** Status-like columns: a phone card's top line shows the first. */
+  statusIds?: Set<string>;
+  /** Phone card lines (`fx.cardLines`). */
+  cardLines?: string[][];
+  /** The list's state, shown in place of the rows (F3b). */
+  state?: ReactNode;
 }
+
+const NONE = new Set<string>();
 
 export function FxListTable({
   view,
@@ -120,6 +140,12 @@ export function FxListTable({
   shortIds,
   rowsKey,
   onMoveColumn,
+  phone = false,
+  copyable = NONE,
+  phoneHidden = NONE,
+  statusIds = NONE,
+  cardLines,
+  state,
 }: FxListTableProps) {
   const { table, props, isLoading, isPlaceholderData } = useDataGrid();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -143,7 +169,9 @@ export function FxListTable({
     const ro = new ResizeObserver(([entry]) => setAvailable(Math.floor(entry.contentRect.width)));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+    // Phone cards and the table are different elements: watch the new one
+    // when the list widens past the phone breakpoint (or narrows to it).
+  }, [phone]);
 
   useLayoutEffect(() => {
     const root = measureRef.current;
@@ -159,7 +187,9 @@ export function FxListTable({
       next[id] = Math.ceil(max) + CELL_PAD;
     });
     setNeeds((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
-  }, [rowsKey, columnIds, rows.length]);
+    // `phone`: the measuring copy only exists beside the table, so a list
+    // first shown as phone cards measures once it widens into a table.
+  }, [rowsKey, columnIds, rows.length, phone]);
 
   // --- the plan: which columns stay, which become info lines, how wide
   const plan = useMemo(() => {
@@ -242,6 +272,23 @@ export function FxListTable({
     ? `${Math.max(...infoColumns.map((c) => columnLabel(c).length)) + 2}ch`
     : undefined;
 
+  if (phone) {
+    return (
+      <div ref={wrapRef} data-fx-list-table="cards" className="relative min-w-0">
+        <div ref={bodyRef} data-slot="data-grid-scroller">
+          {state ?? (
+            <FxPhoneCards
+              phoneHidden={phoneHidden}
+              copyable={copyable}
+              statusIds={statusIds}
+              cardLines={cardLines}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div ref={wrapRef} data-fx-list-table={view} className="relative min-w-0">
       {/* What each column needs: its header and values at their natural
@@ -285,8 +332,12 @@ export function FxListTable({
           data-stuck={stuck || undefined}
           className={cn(
             'overflow-hidden border-b border-(--fx-line) bg-(--fx-surface) transition-shadow duration-(--fx-t-hover) ease-(--fx-ease-out)',
+            // Frozen right under the frozen page header, wherever it sits:
+            // `--fx-head-top` (the shell, css/demos/demo1.css) moves to the
+            // very top when the top bar merges into the page header, and the
+            // row glides with it; without the shell it is under the top bar.
             freeze &&
-              'sticky top-[calc(var(--header-height,0px)+var(--shell-top-offset,0px)+var(--fx-page-head-h,0px))] z-(--z-sticky-header) data-[stuck=true]:shadow-[0_8px_14px_-10px_var(--fx-shade)]',
+              'sticky top-[calc(var(--fx-head-top,calc(var(--header-height,0px)+var(--shell-top-offset,0px)))+var(--fx-page-head-h,0px))] z-(--z-sticky-header) data-[stuck=true]:shadow-[0_8px_14px_-10px_var(--fx-shade)] motion-safe:transition-[top,box-shadow] motion-safe:duration-(--fx-t-layout) motion-safe:ease-(--fx-ease-out)',
           )}
         >
           <table className="w-full table-fixed border-separate border-spacing-0 text-sm" style={tableStyle}>
@@ -331,17 +382,19 @@ export function FxListTable({
                 <tr key={i}>
                   {tableColumns.map((c) => (
                     <td key={c.id} className="px-3 py-3">
-                      {c.columnDef.meta?.skeleton ?? <Skeleton className="h-4 w-3/4" />}
+                      {c.columnDef.meta?.skeleton ?? (
+                        <Skeleton className="h-4 w-3/4" />
+                      )}
                     </td>
                   ))}
                 </tr>
               ))}
             </tbody>
-          ) : rows.length === 0 ? (
+          ) : state || rows.length === 0 ? (
             <tbody>
               <tr>
-                <td colSpan={Math.max(1, tableColumns.length)} className="py-6 text-center text-(--fx-ink-3)">
-                  {props.emptyMessage || 'No data available'}
+                <td colSpan={Math.max(1, tableColumns.length)} className="p-0 text-center text-(--fx-ink-3)">
+                  {state ?? <div className="py-6">{props.emptyMessage || 'No data available'}</div>}
                 </td>
               </tr>
             </tbody>
@@ -356,6 +409,7 @@ export function FxListTable({
                   infoColumns={infoColumns}
                   labelWidth={labelWidth}
                   primaryIndex={primaryIndex}
+                  copyable={copyable}
                 />
               ))}
             </Fragment>
@@ -408,6 +462,7 @@ function FxBodyRow<TData>({
   infoColumns,
   labelWidth,
   primaryIndex,
+  copyable,
 }: {
   row: Row<TData>;
   href: string | undefined;
@@ -415,6 +470,7 @@ function FxBodyRow<TData>({
   infoColumns: Column<TData, unknown>[];
   labelWidth: string | undefined;
   primaryIndex: number;
+  copyable: Set<string>;
 }) {
   const { props, table } = useDataGrid();
   const router = useRouter();
@@ -468,7 +524,11 @@ function FxBodyRow<TData>({
         <Fragment key={cell.id}>
           <dt className="text-xs leading-5 text-(--fx-ink-3)">{columnLabel(cell.column)} :</dt>
           <dd className="min-w-0 break-words text-start text-(--fx-ink)">
-            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+            {copyable.has(cell.column.id) ? (
+              <FxHoldToCopy>{flexRender(cell.column.columnDef.cell, cell.getContext())}</FxHoldToCopy>
+            ) : (
+              flexRender(cell.column.columnDef.cell, cell.getContext())
+            )}
           </dd>
         </Fragment>
       ))}
@@ -507,7 +567,8 @@ function FxBodyRow<TData>({
         className="focus-visible:outline-hidden focus-visible:[&>td]:shadow-[inset_0_2px_0_var(--fx-link),inset_0_-2px_0_var(--fx-link)]"
       >
         {cells.map((cell) => {
-          const content = flexRender(cell.column.columnDef.cell, cell.getContext());
+          const rendered = flexRender(cell.column.columnDef.cell, cell.getContext());
+          const content = copyable.has(cell.column.id) ? <FxHoldToCopy>{rendered}</FxHoldToCopy> : rendered;
           const isPrimary = cell.column.getIndex() === primaryIndex;
           return (
             <td

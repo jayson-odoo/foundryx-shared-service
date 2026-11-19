@@ -21,10 +21,18 @@
  *   unless the page names another (`config.fx.mainActionId`); toolbar
  *   buttons are icon actions.
  *
- * Not here yet (slice F3b): the selection bar, empty and error states, phone
- * cards, Hold to Copy. The legacy bulk bar and empty row stand in meanwhile.
+ * Slice F3b adds:
+ * - the selection bar over the filter bar once a row is ticked
+ *   (`FxSelectionBar`): "3 selected", "Select all n" across pages, the bulk
+ *   actions as icon actions, Export and ×; floating at the lower edge on
+ *   phones;
+ * - the empty, nothing-matches, couldn't-load and no-access states
+ *   (`FxListState`), smaller inside a record's tab;
+ * - phone cards under 720px (`FxPhoneCards`), the view toggle hidden;
+ * - Hold to Copy on the page's copyable columns (`config.fx.copyable`);
+ * - the export panel's words (`ExportDialog` with the switch on).
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, useSortable } from '@dnd-kit/sortable';
@@ -45,6 +53,7 @@ import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useFxSetting } from '@/hooks/use-fx';
 import { useFxListPrefs, type FxColumnsView, type FxListView } from '@/hooks/use-fx-list-prefs';
+import { useMediaQuery } from '@/hooks/use-media-query';
 import { useResourceList } from '@/hooks/use-resource-list';
 import { useImportActivity } from '@/providers/import-activity-provider';
 import { Button } from '@/components/ui/button';
@@ -58,7 +67,6 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { ListSearchInput } from '@/components/platform/list-search-input';
 import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
-import { BulkActions } from '@/components/platform/resource-actions/bulk-actions';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ExportDialog } from '@/components/platform/resource-list/export-dialog';
 import { FilterBuilder } from '@/components/platform/resource-list/filter-builder';
@@ -79,6 +87,11 @@ import {
   type FxHeaderValue,
 } from './list-logic';
 import { FxPager } from './fx-pager';
+import { FxListState, fxListStateKind } from './fx-list-state';
+import { FxSelectionBar } from './fx-selection-bar';
+
+/** Phones show cards (playbook "Responsive": 720px and below). */
+export const FX_PHONE_QUERY = '(max-width: 719px)';
 
 /** Same grip as the legacy list's row reorder (rows keep that table). */
 function RowDragGrip({ rowId }: { rowId: string }) {
@@ -100,6 +113,8 @@ function RowDragGrip({ rowId }: { rowId: string }) {
     </Button>
   );
 }
+
+const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 function countConditions(group: { rules: unknown[] } | null | undefined): number {
   if (!group) return 0;
@@ -184,7 +199,19 @@ export function FxResourceList<T extends object>({
     onFilterChange?.(list.filter);
   }, [list.filter, onFilterChange]);
 
-  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const [rowSelection, setRowSelectionState] = useState<RowSelectionState>({});
+  // "Select all n": every match across pages, not only the ticked rows.
+  const [allMatching, setAllMatching] = useState(false);
+  const setRowSelection = (next: RowSelectionState | ((prev: RowSelectionState) => RowSelectionState)) => {
+    setRowSelectionState((prev) => {
+      const value = typeof next === 'function' ? next(prev) : next;
+      if (Object.values(value).filter(Boolean).length < Object.values(prev).filter(Boolean).length) {
+        setAllMatching(false);
+      }
+      return value;
+    });
+  };
+  const phone = useMediaQuery(FX_PHONE_QUERY);
 
   const segmentIds = config.segments?.map((s) => s.id).join(' ');
   useEffect(() => {
@@ -195,6 +222,15 @@ export function FxResourceList<T extends object>({
     list.setSegment(config.segments[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- segmentIds is the stable dep for config.segments' identity
   }, [segmentIds, list.segment, config.segmentsReady]);
+  // A new search, filter, sort or view is a new set of matches: the ticks go.
+  const matchKey = encodeListQuery({ ...list.query, page: 0 });
+  const lastMatchKey = useRef(matchKey);
+  useEffect(() => {
+    if (lastMatchKey.current === matchKey) return;
+    lastMatchKey.current = matchKey;
+    setRowSelectionState({});
+    setAllMatching(false);
+  }, [matchKey]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -341,6 +377,13 @@ export function FxResourceList<T extends object>({
     [defaultOrder, config.fx?.columnKind, config.filterFields],
   );
 
+  const copyable = useMemo(() => new Set(config.fx?.copyable ?? []), [config.fx?.copyable]);
+  const phoneHidden = useMemo(() => new Set(config.fx?.phoneHidden ?? []), [config.fx?.phoneHidden]);
+  const statusIds = useMemo(
+    () => new Set(Object.entries(kinds).filter(([, k]) => k === 'status').map(([id]) => id)),
+    [kinds],
+  );
+
   const defaultSort = config.defaultSort ?? null;
   const headerCtx = useMemo<FxListHeaderContextValue>(
     () => ({
@@ -439,10 +482,64 @@ export function FxResourceList<T extends object>({
 
   async function handleExport(columnIds: string[]) {
     if (!config.exporter) return;
-    const csv = await config.exporter(list.query, columnIds, selectedIds.length ? selectedIds : undefined);
+    const ids = !allMatching && selectedIds.length ? selectedIds : undefined;
+    const csv = await config.exporter(list.query, columnIds, ids);
     downloadCsv(`${config.exportFilename ?? 'export'}.csv`, csv);
     setRowSelection({});
+    setAllMatching(false);
   }
+
+  // --- the list's state: nothing yet, nothing matches, couldn't load, no access
+  const headerFilterIds = Object.keys(filters.header);
+  const filtered = Boolean(list.search.trim()) || filterCount > 0 || headerFilterIds.length > 0;
+  const stateKind = fxListStateKind({
+    error: list.error,
+    errorStatus: list.errorStatus,
+    isLoading: list.isLoading,
+    rowCount: list.data.length,
+    filtered,
+  });
+  const noun = config.fx?.noun ?? config.pageTitle?.toLowerCase() ?? 'records';
+  const onlyHeaderText =
+    !list.search.trim() && filterCount === 0 && headerFilterIds.length === 1
+      ? filters.header[headerFilterIds[0]]
+      : undefined;
+  const searchColumn =
+    onlyHeaderText?.kind === 'text'
+      ? (() => {
+          const col = table.getColumn(headerFilterIds[0]);
+          return col ? columnLabel(col as Column<unknown, unknown>) : undefined;
+        })()
+      : undefined;
+  const clearFilters = () => {
+    list.setSearch('');
+    setFilters({ panel: null, header: {} });
+  };
+  const stateNode: ReactNode = stateKind ? (
+    <FxListState
+      kind={stateKind}
+      compact={Boolean(hideHeader)}
+      noun={noun}
+      title={config.pageTitle ?? cap(noun)}
+      canCreate={Boolean(config.onCreate) && (!config.createPermission || can(config.createPermission))}
+      trashed={list.statusView === 'trashed'}
+      search={list.search.trim() || (onlyHeaderText?.kind === 'text' ? onlyHeaderText.text.trim() : undefined)}
+      column={searchColumn}
+      onClearFilters={clearFilters}
+      onRetry={list.reload}
+      onBack={() => router.back()}
+    />
+  ) : null;
+
+  // --- selection
+  const tickedCount = selectedRows.length;
+  const selectionCount = allMatching ? list.total : tickedCount;
+  // The bar lies over the filter bar (wider screens); what it covers is inert.
+  const barOver = selectionCount > 0 && !phone;
+  const selectAll = () => {
+    setRowSelectionState(Object.fromEntries(list.data.map((r) => [config.getRowId(r), true])));
+    if (list.total > list.data.length) setAllMatching(true);
+  };
 
   // --- the red action: the list's own Create, unless the page names another
   const mayCreate = Boolean(config.onCreate) && (!config.createPermission || can(config.createPermission));
@@ -465,7 +562,7 @@ export function FxResourceList<T extends object>({
   useRegisterMainAction(mainSpec);
 
   const listStyle = { '--fx-page-head-h': `${pageHeadH}px` } as CSSProperties;
-  const showToggle = viewsOn && !config.rowReorder;
+  const showToggle = viewsOn && !config.rowReorder && !phone;
   const cardView = view === 'card';
 
   const viewToggle = showToggle && (
@@ -526,8 +623,8 @@ export function FxResourceList<T extends object>({
           style={listStyle}
           className="flex min-w-0 flex-col rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface) text-(--fx-ink)"
         >
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-(--fx-line) p-3">
-            <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+          <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-(--fx-line) p-3">
+            <div inert={barOver || undefined} className="flex min-w-0 flex-wrap items-center gap-2.5">
               <ListSearchInput
                 className="w-64 max-w-full"
                 value={list.search}
@@ -600,69 +697,74 @@ export function FxResourceList<T extends object>({
               )}
             </div>
 
-            {selectedRows.length > 0 ? (
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <span className="text-sm text-(--fx-ink-2)">{selectedRows.length} selected</span>
-                <BulkActions
-                  actions={config.actions}
-                  rows={selectedRows}
-                  runtime={runtime}
-                  getEntityId={config.getEntityId}
-                  onDeferredCommitted={config.onDeferredCommitted}
-                />
-                {canExport && <FxIconAction label="Export" icon="export" onClick={() => setExportOpen(true)} />}
-                <FxIconAction label="Clear selection" icon="close" onClick={() => setRowSelection({})} />
-              </div>
-            ) : (
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                {config.filterFields.length > 0 && (
-                  <Popover open={filterOpen} onOpenChange={setFilterOpen}>
-                    <FxTooltip label="Filters">
-                      <PopoverTrigger asChild>
-                        <FxIconActionButton
-                          label={filterCount > 0 ? `Filters (${filterCount})` : 'Filters'}
-                          icon="filter"
-                          className={cn(filterCount > 0 && 'border-(--fx-link) text-(--fx-link)')}
-                        />
-                      </PopoverTrigger>
-                    </FxTooltip>
-                    <PopoverContent align="end" className="w-auto p-3">
-                      <FilterBuilder
-                        fields={config.filterFields}
-                        initialValue={filters.panel}
-                        onApply={(g) => setFilters((prev) => ({ ...prev, panel: g }))}
-                        onClose={() => setFilterOpen(false)}
-                      />
-                    </PopoverContent>
-                  </Popover>
-                )}
-                {config.importer && can(config.importer.writePermission) && (
-                  <FxIconAction
-                    label="Import"
-                    icon="import"
-                    onClick={() =>
-                      openImport({ entityType: config.importer!.entityType, context: config.importer!.context })
-                    }
-                  />
-                )}
-                {canExport && <FxIconAction label="Export" icon="export" onClick={() => setExportOpen(true)} />}
-                {mayCreate && !createIsMain && (
-                  <FxIconAction label={createLabel} icon="add" onClick={config.onCreate} />
-                )}
-                {viewToggle}
-                {columnsOn && !cardView && (
-                  <FxColumnsPanel
-                    view={columnsView}
-                    columns={panelColumns}
-                    hidden={viewColumns.hidden}
-                    same={prefs.same}
-                    onSame={(same) => prefs.setSame(same, columnsView)}
-                    onChange={setViewColumns}
-                    onReset={() => setViewColumns([], [])}
-                  />
-                )}
-              </div>
+            {selectionCount > 0 && (
+              <FxSelectionBar
+                count={selectionCount}
+                total={list.total}
+                allMatching={allMatching}
+                onSelectAll={selectAll}
+                onClear={() => {
+                  setRowSelectionState({});
+                  setAllMatching(false);
+                }}
+                onExport={canExport ? () => setExportOpen(true) : undefined}
+                iconFor={config.fx?.iconFor}
+                floating={phone}
+                actions={config.actions}
+                rows={selectedRows}
+                runtime={runtime}
+                getEntityId={config.getEntityId}
+                onDeferredCommitted={config.onDeferredCommitted}
+              />
             )}
+            <div inert={barOver || undefined} className="flex flex-wrap items-center justify-end gap-2">
+              {config.filterFields.length > 0 && (
+                <Popover open={filterOpen} onOpenChange={setFilterOpen}>
+                  <FxTooltip label="Filters">
+                    <PopoverTrigger asChild>
+                      <FxIconActionButton
+                        label={filterCount > 0 ? `Filters (${filterCount})` : 'Filters'}
+                        icon="filter"
+                        className={cn(filterCount > 0 && 'border-(--fx-link) text-(--fx-link)')}
+                      />
+                    </PopoverTrigger>
+                  </FxTooltip>
+                  <PopoverContent align="end" className="w-auto p-3">
+                    <FilterBuilder
+                      fields={config.filterFields}
+                      initialValue={filters.panel}
+                      onApply={(g) => setFilters((prev) => ({ ...prev, panel: g }))}
+                      onClose={() => setFilterOpen(false)}
+                    />
+                  </PopoverContent>
+                </Popover>
+              )}
+              {config.importer && can(config.importer.writePermission) && (
+                <FxIconAction
+                  label="Import"
+                  icon="import"
+                  onClick={() =>
+                    openImport({ entityType: config.importer!.entityType, context: config.importer!.context })
+                  }
+                />
+              )}
+              {canExport && <FxIconAction label="Export" icon="csv-down" onClick={() => setExportOpen(true)} />}
+              {mayCreate && !createIsMain && (
+                <FxIconAction label={createLabel} icon="add" onClick={config.onCreate} />
+              )}
+              {viewToggle}
+              {columnsOn && !cardView && !phone && (
+                <FxColumnsPanel
+                  view={columnsView}
+                  columns={panelColumns}
+                  hidden={viewColumns.hidden}
+                  same={prefs.same}
+                  onSame={(same) => prefs.setSame(same, columnsView)}
+                  onChange={setViewColumns}
+                  onReset={() => setViewColumns([], [])}
+                />
+              )}
+            </div>
           </div>
 
           {cardView ? (
@@ -677,8 +779,8 @@ export function FxResourceList<T extends object>({
                     </div>
                   ))}
                 </div>
-              ) : list.data.length === 0 ? (
-                <div className="py-16 text-center text-sm text-(--fx-ink-3)">No records</div>
+              ) : stateNode ? (
+                stateNode
               ) : (
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {list.data.map((row) => {
@@ -749,24 +851,33 @@ export function FxResourceList<T extends object>({
                 shortIds={shortIds}
                 rowsKey={ctx}
                 onMoveColumn={moveColumn}
+                phone={phone}
+                copyable={copyable}
+                phoneHidden={phoneHidden}
+                statusIds={statusIds}
+                cardLines={config.fx?.cardLines}
+                state={stateNode}
               />
             </FxListHeaderContext.Provider>
           )}
 
-          <FxPager
-            pageIndex={list.page}
-            pageSize={list.pageSize}
-            total={list.total}
-            onPage={changePage}
-            onPageSize={list.setPageSize}
-          />
+          {!(stateKind && stateKind !== 'no-match') && list.total > 0 && (
+            <FxPager
+              pageIndex={list.page}
+              pageSize={list.pageSize}
+              total={list.total}
+              onPage={changePage}
+              onPageSize={list.setPageSize}
+            />
+          )}
         </section>
 
         <ExportDialog
           open={exportOpen}
           onOpenChange={setExportOpen}
           columns={config.exportColumns}
-          selectedCount={selectedIds.length}
+          selectedCount={allMatching ? 0 : selectedIds.length}
+          totalCount={list.total}
           onExport={handleExport}
         />
       </DataGrid>

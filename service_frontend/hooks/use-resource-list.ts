@@ -50,6 +50,11 @@ export interface UseResourceListResult<T> {
    */
   isPlaceholderData: boolean;
   error: string | null;
+  /**
+   * The HTTP status of the failed load (403 = no access), or null. Read only
+   * by the Foundryx UIUX list's states; the legacy list ignores it.
+   */
+  errorStatus: number | null;
 
   page: number;
   pageSize: number;
@@ -100,6 +105,7 @@ export function useResourceList<T>({
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   // 200ms (AC-DLA-54) - `ListSearchInput`'s own settling indicator debounces
@@ -158,13 +164,17 @@ export function useResourceList<T>({
         setData(result.data);
         setTotal(result.total);
         setError(null);
+        setErrorStatus(null);
         // This query is now the one the rows on screen belong to - flips
         // `isPlaceholderData` off for it and lets a caller trust `loadedQuery`
         // for indexing again.
         setLoadedQuery(query);
       })
       .catch((e: unknown) => {
-        if (active) setError(e instanceof Error ? e.message : 'Failed to load.');
+        if (!active) return;
+        setError(e instanceof Error ? e.message : 'Failed to load.');
+        const status = (e as { status?: unknown } | null)?.status;
+        setErrorStatus(typeof status === 'number' ? status : null);
       })
       .finally(() => {
         if (active && !clamping) setIsLoading(false);
@@ -192,6 +202,7 @@ export function useResourceList<T>({
     isLoading,
     isPlaceholderData,
     error,
+    errorStatus,
     page,
     pageSize,
     search,
