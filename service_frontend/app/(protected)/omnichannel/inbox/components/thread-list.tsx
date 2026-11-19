@@ -20,10 +20,13 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { ConversationFilters } from '@/hooks/use-conversations';
+import { useFx } from '@/hooks/use-fx';
 import { cn } from '@/lib/utils';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { channelCapabilities } from '@/lib/channel-capabilities';
 import type { ConversationThread } from '@/types/omnichannel';
+
+import { FxThreadList } from './fx/fx-thread-list';
 
 export interface ThreadListProps {
   threads: ConversationThread[];
@@ -33,6 +36,10 @@ export interface ThreadListProps {
   setFilters: (patch: Partial<ConversationFilters>) => void;
   selectedId: string | null;
   onSelect: (contactId: string) => void;
+  /** Foundryx UIUX only: "Try again" after a failed load. */
+  onRetry?: () => void;
+  /** Foundryx UIUX only: "Clear filters" when nothing matches. */
+  onClearFilters?: () => void;
 }
 
 function initials(name: string): string {
@@ -54,7 +61,13 @@ function relativeTime(iso: string | null): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-export function ThreadList({
+export function ThreadList(props: ThreadListProps) {
+  // Foundryx UIUX switch (playbook-uiux.md): the playbook list. Off renders
+  // the legacy body below, unchanged.
+  return useFx() ? <FxThreadList {...props} /> : <ThreadListLegacy {...props} />;
+}
+
+function ThreadListLegacy({
   threads,
   isLoading,
   error,
