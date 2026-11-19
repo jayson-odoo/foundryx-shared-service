@@ -23,7 +23,17 @@ from tests.test_ideation_public_status import (  # noqa: F401
     setup,
 )
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+def _real_png() -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), (200, 30, 30)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+PNG = _real_png()
 
 
 @pytest.fixture(autouse=True)
@@ -80,24 +90,27 @@ def _shared_item(s, n):
 # ── share route ────────────────────────────────────────────────────────────────
 
 
-def test_share_detail_points_files_at_the_share_route(setup):
+def test_share_view_keeps_report_files_withheld(setup):
+    """Owner ruling (b): the share view never shows the report's own files -
+    not in the detail, and not through the new share content route either."""
     s = setup
     iid, aid, token = _shared_item(s, 701)
     body = s["client"].get(f"/portal/ideas/shared/{token}").json()
-    paths = [a["contentPath"] for a in body["attachments"]]
-    assert paths == [f"/portal/ideas/shared/{token}/{iid}/attachments/{aid}/content"]
+    assert "attachments" not in body
+    assert s["client"].get(f"/portal/ideas/shared/{token}/{iid}/attachments/{aid}/content").status_code == 404
 
 
 def test_share_image_serves_bytes_without_authorization(setup):
     s = setup
-    iid, aid, token = _shared_item(s, 702)
-    path = s["client"].get(f"/portal/ideas/shared/{token}").json()["attachments"][0]["contentPath"]
+    iid, _aid, token = _shared_item(s, 702)
+    caid = _comment_with_file(s, iid)
+    path = f"/portal/ideas/shared/{token}/{iid}/attachments/{caid}/content"
     res = s["client"].get(path)
     assert res.status_code == 200, res.text
     assert res.content == PNG
     assert res.headers["x-content-type-options"] == "nosniff"
     assert "sandbox" in res.headers["content-security-policy"]
-    assert "private" in res.headers["cache-control"]
+    assert res.headers["cache-control"] == "private, no-cache"
     thumb = s["client"].get(f"{path}?variant=thumb")
     assert thumb.status_code == 200, thumb.text
 
@@ -119,7 +132,8 @@ def test_share_comment_file_serves_from_the_share_route(setup):
 def test_share_token_cannot_read_another_items_file(setup):
     s = setup
     _iid, _aid, token = _shared_item(s, 704)
-    other_iid, other_aid, _other_token = _shared_item(s, 705)
+    other_iid, _x, _other_token = _shared_item(s, 705)
+    other_aid = _comment_with_file(s, other_iid)
     # The other item's file through THIS item's token, with either idea id.
     c = s["client"]
     assert c.get(f"/portal/ideas/shared/{token}/{other_iid}/attachments/{other_aid}/content").status_code == 404
@@ -128,7 +142,8 @@ def test_share_token_cannot_read_another_items_file(setup):
 
 def test_share_revoked_token_404(setup):
     s = setup
-    iid, aid, token = _shared_item(s, 706)
+    iid, _aid, token = _shared_item(s, 706)
+    aid = _comment_with_file(s, iid)
     assert s["client"].delete(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).status_code == 204
     res = s["client"].get(f"/portal/ideas/shared/{token}/{iid}/attachments/{aid}/content")
     assert res.status_code == 404
@@ -136,7 +151,8 @@ def test_share_revoked_token_404(setup):
 
 def test_share_hidden_item_404(setup):
     s = setup
-    iid, aid, token = _shared_item(s, 707)
+    iid, _aid, token = _shared_item(s, 707)
+    aid = _comment_with_file(s, iid)
     _set(s, iid, portal_hidden=True)
     assert s["client"].get(f"/portal/ideas/shared/{token}/{iid}/attachments/{aid}/content").status_code == 404
 
@@ -204,7 +220,8 @@ def _assert_streamed(res):
 
 def test_share_route_streams_not_redirects(setup, presigning):
     s = setup
-    iid, aid, token = _shared_item(s, 710)
+    iid, _aid, token = _shared_item(s, 710)
+    aid = _comment_with_file(s, iid)
     res = s["client"].get(f"/portal/ideas/shared/{token}/{iid}/attachments/{aid}/content", follow_redirects=False)
     _assert_streamed(res)
 
@@ -229,7 +246,8 @@ def test_missing_blob_404_not_500(setup, monkeypatch):
     from app.services import storage
 
     s = setup
-    iid, aid, token = _shared_item(s, 713)
+    iid, _aid, token = _shared_item(s, 713)
+    aid = _comment_with_file(s, iid)
     real = storage.storage_for_tenant
 
     class _Gone(_PresigningStorage):

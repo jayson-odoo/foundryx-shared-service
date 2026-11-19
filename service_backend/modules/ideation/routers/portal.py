@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.database import get_db
-from app.api.v1.documents import _serve_blob
+from app.api.v1.documents import stream_blob
 from app.dependencies import get_current_user, get_real_user
 from app.models.user import User
 
@@ -59,6 +59,7 @@ from ..services.portal import (
     session_for_embed,
     session_for_link,
     session_for_staff,
+    share_content_prefix,
     share_principal,
 )
 
@@ -271,7 +272,7 @@ def _share(db: Session, token: str):
         p, idea_id = share_principal(db, token)
     except PortalError as exc:
         _raise(exc)
-    return _svc(db, p), idea_id
+    return IdeaPortalService(db, p, content_prefix=share_content_prefix(token)), idea_id
 
 
 @router.get("/shared/{token}", response_model=PortalIdeaOut, response_model_exclude_unset=True)
@@ -303,6 +304,29 @@ def shared_activity(
         return svc.activity(idea_id, order=order)
     except PortalError as exc:
         _raise(exc)
+
+
+@router.get("/shared/{token}/{idea_id}/attachments/{attachment_id}/content")
+def shared_attachment_content(
+    token: str,
+    idea_id: str,
+    attachment_id: str,
+    variant: Optional[str] = Query(default=None, pattern="^thumb$"),
+    db: Session = Depends(get_db),
+):
+    """A file on the shared item (lane FEEDBACK-IMAGE-PREVIEW): the share token
+    is the credential (no Authorization header - the share page has none), and
+    it reads only its own item's files under the same rules as the share page
+    itself; revoked / unknown token or another item's file = uniform 404."""
+    svc, shared_id = _share(db, token)
+    try:
+        key, mime, filename = svc.shared_attachment_content(shared_id, idea_id, attachment_id, variant)
+    except PortalError as exc:
+        _raise(exc)
+    response = stream_blob(db, svc.p.tenant_id, key, mime, filename, "inline")
+    # Revalidate every time: a revoked link must stop serving a cached copy.
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
 
 
 @router.post("/shared/{token}/phone/send-code", response_model=SharePhoneSentOut)
@@ -480,7 +504,7 @@ def attachment_content(
         key, mime, filename = _svc(db, p).attachment_content(idea_id, attachment_id, variant)
     except PortalError as exc:
         _raise(exc)
-    response = _serve_blob(db, p.tenant_id, key, mime, filename, "inline")
+    response = stream_blob(db, p.tenant_id, key, mime, filename, "inline")
     # Always revalidate: a browser cache ignores the Authorization header, so a
     # deleted comment's file or a second person on a shared device must never
     # get a cached copy back without the server's say-so.

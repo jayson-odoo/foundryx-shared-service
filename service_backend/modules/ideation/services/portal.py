@@ -139,6 +139,14 @@ WITHHELD_DETAIL_KEYS = WITHHELD_CARD_KEYS + (
 PORTAL_CONTENT_PREFIX = "/portal/ideas"
 
 
+def share_content_prefix(token: str) -> str:
+    """Where a share link's page reads its files: the token-checked share route
+    (the share page has no portal session to send)."""
+    from urllib.parse import quote
+
+    return f"{PORTAL_CONTENT_PREFIX}/shared/{quote(token, safe='')}"
+
+
 def as_use_case_list(value: Any) -> Optional[List[str]]:
     """``use_cases`` as a list of non-empty strings (IDEA-CORE stores JSON
     list[str]; a textarea / older captured answer is one use case per line,
@@ -564,9 +572,14 @@ def _status_map(db: Session, tenant_id: str) -> _StatusMap:
 
 
 class IdeaPortalService:
-    def __init__(self, db: Session, principal: PortalPrincipal):
+    def __init__(self, db: Session, principal: PortalPrincipal, content_prefix: str = PORTAL_CONTENT_PREFIX):
         self.db = db
         self.p = principal
+        # Where this caller's files are served from: the portal route (portal
+        # token) or, for a read-only share link, the share route (the share
+        # token is the only credential that page has - lane
+        # FEEDBACK-IMAGE-PREVIEW).
+        self.content_prefix = content_prefix
         self._smap: Optional[_StatusMap] = None
 
     @property
@@ -879,7 +892,7 @@ class IdeaPortalService:
             out[wire] = self._core_field(idea, attr)
         out["note"] = idea.portal_note
         out["attachments"] = IdeaAttachmentService(self.db).report_level(
-            idea.tenant_id, idea.id, PORTAL_CONTENT_PREFIX
+            idea.tenant_id, idea.id, self.content_prefix
         )
         # Lane FEEDBACK-SUBSCRIBE: follower count + "Following" for this viewer.
         # crew s4: the board hides Share / Follow on a test item.
@@ -1107,7 +1120,7 @@ class IdeaPortalService:
     # ---- comments ----------------------------------------------------------
 
     def _comment_rows(self, idea: Idea) -> List[Dict[str, Any]]:
-        rows = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).list(
+        rows = IdeaCommentService(self.db, self.content_prefix).list(
             idea.tenant_id, idea.id, self.p.viewer, project_names=True
         )
         ids = [r.id for r in rows]
@@ -1152,7 +1165,7 @@ class IdeaPortalService:
             throttle.enforce_idea_portal_comment(principal_key=key)
         except Throttled as exc:
             raise PortalError(429, "too_many_comments", "Too many comments. Try again later.", exc.retry_after_seconds)
-        created = IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).create(
+        created = IdeaCommentService(self.db, self.content_prefix).create(
             idea.tenant_id,
             idea.id,
             body=body,
@@ -1175,7 +1188,7 @@ class IdeaPortalService:
 
         idea = self._resolve(idea_id, follow_merge=False)
         if comment_id:
-            IdeaCommentService(self.db, PORTAL_CONTENT_PREFIX).assert_author(
+            IdeaCommentService(self.db, self.content_prefix).assert_author(
                 idea.tenant_id, idea.id, comment_id, self.p.viewer
             )
         elif not (self.p.can_manage or self._is_owned(idea.id)):
@@ -1199,7 +1212,7 @@ class IdeaPortalService:
             idea.id,
             filename,
             content,
-            content_prefix=PORTAL_CONTENT_PREFIX,
+            content_prefix=self.content_prefix,
             comment_id=comment_id or None,
         )
 
@@ -1257,6 +1270,19 @@ class IdeaPortalService:
                 raise _not_found()
             raise
         return found
+
+    def shared_attachment_content(
+        self, shared_idea_id: str, idea_id: str, attachment_id: str, variant: Optional[str] = None
+    ) -> Tuple[str, str, str]:
+        """A share link's file read (lane FEEDBACK-IMAGE-PREVIEW): only the
+        shared item's own files - the path's idea must resolve to the item the
+        token shares (a merged child's comment files show on its survivor), then
+        the SAME rules as :meth:`attachment_content`. Anything else is the
+        uniform 404 (never says whether the file exists)."""
+        shown = self._resolve(shared_idea_id, follow_merge=True)
+        if self._resolve(idea_id, follow_merge=True).id != shown.id:
+            raise _not_found()
+        return self.attachment_content(idea_id, attachment_id, variant)
 
     def delete_comment(self, idea_id: str, comment_id: str) -> None:
         idea = self._resolve(idea_id, follow_merge=True)
