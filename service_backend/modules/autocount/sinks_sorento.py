@@ -1541,13 +1541,13 @@ class SorentoSink:
         # state - the CALLER (the runner) is what actually withholds the
         # ledger/issue writes; this flag only controls the wire query param.
         dry_run: bool = False,
-        # DO-BACKFILL-SS - True ONLY for a delivery-orders doc-feed backfill
-        # run (`runner.run_backfill`): adds `"backfill": true` to every ingest
-        # envelope so the CRM takes its quiet ingest mode (no cancel relink,
-        # no embeddings). The CRM 422s the flag on any other entity, so a GRN
-        # backfill, poll, sweep re-check and sync pushes all leave it False
-        # and post the exact same body as before - the key is omitted, never
-        # sent as `false`.
+        # DO-BACKFILL-SS - True ONLY for a doc-feed backfill run
+        # (`runner.run_backfill`, delivery orders and goods receive notes):
+        # adds `"backfill": true` to every ingest envelope so the CRM takes its
+        # quiet ingest mode (no cancel relink / receipt hook, no embeddings).
+        # Poll, sweep re-check and sync pushes all leave it False and post the
+        # exact same body as before - the key is omitted, never sent as
+        # `false`.
         backfill: bool = False,
     ) -> List[WriteResult]:
         """Deliver a batch and return one ``WriteResult`` per input record that

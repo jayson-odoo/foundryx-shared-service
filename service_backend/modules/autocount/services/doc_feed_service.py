@@ -173,6 +173,11 @@ class DocFeedService:
             lastPollOkAt=row.last_poll_ok_at if row else None,
             lastSweepOkAt=row.last_sweep_ok_at if row else None,
             fullBackfillDoneAt=row.full_backfill_done_at if row else None,
+            backfillFloor=date.fromisoformat(BACKFILL_FROM_DEFAULT),
+            fullBackfillFromDay=(
+                self.backfills.earliest_completed_live_from_day(tenant_id, row.id)
+                if row and row.full_backfill_done_at is not None else None
+            ),
             contractGate=DocFeedContractGateOut(**gate) if gate else None,
             retryableCount=counts.get("retryable", 0),
             failedCount=counts.get("failed", 0),
@@ -436,9 +441,18 @@ class DocFeedService:
             )
 
         if not dry_run and from_day_value <= default_from and row.full_backfill_done_at is not None:
-            raise DocFeedConflictError(
-                "BACKFILL_ALREADY_DONE", "The full-history backfill has already completed."
-            )
+            # SLOW-MOVING-BACKFILL S0.3 - compare against the from-day the
+            # completed live run started at, not the floor constant: a feed
+            # backfilled from an older (later) floor accepts ONE run from the
+            # new, earlier floor; a second one from the same day is refused.
+            # No completed live row on record (legacy stamp) = refuse, as before.
+            # (Days before the floor already 422 above, so in practice this
+            # branch is reached only by a live start ON the floor day.)
+            done_from = self.backfills.earliest_completed_live_from_day(tenant_id, row.id)
+            if done_from is None or from_day_value >= done_from:
+                raise DocFeedConflictError(
+                    "BACKFILL_ALREADY_DONE", "The full-history backfill has already completed."
+                )
 
         backfill = AcDocFeedBackfill(
             tenant_id=tenant_id, company_id=company_id, feed_id=row.id, feed=feed,
@@ -533,10 +547,10 @@ class DocFeedService:
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
             raise DocFeedValidationError("feed", "There is no stopped backfill to discard.")
-        from ..models import DOC_FEED_BACKFILL_DONE
+        from ..models import BACKFILL_DISCARDED_CODE, DOC_FEED_BACKFILL_DONE
 
         backfill.status = DOC_FEED_BACKFILL_DONE
-        backfill.error_code = "DISCARDED"
+        backfill.error_code = BACKFILL_DISCARDED_CODE
         backfill.finished_at = datetime.now(timezone.utc)
         self.db.commit()
         return backfill

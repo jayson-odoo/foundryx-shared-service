@@ -14,7 +14,7 @@ Contract of record: `16-autocount-do-pull-snapshot-contract.md`. Products / stoc
   `fromDay` = today minus 30 days), echoed on the 202.
 - AC-16-04 422 `INVALID_REQUEST` (flat envelope, `message` names the field) for each of: neither
   `fromDay` nor `docNo`; `toDay` without `fromDay`; a non-`YYYY-MM-DD` day; `fromDay > toDay`;
-  a range over 31 days; `toDay` after MYT today; `fromDay` before 2023-01-01; `docNo` not a
+  a range over 31 days; `toDay` after MYT today; `fromDay` before 2019-01-01 (was 2023-01-01 until SLOW-MOVING-BACKFILL); `docNo` not a
   string / empty after trim / over 64 chars.
 - AC-16-05 A scope key (`fromDay`, `toDay` or `docNo`) on `entity: products` or `stock_balances`
   is 422 `INVALID_REQUEST`; without scope keys those entities behave exactly as before (existing

@@ -60,7 +60,6 @@ from app.secrets import decrypt_secret
 from .clock import myt_date
 from .constants import (
     BACKFILL_FROM_DEFAULT,
-    FEED_DELIVERY_ORDERS,
     RUN_KIND_BACKFILL,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
@@ -957,11 +956,14 @@ def run_backfill(
                 resolved.sink.write_batch(
                     remaining, request_id=f"{backfill_row.id}:{day.isoformat()}",
                     dry_run=dry_run, on_chunk=on_chunk,
-                    # DO-BACKFILL-SS - only a DELIVERY ORDERS backfill marks
-                    # itself `backfill: true` (CRM quiet ingest). The CRM
-                    # 422s the flag on every other entity, so a GRN backfill
-                    # leaves it out; poll/sweep never send it.
-                    backfill=(feed_row.feed == FEED_DELIVERY_ORDERS),
+                    # DO-BACKFILL-SS / SLOW-MOVING-BACKFILL S0.4 - every
+                    # doc-feed backfill (delivery orders AND goods receive
+                    # notes) marks itself `backfill: true` (CRM quiet ingest:
+                    # no embeddings, no relink / receipt hook). Release order:
+                    # the CRM must accept the flag on goods_receive_notes
+                    # BEFORE this ships, or every GRN backfill chunk 422s.
+                    # Poll and sweep never send it.
+                    backfill=True,
                 )
             except SorentoRateLimited as exc:
                 remaining = [r for r in remaining if r.source_ref not in credited]

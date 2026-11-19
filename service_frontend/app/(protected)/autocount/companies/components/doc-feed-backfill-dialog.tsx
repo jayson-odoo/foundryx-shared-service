@@ -25,16 +25,41 @@ import type {
 } from '@/types/autocount';
 import { docFeedLabel } from '../../components/autocount-meta';
 
-const DOC_FEED_BACKFILL_FROM = '2023-01-01';
-// Once the full-history live backfill has completed the backend 409s any live
-// range that starts on or before the floor (doc_feed_service.start_backfill),
-// so a live range then starts the day after it.
-const DOC_FEED_BACKFILL_FROM_AFTER_FULL = '2023-01-02';
+// Mirrors `BACKFILL_FROM_DEFAULT` (doc_feed/constants.py); the feed row's
+// `backfillFloor` wins when the backend sends it.
+const DOC_FEED_BACKFILL_FROM = '2019-01-01';
 // N5 (review round 1) - the backfill's own "today" is MYT (D6, fixed UTC+8,
 // no DST), never the browser's local zone: before 08:00 MYT the browser's
 // UTC "today" is still MYT's PREVIOUS day, and the backend refuses a `toDay`
 // past its own MYT today (AC-14-63 range 422).
 const MYT_ZONE = 'Asia/Kuala_Lumpur';
+
+function nextDayKey(day: string): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The earliest day a backfill may start. Once a live run from the floor (or
+ * earlier) has completed, the backend 409s another live range starting on or
+ * before the floor (doc_feed_service.start_backfill), so a live range then
+ * starts the day after it. A run completed only from a LATER day (the old
+ * 2023 floor) still allows one run from the floor. */
+export function backfillMinDate({
+  dryRun,
+  floor,
+  fullBackfillDoneAt,
+  fullBackfillFromDay,
+}: {
+  dryRun: boolean;
+  floor: string;
+  fullBackfillDoneAt: string | null;
+  fullBackfillFromDay: string | null;
+}): string {
+  if (dryRun || !fullBackfillDoneAt) return floor;
+  if (fullBackfillFromDay && fullBackfillFromDay > floor) return floor;
+  return nextDayKey(floor);
+}
 
 function mytTodayKey(): string {
   return dateKey(new Date(), { timeZone: MYT_ZONE }) ?? new Date().toISOString().slice(0, 10);
@@ -46,6 +71,10 @@ export interface DocFeedBackfillDialogProps {
   mode: DocFeedMode;
   /** Set once the full-history live backfill has completed. */
   fullBackfillDoneAt: string | null;
+  /** The backfill range floor (YYYY-MM-DD); defaults to 2019-01-01. */
+  backfillFloor?: string | null;
+  /** Earliest from-day a completed live backfill ran from (YYYY-MM-DD). */
+  fullBackfillFromDay?: string | null;
   /** `null` = no open/last backfill - the dialog offers to start one. */
   backfill: {
     status: DocFeedBackfillStatus;
@@ -61,22 +90,25 @@ export interface DocFeedBackfillDialogProps {
 /**
  * Backfill a document feed (AC-14-93, D13). While one is `running`/
  * `stopping` the dialog shows `JobProgress` in days with Stop; otherwise it
- * offers Dry run + a from/to range (defaulting to 2023-01-01 .. today) and
+ * offers Dry run + a from/to range (defaulting to the floor .. today) and
  * Start.
  */
 export function DocFeedBackfillDialog({
   feed,
   mode,
   fullBackfillDoneAt,
+  backfillFloor,
+  fullBackfillFromDay,
   backfill,
   onClose,
   onStart,
   onStop,
 }: DocFeedBackfillDialogProps) {
+  const floor = backfillFloor ?? DOC_FEED_BACKFILL_FROM;
   const [dryRunChoice, setDryRun] = useState(true);
   const [range, setRange] = useState<DateRangeValue>(() => ({
     preset: 'custom',
-    from: DOC_FEED_BACKFILL_FROM,
+    from: floor,
     to: mytTodayKey(),
   }));
   const [starting, setStarting] = useState(false);
@@ -85,8 +117,12 @@ export function DocFeedBackfillDialog({
   // Dry run is the only option a feed that is not in Push mode can start.
   const canGoLive = mode === 'push';
   const dryRun = canGoLive ? dryRunChoice : true;
-  const minDate =
-    !dryRun && fullBackfillDoneAt ? DOC_FEED_BACKFILL_FROM_AFTER_FULL : DOC_FEED_BACKFILL_FROM;
+  const minDate = backfillMinDate({
+    dryRun,
+    floor,
+    fullBackfillDoneAt,
+    fullBackfillFromDay: fullBackfillFromDay ?? null,
+  });
   // Clamp `from` up to the floor, and `to` up to `from` (a live range of
   // exactly the floor day would otherwise end before it starts).
   const clampedFrom = range.from < minDate ? minDate : range.from;

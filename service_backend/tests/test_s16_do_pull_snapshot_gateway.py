@@ -188,7 +188,7 @@ def test_ac_16_03_doc_no_alone_defaults_the_range_to_the_31_myt_days_ending_toda
             lambda: {"fromDay": iso(day_ago(1)), "toDay": iso(day_ago(-1))}, ("toDay",),
             id="toDay-after-myt-today",
         ),
-        pytest.param(lambda: {"fromDay": "2022-12-31"}, ("fromDay",), id="fromDay-before-2023-01-01"),
+        pytest.param(lambda: {"fromDay": "2018-12-31"}, ("fromDay",), id="fromDay-before-2019-01-01"),
         pytest.param(
             lambda: {"fromDay": iso(day_ago(1)), "docNo": 123}, ("docNo",), id="docNo-not-a-string",
         ),
@@ -214,7 +214,7 @@ def test_ac_16_04_bad_scope_is_a_flat_422_invalid_request_naming_the_field(
     assert env.stub.requests == [], "a rejected scope must never reach the vendor"
 
 
-def test_ac_16_04_boundaries_are_accepted_31_days_inclusive_and_the_2023_floor(
+def test_ac_16_04_boundaries_are_accepted_31_days_inclusive_and_the_2019_floor(
     client, db, monkeypatch,
 ):
     env = build_env(db, monkeypatch)
@@ -225,11 +225,11 @@ def test_ac_16_04_boundaries_are_accepted_31_days_inclusive_and_the_2023_floor(
     assert thirty_one.status_code == 202, thirty_one.text
     assert thirty_one.json()["toDay"] == iso(today_myt())
 
-    floor = post_build(client, env.key, fromDay="2023-01-01", toDay="2023-01-01")
+    floor = post_build(client, env.key, fromDay="2019-01-01", toDay="2019-01-01")
     # the first build for this company is still within its cooldown only when
     # the scope is equal; a different scope is allowed (AC-16-11).
     assert floor.status_code == 202, floor.text
-    assert floor.json()["fromDay"] == "2023-01-01"
+    assert floor.json()["fromDay"] == "2019-01-01"
 
 
 # ── AC-16-05: scope keys on the other entities ───────────────────────────────
