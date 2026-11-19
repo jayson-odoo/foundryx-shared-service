@@ -166,6 +166,13 @@ export function useTeamsListConfig(): ResourceListConfig<Team> {
       createLabel: `Add ${singular.toLowerCase()}`,
       createPermission: 'teams.manage',
       onCreate: () => router.push(teamNewPath),
+      // Foundryx UIUX switch only (ignored while off).
+      fx: {
+        noun: plural.toLowerCase(),
+        iconFor: { delete: 'delete' },
+        columnKind: { status: 'status' },
+        phoneHidden: ['created'],
+      },
     };
   }, [actions, router, formatDate, singular, plural]);
 }

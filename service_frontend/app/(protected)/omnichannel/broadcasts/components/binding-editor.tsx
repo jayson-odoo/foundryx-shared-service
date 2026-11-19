@@ -11,6 +11,7 @@
 import { useEffect, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { SearchSelect } from '@/components/platform/search-select';
+import { useFx } from '@/hooks/use-fx';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { whatsappTemplateService } from '@/services/whatsapp-template-service';
 import { WaBubblePreview } from '@/app/(protected)/omnichannel/settings/channels/[id]/templates/components/wa-bubble-preview';
@@ -60,6 +61,9 @@ function BindingRow({
    *  looked identical to one that silently succeeded. */
   error?: string;
 }) {
+  // Foundryx UIUX switch: the text and fallback boxes are named after the
+  // slot ("Body {{1}} text"); with the switch off the markup is as today.
+  const fx = useFx();
   return (
     <div className="grid gap-2 rounded-md border border-border p-3 sm:grid-cols-[140px_1fr]">
       <span className="text-sm font-medium text-foreground">{label}</span>
@@ -76,6 +80,7 @@ function BindingRow({
         />
         {binding.source === 'static' ? (
           <Input
+            aria-label={fx ? `${label} text` : undefined}
             value={binding.text}
             onChange={(e) => onChange({ source: 'static', text: e.target.value })}
             disabled={!editing}
@@ -91,6 +96,7 @@ function BindingRow({
               ariaLabel={`${label} field`}
             />
             <Input
+              aria-label={fx ? `${label} fallback` : undefined}
               placeholder="Fallback"
               value={binding.fallback}
               onChange={(e) => onChange({ ...binding, fallback: e.target.value })}
