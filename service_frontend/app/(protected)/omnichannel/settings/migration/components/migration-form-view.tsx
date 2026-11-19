@@ -121,6 +121,9 @@ function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigration
 export function MigrationFormView() {
   const hook = useMigrationForm();
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = hook.form.formState.isDirty;
   const config = useMemo(
     () => ({
       breadcrumb: [
@@ -148,7 +151,7 @@ export function MigrationFormView() {
       editable: true,
       editPermission: 'omnichannel_migration.manage',
       initialEditing: true,
-      isDirty: hook.form.formState.isDirty,
+      isDirty: formDirty,
       saveDisabled: !hook.canSave,
       // The shell's own Save button runs the SAME action as the Review
       // section's "Run dry run" (there is no separate "draft" entity to
@@ -163,7 +166,7 @@ export function MigrationFormView() {
       onCancel: () => hook.form.reset(),
       entityNoun: 'migration',
     }),
-    [hook],
+    [formDirty, hook],
   );
 
   return (

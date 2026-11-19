@@ -6,6 +6,7 @@
  * adds the Revise action (clone a frozen entry into a new Draft), the
  * edit-and-resubmit entry for the current Draft, a "rev N" badge and a
  * revision-history panel (each revision opens pinned to ITS own version). */
+import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
@@ -18,6 +19,8 @@ import { apiFetchBlob } from '@/lib/api-client';
 import { RequirePermission } from '@/components/common/require-permission';
 import { StatusBadge, colorToHex, colorToTone } from '@/components/platform/status-badge';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
+import { useRegisterMainAction, type FxMainActionSpec } from '@/components/fx/actions/page-actions-context';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useFormSubmission } from '@/hooks/use-form-submission';
 import { useSubmissionNav } from './use-submission-nav';
@@ -53,6 +56,22 @@ function SubmissionDetail({ formId, submissionId }: { formId: string; submission
     fireTransition,
     revise,
   } = useFormSubmission(formId, submissionId);
+  // Foundryx UIUX switch only: Edit and resubmit becomes the page's red
+  // action (the same link as today's button).
+  const fx = useFx();
+  const editDraftSpec = useMemo<FxMainActionSpec | null>(() => {
+    if (!fx || !submission) return null;
+    const mine = can('submissions.manage') || (!!session?.user?.id && submission.userId === session.user.id);
+    if (!(submission.isCurrent && isActive && mine)) return null;
+    return {
+      id: 'edit-revision',
+      label: 'Edit and resubmit',
+      fullLabel: `Edit and resubmit ${submission.userName ?? 'this submission'}`,
+      onClick: () => router.push(`/forms/${formId}/fill?revision=${submission.id}`),
+      working: busy,
+    };
+  }, [fx, submission, isActive, can, session?.user?.id, router, formId, busy]);
+  useRegisterMainAction(editDraftSpec);
 
   if (loading) {
     return (
@@ -135,7 +154,7 @@ function SubmissionDetail({ formId, submissionId }: { formId: string; submission
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {canEditDraft && (
+            {canEditDraft && !fx && (
               <Button size="sm" disabled={busy} asChild data-testid="edit-revision">
                 <Link href={`/forms/${formId}/fill?revision=${submission.id}`}>
                   <PencilLine className="size-4" />

@@ -17,7 +17,7 @@ import { tenantAdminService } from '@/services/tenant-admin-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { FilterFieldDef } from '@/types/resource';
 import type { TenantListItem } from '@/types/tenant-admin';
-import { useTenantActions } from './use-tenant-actions';
+import { TENANT_FX_ICONS, useTenantActions } from './use-tenant-actions';
 import { tenantStatusRegistry } from './tenant-status';
 import { tenantFormPath, tenantNewPath } from './paths';
 
@@ -204,6 +204,17 @@ export function useTenantsListConfig(): ResourceListConfig<TenantListItem> {
       createLabel: 'Add tenant',
       createPermission: 'tenants.create',
       onCreate: () => router.push(tenantNewPath),
+      // Foundryx UIUX switch only (slice W3-PLATFORM); ignored while off.
+      // Add tenant stays the red action (the list's own Create).
+      fx: {
+        noun: 'tenants',
+        iconFor: TENANT_FX_ICONS,
+        moreActionIds: ['purge'],
+        columnKind: { status: 'status' },
+        copyable: ['slug'],
+        cardLines: [['tenant', 'status'], ['slug'], ['contact']],
+        phoneHidden: ['users', 'created'],
+      },
     };
   }, [actions, router, formatDate]);
 }

@@ -7,7 +7,9 @@ import { ClampedText } from '@/components/platform/clamped-text';
 import { StatusBadge } from '@/components/platform/status-badge';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
-import { zonedTimeToUtc } from '@/lib/datetime';
+import { useFx } from '@/hooks/use-fx';
+import { FxListMoment } from '@/components/fx/pages/w3-logs/fx-log-parts';
+import { endOfLocalDay, startOfLocalDay } from '@/lib/date-filter';
 import { autocountService } from '@/services/autocount-service';
 import type { AutocountCall, AutocountCallFilterOptions, CallOutcome } from '@/types/autocount';
 import type { FilterGroup, ListQuery, ListResult } from '@/types/resource';
@@ -29,13 +31,13 @@ function readMany(filter: FilterGroup | null | undefined, field: string): string
   return typeof value === 'string' && value ? [value] : undefined;
 }
 
-/** `YYYY-MM-DD` of the day after `key`. */
-function nextDayKey(key: string): string {
-  const [y, m, d] = key.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
-}
+const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 
-/** The picked day range (viewer's timezone) as the two UTC instants the API filters on. */
+/**
+ * The picked day range (viewer's timezone) as the two UTC instants the API
+ * filters on. The list already sends day ranges on moments as instants
+ * (`lib/date-filter.ts`); a day key still converts here, as before.
+ */
 function readRange(
   filter: FilterGroup | null | undefined,
   timeZone: string,
@@ -43,11 +45,9 @@ function readRange(
   const rule = filter?.rules.find((r) => r.kind === 'condition' && r.field === 'createdAt');
   if (!rule || rule.kind !== 'condition' || !Array.isArray(rule.value)) return {};
   const [from, to] = rule.value;
-  const start = from ? zonedTimeToUtc(`${from}T00:00:00`, timeZone) : null;
-  const afterEnd = to ? zonedTimeToUtc(`${nextDayKey(to)}T00:00:00`, timeZone) : null;
   return {
-    dateFrom: start ? start.toISOString() : undefined,
-    dateTo: afterEnd ? new Date(afterEnd.getTime() - 1).toISOString() : undefined,
+    dateFrom: from ? (DAY_KEY.test(from) ? startOfLocalDay(from, timeZone) : from) : undefined,
+    dateTo: to ? (DAY_KEY.test(to) ? endOfLocalDay(to, timeZone) : to) : undefined,
   };
 }
 
@@ -66,6 +66,7 @@ function cell(value: string | number | null | undefined, className = 'text-sm te
  */
 export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}): ResourceListConfig<AutocountCall> {
   const { formatDmyDateTime, timeZone } = useDatetime();
+  const fx = useFx();
   const [options, setOptions] = useState<AutocountCallFilterOptions>(EMPTY_OPTIONS);
   const [companies, setCompanies] = useState<{ label: string; value: string }[]>([]);
 
@@ -116,7 +117,12 @@ export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}):
         id: 'createdAt',
         accessorFn: (row) => row.createdAt,
         ...header('Time'),
-        cell: ({ row }) => cell(formatDmyDateTime(row.original.createdAt)),
+        cell: ({ row }) =>
+          fx ? (
+            <FxListMoment iso={row.original.createdAt} className="text-sm text-(--fx-ink)" />
+          ) : (
+            cell(formatDmyDateTime(row.original.createdAt))
+          ),
         size: 170,
       },
       {
@@ -250,6 +256,18 @@ export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}):
       exportColumns: [],
       actions: [],
       fetcher,
+      // Foundryx UIUX switch only. Hold to Copy on identifiers alone (path,
+      // document number, request id); request and response bodies stay in
+      // the dialog and never copy.
+      fx: {
+        noun: 'calls',
+        copyable: ['path', 'docNo', 'requestId'],
+        // The outcome is the card's status; the document type stays off
+        // phone cards.
+        phoneHidden: ['book', 'method', 'docType', 'responseStatus', 'durationMs', 'requestId', 'errorCode'],
+        columnKind: { outcome: 'status' },
+        cardLines: [['path'], ['docNo'], ['companyName'], ['actingUserName']],
+      },
     };
-  }, [formatDmyDateTime, fetcher, options, companies, onOpenCall]);
+  }, [formatDmyDateTime, fetcher, options, companies, onOpenCall, fx]);
 }

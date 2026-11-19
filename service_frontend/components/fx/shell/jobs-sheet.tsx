@@ -3,17 +3,22 @@
 /**
  * One Jobs place (owner choice, gap audit "one Jobs place"): while the
  * Foundryx UIUX switch is on, one Jobs button in the top bar replaces the four
- * Uploads, Imports, Jobs and Downloads buttons, and one sheet shows the four
- * existing lists as tabs.
+ * Uploads, Imports, Jobs and Downloads buttons, and one sheet lists all four
+ * kinds of work as jobs, newest first (slice W3-JOBS): what it is and for
+ * what, a status chip, real progress while it runs and its next step.
  *
- * The four drawers' own open flags are the tabs: whatever opened a drawer
- * before (the top bar, an upload starting, a storage migration starting)
- * now opens this sheet on that tab, and the drawers themselves render nothing
- * while the switch is on. The lists are the drawers' own list components, so
- * the rows, links and actions are the same. (Slice W3-JOBS later replaces the
- * tabs with the playbook's single Jobs list.)
+ * The four drawers' own open flags still open it: whatever opened a drawer
+ * before (the top bar, an upload starting, a ZIP being requested, a storage
+ * migration starting) now opens this sheet, and the drawers themselves render
+ * nothing while the switch is on. Opening the sheet also raises the downloads
+ * flag, which is what loads the downloads list today. Every row action calls
+ * the provider function the old drawer row called, so the requests are the
+ * same. When a job ends, a toast says what finished and how it went, on
+ * whatever page the user is on.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import Link from 'next/link';
+import { toast } from '@/lib/toast';
 import { useImportActivity } from '@/providers/import-activity-provider';
 import { useJobsActivity } from '@/providers/jobs-activity-provider';
 import { Button } from '@/components/ui/button';
@@ -23,13 +28,15 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { DownloadsList } from '@/components/platform/document-drive/my-downloads-drawer';
 import { useDownloads } from '@/components/platform/document-drive/downloads-manager';
-import { UploadsList } from '@/components/platform/document-drive/upload-activity-drawer';
+import { formatBytes } from '@/components/platform/document-drive/lib';
 import { useUploadManager } from '@/components/platform/document-drive/upload-manager';
-import { ImportsList } from '@/components/platform/import-wizard/imports-drawer';
-import { JobsList } from '@/components/platform/jobs-drawer/jobs-drawer';
+import { FxJobsList } from '@/components/platform/jobs-drawer/fx-jobs-list';
+import {
+  endToast,
+  toJobItems,
+  type FxJobItem,
+} from '@/components/platform/jobs-drawer/fx-job-items';
 
 export type FxJobsTab = 'uploads' | 'imports' | 'jobs' | 'downloads';
 
@@ -96,33 +103,64 @@ export function useJobsPlace() {
   return { flags, setters, counts, total, open, uploads, downloads, imports, jobs };
 }
 
+/** Whether a change from `before` to `after` ends the job (and toasts). */
+export function jobJustEnded(before: FxJobItem | undefined, after: FxJobItem): boolean {
+  if (!before) return false;
+  if (after.phase === 'ended') return before.phase !== 'ended';
+  // A background job that stops to wait for review has ended its run.
+  return after.kind === 'job' && before.phase === 'running' && after.phase === 'waiting';
+}
+
+/** Toasts each job that ends while the app is open (not the ones already
+ *  over when the list first loads). */
+function useJobEndToasts(items: FxJobItem[]): void {
+  const seen = useRef<Map<string, FxJobItem> | null>(null);
+  useEffect(() => {
+    const prev = seen.current;
+    const next = new Map(items.map((item) => [item.key, item]));
+    seen.current = next;
+    if (!prev) return;
+    for (const item of items) {
+      if (!jobJustEnded(prev.get(item.key), item)) continue;
+      const words = endToast(item);
+      if (words) toast.fxDone(words);
+    }
+  }, [items]);
+}
+
 export function FxJobsSheet() {
   const place = useJobsPlace();
   const { flags, setters } = place;
-  const [tab, setTab] = useState<FxJobsTab>('jobs');
-  const before = useRef<PerTab<boolean>>(flags);
-
-  // A flag that turns on picks its tab; the others turn off, so one tab is
-  // ever open and closing the sheet closes them all.
-  useEffect(() => {
-    const prev = before.current;
-    before.current = flags;
-    const opened = FX_JOBS_TABS.find(({ tab: t }) => flags[t] && !prev[t]);
-    if (!opened) return;
-    lastTab = opened.tab;
-    setTab(opened.tab);
-    for (const { tab: t } of FX_JOBS_TABS) {
-      if (t !== opened.tab && flags[t]) setters[t](false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flags.uploads, flags.imports, flags.jobs, flags.downloads]);
 
   const isOpen = FX_JOBS_TABS.some(({ tab: t }) => flags[t]);
   const close = () => {
     for (const { tab: t } of FX_JOBS_TABS) if (flags[t]) setters[t](false);
   };
 
-  const finished = place.uploads.items.filter(
+  // Opening the sheet raises the downloads flag too: that is what loads the
+  // downloads list (the provider loads it when its drawer opens).
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (isOpen && !wasOpen.current) {
+      const opened = FX_JOBS_TABS.find(({ tab: t }) => flags[t]);
+      if (opened) lastTab = opened.tab;
+      if (!flags.downloads) setters.downloads(true);
+    }
+    wasOpen.current = isOpen;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
+  const uploads = place.uploads.items;
+  const imports = place.imports.jobs;
+  const jobs = place.jobs.jobs;
+  const downloads = place.downloads.jobs;
+  const items = useMemo(
+    () => toJobItems({ uploads, imports, jobs, downloads, sizeOf: formatBytes }),
+    [uploads, imports, jobs, downloads],
+  );
+  useJobEndToasts(items);
+
+  const finished = uploads.filter(
     (it) => it.status === 'done' || it.status === 'failed',
   ).length;
 
@@ -135,65 +173,38 @@ export function FxJobsSheet() {
     >
       <SheetContent
         side="right"
+        aria-describedby={undefined}
         className="flex w-full flex-col gap-0 border-(--fx-line) bg-(--fx-surface) p-0 text-(--fx-ink) sm:max-w-md"
       >
-        <SheetHeader className="border-b border-(--fx-line) px-4 py-3">
+        <SheetHeader className="flex-row items-center justify-between gap-2 border-b border-(--fx-line) px-4 py-3 pe-12">
           <SheetTitle>Jobs</SheetTitle>
-        </SheetHeader>
-        <Tabs
-          value={tab}
-          onValueChange={(value) => setters[value as FxJobsTab](true)}
-          className="flex min-h-0 flex-1 flex-col"
-        >
-          <div className="flex items-center justify-between gap-2 px-4 pt-3">
-            <TabsList size="sm" aria-label="Kind of work">
-              {FX_JOBS_TABS.map(({ tab: t, label }) => (
-                <TabsTrigger key={t} value={t}>
-                  {label}
-                  {place.counts[t] > 0 && (
-                    <span className="text-(--fx-ink-3) tabular-nums">
-                      {place.counts[t]}
-                    </span>
-                  )}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
-          <TabsContent value="uploads" className="flex min-h-0 flex-1 flex-col">
+          <div className="flex items-center gap-1">
             {finished > 0 && (
-              <div className="flex justify-end px-4 pt-2">
-                <Button
-                  variant="fx-text"
-                  size="sm"
-                  onClick={place.uploads.clearFinished}
-                >
-                  Clear finished
-                </Button>
-              </div>
+              <Button
+                variant="fx-text"
+                size="sm"
+                onClick={place.uploads.clearFinished}
+              >
+                Clear finished uploads
+              </Button>
             )}
-            <UploadsList
-              items={place.uploads.items}
-              onResolve={place.uploads.resolveConflict}
-              onRetry={place.uploads.retry}
-              onRemove={place.uploads.remove}
-            />
-          </TabsContent>
-          <TabsContent value="imports" className="flex min-h-0 flex-1 flex-col">
-            <ImportsList jobs={place.imports.jobs} onNavigate={close} />
-          </TabsContent>
-          <TabsContent value="jobs" className="flex min-h-0 flex-1 flex-col">
-            <JobsList jobs={place.jobs.jobs} onNavigate={close} />
-          </TabsContent>
-          <TabsContent
-            value="downloads"
-            className="flex min-h-0 flex-1 flex-col"
-          >
-            <DownloadsList
-              jobs={place.downloads.jobs}
-              onDownload={place.downloads.download}
-            />
-          </TabsContent>
-        </Tabs>
+            <Button variant="fx-text" size="sm" asChild>
+              <Link href="/jobs" onClick={close}>
+                All jobs
+              </Link>
+            </Button>
+          </div>
+        </SheetHeader>
+        <FxJobsList
+          items={items}
+          handlers={{
+            onNavigate: close,
+            onDownload: (id) => void place.downloads.download(id),
+            onRetryUpload: place.uploads.retry,
+            onResolveUpload: place.uploads.resolveConflict,
+            onRemoveUpload: place.uploads.remove,
+          }}
+        />
       </SheetContent>
     </Sheet>
   );
