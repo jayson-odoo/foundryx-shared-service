@@ -11,6 +11,7 @@ an ``httpx.MockTransport``. It honours the behaviour recorded on db3 on 4 Nov 20
   an EXISTING row are ignored; a NEW row linked to an SO row is forced to Location
   HQ and an SO link reads back as ``FromSODtlKey`` on PO rows.
 * GET /<doc>bydocdate?DocDate=YYYYMMDD.
+* GET /location - the Location master (plan 70), a bare array of ``{Location, Description}``.
 * GET /debtorbypage?page=&pageSize= - the paged envelope over ``debtors``
   (SS-QTSO-DISPLAYTERM: the debtor's own ``DisplayTerm``).
 * Plan 61 (db3 probes, 10 Nov 2026): GET ``/<Doc>bydocno?DocNo=`` (list, ``[]`` when
@@ -131,6 +132,8 @@ class FakeAutoCountVendor:
         self.inherit_qt_values = False
         # SS-QTSO-DISPLAYTERM: Debtor master rows served by GET /debtorbypage
         self.debtors: List[Dict[str, Any]] = []
+        # plan 70: the Location master served by GET /location (a bare array, like live hapi)
+        self.locations: List[str] = ["HQ", "BR1", "BRW", "BRW-AM", "BRW-BB"]
         # plan 61: new PO rows with these ItemCodes are refused 500 (atomic-PUT probes P-AT1)
         self.invalid_items: set = set()
         # plan 62: created docs carry CreatedTimeStamp + LastModified = now in AutoCount local time (MYT, no zone, ms)
@@ -247,6 +250,8 @@ class FakeAutoCountVendor:
         if method == "GET":
             if leaf == "debtorbypage":
                 return self._debtor_page(call)
+            if leaf == "location":
+                return httpx.Response(200, json=[{"Location": c, "Description": c} for c in self.locations])
             for kind, spec in SPECS.items():
                 if spec["get"] == leaf:
                     return self._get(kind, call)
