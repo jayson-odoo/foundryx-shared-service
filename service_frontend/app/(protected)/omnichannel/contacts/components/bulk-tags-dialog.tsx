@@ -18,6 +18,8 @@ import {
 } from '@/components/ui/dialog';
 import { MultiSelect } from '@/components/platform/multi-select';
 import type { ContactTag } from '@/types/omnichannel';
+import { useFx } from '@/hooks/use-fx';
+import { FxBulkPanel } from './fx-bulk-panel';
 
 export interface BulkTagsDialogProps {
   open: boolean;
@@ -28,7 +30,7 @@ export interface BulkTagsDialogProps {
   onConfirm: (mode: 'add' | 'remove', tagIds: string[]) => Promise<unknown>;
 }
 
-export function BulkTagsDialog({ open, onOpenChange, mode, tags, count, onConfirm }: BulkTagsDialogProps) {
+function BulkTagsDialogLegacy({ open, onOpenChange, mode, tags, count, onConfirm }: BulkTagsDialogProps) {
   const [tagIds, setTagIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -74,5 +76,50 @@ export function BulkTagsDialog({ open, onOpenChange, mode, tags, count, onConfir
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Switch on: the playbook's bulk panel; switch off: the dialog as it was. */
+export function BulkTagsDialog(props: BulkTagsDialogProps) {
+  return useFx() ? <FxBulkTagsDialog {...props} /> : <BulkTagsDialogLegacy {...props} />;
+}
+
+function FxBulkTagsDialog({ open, onOpenChange, mode, tags, count, onConfirm }: BulkTagsDialogProps) {
+  const [tagIds, setTagIds] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open) setTagIds([]);
+  }, [open, mode]);
+
+  const confirm = async () => {
+    if (tagIds.length === 0) return;
+    setBusy(true);
+    try {
+      await onConfirm(mode, tagIds);
+      onOpenChange(false);
+      setTagIds([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <FxBulkPanel
+      open={open}
+      onOpenChange={onOpenChange}
+      kind={mode === 'add' ? 'add-tags' : 'remove-tags'}
+      count={count}
+      busy={busy}
+      canSubmit={tagIds.length > 0}
+      onSubmit={() => void confirm()}
+    >
+      <MultiSelect
+        options={tags.map((t) => ({ label: `${t.emoji ? `${t.emoji} ` : ''}${t.name}`, value: t.id }))}
+        value={tagIds}
+        onChange={setTagIds}
+        placeholder="Pick tags"
+      />
+    </FxBulkPanel>
   );
 }
