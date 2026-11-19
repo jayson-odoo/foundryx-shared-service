@@ -136,6 +136,7 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
                 <Button
                   type="button"
                   mode="link"
+                  underlined="solid"
                   size="sm"
                   disabled={step.busy}
                   onClick={() => {
