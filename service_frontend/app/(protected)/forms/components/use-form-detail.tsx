@@ -10,6 +10,7 @@ import { useRouter } from 'next/navigation';
 import { FileText, GitBranch, History, Inbox, PencilRuler } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import type { LayoutController } from '@/components/platform/status-engine';
@@ -57,6 +58,9 @@ export function useFormDetail(
   const router = useRouter();
   const actions = useFormActions();
   const isNew = formId === undefined;
+  // Foundryx UIUX switch only: done toasts and the page's red action. Every
+  // request is the same in both looks.
+  const fx = useFx();
 
   const [record, setRecord] = useState<FormDetail | null>(null);
   const [doc, setDoc] = useState<FormDocument>(() => emptyFormDoc());
@@ -146,13 +150,21 @@ export function useFormDetail(
           access: payload.access,
         });
         await formService.update(created.id, payload);
-        toast.success(`Form "${created.name}" created.`);
+        if (fx) {
+          toast.fxDone({ what: `${created.name} created`, byWhom: 'you' });
+        } else {
+          toast.success(`Form "${created.name}" created.`);
+        }
         router.replace(formPath(created.id));
       } else {
         const updated = await formService.update(formId, payload);
         setRecord(updated);
         form.reset(settingsValues(updated));
-        toast.success('Form saved.');
+        if (fx) {
+          toast.fxDone({ what: `${updated.name} saved`, byWhom: 'you' });
+        } else {
+          toast.success('Form saved.');
+        }
       }
       // The Flow tab's layout draft commits with the same Save (BL-064).
       layoutController.current?.save();
@@ -162,7 +174,7 @@ export function useFormDetail(
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [form, isNew, router, formId]);
+  }, [form, fx, isNew, router, formId]);
 
   const onCancel = useCallback(() => {
     if (isNew) {
@@ -190,7 +202,11 @@ export function useFormDetail(
       await formService.publish(formId);
       await refresh(formId);
       setPublishProblems([]);
-      toast.success('Published - the form can now be filled.');
+      if (fx) {
+        toast.fxDone({ what: `${record?.name ?? 'Form'} published`, byWhom: 'you' });
+      } else {
+        toast.success('Published - the form can now be filled.');
+      }
     } catch (e) {
       if (e instanceof FormPublishError) {
         setPublishProblems(e.problems);
@@ -201,7 +217,7 @@ export function useFormDetail(
     } finally {
       setBusy(false);
     }
-  }, [formId, docDirty, form.formState.isDirty, onSave, refresh]);
+  }, [formId, fx, docDirty, form.formState.isDirty, onSave, record?.name, refresh]);
 
   const onUnpublish = useCallback(async () => {
     if (!formId) return;
@@ -209,13 +225,17 @@ export function useFormDetail(
     try {
       await formService.unpublish(formId);
       await refresh(formId);
-      toast.success('Unpublished - the fill link is offline.');
+      if (fx) {
+        toast.fxDone({ what: `${record?.name ?? 'Form'} unpublished`, byWhom: 'you' });
+      } else {
+        toast.success('Unpublished - the fill link is offline.');
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Unpublish failed.');
     } finally {
       setBusy(false);
     }
-  }, [formId, refresh]);
+  }, [formId, fx, record?.name, refresh]);
 
   // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
   const fetchRecordAt = useCallback(
@@ -348,6 +368,15 @@ export function useFormDetail(
       recordNav: isNew
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Edit / Save is the red
+      // action, the rest are icon actions.
+      fx: isNew
+        ? { mainActionId: 'save' }
+        : {
+            mainActionId: 'save',
+            fullLabel: (rows) => (rows[0]?.name ? `Save ${rows[0].name}` : ''),
+            iconFor: { archive: 'trash' },
+          },
     };
   }, [
     formDirty,

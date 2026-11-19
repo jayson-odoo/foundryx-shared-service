@@ -24,6 +24,8 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
+import { useFx } from '@/hooks/use-fx';
+import { FxChangeEmailDialog } from './fx-change-email-dialog';
 import {
   ChangeEmailSchemaType,
   getChangeEmailSchema,
@@ -47,7 +49,11 @@ export interface ChangeEmailDialogProps {
  * success shows the "check your current inbox" state; the page underneath
  * picks up the pending banner.
  */
-export function ChangeEmailDialog({
+export function ChangeEmailDialog(props: ChangeEmailDialogProps) {
+  return useFx() ? <FxChangeEmailDialog {...props} /> : <ChangeEmailDialogLegacy {...props} />;
+}
+
+function ChangeEmailDialogLegacy({
   open,
   onOpenChange,
   currentEmail,

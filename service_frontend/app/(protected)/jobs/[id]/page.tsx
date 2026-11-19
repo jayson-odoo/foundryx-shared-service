@@ -23,13 +23,21 @@ import { jobsService } from '@/services/jobs-service';
 import { JOB_IN_FLIGHT, type Job, type JobFailure, type JobLogEntry } from '@/types/jobs';
 import { useJobActions } from '../use-job-actions';
 import { FailedAssetsCard } from './failed-assets-card';
+import { useFx } from '@/hooks/use-fx';
+import { FxJobDetail } from './fx-job-detail';
 
 const POLL_MS = 3000;
 
 /** `/jobs/[id]` detail (sprint-4/10 AC-10-19) - job facts, progress, result
  * failures (for a migration), and the state-aware Abort/Retry/Complete actions.
  * Polls while the job is in flight. */
-export default function JobDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default function JobDetailPage(props: { params: Promise<{ id: string }> }) {
+  // Foundryx UIUX: the job's page with its red action following its state
+  // (Stop while it runs, Try again when it failed); same requests and polling.
+  return useFx() ? <FxJobDetail {...props} /> : <JobDetailPageLegacy {...props} />;
+}
+
+function JobDetailPageLegacy({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { formatDateTime } = useDatetime();
   const actions = useJobActions();

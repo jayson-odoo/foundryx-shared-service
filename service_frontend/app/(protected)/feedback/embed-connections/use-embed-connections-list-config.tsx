@@ -275,6 +275,18 @@ export function useEmbedConnectionsListConfig(
       createLabel: 'Add connection',
       createPermission: MINT,
       onCreate,
+      // Foundryx UIUX switch only (ignored while off).
+      fx: {
+        noun: 'embed connections',
+        iconFor: {
+          rotate: 'refresh',
+          'toggle-active': <PowerOff aria-hidden="true" className="size-[18px]" />,
+          delete: 'trash',
+        },
+        columnKind: { active: 'status', updated: 'date' },
+        copyable: ['connectionId'],
+        phoneHidden: ['origins', 'updated'],
+      },
     };
   }, [actions, onCreate, formatDateTime, productName]);
 

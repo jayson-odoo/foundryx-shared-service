@@ -20,7 +20,8 @@ import {
   Sparkles,
   Split,
 } from 'lucide-react';
-import { toast } from '@/lib/toast';
+import { toast, type FxDoneInput } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { FormPrimaryAction, ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
@@ -94,6 +95,17 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
   const { service: ideationService, paths, mode } = runtime;
   const { can } = useCan();
   const creating = !ideaId;
+  // Foundryx UIUX switch only: done toasts say what, for whom and by whom, and
+  // Edit / the next move is the red action. Every request is the same in both
+  // looks.
+  const fx = useFx();
+  const done = useCallback(
+    (legacy: string, input: FxDoneInput) => {
+      if (fx) toast.fxDone(input);
+      else toast.success(legacy);
+    },
+    [fx],
+  );
   // The Business Requirements tab only makes sense on the OPERATOR surface (the
   // embed iframe has no BR surface) and for a user who can read BRs.
   const showBrsTab =
@@ -231,7 +243,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       const [restored] = await ideationService.unmerge(target.id);
       setIdea(restored);
       form.reset(toFormValues(restored));
-      toast.success('Feedback unmerged.');
+      done('Feedback unmerged.', { what: `${restored.title ?? restored.problem} unmerged`, byWhom: 'you' });
     };
 
     const actions: ResourceAction<Idea>[] = isMergedChild
@@ -290,7 +302,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               const target = rows[0]?.transitions?.[0];
               if (!target) return;
               await applyStatus(rows[0].id, target.toStatusId);
-              toast.success('Feedback restored.');
+              done('Feedback restored.', { what: `${rows[0].title ?? rows[0].problem} restored`, byWhom: 'you' });
             },
           },
           ...(mode === 'operator'
@@ -329,7 +341,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
                   isVisible: (rows: Idea[]) => rows.every((r) => !r.isTest),
                   run: async (rows: Idea[]) => {
                     await ideaFollowerService.stopSharing(rows[0].id);
-                    toast.success('The share link no longer works.');
+                    done('The share link no longer works.', {
+                      what: `Sharing stopped for ${rows[0].title ?? rows[0].problem}`,
+                      byWhom: 'you',
+                    });
                   },
                 } satisfies ResourceAction<Idea>,
               ]
@@ -378,7 +393,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             onRun: () =>
               guarded(async () => {
                 await applyStatus(idea.id, restoreEdge.toStatusId);
-                toast.success('Feedback restored.');
+                done('Feedback restored.', { what: `${idea.title ?? idea.problem} restored`, byWhom: 'you' });
               }, 'Could not restore the feedback.'),
           };
         }
@@ -390,7 +405,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           onRun: () =>
             guarded(async () => {
               await applyStatus(idea.id, advanceEdge.toStatusId);
-              toast.success(`Moved to ${advanceEdge.toStatusLabel}.`);
+              done(`Moved to ${advanceEdge.toStatusLabel}.`, {
+                what: `${idea.title ?? idea.problem} moved to ${advanceEdge.toStatusLabel}`,
+                byWhom: 'you',
+              });
             }, 'Could not move the feedback.'),
         };
       }
@@ -407,7 +425,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             ...cardFields(values),
             rawText: values.rawText ?? '',
           });
-          toast.success('Feedback captured.');
+          done('Feedback captured.', { what: `${created.title ?? created.problem} captured`, byWhom: 'you' });
           router.push(paths.formHref(created.id));
         } else {
           // Fields only - a save never moves status (AC-94-34, owner Q5).
@@ -419,7 +437,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           });
           setIdea(updated);
           form.reset(toFormValues(updated));
-          toast.success('Feedback updated.');
+          done('Feedback updated.', { what: `${updated.title ?? updated.problem} saved`, byWhom: 'you' });
         }
         ok = true;
       })();
@@ -458,7 +476,11 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       if (!ideationService.uploadAttachment || !ideaId) return;
       try {
         for (const file of files) await ideationService.uploadAttachment(ideaId, file);
-        toast.success(files.length > 1 ? 'Files uploaded.' : 'File uploaded.');
+        done(files.length > 1 ? 'Files uploaded.' : 'File uploaded.', {
+          what: files.length > 1 ? 'Files uploaded' : `${files[0]?.name ?? 'File'} uploaded`,
+          howMany: files.length > 1 ? `${files.length} files` : undefined,
+          byWhom: 'you',
+        });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not upload the file.');
       } finally {
@@ -611,7 +633,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
                       const refreshed = await ideationService.getIdea(idea.id);
                       setIdea(refreshed);
                       setMergedReloadToken((t) => t + 1);
-                      toast.success('Feedback unmerged.');
+                      done('Feedback unmerged.', {
+                        what: ids.length === 1 ? 'Feedback unmerged' : `${ids.length} feedback items unmerged`,
+                        byWhom: 'you',
+                      });
                     }}
                   />
                 ),
@@ -630,8 +655,30 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       onSave,
       onCancel,
       recordNav: creating ? undefined : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off, and in the embed): the
+      // next move is the red action when there is one, else Edit / Save.
+      fx: creating
+        ? { mainActionId: 'save' }
+        : {
+            mainActionId: primaryAction?.id ?? 'save',
+            fullLabel: (rows) => {
+              const name = rows[0]?.title ?? rows[0]?.problem;
+              if (!name) return '';
+              return primaryAction ? `${primaryAction.label}: ${name}` : `Save ${name}`;
+            },
+            iconFor: {
+              'promote-br': <Rocket aria-hidden="true" className="size-[18px]" />,
+              archive: <Archive aria-hidden="true" className="size-[18px]" />,
+              restore: <ArchiveRestore aria-hidden="true" className="size-[18px]" />,
+              'share-link': 'share',
+              'stop-sharing': <Link2Off aria-hidden="true" className="size-[18px]" />,
+              'cancel-feedback-link': <Link2Off aria-hidden="true" className="size-[18px]" />,
+              delete: 'delete',
+            },
+          },
     };
   }, [
+    done,
     formDirty,
     isLoading,
     notFound,
@@ -666,7 +713,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           if (!ideationService.merge) throw new Error('Merge is not available.');
           const ids = [idea.id, ...similarMergeRows.map((r) => r.id)];
           const survivor = await ideationService.merge(survivorId, ids, fields);
-          toast.success(`Merged into ${formatFeedbackNumber(survivor.ideaNumber) ?? survivor.title ?? survivor.problem}.`);
+          {
+            const into = formatFeedbackNumber(survivor.ideaNumber) ?? survivor.title ?? survivor.problem;
+            done(`Merged into ${into}.`, { what: `Merged into ${into}`, howMany: `${ids.length} feedback items`, byWhom: 'you' });
+          }
           if (survivor.id !== idea.id) {
             router.push(paths.formHref(survivor.id));
             return;

@@ -15,7 +15,13 @@ import { ResourceForm } from '@/components/platform/resource-form';
 import type { ResourceFormConfig } from '@/components/platform/resource-form/types';
 import { appStoreService } from '@/services/app-store-service';
 import { moduleBadge, type StoreModule } from '@/types/app-store';
-import { ModuleCardBody, MODULE_BADGES, buildModuleActions } from '@/components/platform/app-store';
+import {
+  ModuleCardBody,
+  MODULE_BADGES,
+  MODULE_FX_ICONS,
+  buildModuleActions,
+} from '@/components/platform/app-store';
+import { useFx } from '@/hooks/use-fx';
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -27,7 +33,9 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 export function ModuleDetail({ name }: { name: string }) {
-  const { update } = useSession();
+  const { update, data } = useSession();
+  const fxOn = useFx();
+  const byWhom = data?.user?.name ?? undefined;
   const form = useForm({ mode: 'onTouched' });
   const [module, setModule] = useState<StoreModule | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,7 +113,7 @@ export function ModuleDetail({ name }: { name: string }) {
           ),
         },
       ],
-      actions: buildModuleActions(undefined, update),
+      actions: buildModuleActions(undefined, update, { on: fxOn, byWhom }),
       actionRows: [module],
       // T5 fix round 2, S2: `StoreModule` has no `.id` - Deactivate's
       // `deferred` park/current/cancel needs an explicit entity id.
@@ -115,8 +123,22 @@ export function ModuleDetail({ name }: { name: string }) {
       isDirty: false,
       onSave: () => true,
       onCancel: () => undefined,
+      // Foundryx UIUX switch only (slice W3-PLATFORM); ignored while off.
+      // Install (or Update when one is waiting) is the red action; the other
+      // lifecycle actions sit beside it, Uninstall in More.
+      fx: {
+        mainActionId: !installed
+          ? 'install'
+          : module.updateAvailable && module.status === 'ACTIVE'
+            ? 'update'
+            : undefined,
+        fullLabel: ([m]) =>
+          m && m.status === null ? `Install ${m.title}` : m ? `Update ${m.title} to v${m.version}` : '',
+        iconFor: MODULE_FX_ICONS,
+        moreActionIds: ['uninstall'],
+      },
     };
-  }, [module, update, load]);
+  }, [module, update, load, fxOn, byWhom]);
 
   if (loading) {
     return (

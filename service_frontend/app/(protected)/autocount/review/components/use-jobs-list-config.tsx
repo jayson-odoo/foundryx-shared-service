@@ -88,7 +88,7 @@ export function useAutocountJobsListConfig(): ResourceListConfig<AutocountSyncJo
       {
         id: 'records',
         accessorFn: (row) => row.progressTotal,
-        meta: { headerTitle: 'Records' },
+        meta: { headerTitle: 'Records', fxAlign: 'end' },
         header: ({ column }) => <DataGridColumnHeader title="Records" column={column} />,
         cell: ({ row }) => {
           const { progressTotal, progressFailed } = row.original;
@@ -144,6 +144,13 @@ export function useAutocountJobsListConfig(): ResourceListConfig<AutocountSyncJo
         { id: 'all', label: 'All' },
       ],
       defaultSegment: 'needs_review',
+      // Foundryx UIUX switch only (slice W5-AC-OPS); ignored while off. A row
+      // opens the batch, which carries Approve; the list has no action.
+      fx: {
+        noun: 'batches',
+        columnKind: { status: 'status' },
+        cardLines: [['company', 'status'], ['entity'], ['records', 'when']],
+      },
     };
   }, [formatDateTime]);
 }
