@@ -25,6 +25,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import { dateKey } from '@/lib/datetime';
+import { navigateTop } from '@/lib/top-navigate';
 import { isCommentPostResult, type FailedUpload } from '@/lib/upload-files';
 import type { PortalActivity, PortalComment, PortalIdea, PortalVoter } from '@/types/idea-portal';
 import { PortalStatusPill } from './portal-status-pill';
@@ -575,7 +576,7 @@ export function IdeaPage({ ideaId }: IdeaPageProps) {
           onClose={() => setPhoneAction(null)}
           onProven={(boardUrl) => {
             setPhoneAction(null);
-            if (boardUrl) window.location.assign(boardUrl);
+            if (boardUrl) navigateTop(boardUrl);
             else page.idea.reload();
           }}
         />
