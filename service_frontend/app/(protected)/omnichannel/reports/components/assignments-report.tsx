@@ -7,6 +7,8 @@ import { useOmnichannelReport } from '@/hooks/use-omnichannel-report';
 import type { AssignmentsReportTotals, ReportFilters } from '@/types/omnichannel';
 import { ReportLoadingCard } from './report-loading-card';
 import { useAssignmentLogConfig } from './use-assignment-log-config';
+import { useFx } from '@/hooks/use-fx';
+import { FxBox, fxCount } from '../../components/fx-report-parts';
 
 /**
  * Assignment log report (plan 30, AC-RPT-26/27/46) - the `assigned` series
@@ -14,13 +16,35 @@ import { useAssignmentLogConfig } from './use-assignment-log-config';
  * embedded `ResourceList` (never a hand-rolled table).
  */
 export function AssignmentsReport({ workspaceId, filters }: { workspaceId: string; filters: ReportFilters }) {
-  const { report, loading, error } = useOmnichannelReport(workspaceId, 'assignments', filters);
+  const { report, loading, error, reload } = useOmnichannelReport(workspaceId, 'assignments', filters);
   const config = useAssignmentLogConfig(workspaceId, filters);
+  const fx = useFx();
 
+  if (fx && error) return <ReportLoadingCard errored onRetry={reload} />;
   if (loading || !report) return <ReportLoadingCard />;
   if (error) return <ReportLoadingCard errored />;
 
   const totals = report.totals as AssignmentsReportTotals;
+
+  if (fx) {
+    return (
+      <div className="flex flex-col gap-4">
+        <FxBox
+          title="Conversations assigned"
+          aside={<span className="text-sm tabular-nums text-(--fx-ink-3)">{fxCount(totals.unassigned)} unassigned</span>}
+        >
+          <ReportChart
+            buckets={report.buckets}
+            series={report.series}
+            fxTotals={{ assigned: totals.assigned, unassigned: totals.unassigned }}
+            emptyMessage="No conversations assigned in this range."
+            className="h-64 w-full"
+          />
+        </FxBox>
+        <ResourceList config={config} hideHeader />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">

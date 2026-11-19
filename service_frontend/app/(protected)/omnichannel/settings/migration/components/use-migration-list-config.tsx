@@ -19,7 +19,9 @@ import { respondioMigrationService } from '@/services/respondio-migration-servic
 import type { MigrationJob } from '@/types/respondio-migration';
 import type { FilterFieldDef, ListQuery } from '@/types/resource';
 import { MIGRATION_MODE_LABEL, MIGRATION_STATUS_REGISTRY, MIGRATION_STATUS_SEGMENTS } from './migration-status';
-import { useMigrationActions } from './use-migration-actions';
+import { useMigrationActions, MIGRATION_FX_ICONS } from './use-migration-actions';
+import { useFx } from '@/hooks/use-fx';
+import { fxMigrationCount } from './migration-fx';
 import { migrationJobPath, migrationNewPath } from './paths';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -43,6 +45,7 @@ export function useMigrationListConfig(): ResourceListConfig<MigrationJob> {
   const { formatDateTime } = useDatetime();
   const actions = useMigrationActions();
   const router = useRouter();
+  const fx = useFx();
 
   return useMemo<ResourceListConfig<MigrationJob>>(() => {
     const columns: ColumnDef<MigrationJob>[] = [
@@ -108,6 +111,16 @@ export function useMigrationListConfig(): ResourceListConfig<MigrationJob> {
         cell: ({ row }) => {
           const r = row.original;
           const pct = r.progressTotal > 0 ? Math.round((r.progressDone / r.progressTotal) * 100) : 0;
+          // Foundryx UIUX switch: the server's own count in words ("820 of
+          // 1,240"), with the bar only once the total is known.
+          if (fx) {
+            return (
+              <div className="flex min-w-[120px] items-center gap-2">
+                {r.progressTotal > 0 && <Progress value={pct} className="h-1.5 w-16" />}
+                <span className="text-xs tabular-nums text-(--fx-ink-2)">{fxMigrationCount(r)}</span>
+              </div>
+            );
+          }
           return (
             <div className="flex min-w-[120px] items-center gap-2">
               <Progress value={pct} className="h-1.5 w-20" />
@@ -213,6 +226,14 @@ export function useMigrationListConfig(): ResourceListConfig<MigrationJob> {
       createLabel: 'New migration',
       onCreate: () => router.push(migrationNewPath),
       createPermission: 'omnichannel_migration.manage',
+      // Foundryx UIUX switch only (slice W2-WS); ignored while off.
+      fx: {
+        noun: 'migrations',
+        iconFor: MIGRATION_FX_ICONS,
+        columnKind: { spaceLabel: 'text', workspaceName: 'text', mode: 'status' },
+        cardLines: [['spaceLabel', 'status'], ['workspaceName', 'progress']],
+        phoneHidden: ['contacts', 'messages', 'failures', 'startedAt', 'finishedAt'],
+      },
     };
-  }, [actions, formatDateTime, router]);
+  }, [actions, formatDateTime, router, fx]);
 }

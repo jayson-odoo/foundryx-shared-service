@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { CloudOff, CloudUpload, RotateCcw } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
@@ -205,6 +206,21 @@ export function useWorkflowsListConfig(): ResourceListConfig<WorkflowListItem> {
         { id: 'updatedAt', label: 'Updated' },
       ],
       actions,
+      // Foundryx UIUX switch only (ignored while off).
+      fx: {
+        noun: 'workflows',
+        iconFor: {
+          edit: 'edit',
+          publish: <CloudUpload aria-hidden="true" className="size-[18px]" />,
+          unpublish: <CloudOff aria-hidden="true" className="size-[18px]" />,
+          duplicate: 'copy',
+          archive: 'trash',
+          restore: <RotateCcw aria-hidden="true" className="size-[18px]" />,
+          delete: 'delete',
+        },
+        columnKind: { isActive: 'status' },
+        phoneHidden: ['updatedAt', 'triggerLabel'],
+      },
     };
   }, [actions, router, formatDateTime]);
 }

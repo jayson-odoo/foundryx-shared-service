@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from '@/lib/toast';
+import type { FxIconRef } from '@/components/fx/icons';
 import { Container } from '@/components/common/container';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -70,6 +71,7 @@ import {
   type AcTaskTab,
 } from '../../../../../components/autocount-meta';
 import { useAutocountRunsListConfig } from '../../../../components/use-runs-list-config';
+import { useAcDone } from '../../../../components/use-ac-done';
 import { MappingEditorBody } from '../mapping/components/mapping-editor-body';
 import { useMappingResetAction } from '../mapping/components/mapping-reset-action';
 import { useMappingDraft } from '../mapping/components/use-mapping-draft';
@@ -81,6 +83,14 @@ import {
   type SourceKind,
 } from './source-tab';
 import { ScheduleTab } from './schedule-tab';
+
+/** Other Action icons under the Foundryx UIUX switch (one icon per meaning). */
+const AC_TASK_FX_ICONS: Record<string, FxIconRef> = {
+  'run-now': <Play aria-hidden="true" className="size-[18px]" />,
+  pause: <Pause aria-hidden="true" className="size-[18px]" />,
+  resume: <Play aria-hidden="true" className="size-[18px]" />,
+  'reset-to-preset': 'refresh',
+};
 
 export interface TaskEditorViewProps {
   companyId: string;
@@ -133,6 +143,7 @@ function IncidentBanner({
 export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: TaskEditorViewProps) {
   const form = useForm({ mode: 'onTouched' });
   const { can } = useCan();
+  const done = useAcDone();
   const { detail } = useAutocountCompany(companyId);
   const { task, isLoading, notFound, saveError, fieldErrors, save, apply, reload } =
     useAutocountEtlTask(companyId, entityType);
@@ -476,7 +487,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         toast.error(error instanceof Error ? error.message : 'That source could not be saved.');
         return false;
       }
-      toast.success('Task saved.');
+      done('Task saved.', { what: `${entityLabel(entityType)} task saved`, forWhom: detail?.company.name });
       reload();
       return true;
     }
@@ -534,7 +545,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       }
       reload();
     }
-    toast.success('Task saved.');
+    done('Task saved.', { what: `${entityLabel(entityType)} task saved`, forWhom: detail?.company.name });
     return true;
   }, [
     alerts,
@@ -546,6 +557,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     deliveryModeDirty,
     deliveryModeSetter,
     derivedImpl,
+    detail?.company.name,
+    done,
     draft,
     entityType,
     mapping,
@@ -725,7 +738,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         run: async () => {
           const runId = await lifecycle.runNow();
           if (runId) {
-            toast.success('Run finished.');
+            done('Run finished.', { what: `${label} run finished`, forWhom: companyName });
             onRan();
           }
         },
@@ -744,7 +757,9 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         // gate. Genuinely not a delete/detach action, so it drops `confirm`
         // entirely rather than moving to the grace-window engine.
         run: async () => {
-          if (await lifecycle.pause()) toast.success('Task paused.');
+          if (await lifecycle.pause()) {
+            done('Task paused.', { what: `${label} task paused`, forWhom: companyName });
+          }
         },
       },
       {
@@ -756,7 +771,9 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         isVisible: () => status === 'paused',
         isDisabled: () => lifecycle.busy !== null,
         run: async () => {
-          if (await lifecycle.resume()) toast.success('Task resumed.');
+          if (await lifecycle.resume()) {
+            done('Task resumed.', { what: `${label} task resumed`, forWhom: companyName });
+          }
         },
       },
       mappingReset.action,
@@ -970,6 +987,20 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           : []),
       ],
       initialTabId: initialTab,
+      // Foundryx UIUX switch only (slice W5-AC-SETUP); ignored while off. An
+      // active task's red action is Run now, a paused one's is Resume; Edit,
+      // Pause and Reset to preset sit beside it as icon actions. Any other
+      // state has no red action at rest (Activate lives on its own tab).
+      fx: {
+        mainActionId: status === 'active' ? 'run-now' : status === 'paused' ? 'resume' : undefined,
+        fullLabel: () =>
+          status === 'active'
+            ? `Run ${label} sync now${companyName ? ` for ${companyName}` : ''}`
+            : `Resume ${label} sync${companyName ? ` for ${companyName}` : ''}`,
+        iconFor: AC_TASK_FX_ICONS,
+        moreActionIds: ['reset-to-preset'],
+        discardName: `${label} task`,
+      },
       actions,
       actionRows: [task],
       editable: true,
@@ -997,6 +1028,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     derivedImpl,
     detail,
     dirty,
+    done,
     draft,
     entityType,
     etlPreview,

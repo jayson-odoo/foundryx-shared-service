@@ -1,12 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Search, TriangleAlert } from 'lucide-react';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
+import { useFx } from '@/hooks/use-fx';
+import {
+  useRegisterMainAction,
+  type FxMainActionSpec,
+} from '@/components/fx/actions/page-actions-context';
 import type { AutocountCompany } from '@/types/autocount';
 import type { DocLookupStartInput, DocLookupType } from '@/types/autocount-doc-lookup';
 
@@ -65,6 +70,30 @@ export function DocSearchForm({
   const notConnected = Boolean(companyId && selectedType && selectedType.connected === false);
   const canSearch = Boolean(companyId && docNo.trim() && docType && !notConnected && !busy);
 
+  // Foundryx UIUX switch only (slice W5-AC-OPS): Find is the page's red
+  // action and submits this same form (Enter in a field does the same); its
+  // blocked reason names what is missing. Switch off keeps the inline button.
+  const fx = useFx();
+  const formId = useId();
+  const findSpec = useMemo<FxMainActionSpec | null>(() => {
+    if (!fx) return null;
+    let blocked: FxMainActionSpec['blocked'];
+    if (!companyId) blocked = { reason: 'Pick a company.', pulseTarget: 'ac-find-company' };
+    else if (!docNo.trim()) blocked = { reason: 'Type a document number.', pulseTarget: 'ac-find-doc-no' };
+    else if (notConnected && selectedType) {
+      blocked = { reason: `No AutoCount connection for ${selectedType.label.toLowerCase()}s yet.` };
+    }
+    return {
+      id: 'find',
+      label: 'Find',
+      fullLabel: docNo.trim() ? `Find ${docNo.trim()}` : undefined,
+      form: formId,
+      blocked,
+      working: busy,
+    };
+  }, [fx, companyId, docNo, notConnected, selectedType, busy, formId]);
+  useRegisterMainAction(findSpec);
+
   const submit = () => {
     if (!canSearch || !companyId || !docType) return;
     onSearch({ companyId, docNo: docNo.trim(), docType, aroundDay: aroundDay || null });
@@ -72,6 +101,21 @@ export function DocSearchForm({
 
   return (
     <form
+      id={fx ? formId : undefined}
+      onKeyDown={
+        fx
+          ? (e) => {
+              // The red Find button sits in the page header, outside this
+              // form's own markup: Enter in the number or date field asks
+              // for the same search (portal events from the pickers are
+              // ignored by id).
+              const id = (e.target as HTMLElement).id;
+              if (e.key !== 'Enter' || (id !== 'ac-find-doc-no' && id !== 'ac-find-around')) return;
+              e.preventDefault();
+              submit();
+            }
+          : undefined
+      }
       className="flex flex-col gap-3"
       onSubmit={(e) => {
         e.preventDefault();
@@ -79,7 +123,10 @@ export function DocSearchForm({
       }}
     >
       <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-2 lg:grid-cols-[minmax(0,14rem)_minmax(0,12rem)_minmax(0,1fr)_minmax(0,11rem)_auto]">
-        <div className="flex min-w-0 flex-col gap-1.5">
+        <div
+          className="flex min-w-0 flex-col gap-1.5"
+          data-fx-pulse-target={fx ? 'ac-find-company' : undefined}
+        >
           <Label>Company *</Label>
           <SearchSelect
             options={companyOptions}
@@ -102,7 +149,10 @@ export function DocSearchForm({
             ariaLabel="Document type"
           />
         </div>
-        <div className="flex min-w-0 flex-col gap-1.5">
+        <div
+          className="flex min-w-0 flex-col gap-1.5"
+          data-fx-pulse-target={fx ? 'ac-find-doc-no' : undefined}
+        >
           <Label htmlFor="ac-find-doc-no">Document number *</Label>
           <Input
             id="ac-find-doc-no"
@@ -121,10 +171,12 @@ export function DocSearchForm({
             onChange={(e) => setAroundDay(e.target.value)}
           />
         </div>
-        <Button type="submit" variant="primary" disabled={!canSearch} className="w-full lg:w-auto">
-          <Search className="size-4" />
-          Find
-        </Button>
+        {!fx && (
+          <Button type="submit" variant="primary" disabled={!canSearch} className="w-full lg:w-auto">
+            <Search className="size-4" />
+            Find
+          </Button>
+        )}
       </div>
       {notConnected && selectedType && (
         <Alert variant="warning" appearance="light" data-testid="ac-find-not-connected">

@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
 import { Bold, Italic, Link2, List, ListOrdered, Underline } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import type { TemplateContextFact } from '@/types/templates';
+import { useFx } from '@/hooks/use-fx';
+import { exec, useRichTextField } from './use-rich-text-field';
+import { FxRichTextField } from './fx-rich-text-field';
 
 /**
  * WYSIWYG rich-text field for Text blocks (plan sprint-2/07). A toolbar drives
@@ -25,65 +27,24 @@ export interface RichTextFieldProps {
   'aria-label'?: string;
 }
 
-function exec(command: string, arg?: string) {
-  // execCommand is deprecated but the only zero-dep way to get exactly our
-  // email-safe tag set (b/i/u/a/ul/ol); works in every current browser.
-  document.execCommand(command, false, arg);
+export function RichTextField(props: RichTextFieldProps) {
+  // Foundryx UIUX switch: the playbook's slim toolbar along the field's top
+  // edge while on; today's field while off. Both run the same commands
+  // through `useRichTextField`, so the saved HTML is the same.
+  return useFx() ? <FxRichTextField {...props} /> : <RichTextFieldLegacy {...props} />;
 }
 
-export function RichTextField({
+function RichTextFieldLegacy({
   value,
   onChange,
   fields,
   disabled,
   'aria-label': ariaLabel,
 }: RichTextFieldProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  const savedRange = useRef<Range | null>(null);
-
-  // Seed / re-seed only when the external value diverges and we're not editing.
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (el.innerHTML !== value && document.activeElement !== el) {
-      el.innerHTML = value;
-    }
-  }, [value]);
-
-  const commit = () => {
-    const el = ref.current;
-    if (el) onChange(el.innerHTML);
-  };
-
-  // Remember the caret so a chip/link click (which steals focus) can restore it.
-  const rememberSelection = () => {
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount && ref.current?.contains(sel.anchorNode)) {
-      savedRange.current = sel.getRangeAt(0).cloneRange();
-    }
-  };
-
-  const withCaret = (fn: () => void) => {
-    const el = ref.current;
-    if (!el) return;
-    el.focus();
-    const sel = window.getSelection();
-    if (savedRange.current && sel) {
-      sel.removeAllRanges();
-      sel.addRange(savedRange.current);
-    }
-    fn();
-    commit();
-  };
-
-  const applyLink = () => {
-    const url = window.prompt('Link URL', 'https://');
-    if (url) withCaret(() => exec('createLink', url));
-  };
-
-  const insertToken = (key: string) => {
-    withCaret(() => exec('insertText', `{{${key}}}`));
-  };
+  const { ref, commit, rememberSelection, withCaret, applyLink, insertToken } = useRichTextField(
+    value,
+    onChange,
+  );
 
   return (
     <div className="flex flex-col gap-1.5">

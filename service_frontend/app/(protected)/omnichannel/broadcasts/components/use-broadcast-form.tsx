@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type FieldPath, type UseFormReturn } from 'react-hook-form';
@@ -106,10 +106,18 @@ export interface UseBroadcastFormResult {
   refresh: () => Promise<void>;
 }
 
+export interface UseBroadcastFormOptions {
+  /** Foundryx UIUX switch only: runs after a successful Send now or
+   *  Schedule INSTEAD of today's toast and navigation (the approved done
+   *  page). The requests themselves never change. */
+  onSent?: (sent: Broadcast, mode: BroadcastFormValues['scheduleMode']) => void;
+}
+
 export function useBroadcastForm(
   workspaceId: string | null,
   broadcastId: string | undefined,
   initialEditing: boolean,
+  options?: UseBroadcastFormOptions,
 ): UseBroadcastFormResult {
   const router = useRouter();
   const creating = !broadcastId;
@@ -117,6 +125,10 @@ export function useBroadcastForm(
   const actions = useBroadcastActions(workspaceId);
   const [savedId, setSavedId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const onSentRef = useRef(options?.onSent);
+  useEffect(() => {
+    onSentRef.current = options?.onSent;
+  }, [options?.onSent]);
 
   const form = useForm<BroadcastFormValues>({
     mode: 'onTouched',
@@ -164,7 +176,16 @@ export function useBroadcastForm(
       const id = await ensureDraftId();
       if (!id) return;
       const values = form.getValues();
-      await broadcastService.send(workspaceId, id, values.scheduleMode === 'schedule' ? values.scheduledAt : null);
+      const sent = await broadcastService.send(
+        workspaceId,
+        id,
+        values.scheduleMode === 'schedule' ? values.scheduledAt : null,
+      );
+      const onSent = onSentRef.current;
+      if (onSent) {
+        onSent(sent, values.scheduleMode);
+        return;
+      }
       toast.success(values.scheduleMode === 'now' ? 'Broadcast is sending.' : 'Broadcast scheduled.');
       router.push(broadcastFormPath(id));
     } catch (error) {

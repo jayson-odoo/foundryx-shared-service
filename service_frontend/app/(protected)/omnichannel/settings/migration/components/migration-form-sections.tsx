@@ -18,6 +18,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import { utcToZonedInputValue, zonedTimeToUtc } from '@/lib/datetime';
 import { contactsListPath } from '@/app/(protected)/omnichannel/contacts/components/paths';
 import type { Connection } from '@/types/integration';
@@ -421,6 +422,8 @@ export function ScopeSection({
   // own, and reading it as UTC would silently shift the floor by a day near
   // a timezone boundary (`lib/datetime.ts`, the `useDatetime()` mandate).
   const { timeZone } = useDatetime();
+  // Foundryx UIUX switch only: the switch takes its row's words as its name.
+  const fx = useFx();
   return (
     <Card>
       <CardHeader>
@@ -430,6 +433,7 @@ export function ScopeSection({
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm">Contacts only (skip message history)</span>
           <Switch
+            aria-label={fx ? 'Contacts only (skip message history)' : undefined}
             checked={contactsOnly}
             disabled={!editing}
             onCheckedChange={(checked) => onChange({ contactsOnly: checked, messagesSince })}

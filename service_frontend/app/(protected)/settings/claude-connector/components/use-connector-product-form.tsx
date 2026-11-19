@@ -7,6 +7,7 @@ import { useForm, type UseFormReturn } from 'react-hook-form';
 import { KeyRound, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { ApiError } from '@/lib/api-client';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
 import {
@@ -52,6 +53,9 @@ export function useConnectorProductForm(
 ): UseConnectorProductForm {
   const router = useRouter();
   const creating = !productKey;
+  // Foundryx UIUX switch only: the red action, the More menu and the done
+  // toasts. Every request is the same in both looks.
+  const fx = useFx();
   const [settings, setSettings] = useState<ConnectorProductSettings | null>(null);
   const [isLoading, setIsLoading] = useState(!creating);
   const [notFound, setNotFound] = useState(false);
@@ -93,7 +97,15 @@ export function useConnectorProductForm(
     try {
       if (creating) {
         const created = await createProduct(input);
-        toast.success('Product saved. Changes apply immediately.');
+        if (fx) {
+          toast.fxDone({
+            what: `${input.displayName || created.key} added`,
+            forWhom: 'Claude connector',
+            byWhom: 'you',
+          });
+        } else {
+          toast.success('Product saved. Changes apply immediately.');
+        }
         router.push(productPath(created.key));
         return true;
       }
@@ -102,7 +114,15 @@ export function useConnectorProductForm(
       const updated = await updateProductSettings(productKey, update);
       setSettings(updated);
       form.reset(productFormValues(updated));
-      toast.success('Settings saved. Changes apply immediately.');
+      if (fx) {
+        toast.fxDone({
+          what: `${updated.fields.displayName.value || updated.key} settings saved`,
+          forWhom: 'Claude connector',
+          byWhom: 'you',
+        });
+      } else {
+        toast.success('Settings saved. Changes apply immediately.');
+      }
       return true;
     } catch (e) {
       const errors = serverFieldErrors(e);
@@ -115,7 +135,7 @@ export function useConnectorProductForm(
       }
       return false;
     }
-  }, [creating, form, productKey, router]);
+  }, [creating, form, productKey, router, fx]);
 
   const actions = useMemo<ResourceAction<ConnectorProductSettings>[]>(
     () => [
@@ -139,7 +159,12 @@ export function useConnectorProductForm(
           if (!key) return;
           try {
             await deleteProduct(key, key);
-            toast.success('Saved settings deleted.');
+            if (fx) {
+              // No Undo: the API cannot bring deleted settings or secrets back.
+              toast.fxDone({ what: `Saved settings for ${key} deleted`, byWhom: 'you' });
+            } else {
+              toast.success('Saved settings deleted.');
+            }
             router.push(runtime.backHref ?? CONNECTOR_PATH);
           } catch (e) {
             toast.error(e instanceof Error ? e.message : 'Delete failed.');
@@ -147,7 +172,7 @@ export function useConnectorProductForm(
         },
       },
     ],
-    [router],
+    [router, fx],
   );
 
   // Read outside the memo and listed in its deps: read inside, the config
@@ -208,6 +233,16 @@ export function useConnectorProductForm(
           return;
         }
         if (settings) form.reset(productFormValues(settings));
+      },
+      // Foundryx UIUX switch only (ignored while off): Save (Create on a new
+      // product) is the red action; Edit sits there at rest. Deleting the
+      // saved settings sits in the More menu and still asks for the key.
+      fx: {
+        mainActionId: 'save',
+        fullLabel: () => (creating ? 'Create product' : `Save ${title} settings`),
+        iconFor: { 'delete-product': 'trash' },
+        moreActionIds: ['delete-product'],
+        discardName: title,
       },
     };
   }, [formDirty, isLoading, notFound, loadError, creating, settings, productKey, form, actions, initialEditing, onSave, router]);
