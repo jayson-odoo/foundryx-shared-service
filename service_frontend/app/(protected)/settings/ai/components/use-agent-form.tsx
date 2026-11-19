@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Bot } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import { useAiModels } from '@/hooks/use-ai-models';
@@ -52,6 +53,9 @@ export function useAgentForm(
   const router = useRouter();
   const actions = useAgentActions();
   const isNew = agentId === undefined;
+  // Foundryx UIUX switch only: the red action and the done toasts. Every
+  // request (name, model, temperature, skills) is the same in both looks.
+  const fx = useFx();
 
   const [agent, setAgent] = useState<AiAgent | null>(null);
   const [isLoading, setIsLoading] = useState(!isNew);
@@ -101,20 +105,28 @@ export function useAgentForm(
     try {
       if (isNew) {
         const created = await aiService.createAgent(input);
-        toast.success(`Agent "${created.name}" created.`);
+        if (fx) {
+          toast.fxDone({ what: `Agent ${created.name} created`, byWhom: 'you' });
+        } else {
+          toast.success(`Agent "${created.name}" created.`);
+        }
         router.replace(agentPath(created.id));
       } else {
         const updated = await aiService.updateAgent(agentId, input);
         setAgent(updated);
         form.reset(toValues(updated));
-        toast.success('Agent saved.');
+        if (fx) {
+          toast.fxDone({ what: `Agent ${updated.name} saved`, byWhom: 'you' });
+        } else {
+          toast.success('Agent saved.');
+        }
       }
       return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [form, isNew, router, agentId]);
+  }, [form, isNew, router, agentId, fx]);
 
   const onCancel = useCallback(() => {
     if (isNew) {
@@ -182,6 +194,17 @@ export function useAgentForm(
       recordNav: isNew
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Save is the red action
+      // while editing (as today, a new agent saves too), Edit at rest;
+      // Delete is an icon action.
+      // The red action's noun, switch on only (the shell would lower-case "AI").
+      entityNoun: fx ? 'agent' : undefined,
+      fx: {
+        mainActionId: 'save',
+        fullLabel: () => (isNew ? 'Save new agent' : `Save ${agent?.name ?? 'agent'}`),
+        iconFor: { delete: 'trash' },
+        discardName: isNew ? 'the new agent' : agent?.name,
+      },
     };
   }, [
     formDirty,
@@ -200,6 +223,7 @@ export function useAgentForm(
     skills,
     fetchRecordAt,
     buildRecordHref,
+    fx,
   ]);
 
   return { config, form, isLoading, notFound };
