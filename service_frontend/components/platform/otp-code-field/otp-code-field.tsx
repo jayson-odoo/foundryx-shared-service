@@ -89,8 +89,8 @@ export function OtpCodeField({
         />
       </div>
       {status ? (
-        <div className="flex h-11 items-center justify-center gap-2 text-sm text-muted-foreground">
-          <LoaderCircleIcon className="size-4 animate-spin" />
+        <div role="status" className="flex h-11 items-center justify-center gap-2 text-sm text-muted-foreground">
+          <LoaderCircleIcon aria-hidden className="size-4 animate-spin" />
           {status}
         </div>
       ) : (

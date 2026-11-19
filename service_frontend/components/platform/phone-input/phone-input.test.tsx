@@ -75,4 +75,39 @@ describe('PhoneInput', () => {
     await userEvent.type(screen.getByPlaceholderText('Search...'), 'zzzz');
     expect(await screen.findByText('No results found.')).toBeInTheDocument();
   });
+
+  it('a complete number settles on its own country for a shared calling code', async () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    await userEvent.type(screen.getByLabelText('Phone'), '+79161234567');
+    expect(screen.getByRole('button', { name: 'Country: Russia (+7)' })).toBeInTheDocument();
+    expect(onChange).toHaveBeenLastCalledWith('+79161234567', { valid: true, country: 'RU' });
+  });
+
+  it('keeps a leading 0 for countries without a trunk 0', async () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    await userEvent.type(screen.getByLabelText('Phone'), '+39 06 1234 5678');
+    expect(onChange).toHaveBeenLastCalledWith('+390612345678', { valid: true, country: 'IT' });
+  });
+
+  it('an edit in the middle keeps the caret after the typed digit', async () => {
+    render(<Harness />);
+    const field = screen.getByLabelText('Phone') as HTMLInputElement;
+    await userEvent.type(field, '160000509');
+    expect(field).toHaveValue('16-000 0509');
+    field.setSelectionRange(1, 1);
+    await userEvent.type(field, '9', { initialSelectionStart: 1, initialSelectionEnd: 1 });
+    expect(field.value.replace(/\D/g, '')).toBe('1960000509');
+    expect(field.value.slice(0, field.selectionStart ?? 0).replace(/\D/g, '')).toBe('19');
+  });
+
+  it('deleting a separator deletes the digit before it', async () => {
+    render(<Harness />);
+    const field = screen.getByLabelText('Phone') as HTMLInputElement;
+    await userEvent.type(field, '160000509');
+    // Caret after the "-" (position 3), Backspace removes the separator.
+    await userEvent.type(field, '{Backspace}', { initialSelectionStart: 3, initialSelectionEnd: 3 });
+    expect(field.value.replace(/\D/g, '')).toBe('10000509');
+  });
 });

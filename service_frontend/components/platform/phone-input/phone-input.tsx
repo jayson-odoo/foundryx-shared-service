@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { ChevronDown } from 'lucide-react';
 import {
   AsYouType,
@@ -20,6 +20,7 @@ import {
   CommandList,
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { COARSE_HIT_TARGET_CLASS, PRESSED_CLASS } from '@/components/ui/primitive-classes';
 
 /**
  * Phone field mirroring the Sorento CRM Dealer Access phone input
@@ -136,7 +137,7 @@ function parseRaw(raw: string, country: CountryCode): FieldState {
     if (!international) return { country, digits: digits.slice(calling.length) };
     return { country, digits: '', raw: digits ? `+${digits}` : trimmed ? '+' : '' };
   }
-  if (digits.startsWith('0')) digits = digits.replace(/^0+/, '');
+  if (trunkPrefix(country) === '0') digits = digits.replace(/^0+/, '');
   return { country, digits };
 }
 
@@ -179,10 +180,60 @@ export function PhoneInput({
   const errorShown = !valid && (showError || (touched && digits.length > 0));
   const errorId = id ? `${id}-error` : undefined;
 
+  const inputRef = useRef<HTMLInputElement>(null);
+  /** Digits that sit before the caret after an edit; the caret is put back
+   * after the same digit once the text is re-formatted. */
+  const caretDigits = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    const want = caretDigits.current;
+    caretDigits.current = null;
+    if (!el || want === null || document.activeElement !== el) return;
+    let pos = 0;
+    let seen = 0;
+    while (pos < el.value.length && seen < want) {
+      if (/\d/.test(el.value[pos])) seen += 1;
+      pos += 1;
+    }
+    el.setSelectionRange(pos, pos);
+  });
+
   const emit = (next: FieldState) => {
-    setState(next);
     const out = toE164(next.country, next.digits);
-    onChange(out, { valid: isValidE164(out), country: next.country });
+    const valid = isValidE164(out);
+    // A complete number names its own country: a calling code shared by
+    // several countries (+7, +44, +1) can resolve to the wrong one while typing.
+    const own = valid ? parsePhoneNumberFromString(out) : undefined;
+    const settled = own?.country && own.country !== next.country
+      ? { country: own.country, digits: own.nationalNumber }
+      : next;
+    setState(settled);
+    onChange(out, { valid, country: settled.country });
+  };
+
+  const onInput = (e: ChangeEvent<HTMLInputElement>) => {
+    const el = e.target;
+    let text = el.value;
+    let caret = el.selectionStart ?? text.length;
+    const before = raw ?? formatNational(country, digits);
+    const sameDigits = text.replace(/\D/g, '') === before.replace(/\D/g, '');
+    if (!raw && sameDigits && text.length < before.length && caret > 0) {
+      // Only a separator was deleted: delete the digit before it instead,
+      // else the re-format puts the separator straight back.
+      const cut = text.slice(0, caret).search(/\d(?=\D*$)/);
+      if (cut >= 0) {
+        text = text.slice(0, cut) + text.slice(cut + 1);
+        caret = cut;
+      }
+    }
+    const typedBefore = text.slice(0, caret).replace(/\D/g, '').length;
+    const next = parseRaw(text, country);
+    const dropped = text.replace(/\D/g, '').length - next.digits.length;
+    caretDigits.current = next.raw !== undefined || next.country !== country
+      ? null
+      : Math.max(0, typedBefore - Math.max(0, dropped));
+    emit(next);
   };
 
   return (
@@ -208,7 +259,11 @@ export function PhoneInput({
               type="button"
               disabled={disabled}
               aria-label={`Country: ${countryName(country)} (${dial})`}
-              className="flex h-full shrink-0 items-center gap-1 rounded-s-md px-2.5 hover:bg-accent"
+              className={cn(
+                'flex h-full shrink-0 items-center gap-1 rounded-s-md px-2.5 hover:bg-accent',
+                PRESSED_CLASS,
+                COARSE_HIT_TARGET_CLASS,
+              )}
             >
               <span aria-hidden className="text-base leading-none">
                 {flagOf(country)}
@@ -258,7 +313,8 @@ export function PhoneInput({
           aria-describedby={errorShown ? errorId : undefined}
           placeholder={PLACEHOLDERS[country] ?? ''}
           value={raw ?? formatNational(country, digits)}
-          onChange={(e) => emit(parseRaw(e.target.value, country))}
+          ref={inputRef}
+          onChange={onInput}
           onBlur={() => {
             setTouched(true);
             onBlur?.();

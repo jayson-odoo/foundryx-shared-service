@@ -69,4 +69,36 @@ describe('OtpCodeField', () => {
     expect(screen.getByText('Signing you in as +60 12 345 0002')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Resend/ })).toBeNull();
   });
+
+  it('checks a given 6-digit value only once, whatever re-renders', () => {
+    const first = vi.fn();
+    const props = { value: '123456', onChange: vi.fn(), cooldown: 0, sent: true, onResend: vi.fn() };
+    const { rerender } = render(<OtpCodeField {...props} onComplete={first} pending={false} />);
+    expect(first).toHaveBeenCalledTimes(1);
+    const next = vi.fn();
+    rerender(<OtpCodeField {...props} onComplete={next} pending={false} />);
+    rerender(<OtpCodeField {...props} onComplete={next} pending />);
+    rerender(<OtpCodeField {...props} onComplete={next} pending={false} />);
+    expect(next).not.toHaveBeenCalled();
+    rerender(<OtpCodeField {...props} value="12345" onComplete={next} pending={false} />);
+    rerender(<OtpCodeField {...props} value="123457" onComplete={next} pending={false} />);
+    expect(next).toHaveBeenCalledWith('123457');
+  });
+
+  it('hands focus back to the field when a check ends', () => {
+    const props = { value: '', onChange: vi.fn(), onComplete: vi.fn(), cooldown: 0, sent: true, onResend: vi.fn() };
+    const { rerender } = render(<OtpCodeField {...props} pending />);
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(screen.getByLabelText('Verification code')).not.toHaveFocus();
+    rerender(<OtpCodeField {...props} pending={false} />);
+    expect(screen.getByLabelText('Verification code')).toHaveFocus();
+  });
+
+  it('announces the status row', () => {
+    render(
+      <OtpCodeField value="" onChange={vi.fn()} onComplete={vi.fn()} cooldown={0} sent pending
+        onResend={vi.fn()} status={<span>Signing you in as +60 12 345 0002</span>} />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('Signing you in as +60 12 345 0002');
+  });
 });

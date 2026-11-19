@@ -48,6 +48,7 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
   const [verifying, setVerifying] = useState(false);
   const open = action !== null;
   const { restart, clearError } = step;
+  const cooldownStart = cooldown.start;
 
   useEffect(() => {
     if (!open) {
@@ -56,8 +57,10 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
       setPhoneValid(false);
       setSubmitted(false);
       setCode('');
+      setVerifying(false);
+      cooldownStart(0);
     }
-  }, [open, restart]);
+  }, [open, restart, cooldownStart]);
 
   const send = useCallback(async () => {
     if (await step.sendCode(phone)) {
