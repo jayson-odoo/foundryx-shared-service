@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { PhoneInput } from '@/components/platform/phone-input/phone-input';
 import type { WebchatPreChatToggles, WebchatPreChatValues } from '@/types/omnichannel';
 import { MessageText } from './message-text';
 
@@ -35,17 +36,25 @@ export function PreChatStep({
 }: PreChatStepProps) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  /** E.164 from the shared phone input ('' = left empty). */
   const [phone, setPhone] = useState('');
+  const [phoneValid, setPhoneValid] = useState(false);
+  const [phoneChecked, setPhoneChecked] = useState(false);
   const [text, setText] = useState('');
 
   const canSend = text.trim().length > 0 && !sending;
 
   function submit() {
     if (!canSend) return;
+    // Optional, but a number that was typed must be complete before it goes.
+    if (toggles.askPhone && phone && !phoneValid) {
+      setPhoneChecked(true);
+      return;
+    }
     const values: WebchatPreChatValues = {};
     if (toggles.askName && name.trim()) values.name = name.trim();
     if (toggles.askEmail && email.trim()) values.email = email.trim();
-    if (toggles.askPhone && phone.trim()) values.phone = phone.trim();
+    if (toggles.askPhone && phone) values.phone = phone;
     onSubmit(text.trim(), values);
     setText('');
   }
@@ -75,15 +84,20 @@ export function PreChatStep({
           </label>
         )}
         {toggles.askPhone && (
-          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-            Phone
-            <Input
-              type="tel"
+          <div className="flex flex-col gap-1">
+            <label htmlFor="webchat-prechat-phone" className="text-xs font-medium text-muted-foreground">
+              Phone
+            </label>
+            <PhoneInput
+              id="webchat-prechat-phone"
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              data-testid="webchat-prechat-phone"
+              showError={phoneChecked}
+              onChange={(e164, meta) => {
+                setPhone(e164);
+                setPhoneValid(meta.valid);
+              }}
             />
-          </label>
+          </div>
         )}
       </div>
 

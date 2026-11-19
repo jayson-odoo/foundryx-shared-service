@@ -20,7 +20,7 @@ describe('PreChatStep (plan 34 / A7b S4, D-A7B-23/AC-WEB-53)', () => {
     );
     expect(screen.getByTestId('webchat-prechat-name')).toBeInTheDocument();
     expect(screen.getByTestId('webchat-prechat-email')).toBeInTheDocument();
-    expect(screen.queryByTestId('webchat-prechat-phone')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Phone')).not.toBeInTheDocument();
   });
 
   it('renders no fields at all when every toggle is off, only the greeting + composer', () => {
