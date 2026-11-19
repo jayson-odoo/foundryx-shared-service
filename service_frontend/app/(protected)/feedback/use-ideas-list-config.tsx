@@ -361,6 +361,22 @@ export function useIdeasListConfig(
         { field: 'submitted', label: 'Submitted', type: 'date' },
       ],
       defaultSort: { id: 'votes', desc: true },
+      // Foundryx UIUX switch only (ignored while off, and in the embed).
+      fx: {
+        noun: 'feedback',
+        createInPageHeader: true,
+        iconFor: {
+          'promote-br': <FileText aria-hidden="true" className="size-[18px]" />,
+          merge: <GitMerge aria-hidden="true" className="size-[18px]" />,
+          unmerge: <Split aria-hidden="true" className="size-[18px]" />,
+          advance: 'move',
+          archive: <Archive aria-hidden="true" className="size-[18px]" />,
+          restore: <ArchiveRestore aria-hidden="true" className="size-[18px]" />,
+          delete: 'trash',
+        },
+        columnKind: { status: 'status', votes: 'number', submitted: 'date' },
+        phoneHidden: ['channel', 'product', 'submitter'],
+      },
       exportColumns: [
         { id: 'problem', label: 'Feedback' },
         { id: 'type', label: 'Type' },

@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { PageHeader } from '@/components/platform/page-header';
+import { useFx } from '@/hooks/use-fx';
+import { FxImportSettings } from './fx-import-settings';
 
 /**
  * Import engine tenant settings (plan sprint-3/09 D11) - per-tenant caps
@@ -114,6 +116,25 @@ function ImportSettingsForm() {
 }
 
 export default function ImportSettingsPage() {
+  return useFx() ? <FxImportSettingsPage /> : <ImportSettingsPageLegacy />;
+}
+
+/** Foundryx UIUX switch on (slice W4-SETTINGS). */
+function FxImportSettingsPage() {
+  return (
+    <RequirePermission permission="imports.read_all">
+      <Container width="fluid">
+        <PageHeader
+          title="Import settings"
+          description="Caps applied to every bulk import in this workspace."
+        />
+        <FxImportSettings />
+      </Container>
+    </RequirePermission>
+  );
+}
+
+function ImportSettingsPageLegacy() {
   return (
     <RequirePermission permission="imports.read_all">
       <Container width="fluid">

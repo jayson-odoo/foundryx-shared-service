@@ -13,6 +13,8 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { useTimezonePreference } from '@/hooks/use-timezone-preference';
+import { useFx } from '@/hooks/use-fx';
+import { FxTimezoneCard } from './fx-timezone-card';
 
 /** Sentinel option - clears the preference back to the browser tz. */
 const BROWSER_DEFAULT = '__browser__';
@@ -22,6 +24,10 @@ const BROWSER_DEFAULT = '__browser__';
  * in this timezone via useDatetime; no preference = browser tz.
  */
 export function TimezoneCard() {
+  return useFx() ? <FxTimezoneCard /> : <TimezoneCardLegacy />;
+}
+
+function TimezoneCardLegacy() {
   const { timezone, browserTimeZone, isSaving, error, save } =
     useTimezonePreference();
 

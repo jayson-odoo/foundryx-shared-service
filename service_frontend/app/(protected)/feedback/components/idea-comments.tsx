@@ -1,5 +1,7 @@
 'use client';
 
+import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { useCan } from '@/hooks/use-can';
 import { useIdeaComments } from '@/hooks/use-idea-comments';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
@@ -23,6 +25,14 @@ function CommentsBody({
   canComment: boolean;
 }) {
   const comments = useIdeaComments(ideaId);
+  // Foundryx UIUX switch only (never in the public portal or the embed, which
+  // sit outside the switch): a done toast for a posted comment (an edit or delete reports no result to toast on). Requests are the same in both looks.
+  const fx = useFx();
+  const onAdd: typeof comments.add = async (...args) => {
+    const result = await comments.add(...args);
+    if (fx && result) toast.fxDone({ what: args[1] ? 'Reply posted' : 'Comment posted', byWhom: 'you' });
+    return result;
+  };
   return (
     <IdeaCommentsView
       threads={comments.threads}
@@ -34,7 +44,7 @@ function CommentsBody({
       allowAttachments
       onRetryUploads={comments.retryUploads}
       fetchAttachment={comments.fetchContent}
-      onAdd={comments.add}
+      onAdd={fx ? onAdd : comments.add}
       onEdit={comments.edit}
       onRemove={comments.remove}
     />
