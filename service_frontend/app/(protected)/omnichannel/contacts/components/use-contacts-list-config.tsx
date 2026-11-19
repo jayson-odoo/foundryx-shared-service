@@ -6,7 +6,7 @@
  * Phone, Email, Lifecycle, Tags, Assignee, Channel, Last message, Created,
  * plus the leading select and trailing row "…" columns.
  */
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
@@ -14,6 +14,8 @@ import { DataGridTableRowSelect, DataGridTableRowSelectAll } from '@/components/
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { useJobsActivity } from '@/providers/jobs-activity-provider';
 import type { LifecycleStageOption } from '@/hooks/use-contact-lifecycle-stages';
 import { useContactFilterFields } from '@/hooks/use-contact-filter-fields';
 import { contactService } from '@/services/contact-service';
@@ -31,9 +33,25 @@ import { ContactLifecycleCell } from './contact-lifecycle-cell';
 import { ContactTagsCell } from './contact-tags-cell';
 import { contactFormPath, contactNewPath } from './paths';
 import { segmentOptions } from './segment-picker';
-import { exportPendingToast } from './export-pending-toast';
+import { exportPendingToast, fxExportPendingToast } from './export-pending-toast';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+/**
+ * Foundryx UIUX switch only (slice W1-CONTACTS): the list's page-level
+ * choices. The page header owns the red "Add contact" (the page renders its
+ * own header, so the list gets no Create of its own under the switch);
+ * names, phones and emails copy by holding them; phone cards show the
+ * contact and its stage, then phone and email, assignee and channel, tags
+ * and the last message.
+ */
+export const CONTACTS_FX: NonNullable<ResourceListConfig<ContactListItem>['fx']> = {
+  mainActionId: 'create',
+  noun: 'contacts',
+  copyable: ['name', 'phone', 'email'],
+  cardLines: [['phone', 'email'], ['assignee', 'channel'], ['tags'], ['lastMessageAt']],
+  iconFor: { 'bulk-assign': 'assign', 'add-tags': 'tag' },
+};
 
 export interface UseContactsListConfigParams {
   workspaceId: string;
@@ -71,6 +89,12 @@ export function useContactsListConfig({
 }: UseContactsListConfigParams): ResourceListConfig<ContactListItem> {
   const { formatDate, formatDateTime } = useDatetime();
   const router = useRouter();
+  const fx = useFx();
+  // Read when an export hands off, so neither changes the config's identity.
+  const jobs = useJobsActivity();
+  const openJobsRef = useRef(() => jobs.setDrawerOpen(true));
+  openJobsRef.current = () => jobs.setDrawerOpen(true);
+  const totalRef = useRef<number | null>(null);
 
   const filterFields = useContactFilterFields({ tags, fields, stages, members, channelTypeOptions });
 
@@ -217,7 +241,13 @@ export function useContactsListConfig({
       columns,
       getRowId: (c) => c.id,
       rowHref: (c) => contactFormPath(c.id),
-      fetcher: (q) => contactService.list(workspaceId, q),
+      fetcher: fx
+        ? async (q) => {
+            const result = await contactService.list(workspaceId, q);
+            totalRef.current = result.total;
+            return result;
+          }
+        : (q) => contactService.list(workspaceId, q),
       exporter: async (q, cols, ids) => {
         try {
           return await contactService.exportContacts(workspaceId, {
@@ -230,7 +260,10 @@ export function useContactsListConfig({
             sortDir: q.sort?.desc ? 'desc' : 'asc',
           });
         } catch (error) {
-          if (error instanceof ExportPendingError) exportPendingToast(router.push);
+          if (error instanceof ExportPendingError) {
+            if (fx) fxExportPendingToast(ids?.length ?? totalRef.current, () => openJobsRef.current());
+            else exportPendingToast(router.push);
+          }
           throw error;
         }
       },
@@ -258,8 +291,9 @@ export function useContactsListConfig({
       exportFilename: 'contacts',
       createLabel: 'Add contact',
       createPermission: 'contacts.manage',
-      onCreate: () => router.push(contactNewPath),
+      onCreate: fx ? undefined : () => router.push(contactNewPath),
       importer: { entityType: 'omnichannel_contacts', writePermission: 'contacts.import', context: { workspaceId } },
+      ...(fx ? { fx: CONTACTS_FX } : {}),
     };
-  }, [workspaceId, filterFields, actions, segments, segmentsReady, onFilterChange, formatDate, formatDateTime, router]);
+  }, [workspaceId, filterFields, actions, segments, segmentsReady, onFilterChange, formatDate, formatDateTime, router, fx]);
 }

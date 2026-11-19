@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useMemo } from 'react';
-import { Tag, TagIcon, UserPlus2, Workflow } from 'lucide-react';
+import { createLucideIcon, Tag, TagIcon, UserPlus2, Workflow } from 'lucide-react';
 import type { ResourceAction, ResourceActionRuntime } from '@/components/platform/resource-list';
+import { useFx } from '@/hooks/use-fx';
 import type { ContactListItem } from '@/types/omnichannel';
 import { useContactEraseAction } from './use-contact-erase-action';
 
@@ -16,6 +17,18 @@ import { useContactEraseAction } from './use-contact-erase-action';
  * list's search/filter/sort/page state instead of a full remount). Delete /
  * merge / block are NOT in this slice (D-A2-15).
  */
+/**
+ * Foundryx UIUX switch only: "one icon per meaning" (playbook "Other Actions
+ * are icon buttons"), so Remove tags gets a tag with a minus instead of the
+ * same tag Add tags shows. The switch-off menus keep their icons.
+ */
+export const TagMinusIcon = createLucideIcon('tag-minus', [
+  ['path', { d: 'M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l6.5 6.5', key: 'fxtagm1' }],
+  ['path', { d: 'M12.586 2.586l6.828 6.828a2 2 0 0 1 0 2.828L17 14.657', key: 'fxtagm2' }],
+  ['circle', { cx: '7.5', cy: '7.5', r: '.5', fill: 'currentColor', key: 'fxtagm3' }],
+  ['path', { d: 'M15 19h7', key: 'fxtagm4' }],
+]);
+
 export interface ContactActionCallbacks {
   onBulkAssign: (rows: ContactListItem[], reload: () => void) => void;
   onAddTags: (rows: ContactListItem[], reload: () => void) => void;
@@ -32,6 +45,7 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
   // extra network fetch per render. The caller now memoizes each callback
   // with `useCallback`, so THESE deps are actually stable.
   const { onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle } = callbacks;
+  const fx = useFx();
   const reloadAfterErase = useCallback((runtime: ResourceActionRuntime) => runtime.reload(), []);
   const eraseAction = useContactEraseAction('row', reloadAfterErase);
   return useMemo<ResourceAction<ContactListItem>[]>(
@@ -55,7 +69,7 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
       {
         id: 'remove-tags',
         label: 'Remove tags',
-        icon: TagIcon,
+        icon: fx ? TagMinusIcon : TagIcon,
         permission: 'contacts.manage',
         surfaces: { row: true, bulk: true },
         isVisible: (rows) => rows.some((r) => r.tags.length > 0),
@@ -71,6 +85,6 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
       },
       eraseAction,
     ],
-    [onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle, eraseAction],
+    [onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle, eraseAction, fx],
   );
 }
