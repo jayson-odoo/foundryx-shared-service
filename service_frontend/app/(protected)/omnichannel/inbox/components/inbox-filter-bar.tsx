@@ -9,24 +9,27 @@ import { SearchSelect, type SearchSelectOption } from '@/components/platform/sea
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import type { ConversationFilters } from '@/hooks/use-conversations';
+import { useFx } from '@/hooks/use-fx';
 import { cn } from '@/lib/utils';
 import type { ThreadPriority, ThreadSort, ThreadStatus } from '@/types/omnichannel';
 
-const SHOW_OPTIONS: SearchSelectOption[] = [
+import { FxInboxFilterBar } from './fx/fx-inbox-filter-bar';
+
+export const SHOW_OPTIONS: SearchSelectOption[] = [
   { label: 'All', value: 'ALL' },
   { label: 'Open', value: 'OPEN' },
   { label: 'Snoozed', value: 'SNOOZED' },
   { label: 'Closed', value: 'CLOSED' },
 ];
 
-const SORT_OPTIONS: SearchSelectOption[] = [
+export const SORT_OPTIONS: SearchSelectOption[] = [
   { label: 'Newest', value: 'newest' },
   { label: 'Oldest', value: 'oldest' },
   { label: 'Unreplied first', value: 'unreplied_first' },
   { label: 'Longest waiting', value: 'longest_waiting' },
 ];
 
-const PRIORITY_OPTIONS: SearchSelectOption[] = [
+export const PRIORITY_OPTIONS: SearchSelectOption[] = [
   { label: 'All priorities', value: 'ALL' },
   { label: 'Urgent', value: 'URGENT' },
   { label: 'High', value: 'HIGH' },
@@ -40,7 +43,13 @@ export interface InboxFilterBarProps {
   className?: string;
 }
 
-export function InboxFilterBar({ filters, setFilters, className }: InboxFilterBarProps) {
+export function InboxFilterBar(props: InboxFilterBarProps) {
+  // Foundryx UIUX switch (playbook-uiux.md): the playbook dropdowns and
+  // switch. Off renders the legacy body below, unchanged.
+  return useFx() ? <FxInboxFilterBar {...props} /> : <InboxFilterBarLegacy {...props} />;
+}
+
+function InboxFilterBarLegacy({ filters, setFilters, className }: InboxFilterBarProps) {
   return (
     <div className={cn('flex flex-wrap items-center gap-2', className)} data-testid="inbox-filter-bar">
       <SearchSelect

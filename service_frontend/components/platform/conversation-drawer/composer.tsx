@@ -61,10 +61,12 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { SearchSelect } from '@/components/platform/search-select';
 import { Textarea } from '@/components/ui/textarea';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { useFx } from '@/hooks/use-fx';
 import { EMOJI_GROUPS } from '@/lib/emoji';
 import { CHANNEL_CAPABILITIES, type ChannelCapabilities } from '@/lib/channel-capabilities';
 import { cn } from '@/lib/utils';
 import { channelsListPath } from '@/app/(protected)/omnichannel/settings/channels/components/paths';
+import { FxComposer } from './fx/fx-composer';
 import {
   ContactsBuilderDialog,
   InteractiveBuilderDialog,
@@ -140,7 +142,7 @@ export interface ComposerProps {
   noChannel?: boolean;
 }
 
-interface PendingFile {
+export interface PendingFile {
   id: string;
   file: File;
   kind: MediaKind;
@@ -148,7 +150,7 @@ interface PendingFile {
   preview?: string;
 }
 
-const ATTACH_OPTIONS: { kind: MediaKind; label: string; accept: string; Icon: typeof ImageIcon }[] = [
+export const ATTACH_OPTIONS: { kind: MediaKind; label: string; accept: string; Icon: typeof ImageIcon }[] = [
   { kind: 'image', label: 'Photo', accept: 'image/png,image/jpeg', Icon: ImageIcon },
   { kind: 'video', label: 'Video', accept: 'video/mp4,video/3gpp', Icon: Video },
   { kind: 'audio', label: 'Audio', accept: 'audio/*', Icon: Music },
@@ -197,7 +199,7 @@ function VariableInputs({
   );
 }
 
-function TemplateSendDialog({
+export function TemplateSendDialog({
   open,
   onOpenChange,
   templates,
@@ -342,7 +344,7 @@ function TemplateSendDialog({
 }
 
 /** Preview thumbnail for a pending file. */
-function PendingThumb({ item }: { item: PendingFile }) {
+export function PendingThumb({ item }: { item: PendingFile }) {
   if (item.preview && (item.kind === 'image' || item.kind === 'sticker')) {
     return <img src={item.preview} alt={item.file.name} className="size-12 rounded object-cover" />;
   }
@@ -357,7 +359,11 @@ function PendingThumb({ item }: { item: PendingFile }) {
   );
 }
 
-export function Composer({
+export function Composer(props: ComposerProps) {
+  return useFx() ? <FxComposer {...props} /> : <ComposerLegacy {...props} />;
+}
+
+function ComposerLegacy({
   windowOpen,
   humanAgentWindowOpen = false,
   capabilities = CHANNEL_CAPABILITIES.WHATSAPP,

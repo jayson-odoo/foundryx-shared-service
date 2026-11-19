@@ -1,9 +1,11 @@
 'use client';
 
+import { useFxActor } from './use-fx-actor';
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { FileText, Pencil, Send, Trash2, Code2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
   DataGridTableRowSelect,
@@ -28,6 +30,13 @@ import { TEMPLATE_LANGUAGES } from '@/lib/whatsapp-template';
 import { templateEditPath } from './paths';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+const FX_TEMPLATE_ICONS = {
+  edit: 'edit',
+  submit: 'send',
+  'view-payload': <Code2 aria-hidden="true" className="size-[18px]" />,
+  delete: 'trash',
+} as const;
 
 const FILTER_FIELDS: FilterFieldDef[] = [
   { field: 'name', label: 'Name', type: 'text' },
@@ -65,6 +74,8 @@ export function useTemplateList(
   onEdit: (id: string) => void,
   onViewPayload: (item: TemplateManageItem) => void,
 ): UseTemplateListResult {
+  const fx = useFx();
+  const byWhom = useFxActor();
   const actions = useMemo<ResourceAction<TemplateManageItem>[]>(
     () => [
       {
@@ -89,7 +100,17 @@ export function useTemplateList(
           if (!rows.length) return;
           try {
             await Promise.all(rows.map((t) => whatsappTemplateService.submit(channelId, t.id)));
-            toast.success(`Submitted ${rows.length} template(s) for review.`);
+            if (fx) {
+              toast.fxDone({
+                what:
+                  rows.length === 1
+                    ? `${rows[0].name} submitted to WhatsApp for review`
+                    : `${rows.length} templates submitted to WhatsApp for review`,
+                byWhom,
+              });
+            } else {
+              toast.success(`Submitted ${rows.length} template(s) for review.`);
+            }
             rt.reload();
           } catch {
             toast.error('Could not submit. Your drafts are kept - please retry.');
@@ -118,10 +139,14 @@ export function useTemplateList(
         // handler commits it server-side - it resolves the owning channel
         // from the template row itself, so `entityId` stays the bare
         // template id).
-        deferred: { actionKey: 'wa_templates.delete', entityType: 'wa_template' },
+        deferred: {
+          actionKey: 'wa_templates.delete',
+          entityType: 'wa_template',
+          fxName: (rows) => (rows.length === 1 ? rows[0].name : undefined),
+        },
       },
     ],
-    [channelId, onEdit, onViewPayload],
+    [channelId, onEdit, onViewPayload, fx, byWhom],
   );
 
   const config = useMemo<ResourceListConfig<TemplateManageItem>>(() => {
@@ -277,11 +302,13 @@ export function useTemplateList(
       searchHints: ['Name'],
       defaultSort: { id: 'created', desc: true },
       enableStatusViews: false,
-      createLabel: 'Submit Template',
+      createLabel: fx ? 'New template' : 'Submit Template',
       createPermission: 'wa_templates.manage',
       onCreate: onSubmitTemplate,
+      // Foundryx UIUX switch only (ignored with it off).
+      fx: { noun: 'templates', compactStates: true, iconFor: FX_TEMPLATE_ICONS },
     };
-  }, [channelId, actions, onSubmitTemplate]);
+  }, [channelId, actions, onSubmitTemplate, fx]);
 
   return { config };
 }
