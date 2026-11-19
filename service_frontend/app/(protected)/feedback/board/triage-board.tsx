@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { GripVertical } from 'lucide-react';
 import {
   Kanban,
@@ -88,15 +89,21 @@ function IdeaCardBody({
   idea,
   onVote,
   ghost,
+  fx,
 }: {
   idea: Idea;
   onVote: (idea: Idea, dir: 'up') => void;
   ghost?: boolean;
+  /** Foundryx UIUX switch on: the new card chrome and the drag lift. */
+  fx?: boolean;
 }) {
   return (
     <div
       className={
-        'rounded-lg border bg-card p-3 ' + (ghost ? 'shadow-lg ring-2 ring-primary' : 'shadow-xs')
+        fx
+          ? 'rounded-(--fx-r-l) border border-(--fx-line) bg-(--fx-surface) p-3 transition-[scale,rotate,box-shadow] duration-(--fx-t-hover) ease-(--fx-ease-out) ' +
+            (ghost ? 'rotate-[0.6deg] scale-[1.02] shadow-[0_8px_24px_var(--fx-lift)]' : 'shadow-[0_1px_2px_var(--fx-shade)]')
+          : 'rounded-lg border bg-card p-3 ' + (ghost ? 'shadow-lg ring-2 ring-primary' : 'shadow-xs')
       }
     >
       <div className="flex items-start gap-2">
@@ -147,6 +154,9 @@ export function TriageBoard() {
     withBoard: true,
   });
   const { paths } = useIdeationRuntime();
+  // Foundryx UIUX switch only: card chrome, the drag lift and a done toast.
+  // What a drag does and which moves are allowed are the same in both looks.
+  const fx = useFx();
 
   const source = useMemo<BoardColumn[]>(
     () => (apiColumns && apiColumns.length > 0 ? apiColumns : columnsFromIdeas(ideas)),
@@ -197,6 +207,13 @@ export function TriageBoard() {
           return;
         }
         await setStatus(id, e.overContainer);
+        if (fx) {
+          const to = source.find((c) => c.statusId === e.overContainer)?.title;
+          toast.fxDone({
+            what: `${idea?.title ?? idea?.problem ?? 'Feedback'} moved${to ? ` to ${to}` : ''}`,
+            byWhom: 'you',
+          });
+        }
       }
       await reorderPriority(order); // board reading order → priority
     } catch (err) {
@@ -221,7 +238,12 @@ export function TriageBoard() {
     <Kanban value={columns} onValueChange={onChange} getItemValue={(i) => i.id} onMove={handleMove}>
       <KanbanBoard className="!flex !grid-cols-none flex-nowrap gap-4 overflow-x-auto pb-3">
         {source.map((col) => (
-          <KanbanColumn key={col.statusId} value={col.statusId} className="w-80 shrink-0 rounded-lg bg-muted/40 p-3">
+          <KanbanColumn key={col.statusId} value={col.statusId} className={
+              fx
+                ? 'fx-see-through w-80 shrink-0 rounded-(--fx-r-l) bg-(--fx-surface)/50 p-3'
+                : 'w-80 shrink-0 rounded-lg bg-muted/40 p-3'
+            }
+          >
             <div className="flex items-center justify-between px-1 pb-2">
               <span className="text-sm font-semibold">{col.title}</span>
               <Badge variant="outline">{columns[col.statusId]?.length ?? 0}</Badge>
@@ -231,13 +253,15 @@ export function TriageBoard() {
                 <KanbanItem key={idea.id} value={idea.id}>
                   <KanbanItemHandle asChild>
                     <Link href={paths.formHref(idea.id)} draggable={false}>
-                      <IdeaCardBody idea={idea} onVote={onVote} />
+                      <IdeaCardBody idea={idea} onVote={onVote} fx={fx} />
                     </Link>
                   </KanbanItemHandle>
                 </KanbanItem>
               ))}
               {(columns[col.statusId]?.length ?? 0) === 0 && (
-                <p className="px-1 py-6 text-center text-xs text-muted-foreground">Drop feedback here</p>
+                <p className="px-1 py-6 text-center text-xs text-muted-foreground">
+                  {fx ? 'No feedback here' : 'Drop feedback here'}
+                </p>
               )}
             </KanbanColumnContent>
           </KanbanColumn>
@@ -246,7 +270,7 @@ export function TriageBoard() {
       <KanbanOverlay>
         {({ value }) => {
           const idea = byId.get(String(value));
-          return idea ? <IdeaCardBody idea={idea} onVote={onVote} ghost /> : null;
+          return idea ? <IdeaCardBody idea={idea} onVote={onVote} ghost fx={fx} /> : null;
         }}
       </KanbanOverlay>
     </Kanban>

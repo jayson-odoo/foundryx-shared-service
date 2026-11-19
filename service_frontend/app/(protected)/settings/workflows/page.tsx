@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { PageHeader } from '@/components/platform/page-header';
+import { useFx } from '@/hooks/use-fx';
+import { FxWorkflowSettings } from './fx-workflow-settings';
 
 /**
  * Workflow engine tenant settings (plan sprint-2/10) - run retention. The
@@ -96,6 +98,22 @@ function WorkflowSettingsForm() {
 }
 
 export default function WorkflowSettingsPage() {
+  return useFx() ? <FxWorkflowSettingsPage /> : <WorkflowSettingsPageLegacy />;
+}
+
+/** Foundryx UIUX switch on (slice W4-SETTINGS). */
+function FxWorkflowSettingsPage() {
+  return (
+    <RequirePermission permission="workflows.manage">
+      <Container width="fluid">
+        <PageHeader description="Run retention and other workflow engine settings for this workspace." />
+        <FxWorkflowSettings />
+      </Container>
+    </RequirePermission>
+  );
+}
+
+function WorkflowSettingsPageLegacy() {
   return (
     <RequirePermission permission="workflows.manage">
       <Container width="fluid">
