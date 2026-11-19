@@ -231,3 +231,37 @@ def test_route_without_the_write_key_sends_nothing(client, h, gw, rig):
     r = client.post(ROUTE, json=body(two_rows(rig)))
     assert r.status_code == 401
     assert h.vendor.writes() == []
+
+
+# ============================== the db3 probe suite (plan 69 D4): db3 only =========================
+
+def _run_bulk(h):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.write_back import runner
+
+    h.vendor.stamp_created = True
+    return runner.run_bulk_suite(h.db, tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id,
+                                 creditor_code="400-N004", debtor_code="301-B018", run_tag="T69", **h.factories())
+
+
+@pytest.mark.parametrize("env", ["production", "development"])
+def test_the_bulk_probe_suite_refuses_db1_before_any_request(h, monkeypatch, env):
+    from tests.test_autocount_plan63_gate import DB1, _point_at, _set
+
+    _set(monkeypatch, env=env, books="db1,db3")
+    _point_at(h, DB1)
+    with pytest.raises(Exception) as ei:
+        _run_bulk(h)
+    assert getattr(ei.value, "code", None) == "WRITE_NOT_ALLOWED", repr(ei.value)
+    h.no_http()
+
+
+def test_control_the_bulk_probe_suite_runs_on_db3_and_the_doc_batch_is_one_link_put(h, monkeypatch):
+    from tests.test_autocount_plan63_gate import _set
+
+    _set(monkeypatch, env="production", books="db1,db3")
+    result = _run_bulk(h)
+    by_id = {c.case_id: c for c in result.cases}
+    assert set(by_id) == {"R00", "R01", "F01", "F02"}
+    assert h.vendor.calls, "the control suite sent no request, so the refusal test proves nothing"
+    assert by_id["F02"].status == "PASS", by_id["F02"].observed
