@@ -10,7 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.api.v1.documents import _serve_blob
+from app.api.v1.documents import stream_blob
 from app.database import get_db
 from app.dependencies import effective_permission_keys, get_current_user, require_permission
 from app.models.user import User
@@ -298,7 +298,7 @@ def get_idea_attachment_content(
     key, mime, filename = IdeaAttachmentService(db).content(
         current_user.tenant_id, idea_id, attachment_id, variant
     )
-    return _serve_blob(db, current_user.tenant_id, key, mime, filename, "inline")
+    return stream_blob(db, current_user.tenant_id, key, mime, filename, "inline")
 
 
 @router.get("/{idea_id}/business-requirements", response_model=List[BusinessRequirementOut])

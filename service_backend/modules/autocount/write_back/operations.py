@@ -26,7 +26,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, ContextManager, Dict, Iterator, List, Optional, Tuple, Union
@@ -109,10 +109,16 @@ ROW_VALUES_NOT_KEPT = "ROW_VALUES_NOT_KEPT"
 NOT_APPLIED = "OPERATION_NOT_APPLIED"
 SPLIT_LINK = "split_link"
 LINK_BATCH = "link_batch"  # plan 62: one PO row to N SO rows in one PUT
+LINK_DOC_BATCH = "link_doc_batch"  # plan 69: every linked row of ONE PO document, one PUT per chunk
+# Plan 69 D2: new linked rows per link PUT (a chunk); a longer document batch is split, never refused.
+MAX_LINES_PER_PUT = 40
+SOME_LINES_NOT_LINKED = "SOME_LINES_NOT_LINKED"  # plan 69: a done document batch with skipped / failed lines
+NOT_SENT = "NOT_SENT"  # plan 69: a document batch line whose chunk was never sent (an earlier chunk stopped)
 ALL_LINKS_SKIPPED = "ALL_LINKS_SKIPPED"
 RESTORE_NOT_LANDED = "RESTORE_NOT_LANDED"  # plan 65 D3: the batch's restore PUT did not land (resumable)
 FOC_ON_ROW = "FOC_ON_ROW"  # plan 65 D2a: the line would take the whole of a row carrying FOC (hapi cannot move it)
-MAX_BATCH_LINKS = 20
+# Plan 69 D2: no size refusal a real press can reach - only a body guard far above a PO's row count.
+MAX_BATCH_LINKS = 2000
 TEMPLATE_KEY = "autocount_write_needs_attention"
 
 # Plan 62 review: vendor exception classes proven to refuse BEFORE anything is saved (db3 probe, 11 Nov
@@ -179,6 +185,10 @@ class OperationResult:
     doc_no: Optional[str] = None
     batch: Optional[Dict[str, Any]] = None  # link_batch only: {"links": [...], "freeLine": {...} | None}
     detail: Optional[Doc] = None  # plan 64: link_row / split_link - the PO row the link landed on
+    # plan 69 D5 (ISO-Z): the request reached SS / the first write landed in AutoCount / the answer was settled
+    requested_at: Optional[str] = None
+    linked_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 @dataclass
@@ -229,6 +239,29 @@ def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
     if not isinstance(value, str):
         return None
     return value.strip() or None
+
+
+def _iso_z(value: Optional[datetime]) -> Optional[str]:
+    """An aware (or SQLite-naive UTC) datetime as ``YYYY-MM-DDTHH:MM:SS.mmmZ`` (one width, so the strings order like the times)."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _qty_text(value: Any) -> str:
+    """A quantity as plain text without trailing zeros (``2.0`` -> ``"2"``, ``1.50`` -> ``"1.5"``)."""
+    text = format(_dec(value).normalize(), "f")
+    return text if text not in ("", "-0") else "0"
+
+
+def _landed_at(steps: Any) -> Optional[str]:
+    """Plan 69 D5: when the operation's first AutoCount write landed (its first ``done`` write step)."""
+    for step in steps if isinstance(steps, list) else []:
+        if isinstance(step, dict) and step.get("outcome") == OUTCOME_DONE and step.get("at"):
+            return str(step["at"])
+    return None
 
 
 def _json_safe(value: Any) -> Any:
@@ -355,7 +388,7 @@ class OperationService:
         company = CompanyRepository(self.db).get(tenant_id, company_id)
         if company is None:
             return OperationResult(None, REFUSED, WRITE_DISABLED)
-        if op not in (SPLIT_LINK, LINK_BATCH) and op not in OPS:
+        if op not in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH) and op not in OPS:
             return OperationResult(None, REFUSED, UNKNOWN_OPERATION)
         request_hash = hashlib.sha256(
             json.dumps({"op": op, "params": params}, sort_keys=True, default=str).encode()
@@ -414,7 +447,7 @@ class OperationService:
                 self.db.refresh(row)
         if row.status == IN_PROGRESS:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
-        if row.op != SPLIT_LINK and row.op != LINK_BATCH and row.op not in OPS:
+        if row.op not in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH) and row.op not in OPS:
             return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
         if self._never_applied(row):
             return self._settle_not_applied(row)
@@ -475,6 +508,13 @@ class OperationService:
 
     @staticmethod
     def _spec(op: str, params: Dict[str, Any]) -> _Spec:
+        if op == LINK_DOC_BATCH:  # the row column carries the first PO row (the snapshot lists them all)
+            if not isinstance(params["links"], list) or not params["links"]:
+                raise TypeError("links")
+            return _Spec(
+                int(params["doc_key"]), int(params["links"][0]["po_dtl_key"]), None, None,
+                params.get("doc_date"), params.get("expected_last_modified"), None,
+            )
         if op == LINK_BATCH:
             if not isinstance(params["links"], list):
                 raise TypeError("links")
@@ -535,7 +575,7 @@ class OperationService:
         operation commits its snapshot BEFORE its first AutoCount write (``_execute_unlocked``,
         ``_batch_locked``, ``_split_link``). Belt and braces: no step and no write action recorded."""
         return (row.status == PENDING and not row.snapshot_json and not row.steps_json
-                and (row.op in OPS or row.op in (SPLIT_LINK, LINK_BATCH))
+                and (row.op in OPS or row.op in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH))
                 and not self.ops.has_actions(row.tenant_id, row.id))
 
     def _settle_not_applied(self, row: AcWriteOperation) -> OperationResult:
@@ -571,7 +611,8 @@ class OperationService:
             stored.get("message") or "", list(stored.get("warnings") or []),
             [(int(o), int(n)) for o, n in stored.get("replacedLines") or []], stored.get("document"),
             row.doc_key, _doc_no(stored.get("document"), row.snapshot_json), stored.get("batch"),
-            stored.get("detail"),
+            stored.get("detail"), stored.get("requestedAt") or _iso_z(row.created_at),
+            stored.get("linkedAt") or _landed_at(row.steps_json), stored.get("finishedAt"),
         )
 
     def _finish(self, row: AcWriteOperation, status: str, code: Optional[str] = None, *, message: str = "",
@@ -581,20 +622,23 @@ class OperationService:
         result = OperationResult(
             row.id, status, code, message, list(self._warnings), list(replaced or []), document,
             row.doc_key, _doc_no(document, row.snapshot_json), batch, detail if status == DONE else None,
+            _iso_z(row.created_at), _landed_at(self._steps), _iso_z(datetime.now(timezone.utc)),
         )
         row.status, row.error_code = status, code
         row.steps_json = _json_safe(self._steps)
         row.result_json = _json_safe({
             "outcome": status, "errorCode": code, "message": message, "warnings": result.warnings,
             "replacedLines": [list(p) for p in result.replaced_lines], "document": document,
-            "batch": batch, "detail": result.detail,
+            "batch": batch, "detail": result.detail, "requestedAt": result.requested_at,
+            "linkedAt": result.linked_at, "finishedAt": result.finished_at,
         })
         self.db.commit()
         return result
 
     def _step(self, name: str, res: PrimitiveResult) -> None:
         self._steps.append({"step": name, "outcome": res.outcome, "code": res.error_code,
-                            "actionId": res.action_id, "newDtlKey": res.new_dtl_key})
+                            "actionId": res.action_id, "newDtlKey": res.new_dtl_key,
+                            "at": _iso_z(datetime.now(timezone.utc))})
         if self._row is not None:  # heartbeat: a live operation never looks stale (AC-57-43)
             self._row.updated_at = datetime.now(timezone.utc)
             self._row.steps_json = _json_safe(self._steps)
@@ -646,6 +690,8 @@ class OperationService:
         self._check_test_company(company)
         if op == LINK_BATCH:
             return self._batch_link(row, company, spec, params)
+        if op == LINK_DOC_BATCH:
+            return self._doc_batch_link(row, company, spec, params)
         if op == SPLIT_LINK or (
             op == "link_row" and not params.get("whole_row") and self._is_part_of_row(company, base_url, spec, params)
         ):
@@ -1120,9 +1166,11 @@ class OperationService:
         so_link)``; the values are ``payloads.transfer_restore`` (one rule)."""
         document = document or {}
         changes_by_key: Dict[int, Dict[str, Any]] = {}
-        for new_key, location, so_link in moves:
+        for move in moves:
+            new_key, location, so_link = move[0], move[1], move[2]
+            source = move[3] if len(move) > 3 else snap["row"]  # plan 69: a document batch's own row per move
             landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
-            changes = payloads.transfer_row_drift(payloads.transfer_restore(snap["row"], location, so_link), landed)
+            changes = payloads.transfer_row_drift(payloads.transfer_restore(source, location, so_link), landed)
             if changes:
                 changes_by_key[new_key] = changes
         if not changes_by_key:
@@ -1249,6 +1297,8 @@ class OperationService:
             raise _Done(was, exc.code) from None
         if snap.get("mode") == "batch":
             return self._resume_batch(row, company, snap, doc)
+        if snap.get("mode") == "doc_batch":
+            return self._resume_doc_batch(row, company, snap, doc)
         rows = doc.get("Details") or []
         old_key = int(snap["row"]["DtlKey"])
         original = next((r for r in rows if r.get("DtlKey") == old_key), None)
@@ -1338,7 +1388,7 @@ class OperationService:
     # ── link batch (plan 62 D1-D5): one PO row to N SO rows in ONE PUT ───────
 
     def _batch_params(self, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """The batch's links, checked before anything is read: 1..20, no repeated SO row. A quantity that is
+        """The batch's links, checked before anything is read: 1..MAX_BATCH_LINKS, no repeated SO row. A quantity that is
         not valid does not refuse the batch: that line is skipped (``QTY_INVALID``)."""
         raw = params["links"]
         if not 1 <= len(raw) <= MAX_BATCH_LINKS:
@@ -1388,21 +1438,7 @@ class OperationService:
         doc_date, doc = self._read(company, "PO", spec.doc_key, spec.doc_date)
         if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
             raise _Done(REFUSED, DOC_STALE)
-        try:
-            old = payloads.check_row("PO", doc, spec.dtl_key)  # kind, cancelled, row exists
-            payloads._refuse_other_transfer(old)
-        except WriteRefusal as exc:
-            raise _Done(REFUSED, exc.code, str(exc)) from None
-        spo_ref = self._spo_ref(company, spec.dtl_key)
-        if spo_ref:
-            raise _Done(REFUSED, "ROW_ON_SPO", payloads.on_spo_message(spo_ref))
-        if _link_of("PO", old):
-            raise _Done(REFUSED, "ROW_ALREADY_LINKED")
-        mode, _received = self._receipt(company, defn, doc, old)
-        if mode == "partial":
-            raise _Done(REFUSED, ROW_RECEIVED, received_message("PO", old))
-        # the PO row's qty that pending link operations on it may already have taken (outcome unknown) is not free
-        free = _dec(old.get("Qty")) - self._po_row_pending_qty(company, spec, doc)
+        old, free = self._link_row_checks(company, defn, spec, doc)
         # Owner rule (plan 62, 12 Nov): a bad line never fails the batch. Each line is checked on its own,
         # in request order; a failing line is skipped and named, the rest are linked.
         sources: Dict[int, Doc] = {}
@@ -1465,6 +1501,25 @@ class OperationService:
         self.db.commit()  # the next guard sees these links before the lock is released
         return snapshot, res.document
 
+    def _link_row_checks(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc) -> Tuple[Doc, Decimal]:
+        """The PO row ``spec.dtl_key`` may be linked: ``(row, free qty)``, else ``_Done(REFUSED, code)``. One
+        rule for the one-row batch (plan 62) and every row of a document batch (plan 69)."""
+        try:
+            old = payloads.check_row("PO", doc, spec.dtl_key)  # kind, cancelled, row exists
+            payloads._refuse_other_transfer(old)
+        except WriteRefusal as exc:
+            raise _Done(REFUSED, exc.code, str(exc)) from None
+        spo_ref = self._spo_ref(company, spec.dtl_key)
+        if spo_ref:
+            raise _Done(REFUSED, "ROW_ON_SPO", payloads.on_spo_message(spo_ref))
+        if _link_of("PO", old):
+            raise _Done(REFUSED, "ROW_ALREADY_LINKED")
+        mode, _received = self._receipt(company, defn, doc, old)
+        if mode == "partial":
+            raise _Done(REFUSED, ROW_RECEIVED, received_message("PO", old))
+        # the PO row's qty that pending link operations on it may already have taken (outcome unknown) is not free
+        return old, _dec(old.get("Qty")) - self._po_row_pending_qty(company, spec, doc)
+
     def _po_row_pending_qty(self, company: AcCompany, spec: _Spec, doc: Doc) -> Decimal:
         """Qty of the PO row that unresolved link operations on it (``pending_verification`` or
         ``needs_attention``: they may have landed) would cover and that the fresh read does not show yet (a
@@ -1475,8 +1530,15 @@ class OperationService:
         pool = list(rows)
         for op in self.ops.pending_po_row_links(company.tenant_id, company.id, spec.doc_key, spec.dtl_key,
                                                 exclude_id=self._row.id if self._row else None):
-            snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
-            if snap.get("mode") in ("batch", "split"):  # a part-row link_row runs as a split: its snapshot says
+            whole = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
+            if whole.get("mode") == "doc_batch":  # plan 69: the sent parts on THIS row, each a one-row batch
+                parts = [p for p in whole.get("parts") or [] if isinstance(p, dict) and p.get("sent")
+                         and int((p.get("row") or {}).get("DtlKey") or 0) == spec.dtl_key]
+            elif whole.get("mode") in ("batch", "split"):  # a part-row link_row runs as a split: its snapshot says
+                parts = [whole]
+            else:
+                parts = []
+            for snap in parts:
                 known = set(snap.get("knownKeys") or [])
                 for link in snap.get("links") or []:
                     want, qty = int(link.get("soDtlKey") or 0), _dec(link.get("qty"))
@@ -1486,7 +1548,9 @@ class OperationService:
                         total += qty
                     else:
                         pool.remove(match)
+            if whole.get("mode") in ("batch", "split", "doc_batch"):
                 continue
+            snap = whole
             if op.status != PENDING or not any(r.get("DtlKey") == op.dtl_key for r in rows):
                 # the row was replaced (the whole-row link landed), or a person is resolving an operation whose
                 # row still stands (its replace never landed): nothing of the row is reserved
@@ -1498,8 +1562,9 @@ class OperationService:
         return total
 
     def _line_skip(self, company: AcCompany, doc: Doc, old: Doc, link: Dict[str, Any], sources: Dict[int, Doc],
-                   free: Decimal, running: Decimal) -> Optional[str]:
-        """The reason one line cannot be linked (None = it can); fills ``so_no`` and ``location``."""
+                   free: Decimal, running: Decimal, claimed: Decimal = Decimal(0)) -> Optional[str]:
+        """The reason one line cannot be linked (None = it can); fills ``so_no`` and ``location``. ``claimed``
+        = the SO row's qty earlier lines of the same document batch take (plan 69: not in AutoCount yet)."""
         so = sources.get(link["so_doc_key"])
         if so is None:
             try:
@@ -1518,7 +1583,7 @@ class OperationService:
             return "ITEM_MISMATCH"
         if old.get("UOM") != so_row.get("UOM"):
             return "UOM_MISMATCH"
-        used = self.prims._so_linked_qty(company, link["so_dtl_key"], fresh_po=doc)
+        used = self.prims._so_linked_qty(company, link["so_dtl_key"], fresh_po=doc) + claimed
         if link["qty"] > payloads.so_outstanding(so_row, used):
             return "QTY_ABOVE_OUTSTANDING"
         if running + link["qty"] > free:
@@ -1683,6 +1748,365 @@ class OperationService:
         row.snapshot_json = fresh
         self.db.commit()
         return fresh
+
+    # ── document batch (plan 69): every linked row of ONE PO document, one link PUT per chunk ──────
+
+    def _doc_batch_params(self, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """The document batch's links, checked before anything is read: 1..MAX_BATCH_LINKS (a body guard,
+        never a press), no PO row listing the same SO row twice. A bad quantity skips its line only."""
+        raw = params["links"]
+        if not 1 <= len(raw) <= MAX_BATCH_LINKS:
+            raise _Done(REFUSED, INVALID_PARAMS, f"links must hold 1 to {MAX_BATCH_LINKS} entries")
+        links: List[Dict[str, Any]] = []
+        seen: set = set()
+        for index, item in enumerate(raw):
+            try:
+                po_dtl, so_doc, so_dtl = int(item["po_dtl_key"]), int(item["so_doc_key"]), int(item["so_dtl_key"])
+                qty = Decimal(str(item["qty"]))
+            except (KeyError, TypeError, ValueError, ArithmeticError):
+                raise _Done(REFUSED, INVALID_PARAMS) from None
+            if (po_dtl, so_dtl) in seen:
+                raise _Done(REFUSED, INVALID_PARAMS, f"PO row {po_dtl} lists SO row {so_dtl} twice")
+            seen.add((po_dtl, so_dtl))
+            skip = None
+            try:
+                qty = payloads.validate_qty(qty)
+            except WriteRefusal:
+                skip = "QTY_INVALID"
+            links.append({"index": index, "po_dtl_key": po_dtl, "so_doc_key": so_doc, "so_dtl_key": so_dtl,
+                          "qty": qty, "so_doc_date": item.get("so_doc_date"), "skip": skip})
+        return links
+
+    @staticmethod
+    def _doc_line(link: Doc, result: str, code: Optional[str] = None, message: str = "",
+                  new_key: Optional[int] = None) -> Doc:
+        """One line of a document batch answer (``link`` = a request link, snake or snapshot camel)."""
+        return {"index": int(link["index"]), "poDtlKey": int(link.get("poDtlKey", link.get("po_dtl_key")) or 0),
+                "soDocKey": int(link.get("soDocKey", link.get("so_doc_key")) or 0),
+                "soDtlKey": int(link.get("soDtlKey", link.get("so_dtl_key")) or 0),
+                "qty": _qty_text(link.get("qty")), "result": result, "code": code, "message": message or "",
+                "newPoDtlKey": new_key}
+
+    def _doc_batch_link(self, row: AcWriteOperation, company: AcCompany, spec: _Spec,
+                        params: Dict[str, Any]) -> OperationResult:
+        links = self._doc_batch_params(params)
+        limit = max(1, int(params.get("max_lines_per_put") or MAX_LINES_PER_PUT))
+        try:  # every SO row of the request, sorted (no deadlock), for the whole run: each chunk's guard needs it
+            with so_row_locks(self.db, company.id, [link["so_dtl_key"] for link in links]):
+                return self._doc_batch_locked(row, company, spec, links, limit)
+        except SoRowBusy:
+            raise _Done(REFUSED, DOC_BUSY) from None
+
+    def _doc_batch_locked(self, row: AcWriteOperation, company: AcCompany, spec: _Spec,
+                          links: List[Dict[str, Any]], limit: int) -> OperationResult:
+        defn = OPS["link_row"]  # the document batch rides the link switch, like the one-row batch (plan 62 D9)
+        if not op_capable(defn):
+            raise _Done(REFUSED, VENDOR_UNSUPPORTED)
+        self._check_not_busy(company, spec.doc_key, "PO")
+        doc_date, doc = self._read(company, "PO", spec.doc_key, spec.doc_date)
+        if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
+            raise _Done(REFUSED, DOC_STALE)
+        if doc.get("Cancelled") == "T":
+            raise _Done(REFUSED, "DOC_CANCELLED")
+        answers: Dict[int, Doc] = {}
+        by_row: Dict[int, List[Dict[str, Any]]] = {}
+        for link in links:
+            by_row.setdefault(link["po_dtl_key"], []).append(link)
+        sources: Dict[int, Doc] = {}
+        claimed: Dict[int, Decimal] = {}  # SO row -> qty earlier lines of THIS batch take (not in AutoCount yet)
+        planned: List[Tuple[Doc, List[Doc]]] = []
+        repeats = self._doc_links_on_po(company, spec.doc_key, doc)
+        for po_dtl, row_links in by_row.items():
+            self._check_deadline()  # the guard reads (SO docs, receipts) are bounded like the writes
+            try:  # owner rule: a row that cannot be linked skips its own lines, never the batch
+                old, free = self._link_row_checks(company, defn, replace(spec, dtl_key=po_dtl), doc)
+            except _Done as done:
+                if done.status != REFUSED:
+                    raise
+                for link in row_links:
+                    answers[link["index"]] = self._doc_line(link, "skipped", done.code, done.message)
+                continue
+            running = Decimal(0)
+            applied: List[Doc] = []
+            for link in row_links:
+                self._check_deadline()
+                repeat = (po_dtl, link["so_dtl_key"])
+                code = link["skip"] or ("ALREADY_LINKED" if repeats.get(repeat) else None) or self._line_skip(
+                    company, doc, old, link, sources, free, running, claimed.get(link["so_dtl_key"], Decimal(0)))
+                if code == "ALREADY_LINKED":
+                    repeats[repeat] -= 1  # one PO row on the SO row answers for one repeated line only
+                if code:
+                    answers[link["index"]] = self._doc_line(link, "skipped", code)
+                    continue
+                running += link["qty"]
+                claimed[link["so_dtl_key"]] = claimed.get(link["so_dtl_key"], Decimal(0)) + link["qty"]
+                applied.append({"index": link["index"], "poDtlKey": po_dtl, "soDocKey": link["so_doc_key"],
+                                "soDtlKey": link["so_dtl_key"], "qty": str(link["qty"]), "soNo": link["so_no"],
+                                "location": link["location"], "soDeliveryDate": link["so_link"]["soDeliveryDate"],
+                                "note": link["so_link"]["note"]})
+            if applied:
+                planned.append((old, applied))
+        requested = [{"index": link["index"], "poDtlKey": link["po_dtl_key"], "soDocKey": link["so_doc_key"],
+                      "soDtlKey": link["so_dtl_key"], "qty": str(link["qty"])} for link in links]
+        if not planned:  # nothing to link: refused, nothing sent, the key is released
+            return self._finish(row, REFUSED, ALL_LINKS_SKIPPED, message="every link was skipped",
+                                batch=self._doc_answer({"requested": requested}, answers, None))
+        chunks: List[List[Doc]] = []
+        current: List[Doc] = []
+        count = 0
+        # Whole rows where they fit; a row longer than a chunk spans chunks. Two links whose new rows would read
+        # back alike (same SO row, item, unit and qty, from different PO rows) never share a chunk: each new row
+        # must be told apart from the read-back so it gets ITS source row's restore values (code review).
+        signs: set = set()
+        for old, applied in planned:
+            entry: Optional[Doc] = None
+            for link in applied:
+                sign = (int(link["soDtlKey"]), old.get("ItemCode"), old.get("UOM"), _dec(link["qty"]))
+                if count == limit or sign in signs:
+                    chunks.append(current)
+                    current, count, signs, entry = [], 0, set(), None
+                if entry is None:
+                    entry = {"rowKey": int(old["DtlKey"]), "links": []}
+                    current.append(entry)
+                entry["links"].append(link)
+                signs.add(sign)
+                count += 1
+        if current:
+            chunks.append(current)
+        snapshot = _json_safe({
+            "kind": "PO", "mode": "doc_batch", "docKey": spec.doc_key, "docNo": doc.get("DocNo"),
+            "docDate": doc_date.isoformat(), "lastModified": doc.get("LastModified"),
+            "companyName": company.company_name or company.name, "row": planned[0][0],
+            "location": planned[0][0].get("Location"), "requested": requested, "chunks": chunks, "parts": [],
+            "lineResults": {str(k): v for k, v in answers.items()}, "rowKeys": [int(o["DtlKey"]) for o, _ in planned],
+        })
+        self._store_snapshot(row, snapshot)
+        self._log_remark_overwrite(doc)
+        return self._doc_batch_chunks(row, company, snapshot, doc, 0)
+
+    def _doc_batch_chunks(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc,
+                          start: int) -> OperationResult:
+        """Send chunks ``start..``: per chunk ONE link PUT (the primitive re-reads the PO first) and ONE
+        restore PUT. A chunk AutoCount refused (the read proved nothing landed) fails its own lines and
+        stops the later ones (``NOT_SENT``, retryable); an unknown or wrong result stops for Resume."""
+        results: Dict[str, Doc] = dict(snap.get("lineResults") or {})
+        landed_any = any(v.get("result") == "linked" for v in results.values())
+        last = doc
+        for ci in range(start, len(snap["chunks"])):
+            chunk = snap["chunks"][ci]
+            if ci > start and time.monotonic() > self._op_deadline:
+                break  # past the deadline between chunks: the rest stays unsent (NOT_SENT), never half-sent
+            groups: List[Tuple[int, List[Doc]]] = []
+            parts: List[Doc] = []
+            for entry in chunk:
+                old = _row_in(last, int(entry["rowKey"]))
+                if old is None:  # an earlier chunk took the row: cannot happen (the split keeps a rest)
+                    return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION, "ROW_MISMATCH", last)
+                groups.append((int(entry["rowKey"]), [self._doc_new_row(old, link) for link in entry["links"]]))
+                parts.append({"mode": "batch", "sent": True, "chunk": ci, "row": old, "links": entry["links"],
+                              "knownKeys": [r.get("DtlKey") for r in last.get("Details") or []]})
+            self._check_deadline()
+            snap = _json_safe(dict(snap, parts=list(snap.get("parts") or []) + parts, lineResults=results))
+            self._store_snapshot(row, snap)  # the parts are on the row before their PUT (pending guards read them)
+            res = self.prims.batch_link(**self._call(row, company, snap, f"link{ci}"), dtl_key=groups[0][0],
+                                        lines=groups[0][1], groups=groups)
+            self._step(f"link{ci}", res)
+            if res.outcome == OUTCOME_REFUSED or (res.outcome == OUTCOME_VENDOR_ERROR and res.error_code == VENDOR_REFUSED):
+                for entry in chunk:  # plan 69 D3: the read proved nothing of this chunk landed
+                    for link in entry["links"]:
+                        results[str(link["index"])] = self._doc_line(link, "failed", res.error_code, res.message)
+                snap = dict(snap, parts=[p for p in snap["parts"] if p.get("chunk") != ci])
+                if not landed_any:
+                    status = REFUSED if res.outcome == OUTCOME_REFUSED else VENDOR_ERROR
+                    return self._doc_stop(row, company, snap, results, status, res.error_code, last,
+                                          message=res.message)
+                break
+            if res.outcome == OUTCOME_MISMATCH:
+                return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION,
+                                      res.error_code or INTERNAL_ERROR, last, checking=ci, message=res.message)
+            if res.outcome != OUTCOME_DONE or res.document is None:
+                return self._doc_stop(row, company, snap, results, PENDING, res.error_code or INTERNAL_ERROR,
+                                      last, checking=ci, message=res.message)
+            refresh_po_links_from_doc(self.db, company.tenant_id, company.id,
+                                      f"{company.database_name}:{snap['docKey']}", res.document)
+            self.db.commit()
+            outcome = self._doc_chunk_landed(row, company, snap, ci, res.document, results, deadline=True)
+            if isinstance(outcome, OperationResult):
+                return outcome
+            snap, last = outcome
+            landed_any = True
+        return self._doc_stop(row, company, snap, results, DONE, None, last)
+
+    def _doc_links_on_po(self, company: AcCompany, doc_key: int, doc: Doc) -> Dict[Tuple[int, int], int]:
+        """Plan 69 (security review): ``{(origin PO row, SO row): count}`` of links an earlier batch operation of
+        SS made on this PO whose new row still stands, linked to that SO row. A line asking for that same pair
+        again is the resend of a line that already landed (a caller re-sending the whole list after a partial
+        result): it is skipped ``ALREADY_LINKED``, never linked twice. Links nobody made through SS, or
+        another PO row's links to the same SO row, never count."""
+        standing = {int(r.get("DtlKey") or 0): _link_of("PO", r) for r in doc.get("Details") or []}
+        found: Dict[Tuple[int, int], int] = {}
+        for op in self.ops.link_results_on_doc(company.tenant_id, company.id, doc_key):
+            batch = (op.result_json or {}).get("batch") if isinstance(op.result_json, dict) else None
+            if not isinstance(batch, dict):
+                continue
+            made: List[Tuple[int, int, int]] = []
+            for line in batch.get("lines") or []:  # a document batch: each line names its origin row
+                if isinstance(line, dict) and line.get("result") == "linked":
+                    made.append((int(line.get("poDtlKey") or 0), int(line.get("soDtlKey") or 0),
+                                 int(line.get("newPoDtlKey") or 0)))
+            for link in batch.get("links") or []:  # a one-row batch: the origin is the operation's row
+                if isinstance(link, dict):
+                    made.append((int(op.dtl_key or 0), int(link.get("soDtlKey") or 0), int(link.get("poDtlKey") or 0)))
+            for origin, so_row, new_key in made:
+                if so_row and standing.get(new_key) == so_row:
+                    found[(origin, so_row)] = found.get((origin, so_row), 0) + 1
+        return found
+
+    @staticmethod
+    def _doc_new_row(old: Doc, link: Doc) -> Doc:
+        """One new linked row of a document batch PUT (the one-row batch's shape, ``_batch_locked``)."""
+        return dict(
+            {k: v for k, v in old.items() if k != "DtlKey"},
+            FromDocType="SO", FromDocNo=link["soNo"], FromDocDtlKey=int(link["soDtlKey"]),
+            Location=link["location"], Qty=float(_dec(link["qty"])), FOCQty=0,
+            Discount=payloads.link_discount(old.get("Discount")),
+            **{payloads.LINK_NOTE_KEY: link.get("note")},
+        )
+
+    def _doc_chunk_landed(self, row: AcWriteOperation, company: AcCompany, snap: Doc, ci: int, document: Doc,
+                          results: Dict[str, Doc], *, deadline: bool) -> "Union[OperationResult, Tuple[Doc, Doc]]":
+        """Chunk ``ci``'s link PUT landed: match every link to its new row, run the ONE restore PUT of the
+        chunk, record the lines. A restore that did not land is ``needs_attention`` (Resume re-runs it)."""
+        moves: List[Tuple[int, Optional[str], Optional[Doc], Doc]] = []
+        found: List[Tuple[Doc, int]] = []
+        matched = self._chunk_matches([p for p in snap["parts"] if p.get("chunk") == ci], document)
+        if matched is None:  # cannot happen after a verified PUT
+            return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION, INTERNAL_ERROR, document,
+                                  checking=ci)
+        for part, link, new_row in matched:
+            found.append((link, int(new_row["DtlKey"])))
+            moves.append((int(new_row["DtlKey"]), link.get("location"),
+                          {"soDeliveryDate": link.get("soDeliveryDate"), "note": link.get("note")}, part["row"]))
+        document, failed = self._restore_rows(row, company, snap, moves, document, deadline=deadline)
+        for link, new_key in found:
+            results[str(link["index"])] = self._doc_line(link, "linked", new_key=new_key)
+        if failed:
+            return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION, RESTORE_NOT_LANDED, document,
+                                  restore_of=ci)
+        parts = [dict(p, settled=True) if p.get("chunk") == ci else p for p in snap["parts"]]
+        snap = _json_safe(dict(snap, parts=parts, lineResults=results))
+        row.snapshot_json = snap
+        self.db.commit()
+        return snap, document
+
+    def _doc_answer(self, snap: Doc, results: Dict[Any, Doc], document: Optional[Doc]) -> Doc:
+        """The answer's ``lines`` (one per requested link, request order) and ``freeLines``. A line with no
+        recorded result was never sent: ``failed`` / ``NOT_SENT`` (retryable)."""
+        by_index = {int(k): v for k, v in results.items()}
+        lines = [by_index.get(int(link["index"])) or self._doc_line(link, "failed", NOT_SENT)
+                 for link in snap.get("requested") or []]
+        free: List[Doc] = []
+        if document is not None:
+            for key in snap.get("rowKeys") or []:
+                kept = _row_in(document, int(key))
+                if kept is not None:
+                    free.append({"poDtlKey": int(key), "qty": _qty_text(kept.get("Qty"))})
+        return {"lines": lines, "freeLines": free}
+
+    def _doc_stop(self, row: AcWriteOperation, company: AcCompany, snap: Doc, results: Dict[str, Doc],
+                  status: str, code: Optional[str], document: Optional[Doc], *, checking: Optional[int] = None,
+                  restore_of: Optional[int] = None, message: str = "") -> OperationResult:
+        """Finish the document batch. ``checking`` = the chunk whose outcome is not known yet (its lines read
+        ``checking``); ``restore_of`` = the landed chunk whose restore Resume re-runs."""
+        results = dict(results)
+        if checking is not None:
+            for entry in snap["chunks"][checking]:
+                for link in entry["links"]:
+                    results[str(link["index"])] = self._doc_line(link, "checking", code)
+        snap = _json_safe(dict(snap, lineResults=results, restoreOf=restore_of))
+        row.snapshot_json = snap
+        if status == DONE and SOME_LINES_NOT_LINKED not in self._warnings and any(
+                v.get("result") != "linked" for v in self._doc_answer(snap, results, None)["lines"]):
+            self._warnings.append(SOME_LINES_NOT_LINKED)  # code review: never a bare "done" over failed lines
+        landed = any(v.get("result") == "linked" for v in results.values())
+        if landed and document is not None:
+            self.prims._stage(company, "PO", document, None)
+        batch = self._doc_answer(snap, results, document if landed else None)
+        if status == NEEDS_ATTENTION:
+            return self._needs_attention(row, company, snap, code or INTERNAL_ERROR, batch=batch,
+                                         document=document if landed else None)
+        return self._finish(row, status, code, message=message if status != DONE else "", batch=batch,
+                            document=document if landed else None)
+
+    def _resume_doc_batch(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc) -> OperationResult:
+        """A pending / needs_attention document batch: only the chunk in doubt is repaired, never re-sent.
+        Its link PUT landed in full (every link has its new row, each row as the chunk left it) -> the ONE
+        restore PUT; nothing of it landed (no new row on its SO rows, every row at
+        its snapshot quantity) -> its lines fail ``NOT_APPLIED`` (retryable); anything in between needs a
+        person (no PUT). Later chunks stay ``NOT_SENT`` (a new press re-guards them)."""
+        results: Dict[str, Doc] = dict(snap.get("lineResults") or {})
+        open_parts = [p for p in snap.get("parts") or [] if p.get("sent") and not p.get("settled")]
+        if not open_parts:
+            if not any(v.get("result") == "linked" for v in results.values()):
+                return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
+            return self._doc_stop(row, company, snap, results, DONE, None, doc)
+        ci = int(open_parts[0]["chunk"])
+        landed = self._chunk_matches(open_parts, doc) is not None
+        if landed:
+            code = next((c for c in (self._batch_shape(part, doc) for part in open_parts) if c), None)
+            if code:
+                return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION, code, doc)
+            outcome = self._doc_chunk_landed(row, company, snap, ci, doc, results, deadline=False)
+            if isinstance(outcome, OperationResult):
+                return outcome
+            snap, last = outcome
+            # later chunks are never sent by a Resume: their guards were judged at the first run, so they stay
+            # NOT_SENT and a new press (re-read, re-guarded) links them
+            return self._doc_stop(row, company, snap, results, DONE, None, last)
+        untouched = all(self._part_untouched(part, doc) for part in open_parts)
+        if not untouched:
+            return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION, "RESUMED", doc)
+        for part in open_parts:
+            for link in part["links"]:
+                results[str(link["index"])] = self._doc_line(link, "failed", NOT_APPLIED)
+        snap = dict(snap, parts=[p for p in snap["parts"] if p.get("chunk") != ci])
+        if not any(v.get("result") == "linked" for v in results.values()):
+            row.snapshot_json = _json_safe(dict(snap, lineResults=results))
+            return self._finish(row, RECOVERED, NOT_APPLIED, document=doc,
+                                batch=self._doc_answer(snap, results, None))
+        return self._doc_stop(row, company, snap, results, DONE, None, doc)
+
+    @staticmethod
+    def _chunk_matches(parts: List[Doc], doc: Doc) -> Optional[List[Tuple[Doc, Doc, Doc]]]:
+        """Every link of one chunk matched to its own new row, ``[(part, link, new row)]``, from ONE pool of the
+        chunk's new rows (a row taken is never matched twice); None when a link has no new row. The planner keeps
+        alike links in different chunks, so a match by SO row, item, unit and qty is the link's own row."""
+        if not parts:
+            return []
+        known = set(parts[0]["knownKeys"])
+        pool = [r for r in doc.get("Details") or [] if r.get("DtlKey") not in known]
+        out: List[Tuple[Doc, Doc, Doc]] = []
+        for part in parts:
+            source = part.get("row") or {}
+            for link in part["links"]:
+                match = next((r for r in pool if _link_of("PO", r) == int(link["soDtlKey"])
+                              and _dec(r.get("Qty")) == _dec(link["qty"])
+                              and r.get("ItemCode") == source.get("ItemCode") and r.get("UOM") == source.get("UOM")),
+                             None)
+                if match is None:
+                    return None
+                pool.remove(match)
+                out.append((part, link, match))
+        return out
+
+    @staticmethod
+    def _part_untouched(part: Doc, doc: Doc) -> bool:
+        known = set(part["knownKeys"])
+        keys = {int(link["soDtlKey"]) for link in part["links"]}
+        if any(_link_of("PO", r) in keys for r in doc.get("Details") or [] if r.get("DtlKey") not in known):
+            return False
+        old = _row_in(doc, int(part["row"]["DtlKey"]))
+        return old is not None and _dec(old.get("Qty")) == _dec(part["row"].get("Qty"))
 
     # ── split link (plan 55 wrapped, AC-57-40) ───────────────────────────────
 
@@ -2065,7 +2489,7 @@ class OperationService:
                 note=f"the line was cut to the received quantity {Decimal(snap['received'])} and its "
                      f"remainder {remainder} could not be added",
             )
-        if snap.get("mode") == "batch" or snap.get("mergeInto"):  # a change whose outcome could not be confirmed
+        if snap.get("mode") in ("batch", "doc_batch") or snap.get("mergeInto"):  # an outcome that could not be confirmed
             event["mode"] = "check"
         try:
             self._notifier(event)

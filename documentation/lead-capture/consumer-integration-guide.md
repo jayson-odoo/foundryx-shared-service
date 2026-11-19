@@ -94,6 +94,10 @@ Every gateway error has one shape:
 | POST | `/sources/facebook` | `{"pageId", "systemUserToken" or "loginId", "formsMode": "all"}` | `201` `Source` (connect, or reconnect: same Page again = same source) |
 | POST | `/sources/google` | - | `201` `{"source": Source, "url", "key"}` (section 8; the key is shown only here) |
 | POST | `/sources/{id}/rotate-key` | - | `{"url", "key"}` (section 8; the old key stops at once) |
+| GET | `/google/login-config` | - | `GoogleLoginConfig` (section 8b) |
+| POST | `/google/login` | `{"code", "redirectUri"?}` | `201` `{"loginId", "accounts": [Account], "expiresAt"}` (section 8b) |
+| GET | `/google/logins/{loginId}/accounts/{accountId}/forms` | - | `{"data": [GoogleForm]}` (section 8b) |
+| POST | `/sources/google/connect` | `{"loginId", "accountId", "formIds": [..]}` | `{"source": Source, "forms": [FormResult]}` (section 8b) |
 | POST | `/connect-sessions` | `{"returnOrigin", "sourceId"?}` | `201` `{"url", "expiresAt"}` (section 7) |
 | GET | `/channels` | - | `{"data": [Channel]}` (section 7) |
 | GET | `/facebook/login-config` | - | `LoginConfig` (section 7) |
@@ -569,6 +573,8 @@ The hosted page calls `/public/lead-capture/*` with its scoped token; you never 
 `POST /connect/redeem {"token": "<secret>"}` (once; `410 SESSION_EXPIRED` after), `GET /wizard/context`,
 `POST /wizard/facebook/login`, `GET /wizard/facebook/pages`, `POST /wizard/facebook/connect {"pageId"}`,
 `POST /wizard/google/source` (`201 {"source", "url", "key"}`; again in the same session = same source, new key),
+`POST /wizard/google/login`, `GET /wizard/google/accounts`, `GET /wizard/google/accounts/{accountId}/forms`,
+`POST /wizard/google/connect {"accountId", "formIds"}` (section 8b),
 `GET /wizard/sources/{id}`, `GET|PUT /wizard/sources/{id}/forms`, `GET /wizard/fields`,
 `GET /wizard/sources/{id}/forms/{formId}/questions`, `PUT /wizard/sources/{id}/field-map`,
 `POST /wizard/sources/{id}/test-lead`, `GET /wizard/sources/{id}/test-lead` (newest test lead: the Test step passes on a NEW one), `POST /wizard/finish`.
@@ -610,3 +616,24 @@ What the inbound URL answers Google (for reference; Google is the only caller):
 | Disconnected source | `410 source_disconnected` |
 | Lead Capture off for the tenant | `403 service_not_enabled` |
 | Not JSON, no `lead_id` | `400 invalid_body`; over 64 KB: `413 invalid_body` |
+
+### 8b. Google sign-in (the Shared Service writes the URL + key for your customer)
+
+Instead of copy and paste, your customer can sign in with Google: the Shared Service then writes the inbound URL
+and the source key into each lead form they tick. Off until the server turns it on (`GET /google/login-config`
+-> `available: false`); `simulated: true` = no Google client on this server (development): any non-empty `code`
+works and two sample accounts with two sample forms come back. The hosted wizard does all of this; for your own
+wizard:
+
+| Step | Call |
+|---|---|
+| Sign in | `GET /google/login-config` -> `{"available", "simulated", "clientId", "scopes"}`. Open Google's OAuth dialog (`https://accounts.google.com/o/oauth2/v2/auth`, `response_type=code`, `scope` = the `scopes` joined by spaces, `access_type=offline`, `prompt=consent`, your registered redirect URI, a random `state` you check). Then `POST /google/login {"code", "redirectUri"}` -> `201 {"loginId", "accounts": [{"id", "name"}], "expiresAt"}`. Google's tokens stay on the server; `loginId` works for 30 minutes, for this key only |
+| Account | Pick from `accounts` (one account = choose it for the person). Only accounts the signed-in person can reach are accepted |
+| Forms | `GET /google/logins/{loginId}/accounts/{accountId}/forms` -> `{"data": [{"id", "name"}]}`; tick at least one |
+| Connect | `POST /sources/google/connect {"loginId", "accountId", "formIds"}` -> `{"source", "forms": [{"id", "name", "ok", "message"}]}`. Each ticked form gets our URL + the key; a form Google refuses is `ok: false` with Google's reason and the others still connect. Call it again with the refused ids to try again (same source, same key) |
+| Test + fields | As in section 8, steps 2-6: the customer presses "Send test data" in Google Ads |
+
+One Google source per Google Ads account: a second connect on an account that already has a source answers
+`409 source_exists`. Errors: `400 PERMISSION_DECLINED` (the Google Ads permission was not given), `400 LOGIN_FAILED`,
+`409 LOGIN_REQUIRED` (sign in again), `404 account_not_found`, `422 invalid_forms`, `409 channel_unavailable`
+(sign-in is off on this server).

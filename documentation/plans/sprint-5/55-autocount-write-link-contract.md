@@ -36,6 +36,15 @@ carries `detail` (section 4.2). Without it nothing changes.
 stale `in_progress` run on the same PO first (section 4.0a). A resend under the key of any `recovered`
 operation runs fresh (the key is released), not only `OPERATION_NOT_APPLIED`.
 
+2026-11-19 (plan 69, `69-autocount-bulk-link-fast.md`): new `POST /api/v1/autocount/po-links/doc-batch` links
+EVERY listed row of ONE PO document in one call, with one result per line (section 4.1b); SS sends one link
+write per 40 new rows, never a size refusal. `po-links/batch` loses its 20-entry cap (a 2000-entry body guard
+only). An AutoCount error answer to a link or restore write is now followed by one read of the PO: when the
+read shows the write landed the operation carries on (`done`), when it shows nothing changed the answer is the
+same `vendor_error` / `VENDOR_REFUSED` as before (key released), when the read fails it is
+`pending_verification` (never refused). Every operation answer gains `requestedAt`, `linkedAt`, `finishedAt`
+(section 4.5). Additive: no existing field, status or route changes.
+
 ## 1. What it is
 
 Four routes on the existing public gateway (`/api/v1/autocount/*`) that change the link between a
@@ -44,7 +53,8 @@ purchase order row and a sales order row in the customer's AutoCount book:
 | Route | Does |
 |---|---|
 | `POST /api/v1/autocount/po-links` | Link a quantity of one PO row to one SO row (in place, or by splitting the PO row) |
-| `POST /api/v1/autocount/po-links/batch` | Link one PO row to 1 to 20 SO rows in one call; a bad line is skipped and named, the rest are linked (section 4.1a) |
+| `POST /api/v1/autocount/po-links/batch` | Link one PO row to several SO rows in one call; a bad line is skipped and named, the rest are linked (section 4.1a) |
+| `POST /api/v1/autocount/po-links/doc-batch` | Link every listed row of ONE PO document, each to its SO rows, in one call; one result per line (section 4.1b) |
 | `POST /api/v1/autocount/po-links/unlink` | Clear the SO link of one PO row |
 | `POST /api/v1/autocount/spo-links/unlink` | Clear the PO link of one shipping purchase order (SPO) row |
 
@@ -189,7 +199,7 @@ Links one PO row to several SO rows (plan 62). Header `Idempotency-Key` required
 |---|---|---|
 | `companyCode`, `poDocKey`, `poDtlKey`, `expectedLastModified` | | as section 4.1 |
 | `docDate` | string, optional | `YYYY-MM-DD`; the PO's document date, a hint for the read |
-| `links` | array, required | 1 to 20 entries, each an object. Not an array, empty, over 20, an entry not an object, an SO row (`soDtlKey`) listed twice, or a `qty` that is not a JSON number: `422 INVALID_REQUEST` (nothing is stored, the key stays free) |
+| `links` | array, required | 1 to 2000 entries (plan 69: a body guard only), each an object. Not an array, empty, over 2000, an entry not an object, an SO row (`soDtlKey`) listed twice, or a `qty` that is not a JSON number: `422 INVALID_REQUEST` (nothing is stored, the key stays free) |
 | `links[].soDocKey`, `links[].soDtlKey` | integer | as `soDocKey`, `soDtlKey` in section 4.1 (a missing or non-integer key: `422 INVALID_REQUEST`) |
 | `links[].qty` | number | a JSON number (anything else: `422 INVALID_REQUEST`); a number that is zero, negative, above 1,000,000,000 or has more than 8 decimal places skips that line (`QTY_INVALID`) |
 | `links[].soDocDate` | string, optional | `YYYY-MM-DD`; the SO's date, a hint for the read |
@@ -244,6 +254,68 @@ fields are those of section 4.5, with `actionId` null on this route. Other outco
 202, `mismatch` 502, `vendor_error` 502, `refused`) carry the same body without `links` content
 (`links` `[]`, `freeLine` null). A `pending_verification` is reconciled by resending with the same key and
 the same body (section 4.0).
+
+### 4.1b `POST /api/v1/autocount/po-links/doc-batch`
+
+Links every listed row of ONE PO document, each to its SO rows (plan 69). Send ONE call per PO document per
+press. Header `Idempotency-Key` required (section 4.0): one key per call.
+
+```json
+{ "companyCode": "SRT", "poDocKey": 12008, "docDate": "2026-11-02", "expectedLastModified": null,
+  "links": [ { "poDtlKey": 12017, "soDocKey": 11988, "soDtlKey": 11989, "qty": 4, "soDocDate": "2026-10-30" },
+             { "poDtlKey": 12017, "soDocKey": 12101, "soDtlKey": 12102, "qty": 3 },
+             { "poDtlKey": 12019, "soDocKey": 11988, "soDtlKey": 11990, "qty": 1 } ] }
+```
+
+| Field | Type | Rule |
+|---|---|---|
+| `companyCode`, `poDocKey`, `docDate`, `expectedLastModified` | | as section 4.1a |
+| `links` | array, required | 1 to 2000 entries, any number of PO rows. Not an array, empty, over 2000, an entry not an object, or the same `poDtlKey` + `soDtlKey` pair twice: `422 INVALID_REQUEST` (nothing stored, key free) |
+| `links[].poDtlKey` | integer | the PO row this line takes its quantity from |
+| `links[].soDocKey`, `soDtlKey`, `qty`, `soDocDate` | | as section 4.1a |
+
+**Any size, never refused for size.** SS sends one link write per chunk of up to 40 new rows (whole PO rows
+where they fit; a PO row with more lines spans chunks), each preceded by a fresh read of the PO, and one restore
+write per chunk (section 4.1a "Two writes"). A 10-line press on one PO is 2 writes, a 50-line press 4. Two
+lines from different PO rows to the same SO row with the same quantity go in separate chunks (their new rows
+read back alike, and each must get its own row's restore values).
+
+**Every line answers its own result**, in request order, in `lines[]`:
+
+| `result` | Meaning | What the CRM does |
+|---|---|---|
+| `linked` | In AutoCount; `newPoDtlKey` is the new PO row that carries the link | show it linked |
+| `skipped` | Not sent: `code` says why (the section 4.1a line reasons; `ALREADY_LINKED` = an earlier call through SS already linked this PO row to this SO row and that linked row still stands, so a resend of the whole list never links a line twice; plus the PO-row reasons `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_HAS_OTHER_TRANSFER`, `ROW_RECEIVED`, `ROW_NOT_FOUND`, which here skip that row's lines only) | show the plain reason; the user fixes it and presses again |
+| `failed` | AutoCount refused its chunk (`code` `VENDOR_REFUSED`, AutoCount's text in `message`), or it was never sent because an earlier chunk stopped (`NOT_SENT`), or Resume proved it never landed (`OPERATION_NOT_APPLIED`) | show the reason and "Try again" (a new call with a new key, those lines only) |
+| `checking` | Its chunk's outcome is not known yet (operation `pending_verification` or `needs_attention`) | poll `GET /write-operations/{operationId}` / resume (section 4.0a) |
+
+Outcome of the whole call: `done` (200) when at least one line is linked and nothing is in doubt, even if
+other lines are `skipped` / `failed` (then `warnings` carries `SOME_LINES_NOT_LINKED`: read `lines`); `refused` `ALL_LINKS_SKIPPED` (409) when every line was skipped (nothing
+sent); `vendor_error` `VENDOR_REFUSED` (502) when AutoCount refused the FIRST chunk and nothing landed (key
+released); `pending_verification` (202) / `needs_attention` when a chunk is in doubt (its lines `checking`,
+later chunks `NOT_SENT`). The PO document itself being cancelled, stale (`expectedLastModified`) or busy refuses
+the whole call (`DOC_CANCELLED`, `DOC_STALE`, `DOC_BUSY`).
+
+Answer (HTTP 200, `outcome` `done`):
+
+```json
+{ "operationId": "9e2f...", "actionId": null, "outcome": "done", "errorCode": null, "message": "",
+  "warnings": [], "docKey": 12008, "docNo": "202602-S0007", "replacedLines": [],
+  "requestedAt": "2026-11-19T03:02:01.120Z", "linkedAt": "2026-11-19T03:02:05.410Z",
+  "finishedAt": "2026-11-19T03:02:08.930Z",
+  "lines": [ { "index": 0, "poDtlKey": 12017, "soDocKey": 11988, "soDtlKey": 11989, "qty": "4",
+               "result": "linked", "code": null, "message": "", "newPoDtlKey": 12031 },
+             { "index": 1, "poDtlKey": 12017, "soDocKey": 12101, "soDtlKey": 12102, "qty": "3",
+               "result": "linked", "code": null, "message": "", "newPoDtlKey": 12032 },
+             { "index": 2, "poDtlKey": 12019, "soDocKey": 11988, "soDtlKey": 11990, "qty": "1",
+               "result": "skipped", "code": "ROW_ON_SPO", "message": "...", "newPoDtlKey": null } ],
+  "freeLines": [ { "poDtlKey": 12017, "qty": "3" } ],
+  "document": { "...": "the PO as read back" } }
+```
+
+`index` is the line's position in the request `links`. `qty` is a decimal STRING. `freeLines` lists each linked
+PO row that keeps an unlinked remainder (a row whose lines took all of it is absent). `GET
+/write-operations/{operationId}` returns the same `lines` / `freeLines`.
 
 ### 4.2 `POST /api/v1/autocount/po-links/unlink`
 
@@ -332,6 +404,7 @@ rules in 57 contract sections 2a.1 and 8. Absent or invalid = stored empty, neve
 | `actionId` | string or null | The id of the audit record for this call; quote it to support. Null only when the company could not be resolved to a write action |
 | `outcome` | string | One of section 5 |
 | `errorCode` | string or null | Null on a clean `done`; `LOCATION_NOT_MOVED` on a `done` of a single part-row link whose location move did not land (section 5); `RESTORE_NOT_LANDED` on `needs_attention`; else a code from section 5 |
+| `requestedAt`, `linkedAt`, `finishedAt` | string or null | Plan 69, every operation answer and `GET /write-operations/{id}`, ISO-8601 UTC with `Z` (ms): when the call reached SS / when its first AutoCount write was confirmed landed (null when nothing landed) / when the answer was settled. Show press time (the CRM's own) next to `linkedAt` |
 | `document` | object or null | On `done` only: the whole document as AutoCount reads back after the write (PO, or SPO), in the vendor's field names (`DocKey`, `DocNo`, `LastModified`, `Details[]` with `DtlKey`, `ItemCode`, `Location`, `UOM`, `Qty`, `FromSODtlKey`, `FromDocDtlKey`, ...). Null otherwise |
 
 | `detail` | object or null | `po-links` only (plan 64): on `done`, the PO row the link landed on, as read back, in the vendor's field names (`DtlKey`, `Location`, `Qty`, `FromSODtlKey`, ...). Whole row: the new row named in `replacedLines`; split, or a partly received row cut to its received quantity: the new linked row. `detail.Location` is where AutoCount holds the row: the SO row's location when the restore landed; on a split link with `LOCATION_NOT_MOVED` in `warnings` it is the location the row really sits at. Null on every other outcome, including `needs_attention` `RESTORE_NOT_LANDED`. No other route carries the key |

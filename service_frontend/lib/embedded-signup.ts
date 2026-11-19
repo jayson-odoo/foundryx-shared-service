@@ -93,29 +93,30 @@ export interface MetaOAuthResult {
   redirectUri: string;
 }
 
+export interface OAuthPopupOptions {
+  windowName?: string;
+  /** Messages Meta posts to the opener while the dialog runs (exact-origin
+   *  filtered here first). */
+  onProviderMessage?: (data: unknown) => void;
+}
+
 /**
- * The ONE Meta OAuth popup (WhatsApp Embedded Signup, Messenger/Instagram
- * Business Login, Lead Capture's Facebook login). Opens Meta's dialog with
- * OUR registered redirect URI (`/wa-callback`), which relays the code back to
- * this window; resolves `{code, redirectUri}` (the backend exchanges with the
+ * The ONE OAuth popup (WhatsApp Embedded Signup, Messenger/Instagram Business
+ * Login, Lead Capture's Facebook AND Google sign-in, plan 68). The provider
+ * only builds its dialog URL from OUR registered redirect URI (`/wa-callback`)
+ * and a fresh random `state`; the callback page relays the code back to this
+ * window, and only a code relayed with THIS dialog's `state` is accepted
+ * (login CSRF). Resolves `{code, redirectUri}` (the backend exchanges with the
  * identical redirect URI).
  */
-export function launchMetaOAuth(opts: MetaOAuthOptions): Promise<MetaOAuthResult> {
+export function launchOAuthPopup(
+  dialogUrl: (redirectUri: string, state: string) => string,
+  opts: OAuthPopupOptions = {},
+): Promise<MetaOAuthResult> {
   if (typeof window === 'undefined') return Promise.reject(new Error('Sign-in runs in the browser only.'));
   const redirectUri = `${window.location.origin}${CALLBACK_PATH}`;
-  const extras = opts.extras ? `&extras=${encodeURIComponent(JSON.stringify(opts.extras))}` : '';
   const state = newOAuthState();
-  const dialogUrl =
-    `https://www.facebook.com/${opts.graphVersion}/dialog/oauth` +
-    `?client_id=${encodeURIComponent(opts.appId)}` +
-    `&config_id=${encodeURIComponent(opts.configId)}` +
-    `&response_type=code` +
-    `&override_default_response_type=true` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    `&state=${state}` +
-    extras;
-
-  const popup = window.open(dialogUrl, opts.windowName ?? 'fx_meta_oauth', 'popup,width=600,height=760');
+  const popup = window.open(dialogUrl(redirectUri, state), opts.windowName ?? 'fx_oauth', 'popup,width=600,height=760');
   if (!popup) {
     return Promise.reject(new Error('Popup blocked - allow popups for this site and try again.'));
   }
@@ -145,7 +146,7 @@ export function launchMetaOAuth(opts: MetaOAuthOptions): Promise<MetaOAuthResult
       }
     };
 
-    // Our callback page relays the auth code back once Meta redirects.
+    // Our callback page relays the auth code back once the provider redirects.
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       const data = event.data as OAuthMessage | undefined;
@@ -168,6 +169,23 @@ export function launchMetaOAuth(opts: MetaOAuthOptions): Promise<MetaOAuthResult
     window.addEventListener('message', onMessage);
     window.addEventListener('message', onProviderMessage);
   });
+}
+
+/** Meta's OAuth dialog through the ONE popup. */
+export function launchMetaOAuth(opts: MetaOAuthOptions): Promise<MetaOAuthResult> {
+  const extras = opts.extras ? `&extras=${encodeURIComponent(JSON.stringify(opts.extras))}` : '';
+  return launchOAuthPopup(
+    (redirectUri, state) =>
+      `https://www.facebook.com/${opts.graphVersion}/dialog/oauth` +
+      `?client_id=${encodeURIComponent(opts.appId)}` +
+      `&config_id=${encodeURIComponent(opts.configId)}` +
+      `&response_type=code` +
+      `&override_default_response_type=true` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&state=${state}` +
+      extras,
+    { windowName: opts.windowName ?? 'fx_meta_oauth', onProviderMessage: opts.onProviderMessage },
+  );
 }
 
 /**
