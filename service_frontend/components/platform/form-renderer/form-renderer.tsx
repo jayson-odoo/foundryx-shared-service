@@ -65,6 +65,9 @@ export interface FormRendererProps {
    * portal = portalApiFetchBlob). The renderer NEVER imports the staff client
    * itself - without a fetcher the chip is a plain label (Cluster E fix). */
   fileFetcher?: FileBlobFetcher;
+  /** Foundryx UIUX fields for the signed-in fill page (date). Off by default,
+   * so public forms and the builder preview keep today's inputs. */
+  fxFields?: boolean;
 }
 
 export function FormRenderer({
@@ -80,6 +83,7 @@ export function FormRenderer({
   flat = false,
   submissionId,
   fileFetcher,
+  fxFields = false,
 }: FormRendererProps) {
   const pages = definition.pages ?? [];
   const isWizard = mode === 'fill' && paged && pages.length > 1;
@@ -178,6 +182,7 @@ export function FormRenderer({
                 errors={mergedErrors}
                 onChange={setAnswer}
                 flat={flat}
+                fxFields={fxFields}
               />
             ) : null,
           )}
@@ -286,9 +291,10 @@ interface SectionBlockProps {
   onChange: (key: string, value: FormAnswerValue) => void;
   /** Flat mode omits the section title/description chrome (AC-BI-29c). */
   flat?: boolean;
+  fxFields?: boolean;
 }
 
-function SectionBlock({ section, facts, mode, answers, errors, onChange, flat = false }: SectionBlockProps) {
+function SectionBlock({ section, facts, mode, answers, errors, onChange, flat = false, fxFields = false }: SectionBlockProps) {
   const visibleFields = section.fields.filter(
     (field) => isDisplayField(field) || fieldVisible(field, section, facts),
   );
@@ -323,6 +329,7 @@ function SectionBlock({ section, facts, mode, answers, errors, onChange, flat = 
             answers={answers}
             errors={errors}
             onChange={onChange}
+            fxFields={fxFields}
           />
         ))}
       </div>
@@ -338,9 +345,10 @@ interface FieldBlockProps {
   answers: FormAnswers;
   errors: FormFieldErrors;
   onChange: (key: string, value: FormAnswerValue) => void;
+  fxFields?: boolean;
 }
 
-function FieldBlock({ field, mode, answers, errors, onChange }: FieldBlockProps) {
+function FieldBlock({ field, mode, answers, errors, onChange, fxFields = false }: FieldBlockProps) {
   if (isDisplayField(field)) return <DisplayBlock field={field} />;
 
   const key = field.key ?? field.id;
@@ -370,6 +378,7 @@ function FieldBlock({ field, mode, answers, errors, onChange }: FieldBlockProps)
           computed={computed}
           errors={errors}
           invalid={Boolean(error) && !composite}
+          fxFields={fxFields}
           onChange={(v) => onChange(key, v)}
         />
       )}

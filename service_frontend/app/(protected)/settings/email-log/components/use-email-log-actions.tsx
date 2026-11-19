@@ -5,10 +5,14 @@ import { Ban, RotateCcw } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { emailLogService } from '@/services/email-log-service';
+import { useFx } from '@/hooks/use-fx';
+import { useFxByWhom } from '@/components/fx/pages/w3-logs/fx-log-parts';
 import type { EmailLogListItem } from '@/types/templates';
 
 /** Retry + Cancel (D14) - one registry for row `…`, bulk and detail `…`. */
 export function useEmailLogActions(): ResourceAction<EmailLogListItem>[] {
+  const fx = useFx();
+  const byWhom = useFxByWhom();
   return useMemo<ResourceAction<EmailLogListItem>[]>(
     () => [
       {
@@ -22,7 +26,20 @@ export function useEmailLogActions(): ResourceAction<EmailLogListItem>[] {
           for (const row of rows) {
             await emailLogService.retry(row.id);
           }
-          toast.success(`Queued ${rows.length} email(s) for retry.`);
+          if (fx) {
+            // No Undo: nothing in the API takes a queued retry back (Cancel
+            // only stops a pending email and leaves it cancelled, not failed).
+            // No recipient or subject in the toast: both are personal data.
+            toast.fxDone({
+              what:
+                rows.length === 1
+                  ? 'Email queued for retry'
+                  : `${rows.length} emails queued for retry`,
+              byWhom,
+            });
+          } else {
+            toast.success(`Queued ${rows.length} email(s) for retry.`);
+          }
           runtime.reload();
         },
       },
@@ -42,6 +59,6 @@ export function useEmailLogActions(): ResourceAction<EmailLogListItem>[] {
         deferred: { actionKey: 'email_outbox.cancel', entityType: 'email_outbox' },
       },
     ],
-    [],
+    [fx, byWhom],
   );
 }

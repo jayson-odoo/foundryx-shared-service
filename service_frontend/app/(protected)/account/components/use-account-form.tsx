@@ -13,6 +13,7 @@ import { AvatarUpload } from '@/components/platform/avatar-upload';
 import { accountService } from '@/services/account-service';
 import { useEmailChange, type UseEmailChangeResult } from '@/hooks/use-email-change';
 import { useOwnAvatar } from '@/hooks/use-avatar';
+import { useFx } from '@/hooks/use-fx';
 import { AccountProfileTab } from './account-form-fields';
 
 export const accountFormSchema = z.object({
@@ -52,6 +53,7 @@ export function useAccountForm(): UseAccountFormResult {
   const emailChange = useEmailChange();
   const ownAvatar = useOwnAvatar();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const fx = useFx();
 
   const user = session?.user;
   const displayName = nameOverride ?? user?.name ?? null;
@@ -74,17 +76,40 @@ export function useAccountForm(): UseAccountFormResult {
     const valid = await form.trigger();
     if (!valid) return false;
     const values = form.getValues();
+    const before = displayName;
     try {
       const result = await accountService.updateProfile({ name: values.name.trim() });
       nameOverride = result.name;
       form.reset({ name: result.name });
-      toast.success('Profile saved.');
+      if (fx) {
+        toast.fxDone({
+          what: `Name changed to ${result.name}`,
+          // The same request with the earlier name puts it back.
+          undo:
+            before && before !== result.name
+              ? () => void undoName(before)
+              : undefined,
+        });
+      } else {
+        toast.success('Profile saved.');
+      }
       // Session catches up (name rides the jwt update branch).
       await update();
       return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
+    }
+  };
+
+  const undoName = async (name: string): Promise<void> => {
+    try {
+      const result = await accountService.updateProfile({ name });
+      nameOverride = result.name;
+      form.reset({ name: result.name });
+      await update();
+    } catch {
+      toast.error("Couldn't undo. Your new name stays.");
     }
   };
 
@@ -146,9 +171,24 @@ export function useAccountForm(): UseAccountFormResult {
       isDirty: form.formState.isDirty,
       onSave,
       onCancel: () => form.reset({ name: displayName ?? '' }),
+      // Foundryx UIUX switch only: Edit / "Save profile" is the page's red
+      // action; Change email and Reset password are icon actions beside it.
+      ...(fx
+        ? {
+            entityNoun: 'profile',
+            fx: {
+              mainActionId: 'save',
+              iconFor: {
+                'change-email': 'email',
+                'reset-password': <KeyRound aria-hidden="true" className="size-[18px]" />,
+              },
+              discardName: 'your profile',
+            },
+          }
+        : {}),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [displayName, email, roles, ownAvatar, emailChange, form, form.formState.isDirty, router],
+    [displayName, email, roles, ownAvatar, emailChange, form, form.formState.isDirty, router, fx],
   );
 
   return { config, form, emailChange, dialogOpen, setDialogOpen, email };

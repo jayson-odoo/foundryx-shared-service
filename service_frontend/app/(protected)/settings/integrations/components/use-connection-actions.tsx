@@ -7,8 +7,10 @@ import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { integrationService } from '@/services/integration-service';
 import { useJobsActivity } from '@/providers/jobs-activity-provider';
+import { useFx } from '@/hooks/use-fx';
 import type { Connection } from '@/types/integration';
 import { connectionFormHref } from './paths';
+import { fxRunConnectionTest } from './connection-test-results';
 
 /**
  * The Connection action registry - surfaced in the row "…" menu, the bulk
@@ -34,7 +36,9 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
       .catch(() => setNoTestProviders(new Set()));
   }, []);
 
-  return useMemo<ResourceAction<Connection>[]>(
+  const fx = useFx();
+
+  const actions = useMemo<ResourceAction<Connection>[]>(
     () => [
       {
         id: 'edit',
@@ -104,4 +108,32 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
     ],
     [router, openMigration, noTestProviders],
   );
+
+  // Foundryx UIUX switch only: the same actions and the same requests; only
+  // what is said afterwards changes (the test result sits next to the
+  // connection instead of a toast, the countdown names the connection).
+  return useMemo(() => (fx ? actions.map(fxConnectionAction) : actions), [fx, actions]);
+}
+
+function fxConnectionAction(action: ResourceAction<Connection>): ResourceAction<Connection> {
+  if (action.id === 'test') {
+    return {
+      ...action,
+      run: async ([connection], rt) => {
+        if (!connection) return;
+        await fxRunConnectionTest(connection.id);
+        rt.reload();
+      },
+    } as ResourceAction<Connection>;
+  }
+  if (action.deferred) {
+    return {
+      ...action,
+      deferred: {
+        ...action.deferred,
+        fxName: (rows: Connection[]) => (rows.length === 1 ? rows[0].name : undefined),
+      },
+    };
+  }
+  return action;
 }
