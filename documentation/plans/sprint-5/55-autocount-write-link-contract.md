@@ -45,6 +45,19 @@ same `vendor_error` / `VENDOR_REFUSED` as before (key released), when the read f
 `pending_verification` (never refused). Every operation answer gains `requestedAt`, `linkedAt`, `finishedAt`
 (section 4.5). Additive: no existing field, status or route changes.
 
+2026-11-19 (plan 70, `70-autocount-link-location-acceptance-criteria.md`, owner ruling 19 Nov): the CRM may
+name where the linked PO row lands. Optional `location` (an AutoCount Location code, e.g. `BRW-BB`) on
+`po-links`, `po-links/relink` and `po-links/relocate`, and on EACH entry of `links[]` on `po-links/batch` and
+`po-links/doc-batch`. When sent, the row lands at that location instead of the SO row's (the CRM sends the
+Order Inquiry row's location, e.g. the donor location of an order back). Absent, null or blank = today's
+behaviour (the SO row's location) and today's idempotency hash. Every code a request names is checked against
+AutoCount's Location master with ONE logged `GET /location` before anything is written: an unknown code is
+refused `422 LOCATION_UNKNOWN` (nothing written, key released; on a batch only that line is skipped with that
+code); a failed read refuses `READ_FAILED` (nothing written, key released). The code is written in AutoCount's
+own spelling (matched trimmed and case-insensitively). A location that could not be put on the row after the
+link is still the existing `LOCATION_NOT_MOVED` / `RESTORE_NOT_LANDED` answer. `poolLocation` on unlink is
+unchanged; unlink ignores `location`.
+
 ## 1. What it is
 
 Four routes on the existing public gateway (`/api/v1/autocount/*`) that change the link between a
@@ -165,6 +178,7 @@ once. More than one match: `needs_attention` (`CREATE_AMBIGUOUS`), locked, nothi
 | `soDocKey`, `soDtlKey` | integer | the SO document and the SO row to link to |
 | `qty` | number | quantity to link; above zero and at most 1,000,000,000, with at most 8 decimal places (a value the server would have to round is refused `QTY_INVALID`, never rewritten), at most the PO row qty, at most the SO row outstanding. Sent as a JSON number; the server reads it as an exact decimal, never a binary float, so `3.3` stays `3.3`. Send decimals as plain numbers, not strings |
 | `expectedLastModified` | string, optional | the `LastModified` of the PO as the CRM last read it; when given and the PO has changed since, the call is refused `DOC_STALE` |
+| `location` | string, optional (plan 70) | the AutoCount Location code the linked row lands at (at most 64 characters; not text or longer: `422 INVALID_REQUEST`). Absent, null or blank: the SO row's location. Unknown in AutoCount: refused `422 LOCATION_UNKNOWN`, nothing written |
 
 `qty` must be BELOW the PO row qty: the PO row keeps `rowQty - qty` unlinked and a NEW PO row (new
 `DtlKey`) carries the linked `qty` (two writes, section 5). A `qty` equal to the PO row qty (a whole
@@ -172,8 +186,8 @@ row) is never linked in place (AutoCount does not change the link of an existing
 the row and adds a new linked row with the same values (a new `DtlKey`, listed in `replacedLines` when
 the operation layer answers), then a second write restores the new row (AutoCount forces HQ, sets the unit
 price to 0 and clears the delivery date and the discount on a new linked row; db3 10-16 Nov, plans 61 and 65).
-The restore values are the same for every link (whole row, split, batch, relink): location = the SO row's
-location; unit price = the old PO row's; delivery date = the SO ROW's delivery date (none when the SO row has
+The restore values are the same for every link (whole row, split, batch, relink): location = the caller's
+`location` when sent (plan 70), else the SO row's location; unit price = the old PO row's; delivery date = the SO ROW's delivery date (none when the SO row has
 none, never the PO row's); discount only when it is a percentage, else blank; and a further-description
 note `**<customer>/<ref> S/O: <number> DD: <dd/mm/yyyy>` (customer and ref from the SO, `/<ref>` left out when
 the ref is blank, `<number>` the SO number without its leading `SO`, ` DD: ...` left out when the SO row has
@@ -203,13 +217,14 @@ Links one PO row to several SO rows (plan 62). Header `Idempotency-Key` required
 | `links[].soDocKey`, `links[].soDtlKey` | integer | as `soDocKey`, `soDtlKey` in section 4.1 (a missing or non-integer key: `422 INVALID_REQUEST`) |
 | `links[].qty` | number | a JSON number (anything else: `422 INVALID_REQUEST`); a number that is zero, negative, above 1,000,000,000 or has more than 8 decimal places skips that line (`QTY_INVALID`) |
 | `links[].soDocDate` | string, optional | `YYYY-MM-DD`; the SO's date, a hint for the read |
+| `links[].location` | string, optional (plan 70) | this link's own location, as `location` in section 4.1 (one PO row to several SO rows may need two locations). Absent: that SO row's location. Unknown in AutoCount: that line is skipped `LOCATION_UNKNOWN` |
 
 **One bad line never fails the batch** (owner rule, 12 Nov 2026). The checks that concern the PO row refuse the
 whole request and nothing is written: `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_HAS_OTHER_TRANSFER`, `ROW_RECEIVED`,
 `DOC_CANCELLED` (the PO), `ROW_NOT_FOUND` (the PO row), `DOC_STALE`, `DOC_BUSY`, `VENDOR_UNSUPPORTED`. Every other
 check is made line by line, in request order, and a line that fails is skipped: it is not sent, the other lines are
 linked. The reasons are `ROW_NOT_FOUND` (the SO row), `ITEM_MISMATCH`, `UOM_MISMATCH`, `DOC_CANCELLED` (its sales
-order), `QTY_ABOVE_OUTSTANDING`, `QTY_INVALID`, `FOC_ON_ROW` (the line would take the whole of a PO row that has a free quantity, which
+order), `QTY_ABOVE_OUTSTANDING`, `QTY_INVALID`, `LOCATION_UNKNOWN` (plan 70: its `location` is not in AutoCount), `FOC_ON_ROW` (the line would take the whole of a PO row that has a free quantity, which
 AutoCount's API cannot move), and `QTY_ABOVE_FREE` (the running total of the lines linked so
 far plus this one would pass the PO row quantity; a later, smaller line that still fits is linked). The answer
 names every skipped line in `skipped`: `[{ "soDocKey": 11988, "soDtlKey": 11989, "code": "QTY_ABOVE_OUTSTANDING" }]`,
@@ -272,7 +287,7 @@ press. Header `Idempotency-Key` required (section 4.0): one key per call.
 | `companyCode`, `poDocKey`, `docDate`, `expectedLastModified` | | as section 4.1a |
 | `links` | array, required | 1 to 2000 entries, any number of PO rows. Not an array, empty, over 2000, an entry not an object, or the same `poDtlKey` + `soDtlKey` pair twice: `422 INVALID_REQUEST` (nothing stored, key free) |
 | `links[].poDtlKey` | integer | the PO row this line takes its quantity from |
-| `links[].soDocKey`, `soDtlKey`, `qty`, `soDocDate` | | as section 4.1a |
+| `links[].soDocKey`, `soDtlKey`, `qty`, `soDocDate`, `location` | | as section 4.1a (plan 70: a line naming an unknown `location` is `skipped` `LOCATION_UNKNOWN`) |
 
 **Any size, never refused for size.** SS sends one link write per chunk of up to 40 new rows (whole PO rows
 where they fit; a PO row with more lines spans chunks), each preceded by a fresh read of the PO, and one restore
@@ -378,12 +393,14 @@ sent): no SPO write is proven on the test book.
 ### 4.4 `POST /api/v1/autocount/po-links/relocate`
 
 ```json
-{ "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12050, "expectedLastModified": "2026-11-05T09:00:03" }
+{ "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12050, "expectedLastModified": "2026-11-05T09:00:03",
+  "location": "BRW-BB" }
 ```
 
 `poDocKey`, `poDtlKey` integer, required; `expectedLastModified` optional. Moves one LINKED PO row to
-the location of the SO row it is linked to; the caller never sends a location (the server takes it
-from its synced copy of the SO). Refused `ROW_NOT_LINKED` when the row has no link and
+the location of the SO row it is linked to (the server takes it from its synced copy of the SO), or, plan 70,
+to the optional `location` when sent (as section 4.1: unknown = `422 LOCATION_UNKNOWN`, nothing written). Use
+`location` to repair a row linked before plan 70 that should sit at its Order Inquiry row's location. Refused `ROW_NOT_LINKED` when the row has no link and
 `ROW_ALREADY_AT_LOCATION` when it is already there. Same auth, company resolution, stale, busy and
 write guards as a link. Use it when a link ended `LOCATION_NOT_MOVED`.
 
@@ -439,6 +456,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` | The write may or may not have happened; the server could not confirm it |
 | `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
+| `refused` | 422 | `LOCATION_UNKNOWN` | Plan 70: a `location` the request names is not in AutoCount's Location master; nothing written, key released. `message` is a plain reason to show as is ("Location X does not exist in AutoCount, so nothing was changed. ...") |
 | `refused` | 409 | any code below | Refused before anything was written |
 | `mismatch` | 502 | `READBACK_MISMATCH` | AutoCount accepted the write but the document read back differently from what was sent |
 | `mismatch` | 502 | `ROW_VALUES_NOT_KEPT` | Split link: the link landed, but the new row's unit price or delivery date could not be put back to the PO row's values (section 5) |
@@ -553,7 +571,10 @@ Tell the two 403 shapes apart by the body: a flat body has `code`; a write refus
   `VENDOR_REFUSED` answer (the key is free again) and to reconcile a `pending_verification`; use a new key
   only for a deliberately new change.
 - **Linking one PO row to many SO rows** = one `po-links/batch` call, not N sequential `po-links` calls.
-- **Relink** = `po-links/relink` (plan 57 contract): one replace PUT, then the move.
+- **Relink** = `po-links/relink` (plan 57 contract): one replace PUT, then the move. Plan 70: takes the
+  same optional `location` as `po-links`.
+- **Where the linked row lands** (plan 70): the CRM decides. Send `location` (per link on the batch routes)
+  for a row linked from an Order Inquiry row; leave it out for today's SO row location.
 - **Rows on a shipping PO:** a PO row that an SPO row points at cannot be linked or unlinked until
   that SPO row is unlinked (`ROW_ON_SPO`).
 
