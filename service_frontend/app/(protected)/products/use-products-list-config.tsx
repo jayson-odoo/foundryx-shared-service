@@ -12,13 +12,35 @@ import {
   DataGridTableRowSelectAll,
 } from '@/components/ui/data-grid-table';
 import { Badge } from '@/components/ui/badge';
+import type { FxListConfig } from '@/components/platform/resource-list/types';
 import type {
   ResourceAction,
   ResourceListConfig,
 } from '@/components/platform/resource-list';
 import { productService, type Product } from '@/services/productService';
+import { useFx } from '@/hooks/use-fx';
+import { formatMoneyFx } from '@/lib/money';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+/**
+ * Foundryx UIUX switch choices (slice W1-PRODUCTS, ignored while off): Add
+ * product is the red action; Edit and Delete as icon actions; Hold to Copy on
+ * SKU and price. Price is an amount: its header and cells are right-aligned
+ * together (`meta.fxAlign: 'end'`). Phone cards follow the playbook: the
+ * top line holds the product and its status, the next line its SKU with the
+ * price at the line's end, then the kind. The price column gets no header
+ * amount range: the products list API filters nothing but its search, and
+ * the status column gets no ticks for the same reason (no filter field).
+ */
+const FX_PRODUCTS: FxListConfig<Product> = {
+  mainActionId: 'create',
+  iconFor: { edit: 'edit', delete: 'delete' },
+  copyable: ['sku', 'price'],
+  columnKind: { active: 'status' },
+  cardLines: [['sku', 'price'], ['kind']],
+  noun: 'products',
+};
 
 /** Money + currency, or an em dash when unpriced. */
 function formatPrice(row: Product): string {
@@ -51,6 +73,9 @@ export function useProductsListConfig(handlers: {
   onDelete: (product: Product) => Promise<void>;
 }): ResourceListConfig<Product> {
   const { onCreate, onEdit } = handlers;
+  // Foundryx UIUX switch: only the price cell and the `fx` choices differ;
+  // with the switch off the config renders exactly as before.
+  const fx = useFx();
 
   return useMemo<ResourceListConfig<Product>>(() => {
     const actions: ResourceAction<Product>[] = [
@@ -136,11 +161,17 @@ export function useProductsListConfig(handlers: {
       {
         id: 'price',
         accessorFn: (row) => row.defaultPrice ?? 0,
-        meta: { headerTitle: 'Price' },
+        // An amount: right-aligned with its header under the switch (FX-13).
+        meta: fx ? { headerTitle: 'Price', fxAlign: 'end' } : { headerTitle: 'Price' },
         header: () => 'Price',
-        cell: ({ row }) => (
-          <span className="text-sm tabular-nums text-foreground">{formatPrice(row.original)}</span>
-        ),
+        cell: ({ row }) =>
+          fx ? (
+            <span className="text-sm tabular-nums text-(--fx-ink)">
+              {formatMoneyFx(row.original.defaultPrice, row.original.currency)}
+            </span>
+          ) : (
+            <span className="text-sm tabular-nums text-foreground">{formatPrice(row.original)}</span>
+          ),
         size: 150,
         enableSorting: false,
       },
@@ -212,6 +243,7 @@ export function useProductsListConfig(handlers: {
       createLabel: 'Add product',
       createPermission: 'products.create',
       onCreate,
+      fx: FX_PRODUCTS,
     };
-  }, [onCreate, onEdit]);
+  }, [onCreate, onEdit, fx]);
 }
