@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { toast } from '@/lib/toast';
 import { CURRENCY_OPTIONS } from '@/lib/money';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
 import { emsService } from '@/services/ems-service';
 import { Button } from '@/components/ui/button';
 import {
@@ -20,6 +21,7 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { PageHeader } from '@/components/platform/page-header';
 import { SearchSelect } from '@/components/platform/search-select';
 import { FormRow } from '@/components/platform/resource-form/form-row';
+import { FxGeneralSettings } from './fx-general-settings';
 
 const CURRENCIES = CURRENCY_OPTIONS;
 
@@ -205,6 +207,22 @@ function DeferredActionsSettingsForm() {
 }
 
 export default function GeneralSettingsPage() {
+  return useFx() ? <FxGeneralSettingsPage /> : <GeneralSettingsPageLegacy />;
+}
+
+/** Foundryx UIUX switch on (slice W4-SETTINGS). */
+function FxGeneralSettingsPage() {
+  return (
+    <RequirePermission permission="settings.read">
+      <Container width="fluid" className="flex flex-col gap-5">
+        <PageHeader description="General workspace settings." />
+        <FxGeneralSettings />
+      </Container>
+    </RequirePermission>
+  );
+}
+
+function GeneralSettingsPageLegacy() {
   return (
     <RequirePermission permission="settings.read">
       <Container width="fluid" className="flex flex-col gap-5">

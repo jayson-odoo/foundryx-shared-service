@@ -361,11 +361,14 @@ export function FxListTable({
         </div>
       </DndContext>
 
+      {/* The rows are one layer under the frozen header row: nothing inside
+          a row (a badge, a cell's own layer, a row fading in) can paint over
+          the header row while it scrolls under it. */}
       <div
         ref={bodyRef}
         data-slot="data-grid-scroller"
         onScroll={view === 'table' ? syncHead : undefined}
-        className={cn(view === 'table' && 'overflow-x-auto overscroll-x-contain')}
+        className={cn('relative z-0', view === 'table' && 'overflow-x-auto overscroll-x-contain')}
       >
         <table
           className={cn(

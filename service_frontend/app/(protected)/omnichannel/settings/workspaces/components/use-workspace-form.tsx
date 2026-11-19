@@ -117,6 +117,9 @@ export function useWorkspaceForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<Workspace> | null>(() => {
     if (isLoading || notFound) return null;
 
@@ -300,7 +303,7 @@ export function useWorkspaceForm(
       editable: !creating,
       editPermission: 'workspaces.manage',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty || lifecycleDirty || businessHoursDirty,
+      isDirty: formDirty || lifecycleDirty || businessHoursDirty,
       onSave,
       onCancel,
       recordNav: creating
@@ -308,6 +311,7 @@ export function useWorkspaceForm(
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
+    formDirty,
     isLoading,
     notFound,
     creating,
