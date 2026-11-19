@@ -186,6 +186,12 @@ export const ideaShareService = {
   activity(token: string, order: 'asc' | 'desc' = 'desc'): Promise<PortalActivity[]> {
     return publicFetch<PortalActivity[]>(shared(token, `/activity?order=${order}`));
   },
+  /** A file on the shared item (lane FEEDBACK-IMAGE-PREVIEW): its contentPath
+   * is the token-checked share route, so no Authorization is sent, and a
+   * refusal never touches a portal session the visitor may hold elsewhere. */
+  attachmentContent(contentPath: string): Promise<Blob> {
+    return publicFetchBlob(contentPath);
+  },
   /** Step 1: the item's product checks the phone and sends a WhatsApp code. */
   sendCode(token: string, phone: string): Promise<{ sent: boolean }> {
     return publicFetch<{ sent: boolean }>(shared(token, '/phone/send-code'), json({ phone }));
