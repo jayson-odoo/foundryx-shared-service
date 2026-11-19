@@ -229,10 +229,16 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
   };
 }
 
-/** Also masks React 19's `_r_N_` ids, in order of first appearance. */
+/**
+ * Also masks React 19's `_r_N_` ids, in order of first appearance, and the
+ * tab panel's presence timing style (`animation-duration: 0s` or empty,
+ * whichever frame the snapshot lands on).
+ */
 function stable(root: Element): string {
   const seen = new Map<string, string>();
-  return parityHtml(root).replace(/_r_[0-9a-z]+_/g, (id) => {
+  return parityHtml(root)
+    .replace(/ style="(animation-duration: 0s;)?"/g, '')
+    .replace(/_r_[0-9a-z]+_/g, (id) => {
     let name = seen.get(id);
     if (!name) {
       name = `_rid${seen.size}_`;
