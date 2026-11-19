@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { FileText, History } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { Alert, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent } from '@/components/ui/card';
 import { FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
@@ -50,6 +51,10 @@ export function useSkillForm(
   const router = useRouter();
   const actions = useSkillActions();
   const isNew = skillId === undefined;
+  // Foundryx UIUX switch only: the red action and the done toasts (which
+  // name the skill, never its prompt). Every request is the same in both
+  // looks.
+  const fx = useFx();
 
   const [skill, setSkill] = useState<AiSkill | null>(null);
   const [isLoading, setIsLoading] = useState(!isNew);
@@ -108,7 +113,11 @@ export function useSkillForm(
           description: values.description.trim(),
           body: values.body,
         });
-        toast.success(`Skill "${created.name}" created.`);
+        if (fx) {
+          toast.fxDone({ what: `Skill ${created.name} created`, byWhom: 'you' });
+        } else {
+          toast.success(`Skill "${created.name}" created.`);
+        }
         router.replace(skillPath(created.id));
       } else {
         const updated = await aiService.updateSkill(skillId, {
@@ -119,25 +128,37 @@ export function useSkillForm(
         // Editing a PROVIDED (platform-tier) skill forks a tenant copy - follow
         // the new id rather than leaving the form pointed at the shared row.
         if (updated.id !== skillId) {
-          toast.success('Saved as your workspace copy.');
+          if (fx) {
+            toast.fxDone({ what: `${updated.name} saved as your workspace copy`, byWhom: 'you' });
+          } else {
+            toast.success('Saved as your workspace copy.');
+          }
           router.replace(skillPath(updated.id));
           return true;
         }
         setSkill(updated);
         form.reset(toValues(updated));
         setVersionsToken((t) => t + 1);
-        toast.success(
-          updated.activeVersionNumber
-            ? `Saved - now on v${updated.activeVersionNumber}.`
-            : 'Skill saved.',
-        );
+        if (fx) {
+          toast.fxDone({
+            what: `Skill ${updated.name} saved`,
+            howMany: updated.activeVersionNumber ? `now on v${updated.activeVersionNumber}` : undefined,
+            byWhom: 'you',
+          });
+        } else {
+          toast.success(
+            updated.activeVersionNumber
+              ? `Saved - now on v${updated.activeVersionNumber}.`
+              : 'Skill saved.',
+          );
+        }
       }
       return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [form, isNew, router, skillId]);
+  }, [form, isNew, router, skillId, fx]);
 
   const onCancel = useCallback(() => {
     if (isNew) {
@@ -161,6 +182,9 @@ export function useSkillForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<AiSkill> | null>(() => {
     if (!isNew && !skill) return null;
     return {
@@ -292,14 +316,28 @@ export function useSkillForm(
       editable: true,
       editPermission: 'ai_agents.manage',
       initialEditing: isNew ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: isNew
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Save is the red action
+      // while editing (as today, a new skill saves too), Edit at rest;
+      // Delete is an icon action. The
+      // labels name the skill, never its prompt, and the prompt is not
+      // copyable (Hold to Copy is off on this form).
+      // The red action's noun, switch on only (the shell would lower-case "AI").
+      entityNoun: fx ? 'skill' : undefined,
+      fx: {
+        mainActionId: 'save',
+        fullLabel: () => (isNew ? 'Save new skill' : `Save ${skill?.name ?? 'skill'}`),
+        iconFor: { delete: 'trash' },
+        discardName: isNew ? 'the new skill' : skill?.name,
+      },
     };
   }, [
+    formDirty,
     actions,
     form,
     initialEditing,
@@ -312,6 +350,7 @@ export function useSkillForm(
     versionsToken,
     fetchRecordAt,
     buildRecordHref,
+    fx,
   ]);
 
   return { config, form, isLoading, notFound };

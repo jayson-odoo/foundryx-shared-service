@@ -16,6 +16,7 @@ import { FormRow } from '@/components/platform/resource-form';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import { keysForResource, mergeResourceGrants } from '@/lib/permissions';
 import { roleService } from '@/services/role-service';
 import type { PermissionCatalog, PermissionResource } from '@/types/permission';
@@ -24,6 +25,7 @@ import { groupPermissionsByModule } from './group-permissions';
 import { userFormPath } from '../../users/components/paths';
 import { ASSIGNED_USER_STATUS_REGISTRY } from './assigned-user-status';
 import type { RoleFormValues } from './role-schema';
+import { FxPermissionsTab } from './fx-permissions-tab';
 
 /* ─────────────────────────── Settings tab ─────────────────────────── */
 
@@ -167,7 +169,12 @@ export interface PermissionsTabProps {
   catalog: PermissionCatalog;
 }
 
-export function PermissionsTab({ form, editing, catalog }: PermissionsTabProps) {
+/** Foundryx UIUX switch on: the tick-box grid; off: today's dropdowns. */
+export function PermissionsTab(props: PermissionsTabProps) {
+  return useFx() ? <FxPermissionsTab {...props} /> : <PermissionsTabLegacy {...props} />;
+}
+
+function PermissionsTabLegacy({ form, editing, catalog }: PermissionsTabProps) {
   // Group resources by owning module for section headers.
   const groups = useMemo(() => groupPermissionsByModule(catalog), [catalog]);
 
@@ -218,10 +225,15 @@ function Initials({ name, email }: { name: string | null; email: string }) {
 export interface AssignedUsersTabProps {
   roleId: string | null;
   creating: boolean;
+  /** The role's name, for the done toasts under the Foundryx UIUX switch. */
+  roleName?: string;
 }
 
-export function AssignedUsersTab({ roleId, creating }: AssignedUsersTabProps) {
+export function AssignedUsersTab({ roleId, creating, roleName }: AssignedUsersTabProps) {
   const { formatDateTime } = useDatetime();
+  // Foundryx UIUX switch only: done toasts with Undo. The requests are the
+  // same in both looks; Undo sends the existing opposite request.
+  const fx = useFx();
   const [search, setSearch] = useState('');
   const [assigned, setAssigned] = useState<RoleUser[]>([]);
   const [assignable, setAssignable] = useState<AssignableUser[]>([]);
@@ -272,7 +284,18 @@ export function AssignedUsersTab({ roleId, creating }: AssignedUsersTabProps) {
     setBusy(true);
     try {
       await roleService.assignUsers(roleId, picked);
-      toast.success(`Assigned ${picked.length} user(s).`);
+      if (fx) {
+        const ids = picked;
+        const first = assignable.find((u) => u.id === ids[0]);
+        const who = ids.length === 1 && first ? (first.name ?? first.email) : `${ids.length} users`;
+        toast.fxDone({
+          what: `${who} added to ${roleName ?? 'this role'}`,
+          byWhom: 'you',
+          undo: () => void undoAssign(roleId, ids),
+        });
+      } else {
+        toast.success(`Assigned ${picked.length} user(s).`);
+      }
       setPicked([]);
       await reload();
     } finally {
@@ -283,7 +306,36 @@ export function AssignedUsersTab({ roleId, creating }: AssignedUsersTabProps) {
   async function remove(userId: string) {
     if (!roleId) return;
     await roleService.removeUser(roleId, userId);
-    toast.success('User unassigned.');
+    if (fx) {
+      const gone = assigned.find((u) => u.id === userId);
+      const rid = roleId;
+      toast.fxDone({
+        what: `${gone ? (gone.name ?? gone.email) : 'User'} removed from ${roleName ?? 'this role'}`,
+        byWhom: 'you',
+        undo: () => void undoRemove(rid, userId),
+      });
+    } else {
+      toast.success('User unassigned.');
+    }
+    await reload();
+  }
+
+  // Undo for the fx done toasts: the existing opposite requests.
+  async function undoAssign(rid: string, ids: string[]) {
+    try {
+      for (const id of ids) await roleService.removeUser(rid, id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not undo that.');
+    }
+    await reload();
+  }
+
+  async function undoRemove(rid: string, userId: string) {
+    try {
+      await roleService.assignUsers(rid, [userId]);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not undo that.');
+    }
     await reload();
   }
 

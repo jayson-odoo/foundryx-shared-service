@@ -297,7 +297,9 @@ describe('list states', () => {
   });
 
   it('inside a record tab the same words show smaller', async () => {
-    setup(vi.fn(async () => ({ data: [], total: 0, page: 0 })), { fx: { noun: 'contacts' } }, true);
+    // FX-17: compact is the list's own choice (`embeddedListConfig` sets it),
+    // no longer implied by a hidden header.
+    setup(vi.fn(async () => ({ data: [], total: 0, page: 0 })), { fx: { noun: 'contacts', compactStates: true } }, true);
     const line = await screen.findByText('Contacts you add show here.');
     expect(line.closest('[data-fx-list-state]')?.className).toContain('py-6');
   });

@@ -1,6 +1,7 @@
 'use client';
 
 import { Container } from '@/components/common/container';
+import { useFx } from '@/hooks/use-fx';
 import { PageHeader } from '@/components/platform/page-header';
 import { TriageBoard } from './triage-board';
 
@@ -11,9 +12,14 @@ import { TriageBoard } from './triage-board';
  * (WS-C1). Drag across columns → status change; within a column → reorder.
  */
 export default function IdeationBoardPage() {
+  const fx = useFx();
   return (
     <Container width="fluid">
-      <PageHeader description="Drag across columns to change status, or within a column to reorder priority." />
+      <PageHeader
+        description={
+          fx ? undefined : 'Drag across columns to change status, or within a column to reorder priority.'
+        }
+      />
       <TriageBoard />
     </Container>
   );

@@ -23,6 +23,7 @@ import type {
 } from '@/components/platform/resource-list/types';
 import { ConfirmActionDialog } from './confirm-action-dialog';
 import { deferredToast, dismissDeferredToast } from './deferred-toast';
+import { runResourceAction } from './run-action';
 
 export interface BulkActionsProps<T> {
   actions: ResourceAction<T>[];
@@ -178,6 +179,10 @@ export function useBulkActionRunner<T>({
           windowSeconds,
           count: parkedIds.length > 1 ? parkedIds.length : undefined,
           noun: entityNoun(entityType, parkedIds.length),
+          fxName:
+            parkedIds.length === 1
+              ? action.deferred.fxName?.(rows.filter((_, i) => parkedIds.includes(entityIds[i])))
+              : undefined,
           onCancel: () => {
             void deferred.cancel();
             untrackPendingEntities(parkedIds);
@@ -198,7 +203,7 @@ export function useBulkActionRunner<T>({
       }
       return;
     }
-    await action.run(rows, runtime);
+    await runResourceAction(action, rows, runtime);
   }
 
   return { visible, run, pending, setPending };

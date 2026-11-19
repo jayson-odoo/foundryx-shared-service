@@ -35,9 +35,18 @@ describe('AC-DLA-62 header ActivityTriggers mobile overlap fix', () => {
   });
 
   it('the mobile logo has a fixed pixel width (a broken-image alt-text fallback must not inflate it)', () => {
+    // The logo is AppLogo's `mini` slot: a fixed 24px box for the tenant
+    // image and for the inline initial alike, and no static file to 404
+    // (the old `/media/app/mini-logo.svg` was never committed).
     const src = fs.readFileSync(path.join(__dirname, 'header.tsx'), 'utf8');
-    expect(src).toMatch(/alt="mini-logo"/);
+    expect(src).toMatch(/<AppLogo branding=\{branding\} variant="mini" \/>/);
+    expect(src).not.toMatch(/\/media\/app\//);
     expect(src).not.toMatch(/className="h-\[25px\] w-full"/);
+    const logo = fs.readFileSync(
+      path.join(__dirname, '../../../../../components/platform/branding/app-logo.tsx'),
+      'utf8',
+    );
+    expect(logo.match(/size-\[24px\]/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   it('the mobile topbar gap tightens and its icon buttons go compact (size="sm") to fit', () => {

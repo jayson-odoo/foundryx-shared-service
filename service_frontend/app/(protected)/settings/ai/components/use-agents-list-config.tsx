@@ -220,6 +220,14 @@ export function useAgentsListConfig(): ResourceListConfig<AiAgent> {
         { id: 'isEnabled', label: 'Enabled' },
       ],
       actions,
+      // Foundryx UIUX switch only (ignored while off). Header search only on
+      // the columns the API filters (name, model, status).
+      fx: {
+        noun: 'agents',
+        iconFor: { edit: 'edit', delete: 'trash' },
+        columnKind: { name: 'text', model: 'text', isEnabled: 'status' },
+        phoneHidden: ['updatedAt'],
+      },
     };
   }, [actions, router, formatDateTime]);
 }

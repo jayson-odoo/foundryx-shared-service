@@ -30,7 +30,12 @@ export function useAgentActions(): ResourceAction<AiAgent>[] {
         permission: 'ai_agents.manage',
         // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
         // no `run` (the registered `ai_agents.delete` handler commits it).
-        deferred: { actionKey: 'ai_agents.delete', entityType: 'ai_agent' },
+        deferred: {
+          actionKey: 'ai_agents.delete',
+          entityType: 'ai_agent',
+          // Switch on only: the one-agent countdown names it.
+          fxName: (rows) => rows[0]?.name || undefined,
+        },
       },
     ],
     [router],
