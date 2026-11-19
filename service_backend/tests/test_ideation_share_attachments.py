@@ -242,6 +242,19 @@ def test_staff_route_streams_not_redirects(setup, presigning):
     _assert_streamed(res)
 
 
+def test_share_file_reads_are_throttled_per_ip(setup, monkeypatch):
+    s = setup
+    iid, _aid, token = _shared_item(s, 714)
+    aid = _comment_with_file(s, iid)
+    monkeypatch.setattr(settings, "throttle_idea_share_file_max", 2)
+    path = f"/portal/ideas/shared/{token}/{iid}/attachments/{aid}/content"
+    assert s["client"].get(path).status_code == 200
+    assert s["client"].get(path).status_code == 200
+    res = s["client"].get(path)
+    assert res.status_code == 429
+    assert int(res.headers["retry-after"]) > 0
+
+
 def test_missing_blob_404_not_500(setup, monkeypatch):
     from app.services import storage
 

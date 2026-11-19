@@ -311,13 +311,25 @@ def shared_attachment_content(
     token: str,
     idea_id: str,
     attachment_id: str,
+    request: Request,
     variant: Optional[str] = Query(default=None, pattern="^thumb$"),
     db: Session = Depends(get_db),
 ):
     """A file on the shared item (lane FEEDBACK-IMAGE-PREVIEW): the share token
     is the credential (no Authorization header - the share page has none), and
     it reads only its own item's files under the same rules as the share page
-    itself; revoked / unknown token or another item's file = uniform 404."""
+    itself; revoked / unknown token or another item's file = uniform 404.
+    Public and it re-serves the bytes, so every read counts against a per-IP
+    window (429 + Retry-After over it)."""
+    from app.services.throttle import Throttled, ThrottleService, client_ip
+
+    throttle = ThrottleService(db)
+    ip = client_ip(request)
+    try:
+        throttle.enforce_idea_share_file(ip=ip)
+    except Throttled as exc:
+        _raise(PortalError(429, "too_many_requests", "Too many requests. Try again later.", exc.retry_after_seconds))
+    throttle.record_idea_share_file(ip=ip)
     svc, shared_id = _share(db, token)
     try:
         key, mime, filename = svc.shared_attachment_content(shared_id, idea_id, attachment_id, variant)

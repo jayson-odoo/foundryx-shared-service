@@ -41,6 +41,7 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_IDEA_PORTAL_COMMENT,
     THROTTLE_SCOPE_IDEA_PORTAL_SUBMIT,
     THROTTLE_SCOPE_IDEA_PORTAL_UPLOAD,
+    THROTTLE_SCOPE_IDEA_SHARE_FILE,
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_LEAD_GATEWAY,
     THROTTLE_SCOPE_LEAD_GATEWAY_KEY,
@@ -145,6 +146,12 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
             settings.throttle_idea_feedback_link_max_fails,
             timedelta(minutes=settings.throttle_idea_feedback_link_window_minutes),
             None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_IDEA_SHARE_FILE:
+        return (
+            settings.throttle_idea_share_file_max,
+            timedelta(minutes=settings.throttle_idea_share_file_window_minutes),
+            None,
         )
     if scope == THROTTLE_SCOPE_IDEA_FOLLOW_PHONE:
         return (
@@ -595,6 +602,15 @@ class ThrottleService:
     def record_idea_follow_phone(self, *, ip: str, phone_key: str) -> None:
         for key in (f"ip:{ip}", f"phone:{phone_key}"):
             self.store.record_failure(THROTTLE_SCOPE_IDEA_FOLLOW_PHONE, key)
+
+    def enforce_idea_share_file(self, *, ip: str) -> None:
+        """A file read through a share link (lane FEEDBACK-IMAGE-PREVIEW)."""
+        retry = self.store.check(THROTTLE_SCOPE_IDEA_SHARE_FILE, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_idea_share_file(self, *, ip: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_IDEA_SHARE_FILE, ip)
 
     def enforce_idea_portal_upload(self, *, principal_key: str) -> None:
         retry = self.store.check(THROTTLE_SCOPE_IDEA_PORTAL_UPLOAD, principal_key)
