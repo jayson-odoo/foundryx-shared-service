@@ -241,6 +241,21 @@ def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
     return value.strip() or None
 
 
+def _requested_locations(op: str, params: Dict[str, Any]) -> List[str]:
+    """Plan 70: the locations a request names (trimmed, in order): each batch line's ``location``; the one
+    ``location`` of a PO link / relink / split. Every other operation ignores it (an unlink frees nothing
+    to a link location; it has ``pool_location``)."""
+    if op in (LINK_BATCH, LINK_DOC_BATCH):
+        raw = params.get("links") if isinstance(params.get("links"), list) else []
+        found = (frame.clean_location(item.get("location")) for item in raw if isinstance(item, dict))
+        return [code for code in found if code]
+    defn = OPS.get(op)
+    if op == SPLIT_LINK or (defn is not None and defn.kind == "PO" and defn.mode in ("link", "relink")):
+        code = frame.clean_location(params.get("location"))
+        return [code] if code else []
+    return []
+
+
 def _iso_z(value: Optional[datetime]) -> Optional[str]:
     """An aware (or SQLite-naive UTC) datetime as ``YYYY-MM-DDTHH:MM:SS.mmmZ`` (one width, so the strings order like the times)."""
     if value is None:
@@ -354,6 +369,9 @@ class OperationService:
         self._row: Optional[AcWriteOperation] = None
         self._op_deadline = 0.0
         self._pool_location: Optional[str] = None  # plan 66: the unlink's pool location (the caller's)
+        # plan 70: the caller's location for a PO link / relink / split (AutoCount's own spelling, checked)
+        self._link_location: Optional[str] = None
+        self._locations: Dict[str, str] = {}  # plan 70: casefold(code) -> code, every checked code of the run
         # (kind, doc_key) -> (date, document | the read's exception): a side read made beside another
         # GET, consumed by the next ``_read`` of that document (SS-AUTOCOUNT-SPEEDUP).
         self._prefetched: Dict[Tuple[str, int], Tuple[date, Any]] = {}
@@ -430,6 +448,7 @@ class OperationService:
         self._steps, self._warnings = [], []
         self._mail_allowed = True
         self._pool_location = None  # set per run by ``_execute_unlocked`` (plan 66)
+        self._link_location, self._locations = None, {}  # set per run by ``_check_locations`` (plan 70)
         self._row = row
         self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
         return self._guarded(row, company, lambda: self._execute(row, company, op, spec, params))
@@ -688,6 +707,7 @@ class OperationService:
         self._base_url = base_url
         self._prefetched = {}
         self._check_test_company(company)
+        self._check_locations(company, op, spec, params)  # plan 70: before any document read or write
         if op == LINK_BATCH:
             return self._batch_link(row, company, spec, params)
         if op == LINK_DOC_BATCH:
@@ -714,6 +734,28 @@ class OperationService:
         snapshot = self._snapshot(company, defn, spec, doc, doc_date, plan)
         self._store_snapshot(row, snapshot)
         return self._steps_run(row, company, op, defn, spec, snapshot)
+
+    def _check_locations(self, company: AcCompany, op: str, spec: _Spec, params: Dict[str, Any]) -> None:
+        """Plan 70: every location the request names, checked with ONE logged ``GET /location``. A single
+        link / relink / split naming an unknown code is refused ``LOCATION_UNKNOWN`` (nothing written, the
+        key released); a batch line naming one is skipped with that code (``_line_skip``); a failed read
+        refuses the request with the read's code. No location named = no call (today's behaviour)."""
+        codes = _requested_locations(op, params)
+        if not codes:
+            return
+        reader = self._reader(company, self._base_url, "PO", spec.doc_key, None)
+        self.db.commit()  # no transaction open during the GET
+        try:
+            self._locations = frame.known_locations(reader, codes)
+        except DocReadError as exc:
+            raise _Done(REFUSED, exc.code) from None
+        if op in (LINK_BATCH, LINK_DOC_BATCH):
+            return
+        code = codes[0]
+        found = self._locations.get(code.casefold())
+        if found is None:
+            raise _Done(REFUSED, frame.LOCATION_UNKNOWN, frame.unknown_location_message(code))
+        self._link_location = found
 
     def _is_part_of_row(self, company: AcCompany, base_url: str, spec: _Spec, params: Dict[str, Any]) -> bool:
         """A ``link_row`` that names a qty below the FRESH row qty is the split link
@@ -981,7 +1023,9 @@ class OperationService:
         so_link: Optional[Doc] = None
         if target is not None and defn.target == "SO":
             trow = next((r for r in target.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), {})
-            move_to = trow.get("Location") or move_to  # owner ruling: a linked PO row sits at its SO row
+            # owner ruling: a linked PO row sits at its SO row; plan 70 (owner 19 Nov): at the caller's location
+            # when the CRM names one (an Order Inquiry row's location, e.g. the donor of an order back)
+            move_to = self._link_location or trow.get("Location") or move_to
             so_link = self._so_link_values(target, trow)
         return _json_safe({
             "soLink": so_link,
@@ -1410,7 +1454,8 @@ class OperationService:
             except WriteRefusal:
                 skip = "QTY_INVALID"
             links.append({"so_doc_key": so_doc, "so_dtl_key": so_dtl, "qty": qty,
-                          "so_doc_date": item.get("so_doc_date"), "skip": skip})
+                          "so_doc_date": item.get("so_doc_date"), "skip": skip,
+                          "to_location": frame.clean_location(item.get("location"))})  # plan 70
         return links
 
     def _batch_link(self, row: AcWriteOperation, company: AcCompany, spec: _Spec,
@@ -1564,7 +1609,12 @@ class OperationService:
     def _line_skip(self, company: AcCompany, doc: Doc, old: Doc, link: Dict[str, Any], sources: Dict[int, Doc],
                    free: Decimal, running: Decimal, claimed: Decimal = Decimal(0)) -> Optional[str]:
         """The reason one line cannot be linked (None = it can); fills ``so_no`` and ``location``. ``claimed``
-        = the SO row's qty earlier lines of the same document batch take (plan 69: not in AutoCount yet)."""
+        = the SO row's qty earlier lines of the same document batch take (plan 69: not in AutoCount yet).
+        Plan 70: a line naming a location lands there (``_check_locations`` checked it; unknown = skipped)."""
+        wanted = link.get("to_location")
+        to_location = self._locations.get(wanted.casefold()) if wanted else None
+        if wanted and to_location is None:
+            return frame.LOCATION_UNKNOWN
         so = sources.get(link["so_doc_key"])
         if so is None:
             try:
@@ -1590,7 +1640,7 @@ class OperationService:
             return "QTY_ABOVE_FREE"
         if payloads.foc_on_row(old, running + link["qty"]):
             return FOC_ON_ROW  # the row would go with its FOC, which hapi cannot put on a new row (D2a)
-        link["so_no"], link["location"] = so.get("DocNo"), so_row.get("Location")
+        link["so_no"], link["location"] = so.get("DocNo"), to_location or so_row.get("Location")
         link["so_link"] = self._so_link_values(so, so_row)
         return None
 
@@ -1774,7 +1824,8 @@ class OperationService:
             except WriteRefusal:
                 skip = "QTY_INVALID"
             links.append({"index": index, "po_dtl_key": po_dtl, "so_doc_key": so_doc, "so_dtl_key": so_dtl,
-                          "qty": qty, "so_doc_date": item.get("so_doc_date"), "skip": skip})
+                          "qty": qty, "so_doc_date": item.get("so_doc_date"), "skip": skip,
+                          "to_location": frame.clean_location(item.get("location"))})  # plan 70
         return links
 
     @staticmethod
@@ -2119,6 +2170,7 @@ class OperationService:
         )
         legacy.use_trace(self.prims.request_id, (self.prims.acting_user_id, self.prims.acting_user_name))
         legacy.so_lock_held = True  # _execute holds the SO row lock around this call
+        legacy.location_checked = True  # plan 70: ``_check_locations`` already checked it (one GET)
         qty = Decimal(str(params["qty"]))
         # the over-link guard of other callers counts this link while its outcome is unknown (pending_link_qty)
         self._store_snapshot(row, {"mode": "split", "links": [{"soDtlKey": spec.target_dtl_key, "qty": str(qty)}]})
@@ -2130,6 +2182,7 @@ class OperationService:
             po_doc_key=spec.doc_key, po_dtl_key=spec.dtl_key, so_doc_key=int(spec.target_doc_key or 0),
             so_dtl_key=int(spec.target_dtl_key or 0), qty=qty,
             expected_last_modified=spec.expected_last_modified, so_doc_date=_as_date(spec.target_doc_date), doc_date=found,
+            location=self._link_location,
         )
         if result.action_id and self.prims.actions.attach_to_operation(
             company.tenant_id, result.action_id, row.id, SPLIT_LINK, "PUT", EDIT_PO_PATH

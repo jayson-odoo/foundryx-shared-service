@@ -283,7 +283,7 @@ def test_route_batch_takes_a_location_per_link(client, h, gw, w_far):
         "companyCode": "SRT", "poDocKey": 7001, "poDtlKey": w_far.p_free, "links": [
             {"soDocKey": 7002, "soDtlKey": w_far.so_a, "qty": 4, "location": DONOR}]})
     assert r.status_code == 200, r.text
-    new = r.json()["links"][0]["newPoDtlKey"]
+    new = r.json()["links"][0]["poDtlKey"]
     assert row(h, new)["Location"] == DONOR
 
 

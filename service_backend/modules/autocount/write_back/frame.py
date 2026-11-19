@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -63,6 +63,8 @@ DOC_KIND_MISMATCH = "DOC_KIND_MISMATCH"
 DOC_BUSY = "DOC_BUSY"
 DOC_UNKNOWN = "DOC_UNKNOWN"
 DOC_STALE = "DOC_STALE"
+# Plan 70: a location the caller named is not in the book's Location master (refused before any write)
+LOCATION_UNKNOWN = "LOCATION_UNKNOWN"
 
 
 @dataclass
@@ -110,6 +112,28 @@ def _same(a: Any, b: Any) -> bool:
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
         return _dec(a) == _dec(b)
     return a == b
+
+def clean_location(value: Any) -> Optional[str]:
+    """Plan 70: a caller's optional ``location`` (an AutoCount Location code): trimmed text, else None
+    (absent, null, blank or not text = none given, today's behaviour)."""
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+def unknown_location_message(code: str) -> str:
+    """Plan 70: the plain reason for ``LOCATION_UNKNOWN`` (the CRM shows it as is)."""
+    return f"Location {code} does not exist in AutoCount, so nothing was changed. Pick another location and try again."
+
+
+def known_locations(reader: Any, codes: "Iterable[str]") -> Dict[str, str]:
+    """Plan 70, the ONE location check of every link path: ``codes`` (trimmed) looked up in the book's
+    Location master with one logged GET (``reader.location_codes``). Answers ``casefold(code) -> AutoCount's
+    own code`` for the codes that exist; a missing key = unknown. A failed read raises ``DocReadError``."""
+    wanted = {c.casefold() for c in codes if c}
+    if not wanted:
+        return {}
+    master = reader.location_codes()
+    return {key: master[key] for key in wanted if key in master}
+
 
 def _safe_body(body: Any) -> Doc:
     if isinstance(body, (dict, list)):
