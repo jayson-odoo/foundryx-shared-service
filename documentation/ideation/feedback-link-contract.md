@@ -57,3 +57,14 @@ Plan + UAC: `documentation/plans/ideation/public-ideas-board/`.
   default `https://fe-sorento.foundryx.my`) and no `X-Frame-Options`. The board
   needs no cookies (Bearer from `/portal/ideas/session/link`), so it works in a
   cross-site iframe without any SameSite change.
+- Share page (lane FEEDBACK-SHARE-SS-HOST): share links follow the same host
+  rule as board links - `{CRM origin}/feedback/share/{shareToken}` for a CRM
+  tenant, else `{base}/public/feedback/share/{shareToken}`. The CRM route
+  `/feedback/share/{shareToken}` iframes `{shared-service frontend}/public/feedback/share/{shareToken}`
+  with the same headers as the board page; SS answers `/public/feedback/share/**`
+  with the same `frame-ancestors` list. After the phone check the framed page
+  navigates the TOP window to the visitor's board.
+- Phone check errors: a 403 from the CRM lookup or send-code (integration user
+  lacks `integration.contact_phone.verify`) shows "Phone check is not set up for
+  this product yet." (error code `not_set_up`); other failures keep "We could not
+  check your number right now. Try again." 

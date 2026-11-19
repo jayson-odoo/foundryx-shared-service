@@ -13,6 +13,7 @@ wrapper and must stay green untouched (the reviewer's diff check).
 import pytest
 
 from app.services.url_guard import (
+    UnparseableUrlError,
     UrlGuardError,
     assert_deliverable,
     validate_public_https_url,
@@ -171,3 +172,20 @@ def test_ac_38_137_iana_special_purpose_ranges_blocked(net, end):
     host = f"[{ip}]" if ip.version == 6 else str(ip)
     with pytest.raises(UrlGuardError):
         assert_deliverable(f"https://{host}/x")
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://exa mple.com/x", "https://exa%20mple.com/x", "https://exa\tmple.com/x", "https://exa<mple.com/x"],
+)
+def test_a_host_with_a_space_or_other_non_host_character_is_not_a_valid_url(url):
+    # Crew pass 041306ae (#259): urlparse + httpx.URL both accept a space in
+    # the host, so the receiver was stored. A host is letters, digits, '-',
+    # '.', '_' (or an IP literal / an IDN name), never a space or '%'.
+    with pytest.raises(UnparseableUrlError):
+        validate_public_https_url(url)
+
+
+@pytest.mark.parametrize("url", ["https://hooks-1.example.com/x", "https://my_host.example.com/x", "https://bücher.example/x"])
+def test_ordinary_hosts_stay_valid(url):
+    assert validate_public_https_url(url) == url

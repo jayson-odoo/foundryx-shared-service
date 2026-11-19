@@ -20,6 +20,7 @@ from ..services import (
     delivery_service,
     field_service,
     form_service,
+    google_source_service,
     key_service,
     read_service,
     source_service,
@@ -61,6 +62,34 @@ def connect_facebook(
     except connect_service.ConnectError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
     return read_service.source_item(row)
+
+
+@router.post("/sources/google", response_model=schemas.GuidedSourceCreated, status_code=201)
+def create_google_source(
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.GuidedSourceCreated:
+    row, url, key = google_source_service.create_guided_source(
+        db, user.tenant_id, actor=source_service.Actor.user(actor_id, user.id), user_id=actor_id
+    )
+    return schemas.GuidedSourceCreated(source=read_service.source_item(row), url=url, key=key)
+
+
+@router.post("/sources/{source_id}/rotate-key", response_model=schemas.KeyRotated)
+def rotate_source_key(
+    source_id: str,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.KeyRotated:
+    try:
+        url, key = google_source_service.rotate_key(
+            db, user.tenant_id, source_id, actor=source_service.Actor.user(actor_id, user.id)
+        )
+    except source_service.SourceError as exc:
+        raise _http(exc)
+    return schemas.KeyRotated(url=url, key=key)
 
 
 @router.get("/sources", response_model=schemas.SourceList)
@@ -126,6 +155,41 @@ def revoke_key(key_id: str, user: User = Depends(_KEYS), db: Session = Depends(g
     except key_service.KeyNotFound:
         raise HTTPException(status_code=404, detail="Key not found.")
     return Response(status_code=204)
+
+
+@router.get("/webhooks", response_model=schemas.WebhookList)
+def list_webhooks(user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.WebhookList:
+    rows = delivery_service.list_endpoints(db, user.tenant_id)
+    return schemas.WebhookList(data=[read_service.webhook_item(r) for r in rows])
+
+
+@router.post("/webhooks", response_model=schemas.WebhookCreated, status_code=201)
+def create_webhook(
+    body: schemas.WebhookCreate, user: User = Depends(_MANAGE), db: Session = Depends(get_db)
+) -> schemas.WebhookCreated:
+    try:
+        row, secret = delivery_service.create_endpoint(db, user.tenant_id, body.url, body.events)
+    except delivery_service.DeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+    return schemas.WebhookCreated(**read_service.webhook_item(row).model_dump(), secret=secret)
+
+
+@router.delete("/webhooks/{endpoint_id}", status_code=204)
+def delete_webhook(endpoint_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> Response:
+    try:
+        delivery_service.delete_endpoint(db, user.tenant_id, endpoint_id)
+    except delivery_service.DeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+    return Response(status_code=204)
+
+
+@router.post("/webhooks/{endpoint_id}/test", response_model=schemas.DeliveryItem, status_code=202)
+def test_webhook(endpoint_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.DeliveryItem:
+    try:
+        row = delivery_service.send_test_push(db, user.tenant_id, endpoint_id)
+    except delivery_service.DeliveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
+    return read_service.delivery_item(row)
 
 
 @router.post("/deliveries/{delivery_id}/redeliver", response_model=schemas.DeliveryItem)

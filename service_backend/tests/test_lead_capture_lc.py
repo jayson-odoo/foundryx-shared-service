@@ -217,7 +217,7 @@ def test_wizard_token_is_scoped_to_wizard_routes(client, lc):
     ctx = client.get("/public/lead-capture/wizard/context", headers=wiz)
     assert ctx.status_code == 200, ctx.text
     assert ctx.json()["returnOrigin"] == ORIGIN
-    assert [c["key"] for c in ctx.json()["channels"]] == ["facebook"]
+    assert [c["key"] for c in ctx.json()["channels"]] == ["facebook", "google"]
     # Staff and gateway routes refuse it.
     assert client.get("/lead-capture/sources", headers=wiz).status_code == 401
     assert client.get("/api/v1/lead-capture/sources", headers=wiz).status_code == 401
@@ -439,7 +439,7 @@ def test_facebook_hidden_when_app_set_but_no_login_config(client, lc, monkeypatc
     monkeypatch.setattr(settings, "lead_capture_login_config_id", "")
     admin = _login(client)
     key, _ = _key_with_origins(client, admin)
-    assert client.get("/api/v1/lead-capture/channels", headers=_gw(key)).json()["data"] == []
+    assert [c["key"] for c in client.get("/api/v1/lead-capture/channels", headers=_gw(key)).json()["data"]] == ["google"]
     wiz = _wizard(client, key)
     res = client.post("/public/lead-capture/wizard/facebook/login", json={"code": FB_CODE}, headers=wiz)
     assert res.status_code == 409
@@ -572,6 +572,8 @@ def test_consumer_guide_names_every_gateway_route():
     for route in router.routes:
         path = route.path.replace("{source_id}", "{id}").replace("{endpoint_id}", "{id}")
         path = path.replace("{delivery_id}", "{id}").replace("{form_id}", "{formId}").replace("{login_id}", "{loginId}")
+        path = path.replace("{account_id}", "{accountId}")
+        path = path.replace("{key_id}", "{id}")
         if f"`{path}`" not in guide:
             missing.append(path)
     assert missing == []
@@ -638,7 +640,7 @@ def test_last_test_lead_read_is_scoped_and_moves_on_a_new_test_lead(client, lc):
     client.post(f"{base}/facebook/login", json={"code": "dev"}, headers=wiz)
     sid = client.post(f"{base}/facebook/connect", json={"pageId": DEV_PAGE}, headers=wiz).json()["id"]
     before = client.get(f"{base}/sources/{sid}/test-lead", headers=wiz)
-    assert before.status_code == 200 and before.json() == {"leadId": None, "receivedAt": None}
+    assert before.status_code == 200 and before.json() == {"leadId": None, "receivedAt": None, "formId": None}
     form_id = client.get(f"{base}/sources/{sid}/forms", headers=wiz).json()["data"][0]["id"]
     client.post(f"{base}/sources/{sid}/test-lead", json={"formId": form_id}, headers=wiz)
     after = client.get(f"{base}/sources/{sid}/test-lead", headers=wiz).json()

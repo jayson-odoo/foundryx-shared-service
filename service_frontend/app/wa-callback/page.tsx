@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react';
  * URI in the Meta app.
  */
 export default function WaCallbackPage() {
-  const [message, setMessage] = useState('Completing your WhatsApp connection…');
+  const [message, setMessage] = useState('Completing your sign-in…');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

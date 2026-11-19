@@ -2062,6 +2062,115 @@ def resume_restore_op(
     }
 
 
+# ── plan 69: bulk link fast (F01 first-write probe, F02 document batch speed; db3 only) ─────────
+
+_F_CASES = (
+    ("R00", "Create the test SO (sub-location row, delivery date, header Ref)", "r00"),
+    ("R01", "Create the test PO (description, four different remarks, discount, FOC, price, date)", "r01"),
+    ("F01", "P69-D4: one raw link PUT (row A qty 1) with Location, UnitPrice, DeliveryDate, Discount and "
+            "FurtherDescription on the new row; which stick", "f01"),
+    ("F02", "Document batch: rows B and C (1 each, same SO row) in ONE operation: distinct new rows, each restored", "f02"),
+)
+
+
+class _BulkRun(_RestoreRun):
+    """Plan 69 probes on own ``FXT-<tag>`` documents: F01 = does AutoCount keep the first write's values on
+    a new SO-linked row today (if so the restore PUT is skipped by itself); F02 = the real document batch."""
+
+    def f01(self, case: CaseResult) -> None:
+        case.expected = ("raw link PUT 200; read back: for each of Location / UnitPrice / DeliveryDate / Discount, "
+                         "the value sent or AutoCount's reset (plan 65 P2: all four reset)")
+        if self.po is None or "SO" not in self.so:
+            case.status, case.observed = SKIPPED, "R00/R01 did not pass"
+            return
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        old = self._po_row(doc, self.source_key) or {}
+        so_no = self.so["SO"].doc_no
+        sent = dict({k: v for k, v in old.items() if k != "DtlKey"}, FromDocType="SO", FromDocNo=so_no,
+                    FromDocDtlKey=self.so_row_key, Location=_R_SO_LOCATION, Qty=1, FOCQty=0,
+                    UnitPrice=_R_PRICE, DeliveryDate=self.so_date, Discount="5%",
+                    FurtherDescription=payloads.autocount_rtf(_R_NOTE))
+        request = payloads.build_link_batch("PO", doc, self.source_key, [sent])
+        response = self._logged_put(case, doc, request)
+        after = self._read("PO", int(self.po.doc_key or 0))
+        self.new_key = int((self._new_row_of(after) or {}).get("DtlKey") or 0)  # type: ignore[call-overload]
+        got = self._six(self._po_row(after, self.new_key) if self.new_key else None)
+        kept = {
+            "Location": got["Location"] == _R_SO_LOCATION,
+            "UnitPrice": _num(got["UnitPrice"]) == Decimal(str(_R_PRICE)),
+            "DeliveryDate": day_of(got["DeliveryDate"]) == day_of(self.so_date),
+            "Discount": got["Discount"] == "5%",
+        }
+        self.facts["f01"] = {"putStatus": response.status_code, "newRowSix": got, "keptOnFirstWrite": kept}
+        case.observed = f"PUT {response.status_code}; kept on the first write: {kept}"
+        case.status = PASS if response.ok and self.new_key else FAIL
+
+    def f02(self, case: CaseResult) -> None:
+        case.expected = ("op done; each line its OWN new row (distinct newPoDtlKey), every new row restored to the SO "
+                         "row's location, its source row's price and the SO row's date; alike lines = one PUT pair each")
+        if self.po is None or "SO" not in self.so:
+            case.status, case.observed = SKIPPED, "R00/R01 did not pass"
+            return
+        so_doc = int(self.so["SO"].doc_key or 0)
+        # the real-world case: two PO rows to the same SO row with the SAME qty (alike new rows: plan 69 puts
+        # them in separate chunks, so each new row gets its own source row's values)
+        links = [{"po_dtl_key": self.keys[name], "so_doc_key": so_doc, "so_dtl_key": self.so_row_key, "qty": 1}
+                 for name in ("B", "C")]
+        params = {"doc_key": int(self.po.doc_key or 0), "links": links, "doc_date": self.today}
+        res = self._timed(case, "document batch: 2 rows to 1 SO row", 2,
+                          lambda: self._run_op("link_doc_batch", "f02", params))
+        timing = self.timings[-1]
+        doc = self._read("PO", int(self.po.doc_key or 0))
+        lines = (res.batch or {}).get("lines") or []
+        rows = [self._six(self._po_row(doc, int(x.get("newPoDtlKey") or 0))) for x in lines]
+        self.facts["f02"] = {"operationId": res.operation_id, "status": res.outcome, "errorCode": res.error_code,
+                             "lines": lines, "newRows": rows, "ms": timing["ms"], "puts": timing["puts"],
+                             "logRows": timing["logRows"], "linkedAt": res.linked_at}
+        case.observed = f"{res.outcome} {res.error_code or ''}; {timing['puts']} PUTs, {timing['ms']} ms"
+        keys = [int(x.get("newPoDtlKey") or 0) for x in lines]
+        good = (res.outcome == "done" and timing["puts"] <= 4 and len(rows) == 2 and len(set(keys)) == 2
+                and all(keys)
+                and all(r["Location"] == _R_SO_LOCATION and _num(r["UnitPrice"]) == Decimal(str(_R_PRICE))
+                        and day_of(r["DeliveryDate"]) == day_of(self.so_date) for r in rows))
+        case.status = PASS if good else FAIL
+
+
+def run_bulk_suite(
+    db: Session, *, tenant_id: str, company_id: str, creditor_code: str, run_tag: str,
+    debtor_code: str = DEFAULT_DEBTOR,
+    client_factory: Optional[Callable[[str], AutoCountWriteClient]] = None,
+    reader_factory: Optional[Callable[[str], AutoCountDocReader]] = None,
+    sink_factory: Optional[Callable[..., object]] = None,
+) -> SuiteResult:
+    """Run R00, R01, F01, F02 (plan 69): the db3 guards of the restore suite run BEFORE any request."""
+    from modules.autocount.write_back.pull_docs import WriteDisabled
+
+    company = CompanyRepository(db).get(tenant_id, company_id)
+    if company is None:
+        raise WriteDisabled()
+    base_url = write_base_url(db, company)
+    _require_test_book(base_url)
+    write_auth_headers(db, company)
+    guard.assert_test_company(db, tenant_id, company.id, book=guard.book_of(base_url))
+    run = _BulkRun(db, tenant_id, company, base_url, creditor_code, debtor_code, run_tag,
+                   client_factory or AutoCountWriteClient, reader_factory or AutoCountDocReader, sink_factory)
+    suite = SuiteResult(run_tag=run_tag)
+    for case_id, title, method in _F_CASES:
+        case = CaseResult(case_id, title)
+        run.case_id = case_id
+        try:
+            getattr(run, method)(case)
+        except Exception as exc:  # noqa: BLE001 - one case never stops the suite
+            logger.exception("write-back runner case %s failed", case_id)
+            case.status = FAIL
+            case.observed = f"{case.observed} {type(exc).__name__}: {exc}".strip()
+        db.rollback()
+        suite.cases.append(case)
+    suite.evidence = run.evidence
+    suite.summary = "## Facts\n\n```json\n" + json.dumps(run.facts, indent=1, default=str) + "\n```"
+    return suite
+
+
 def write_evidence(result: SuiteResult, path: str) -> None:
     """The exact, unscrubbed evidence (private): one entry per vendor write."""
     with open(path, "w", encoding="utf-8") as handle:
@@ -2076,12 +2185,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--run-tag", required=True)
     parser.add_argument("--debtor", default=DEFAULT_DEBTOR)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--suite", choices=("db3", "qtso", "batch", "restore"), default="db3")
+    parser.add_argument("--suite", choices=("db3", "qtso", "batch", "restore", "bulk"), default="db3")
     parser.add_argument("--resume-op", help="restore: only resume this operation id (plan 65 P4), then print the outcome")
     parser.add_argument("--evidence", help="qtso: path of the exact (private) evidence JSON")
     parser.add_argument("--header-extra", help="qtso: JSON file of header fields (names, addresses) to send")
     args = parser.parse_args(argv)
-    if args.suite in ("db3", "batch", "restore") and not args.creditor and not args.resume_op:
+    if args.suite in ("db3", "batch", "restore", "bulk") and not args.creditor and not args.resume_op:
         parser.error("--creditor is required for the db3 suite")
 
     from app.database import SessionLocal
@@ -2116,6 +2225,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     db, tenant_id=tenant.id, company_id=args.company_id, creditor_code=args.creditor,
                     debtor_code=args.debtor, run_tag=args.run_tag,
                 )
+            elif args.suite == "bulk":
+                result = run_bulk_suite(
+                    db, tenant_id=tenant.id, company_id=args.company_id, creditor_code=args.creditor,
+                    debtor_code=args.debtor, run_tag=args.run_tag,
+                )
             elif args.suite == "batch":
                 result = run_batch_suite(
                     db, tenant_id=tenant.id, company_id=args.company_id, creditor_code=args.creditor,
@@ -2136,9 +2250,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_evidence(result, args.evidence)
     for case in result.cases:
         print(f"{case.case_id} {case.status}")
-        if args.suite == "restore":
+        if args.suite in ("restore", "bulk"):
             print(f"  {case.observed}")
-    if args.suite == "restore":
+    if args.suite in ("restore", "bulk"):
         print(result.summary)
     return 0 if all(c.status != FAIL for c in result.cases) else 1
 

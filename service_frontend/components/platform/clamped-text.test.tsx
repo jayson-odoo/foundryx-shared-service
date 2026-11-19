@@ -120,4 +120,14 @@ describe('ClampedText (resize observer)', () => {
     );
     expect(screen.getByText('a.png')).not.toHaveAttribute('data-slot');
   });
+
+  it('several lines still clamp and wrap long words', () => {
+    render(
+      <TooltipProvider>
+        <ClampedText text="Long title" lines={2} />
+      </TooltipProvider>,
+    );
+    expect(screen.getByText('Long title').className).toContain('line-clamp-2');
+    expect(screen.getByText('Long title').className).toContain('break-words');
+  });
 });

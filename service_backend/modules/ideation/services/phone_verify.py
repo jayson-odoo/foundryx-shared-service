@@ -66,6 +66,12 @@ def _unavailable() -> PortalError:
     return PortalError(503, "unavailable", "We could not check your number right now. Try again.")
 
 
+def _not_set_up() -> PortalError:
+    """The product refused us (403): its integration user lacks the phone
+    check permission. Not retryable by the visitor, so not "try again"."""
+    return PortalError(503, "not_set_up", "Phone check is not set up for this product yet.")
+
+
 def _throttled(exc: Throttled) -> PortalError:
     return PortalError(429, "too_many_attempts", "Too many attempts. Try again later.", exc.retry_after_seconds)
 
@@ -86,20 +92,47 @@ def product_target(db: Session, tenant_id: str, product_id: Optional[str]) -> Op
         .order_by(Connection.created_at.asc(), Connection.id.asc())
         .all()
     )
+    active = len(rows)
     rows = [r for r in rows if r.status != CONNECTION_STATUS_ERROR]
     tagged = [r for r in rows if product_id and (r.config_json or {}).get("productId") == product_id]
     untagged = [r for r in rows if not (r.config_json or {}).get("productId")]
     conn = tagged[0] if tagged else (untagged[0] if len(untagged) == 1 else None)
     if conn is None:
+        if not active:
+            _no_target("no active consumer connection")
+        elif not rows:
+            _no_target("every active consumer connection is in error")
+        elif len(untagged) > 1:
+            _no_target(f"no connection tagged for the product and {len(untagged)} untagged ones")
+        else:
+            _no_target("no connection tagged for the product and no untagged one")
         return None
     base = str((conn.config_json or {}).get("baseUrl") or "").strip().rstrip("/")
-    if not base or not conn.credentials_json:
+    if not base:
+        _no_target("connection has no base URL", conn.id)
+        return None
+    if not conn.credentials_json:
+        _no_target("connection has no stored key", conn.id)
         return None
     try:
         key = str(decrypt_secret(conn.credentials_json).get("apiKey") or "").strip()
     except Exception:  # noqa: BLE001 - an undecryptable key = no target
+        _no_target("connection key cannot be decrypted", conn.id)
         return None
-    return (base, key) if key else None
+    if not key:
+        _no_target("connection has an empty key", conn.id)
+        return None
+    return base, key
+
+
+def _no_target(reason: str, connection_id: Optional[str] = None) -> None:
+    """Why the phone step found no product to ask. Names the branch and the
+    connection id only: never a key, URL or phone."""
+    logger.warning(
+        "feedback phone step: no product target: %s%s",
+        reason,
+        f" (connection {connection_id})" if connection_id else "",
+    )
 
 
 def _product_name(db: Session, tenant_id: str, product_id: Optional[str]) -> str:
@@ -182,6 +215,8 @@ class PhoneStep:
             raise self._not_registered()
         if res.status_code == 429:
             raise PortalError(429, "too_many_attempts", "Too many attempts. Try again later.", 900)
+        if res.status_code == 403:
+            raise _not_set_up()
 
     def send_code(self, phone: str) -> Dict[str, Any]:
         """Ask the product whether this phone is one of its contacts; if so,
@@ -189,9 +224,10 @@ class PhoneStep:
         the product deliver it over WhatsApp."""
         digits, target, body = self._prepare(phone)
         res = _call(target, LOOKUP_PATH, body)
+        if res.status_code not in (200, 404):
+            logger.warning("feedback phone step: lookup refused: HTTP %s", res.status_code)
         self._common_errors(res)
         if res.status_code != 200:
-            logger.warning("feedback phone step: lookup refused: HTTP %s", res.status_code)
             raise _unavailable()
         try:
             name = str((res.json() or {}).get("name") or "").strip() or None
@@ -228,8 +264,8 @@ class PhoneStep:
             return {"sent": True}
         # Not delivered: the code must not stay usable.
         self._void(row_id)
-        self._common_errors(sent)
         logger.warning("feedback phone step: send-code refused: HTTP %s", sent.status_code)
+        self._common_errors(sent)
         raise _unavailable()
 
     def verify(self, phone: str, code: str) -> Dict[str, Any]:

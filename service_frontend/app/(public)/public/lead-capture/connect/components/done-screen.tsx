@@ -33,8 +33,9 @@ export function DoneScreen({ done, onDone }: { done: WizardDone; onDone: () => v
         </h1>
       </div>
       <dl className="flex flex-col gap-2">
-        <Row label="Channel" value="Facebook" />
+        <Row label="Channel" value={source.platform === 'google' ? 'Google Ads' : 'Facebook'} />
         <Row label="Connected by" value={done.connectedBy ?? '-'} />
+        {done.signedInAs ? <Row label="Signed in as" value={done.signedInAs} /> : null}
         <Row label="Connected on" value={done.connectedAt ? formatDmyDateTime(done.connectedAt) : '-'} />
         <Row label="Test lead received" value={done.testLeadAt ? formatDmyDateTime(done.testLeadAt) : '-'} />
         <Row label="Test lead form" value={done.testLeadFormName ?? '-'} />

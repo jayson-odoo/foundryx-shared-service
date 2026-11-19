@@ -49,10 +49,31 @@ export interface WizardLoginConfig {
   scopes: string[];
 }
 
+/** Google sign-in (plan 68); `simulated` = no Google client on the server. */
+export interface WizardGoogleLoginConfig {
+  available: boolean;
+  simulated: boolean;
+  clientId: string | null;
+  scopes: string[];
+}
+
+export interface WizardGoogleFormResult {
+  id: string;
+  name: string;
+  ok: boolean;
+  message: string | null;
+}
+
+export interface WizardGoogleConnect {
+  source: WizardSource;
+  forms: WizardGoogleFormResult[];
+}
+
 export interface WizardContext {
   branding: { name: string; logoUrl: string | null };
   channels: WizardChannel[];
   login: WizardLoginConfig;
+  googleLogin: WizardGoogleLoginConfig;
   returnOrigin: string | null;
   source: WizardSource | null;
 }
@@ -97,6 +118,15 @@ export interface WizardConsumerField {
 export interface WizardTestLead {
   leadId: string | null;
   receivedAt: string | null;
+  /** The form the test lead came from (Google: the Fields step maps it). */
+  formId?: string | null;
+}
+
+/** A Google Ads source's inbound URL + key (card 68a); the key is shown only here. */
+export interface WizardGuidedSource {
+  source: WizardSource;
+  url: string;
+  key: string;
 }
 
 export interface WizardDone {
@@ -106,6 +136,8 @@ export interface WizardDone {
   testLeadAt: string | null;
   testLeadFormName: string | null;
   waitingForRealLead: boolean;
+  /** Google sign-in (plan 68): the Google account that signed in. */
+  signedInAs?: string | null;
 }
 
 /** postMessage contract to the opener (AC-64-08). */

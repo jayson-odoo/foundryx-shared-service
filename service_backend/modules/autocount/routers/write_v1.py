@@ -34,7 +34,7 @@ from ..write_back.call_log import (
     request_id_of,
 )
 from ..write_back.deps import get_operation_service, get_primitive_service
-from ..write_back.operations import OperationResult, OperationService
+from ..write_back.operations import MAX_BATCH_LINKS, OperationResult, OperationService
 from ..write_back.primitives import PrimitiveService
 from .pull_v1 import (
     WriteBody,
@@ -126,8 +126,11 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
         "warnings": [_camel_names(w) for w in result.warnings], "docKey": result.doc_key or doc_key, "docNo": result.doc_no,
         "replacedLines": [{"oldDtlKey": o, "newDtlKey": n} for o, n in result.replaced_lines],
         "document": result.document,
+        "requestedAt": result.requested_at, "linkedAt": result.linked_at, "finishedAt": result.finished_at,
     }
-    if result.batch is not None:  # link_batch (plan 62 D5): the new PO row per SO row + the free row
+    if result.batch is not None and "lines" in result.batch:  # link_doc_batch (plan 69 D1): one result per line
+        answer.update(lines=result.batch.get("lines") or [], freeLines=result.batch.get("freeLines") or [])
+    elif result.batch is not None:  # link_batch (plan 62 D5): the new PO row per SO row + the free row
         answer.update(links=result.batch.get("links") or [], skipped=result.batch.get("skipped") or [],
                       freeLine=result.batch.get("freeLine"))
     return answer
@@ -492,15 +495,15 @@ def link_po_row_batch(
     raw_body: bytes = Depends(_read_request_body_bytes),
     ops: OperationService = Depends(get_operation_service),
 ) -> JSONResponse:
-    """Plan 62 D1: link one PO row to 1..20 SO rows in one operation (one idempotency key)."""
+    """Plan 62 D1 / 69 D2: link one PO row to 1..N SO rows in one operation (one idempotency key)."""
 
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
         try:
             entries = raw.get("links")
             if not isinstance(entries, list) or not entries:
                 raise _bad("INVALID_REQUEST", "links must be a non-empty array.")
-            if len(entries) > 20:
-                raise _bad("INVALID_REQUEST", "links must hold at most 20 entries.")
+            if len(entries) > MAX_BATCH_LINKS:  # plan 69 D2: a body guard only, never a real press
+                raise _bad("INVALID_REQUEST", f"links must hold at most {MAX_BATCH_LINKS} entries.")
             links = []
             seen: set = set()
             for entry in entries:
@@ -533,6 +536,56 @@ def link_po_row_batch(
         return _respond(answer)
 
     return _frame(request, db, raw_body, "write_link_batch", run, key_required=True, services=(ops,))
+
+
+@router.post("/po-links/doc-batch")
+def link_po_doc_batch(
+    request: Request, db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+    ops: OperationService = Depends(get_operation_service),
+) -> JSONResponse:
+    """Plan 69 D1: link every listed row of ONE PO document, each to its SO rows, in one operation (one
+    idempotency key). Any size: SS splits it into link PUTs of ``MAX_LINES_PER_PUT`` new rows; each line
+    answers its own ``result`` (linked / skipped / failed / checking)."""
+
+    def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        try:
+            entries = raw.get("links")
+            if not isinstance(entries, list) or not entries:
+                raise _bad("INVALID_REQUEST", "links must be a non-empty array.")
+            if len(entries) > MAX_BATCH_LINKS:  # a body guard only, never a real press
+                raise _bad("INVALID_REQUEST", f"links must hold at most {MAX_BATCH_LINKS} entries.")
+            links = []
+            seen: set = set()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise _bad("INVALID_REQUEST", "each link must be an object.")
+                pair = (_int_field(entry, "poDtlKey"), _int_field(entry, "soDtlKey"))
+                if pair in seen:
+                    raise _bad("INVALID_REQUEST", "a poDtlKey + soDtlKey pair is listed twice.")
+                seen.add(pair)
+                links.append({
+                    "po_dtl_key": pair[0], "so_doc_key": _int_field(entry, "soDocKey"), "so_dtl_key": pair[1],
+                    "qty": _qty_field(entry), "so_doc_date": _optional_date(entry, "soDocDate"),
+                })
+            params: Dict[str, Any] = {
+                "doc_key": _int_field(raw, "poDocKey"), "links": links,
+                "doc_date": _optional_date(raw, "docDate"),
+                "expected_last_modified": _optional_text(raw, "expectedLastModified"),
+            }
+        except PullGatewayError as exc:  # a request-shape error still carries the line fields
+            exc.extra = {"lines": [], "freeLines": []}
+            raise
+        result = ops.run(
+            tenant_id=key.tenant_id, company_id=company.id, key_id=key.id,
+            idempotency_key=idem or "", op="link_doc_batch", params=params,
+        )
+        answer = operation_answer(result, params["doc_key"])
+        answer.setdefault("lines", [])
+        answer.setdefault("freeLines", [])
+        return _respond(answer)
+
+    return _frame(request, db, raw_body, "write_link_doc_batch", run, key_required=True, services=(ops,))
 
 
 _PO_KEYS = (("poDocKey", "doc_key"), ("poDtlKey", "dtl_key"), ("soDocKey", "so_doc_key"), ("soDtlKey", "so_dtl_key"))

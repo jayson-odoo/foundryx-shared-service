@@ -16,6 +16,7 @@ import { validateEmbedOrigin } from './lib/embed-origin';
  * SS-FEEDBACK-BOARD-LINK) is framed by the Sorento CRM public page
  * (`documentation/ideation/feedback-link-contract.md` section 3), so it allows
  * `'self'` + the deployment's CRM origins from env - see `boardFrameAncestors`.
+ * The read-only share page (`/public/feedback/share/**`) uses the same list.
  */
 const BACKEND =
   process.env.BACKEND_API_URL ??
@@ -27,11 +28,15 @@ export const config = {
     '/embed/omnichannel/:path*',
     '/public/webchat/:widgetKey*',
     '/public/feedback/board/:path*',
+    '/public/feedback/share/:path*',
     '/public/lead-capture/:path*',
   ],
 };
 
 const BOARD_PREFIX = '/public/feedback/board/';
+// The read-only share page is framed by the CRM's `/feedback/share/{token}`
+// page exactly like the board (lane FEEDBACK-SHARE-SS-HOST).
+const SHARE_PREFIX = '/public/feedback/share/';
 const LEAD_CAPTURE_PREFIX = '/public/lead-capture/';
 const DEFAULT_BOARD_FRAME_ANCESTORS = 'https://fe-sorento.foundryx.my';
 
@@ -105,9 +110,9 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     return res;
   }
 
-  if (pathname.startsWith(BOARD_PREFIX)) {
+  if (pathname.startsWith(BOARD_PREFIX) || pathname.startsWith(SHARE_PREFIX)) {
     res.headers.set('Content-Security-Policy', `frame-ancestors ${boardFrameAncestors()}`);
-    // X-Frame-Options overrides the CSP in some browsers: never on the board.
+    // X-Frame-Options overrides the CSP in some browsers: never on these pages.
     res.headers.delete('X-Frame-Options');
     return res;
   }

@@ -42,6 +42,9 @@ SOURCE_DISCONNECTED = "DISCONNECTED"
 SOURCE_ROUTING_STATES = (SOURCE_WAITING_FOR_TEST, SOURCE_LIVE)
 
 PLATFORM_FACEBOOK = "facebook"
+# Google Ads lead form, guided path (card 68a): Google POSTs to our inbound URL.
+PLATFORM_GOOGLE = "google"
+MODE_GUIDED = "guided"
 
 DELIVERY_PENDING = "PENDING"
 DELIVERY_SUCCESS = "SUCCESS"
@@ -301,4 +304,7 @@ class LcConnectSession(LeadCaptureBase):
     finished_at = Column(UTCDateTime(), nullable=True)
     meta_encrypted = Column(Text, nullable=True)
     meta_expires_at = Column(UTCDateTime(), nullable=True)
+    # Google sign-in (plan 68): Fernet {refreshToken, accessToken, email, dev}.
+    google_encrypted = Column(Text, nullable=True)
+    google_expires_at = Column(UTCDateTime(), nullable=True)
     created_at = _created()

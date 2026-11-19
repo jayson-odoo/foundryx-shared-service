@@ -24,6 +24,9 @@ from ..services import (
     delivery_service,
     field_service,
     form_service,
+    google_signin_service,
+    google_source_service,
+    key_service,
     read_service,
     source_service,
 )
@@ -77,6 +80,27 @@ def _connect_token(db: Session, key: LeadGatewayKey, body: schemas.ConnectFacebo
     return body.systemUserToken or ""
 
 
+@router.post("/sources/google", response_model=schemas.GuidedSourceCreated, status_code=201)
+def create_google_source(
+    key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.GuidedSourceCreated:
+    """A Google Ads lead form source (card 68a): the product shows the URL +
+    key to its customer to paste into the Google Ads lead form."""
+    row, url, secret = google_source_service.create_guided_source(db, key.tenant_id, actor=_actor(key))
+    return schemas.GuidedSourceCreated(source=read_service.source_item(row), url=url, key=secret)
+
+
+@router.post("/sources/{source_id}/rotate-key", response_model=schemas.KeyRotated)
+def rotate_source_key(
+    source_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.KeyRotated:
+    try:
+        url, secret = google_source_service.rotate_key(db, key.tenant_id, source_id, actor=_actor(key))
+    except source_service.SourceError as exc:
+        raise _api(exc)
+    return schemas.KeyRotated(url=url, key=secret)
+
+
 @router.get("/sources", response_model=schemas.SourceList)
 def list_sources(key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)) -> schemas.SourceList:
     rows = connect_service.list_sources(db, key.tenant_id)
@@ -96,6 +120,34 @@ def put_settings(
 ) -> schemas.SettingsItem:
     connect_service.set_allow_shared_pages(db, key.tenant_id, body.allowSharedPages, None)
     return read_service.settings_item(db, key.tenant_id)
+
+
+@router.get("/keys", response_model=schemas.KeyList)
+def list_keys(key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)) -> schemas.KeyList:
+    return schemas.KeyList(data=[read_service.key_item(r) for r in key_service.list_keys(db, key.tenant_id)])
+
+
+@router.post("/keys", response_model=schemas.KeyCreated, status_code=201)
+def create_key(
+    body: schemas.KeyCreate,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.KeyCreated:
+    row, full_key = key_service.issue(db, key.tenant_id, name=body.name, created_by=None)
+    return schemas.KeyCreated(**read_service.key_item(row).model_dump(), key=full_key)
+
+
+@router.delete("/keys/{key_id}", status_code=204)
+def revoke_key(
+    key_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> Response:
+    try:
+        key_service.revoke(db, key.tenant_id, key_id, calling_key_id=key.key_id)
+    except key_service.KeyNotFound:
+        raise ApiError(404, "key_not_found", "Key not found.") from None
+    except key_service.KeyInUse:
+        raise ApiError(409, "key_in_use", "This request uses that key. Revoke it with another key.") from None
+    return Response(status_code=204)
 
 
 @router.get("/webhooks", response_model=schemas.WebhookList)
@@ -126,6 +178,17 @@ def delete_webhook(
     except delivery_service.DeliveryError as exc:
         raise _api(exc)
     return Response(status_code=204)
+
+
+@router.post("/webhooks/{endpoint_id}/test", response_model=schemas.DeliveryItem, status_code=202)
+def test_webhook(
+    endpoint_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.DeliveryItem:
+    try:
+        row = delivery_service.send_test_push(db, key.tenant_id, endpoint_id)
+    except delivery_service.DeliveryError as exc:
+        raise _api(exc)
+    return read_service.delivery_item(row)
 
 
 @router.get("/leads", response_model=schemas.LeadPage)
@@ -296,6 +359,60 @@ def create_connect_session(
 @router.get("/channels", response_model=schemas.ChannelList)
 def list_channels(key: LeadGatewayKey = Depends(get_lead_gateway_key)) -> schemas.ChannelList:
     return schemas.ChannelList(data=[schemas.Channel(**c) for c in connect_session_service.channels()])
+
+
+@router.get("/google/login-config", response_model=schemas.GoogleLoginConfig)
+def google_login_config(key: LeadGatewayKey = Depends(get_lead_gateway_key)) -> schemas.GoogleLoginConfig:
+    return schemas.GoogleLoginConfig(**google_signin_service.login_config())
+
+
+@router.post("/google/login", response_model=schemas.GoogleLogin, status_code=201)
+def google_login(
+    body: schemas.GoogleLoginRequest,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.GoogleLogin:
+    """A product's own wizard (plan 68): exchange a Google code; the tokens
+    stay here, the product gets an opaque ``loginId`` (30 minutes)."""
+    try:
+        out = google_signin_service.create_login(db, key.tenant_id, key.key_id, body.code, body.redirectUri)
+    except connect_session_service.SessionError as exc:
+        raise _api(exc)
+    return schemas.GoogleLogin(
+        loginId=out["loginId"], accounts=[schemas.GoogleAccount(**a) for a in out["accounts"]], expiresAt=out["expiresAt"]
+    )
+
+
+@router.get("/google/logins/{login_id}/accounts/{account_id}/forms", response_model=schemas.GoogleLeadFormList)
+def google_login_forms(
+    login_id: str, account_id: str, key: LeadGatewayKey = Depends(get_lead_gateway_key), db: Session = Depends(get_db)
+) -> schemas.GoogleLeadFormList:
+    try:
+        principal = google_signin_service.login_principal(db, key.tenant_id, login_id, key.key_id)
+        rows = google_signin_service.forms(principal, account_id)
+    except connect_session_service.SessionError as exc:
+        raise _api(exc)
+    return schemas.GoogleLeadFormList(data=[schemas.GoogleLeadForm(**f) for f in rows])
+
+
+@router.post("/sources/google/connect", response_model=schemas.GoogleConnectResult)
+def google_connect(
+    body: schemas.GatewayGoogleConnectRequest,
+    key: LeadGatewayKey = Depends(get_lead_gateway_key),
+    db: Session = Depends(get_db),
+) -> schemas.GoogleConnectResult:
+    """Write our URL + the source key into each ticked lead form (the same
+    function as the hosted wizard). A refused form is named; the rest connect."""
+    try:
+        principal = google_signin_service.login_principal(db, key.tenant_id, body.loginId, key.key_id)
+        row, results = google_signin_service.connect(db, principal, body.accountId, body.formIds)
+    except connect_session_service.SessionError as exc:
+        raise _api(exc)
+    except source_service.SourceError as exc:
+        raise _api(exc)
+    return schemas.GoogleConnectResult(
+        source=read_service.source_item(row), forms=[schemas.GoogleFormResult(**r) for r in results]
+    )
 
 
 @router.get("/facebook/login-config", response_model=schemas.LoginConfig)

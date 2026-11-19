@@ -170,9 +170,20 @@ describe('middleware frame-ancestors (feedback board)', () => {
     expect(res.headers.get('Content-Security-Policy')).toBe('frame-ancestors https://shop.example');
   });
 
-  it('matches only the board routes, not other public pages', async () => {
+  it('applies the same policy to the read-only share page', async () => {
+    vi.stubEnv('FEEDBACK_BOARD_FRAME_ANCESTORS', 'https://crm.example.test');
+    const res = await middleware(boardRequest(`/public/feedback/share/${TOKEN}`));
+    expect(res.headers.get('Content-Security-Policy')).toBe(
+      "frame-ancestors 'self' https://crm.example.test",
+    );
+    expect(res.headers.get('X-Frame-Options')).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('matches only the board and share routes, not other public pages', async () => {
     const { config } = await import('./middleware');
     expect(config.matcher).toContain('/public/feedback/board/:path*');
+    expect(config.matcher).toContain('/public/feedback/share/:path*');
     expect(config.matcher).not.toContain('/public/feedback/:path*');
   });
 });

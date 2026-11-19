@@ -29,6 +29,8 @@ from ..services import (
     connect_session_service as sessions,
     field_service,
     form_service,
+    google_signin_service,
+    google_source_service,
     read_service,
     source_service,
 )
@@ -66,6 +68,22 @@ def _source(db: Session, principal: WizardPrincipal, source_id: str):
         raise _api(exc)
 
 
+@router.post("/in/{source_key}")
+async def google_inbound(source_key: str, request: Request, db: Session = Depends(get_db)) -> dict:
+    """Google Ads lead form webhook (card 68a R2). No auth header: the path's
+    source key picks the source and the body's ``google_key`` proves it."""
+    raw = bytearray()
+    async for chunk in request.stream():  # capped read: an oversize body is never buffered
+        raw += chunk
+        if len(raw) > google_source_service.MAX_BODY_BYTES:
+            break
+    try:
+        google_source_service.receive(db, source_key, bytes(raw), ip=client_ip(request))
+    except google_source_service.ReceiveError as exc:
+        raise _api(exc)
+    return {}
+
+
 @router.post("/connect/redeem", response_model=schemas.WizardSession)
 def redeem(body: schemas.ConnectSessionRedeem, request: Request, db: Session = Depends(get_db)) -> schemas.WizardSession:
     """Open the hosted URL once (AC-64-06). A failed open counts against the
@@ -94,6 +112,7 @@ def context(principal: WizardPrincipal = Depends(get_wizard), db: Session = Depe
         branding=schemas.WizardBranding(**sessions.wizard_branding(db, principal.tenant_id)),
         channels=[schemas.Channel(**c) for c in sessions.channels()],
         login=schemas.LoginConfig(**sessions.login_config()),
+        googleLogin=schemas.GoogleLoginConfig(**google_signin_service.login_config()),
         returnOrigin=principal.session.return_origin,
         source=source,
     )
@@ -110,6 +129,63 @@ def facebook_login(
     except sessions.SessionError as exc:
         raise _api(exc)
     return schemas.FacebookPageList(data=[schemas.FacebookPage(**p) for p in pages])
+
+
+@router.post("/wizard/google/source", response_model=schemas.GuidedSourceCreated, status_code=201)
+def google_source(principal: WizardPrincipal = Depends(get_wizard), db: Session = Depends(get_db)) -> schemas.GuidedSourceCreated:
+    try:
+        row, url, key = sessions.wizard_google_source(db, principal)
+    except sessions.SessionError as exc:
+        raise _api(exc)
+    return schemas.GuidedSourceCreated(source=read_service.source_item(row), url=url, key=key)
+
+
+@router.post("/wizard/google/login", response_model=schemas.GoogleAccountList)
+def google_login(
+    body: schemas.GoogleLoginRequest,
+    principal: WizardPrincipal = Depends(get_wizard),
+    db: Session = Depends(get_db),
+) -> schemas.GoogleAccountList:
+    try:
+        rows = google_signin_service.wizard_login(db, principal, body.code, body.redirectUri)
+    except sessions.SessionError as exc:
+        raise _api(exc)
+    return schemas.GoogleAccountList(data=[schemas.GoogleAccount(**a) for a in rows])
+
+
+@router.get("/wizard/google/accounts", response_model=schemas.GoogleAccountList)
+def google_accounts(principal: WizardPrincipal = Depends(get_wizard)) -> schemas.GoogleAccountList:
+    try:
+        rows = google_signin_service.accounts(principal)
+    except sessions.SessionError as exc:
+        raise _api(exc)
+    return schemas.GoogleAccountList(data=[schemas.GoogleAccount(**a) for a in rows])
+
+
+@router.get("/wizard/google/accounts/{account_id}/forms", response_model=schemas.GoogleLeadFormList)
+def google_forms(account_id: str, principal: WizardPrincipal = Depends(get_wizard)) -> schemas.GoogleLeadFormList:
+    try:
+        rows = google_signin_service.forms(principal, account_id)
+    except sessions.SessionError as exc:
+        raise _api(exc)
+    return schemas.GoogleLeadFormList(data=[schemas.GoogleLeadForm(**f) for f in rows])
+
+
+@router.post("/wizard/google/connect", response_model=schemas.GoogleConnectResult)
+def google_connect(
+    body: schemas.GoogleConnectRequest,
+    principal: WizardPrincipal = Depends(get_wizard),
+    db: Session = Depends(get_db),
+) -> schemas.GoogleConnectResult:
+    try:
+        row, results = google_signin_service.connect(db, principal, body.accountId, body.formIds)
+    except sessions.SessionError as exc:
+        raise _api(exc)
+    except source_service.SourceError as exc:
+        raise _api(exc)
+    return schemas.GoogleConnectResult(
+        source=read_service.source_item(row), forms=[schemas.GoogleFormResult(**r) for r in results]
+    )
 
 
 @router.get("/wizard/facebook/pages", response_model=schemas.FacebookPageList)

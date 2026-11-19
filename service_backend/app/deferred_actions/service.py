@@ -305,7 +305,7 @@ class PendingActionService:
         if not action_def.exists(self.db, tenant_id, entity_id):
             # Fix round 1 item 7: never park a countdown against a record
             # that's already gone (or never existed in this tenant).
-            raise TargetNotFound(f"{entity_type} {entity_id!r} not found.")
+            raise TargetNotFound(action_def.gone_message)
 
         existing = self._commit_if_due(self._pending_for(tenant_id, entity_type, entity_id))
         if existing is not None and existing.status == PENDING_ACTION_PENDING:
