@@ -24,7 +24,9 @@ import { Switch } from '@/components/ui/switch';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
+import { useFx } from '@/hooks/use-fx';
 import { documentService } from '@/services/document-service';
+import { FxShareAdvanced } from './fx-share-advanced';
 import type {
   PublicSharingPolicy,
   ShareCapability,
@@ -271,7 +273,19 @@ function Body({
   );
 }
 
-function AdvancedOptions({
+/**
+ * Foundryx UIUX (slice W3-DOCS): expiry in the playbook date field (the same
+ * instant for the same day), with the moment it stops working in 12-hour
+ * form. Off renders the legacy body below, unchanged.
+ */
+function AdvancedOptions(props: {
+  share: ShareRow;
+  patch: (body: ShareUpdatePayload) => Promise<void>;
+}) {
+  return useFx() ? <FxShareAdvanced {...props} /> : <AdvancedOptionsLegacy {...props} />;
+}
+
+function AdvancedOptionsLegacy({
   share,
   patch,
 }: {

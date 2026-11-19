@@ -26,6 +26,8 @@ import { Form } from '@/components/ui/form';
 import { ConfigurationTab } from '@/app/(protected)/settings/integrations/components/connection-form-fields';
 import { useStorageMigration, type MigrationStep } from '@/hooks/use-storage-migration';
 import type { Job } from '@/types/jobs';
+import { useFx } from '@/hooks/use-fx';
+import { FxStorageMigrationWizard } from './fx-storage-migration-wizard';
 
 export interface StorageMigrationWizardProps {
   open: boolean;
@@ -48,7 +50,13 @@ const STEP_LABELS: Record<MigrationStep, string> = {
  * the bucket name before the destructive Start. Responsive: single-column,
  * scrollable body - usable at 375px and 1280px.
  */
-export function StorageMigrationWizard({ open, onClose, onStarted }: StorageMigrationWizardProps) {
+export function StorageMigrationWizard(props: StorageMigrationWizardProps) {
+  // Foundryx UIUX (slice W3-DOCS): the playbook's typed confirm on the bucket
+  // name over the same hook. Off renders the legacy body below, unchanged.
+  return useFx() ? <FxStorageMigrationWizard {...props} /> : <StorageMigrationWizardLegacy {...props} />;
+}
+
+function StorageMigrationWizardLegacy({ open, onClose, onStarted }: StorageMigrationWizardProps) {
   const m = useStorageMigration(open);
   const [confirmError, setConfirmError] = useState(false);
 
