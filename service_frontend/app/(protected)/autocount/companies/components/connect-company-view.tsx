@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import { Plug } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
+import { useAcDone } from './use-ac-done';
 import { Container } from '@/components/common/container';
 import { Form } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
@@ -68,6 +70,8 @@ function emptyReason(kind: SourceKind, state: SourceConnectionsState) {
  */
 export function ConnectCompanyView() {
   const router = useRouter();
+  const done = useAcDone();
+  const fx = useFx();
   const form = useForm({ mode: 'onTouched' });
   const sources = useAutocountSourceConnections();
   const [pickedKind, setPickedKind] = useState<SourceKind | null>(null);
@@ -142,7 +146,10 @@ export function ConnectCompanyView() {
         name: label.trim(),
         ...(isOpenConnection ? { refPrefix: refPrefix.trim() } : {}),
       });
-      toast.success(`Connected ${company.databaseName}.`);
+      done(`Connected ${company.databaseName}.`, {
+        what: `${company.name || company.databaseName} connected`,
+        forWhom: company.databaseName,
+      });
       router.push(acCompanyHref(company.id));
       return true;
     } catch (error) {
@@ -165,7 +172,7 @@ export function ConnectCompanyView() {
     } finally {
       setIsSaving(false);
     }
-  }, [connectionId, isOpenConnection, label, refPrefix, router]);
+  }, [connectionId, done, isOpenConnection, label, refPrefix, router]);
 
   const config = useMemo<ResourceFormConfig<AutocountCompany>>(
     () => ({
@@ -212,7 +219,8 @@ export function ConnectCompanyView() {
                     <ToggleGroupItem
                       key={option.value}
                       value={option.value}
-                      className={SEGMENT_CLASS}
+                      // The new look's toggle draws its own sliding thumb.
+                      className={fx ? undefined : SEGMENT_CLASS}
                     >
                       {option.label}
                     </ToggleGroupItem>
@@ -287,6 +295,8 @@ export function ConnectCompanyView() {
         !connectionId || (isOpenConnection && !REF_PREFIX_RE.test(refPrefix.trim())),
       onSave,
       onCancel: () => router.push(AC_COMPANIES_PATH),
+      // Foundryx UIUX switch only (slice W5-AC-SETUP); ignored while off.
+      fx: { mainActionId: 'save', discardName: 'the new company connection' },
     }),
     [
       banner,
@@ -304,6 +314,7 @@ export function ConnectCompanyView() {
       refPrefixError,
       router,
       source,
+      fx,
     ],
   );
 
