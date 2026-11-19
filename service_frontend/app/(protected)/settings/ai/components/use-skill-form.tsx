@@ -327,6 +327,8 @@ export function useSkillForm(
       // Delete is an icon action. The
       // labels name the skill, never its prompt, and the prompt is not
       // copyable (Hold to Copy is off on this form).
+      // The red action's noun, switch on only (the shell would lower-case "AI").
+      entityNoun: fx ? 'skill' : undefined,
       fx: {
         mainActionId: 'save',
         fullLabel: () => (isNew ? 'Save new skill' : `Save ${skill?.name ?? 'skill'}`),
@@ -348,6 +350,7 @@ export function useSkillForm(
     versionsToken,
     fetchRecordAt,
     buildRecordHref,
+    fx,
   ]);
 
   return { config, form, isLoading, notFound };

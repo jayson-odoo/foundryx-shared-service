@@ -197,6 +197,8 @@ export function useAgentForm(
       // Foundryx UIUX switch only (ignored while off): Save is the red action
       // while editing (as today, a new agent saves too), Edit at rest;
       // Delete is an icon action.
+      // The red action's noun, switch on only (the shell would lower-case "AI").
+      entityNoun: fx ? 'agent' : undefined,
       fx: {
         mainActionId: 'save',
         fullLabel: () => (isNew ? 'Save new agent' : `Save ${agent?.name ?? 'agent'}`),
@@ -221,6 +223,7 @@ export function useAgentForm(
     skills,
     fetchRecordAt,
     buildRecordHref,
+    fx,
   ]);
 
   return { config, form, isLoading, notFound };

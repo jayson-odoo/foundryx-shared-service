@@ -440,4 +440,14 @@ describe('AI agents and skills under the new look', () => {
     await waitFor(() => expect(redAction()?.textContent).toMatch(/Save/));
     expect(within(document.body).getByRole('combobox', { name: 'Skills' })).toBeTruthy();
   });
+
+  it('names the red action with the capitalised noun, never "ai skill" or "ai agent"', async () => {
+    await mount(true, '/settings/ai/skills/s-1', SKILL_READ(), text('PROMPT-MARKER-7731'));
+    expect(redAction()?.textContent).toMatch(/Edit skill/);
+    expect(redAction()?.textContent).not.toMatch(/\bai\b/);
+    cleanup();
+    await mount(true, '/settings/ai/agents/a-1', AGENT_READ(), text('anthropic/claude-sonnet'));
+    expect(redAction()?.textContent).toMatch(/Edit agent/);
+    expect(redAction()?.textContent).not.toMatch(/\bai\b/);
+  });
 });
