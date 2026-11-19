@@ -20,6 +20,7 @@ import {
   entityLabel,
 } from '../../../../../../components/autocount-meta';
 import { MappingEditorBody } from './mapping-editor-body';
+import { useAcDone } from '../../../../../components/use-ac-done';
 import { useMappingResetAction } from './mapping-reset-action';
 import { useMappingDraft } from './use-mapping-draft';
 
@@ -37,6 +38,7 @@ export interface MappingEditorViewProps {
  */
 export function MappingEditorView({ companyId, entityType }: MappingEditorViewProps) {
   const { can } = useCan();
+  const done = useAcDone();
   const form = useForm({ mode: 'onTouched' });
   const { detail } = useAutocountCompany(companyId);
   const { view, isLoading, notFound, saveError, save, testFormula, simulate, applyView } =
@@ -59,9 +61,14 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
     }
     const { rows, lineRows } = draft.writeRowsForSave();
     const ok = await save(rows, lineRows);
-    if (ok) toast.success('Field mapping saved.');
+    if (ok) {
+      done('Field mapping saved.', {
+        what: `${entityLabel(entityType)} field mapping saved`,
+        forWhom: detail?.company.name,
+      });
+    }
     return ok;
-  }, [draft, save]);
+  }, [detail?.company.name, done, draft, entityType, save]);
 
   const config = useMemo<ResourceFormConfig<AutocountMappingRow> | null>(() => {
     if (!view) return null;
@@ -117,6 +124,14 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       isDirty: draft.dirty,
       onSave,
       onCancel: draft.reset,
+      // Foundryx UIUX switch only (slice W5-AC-SETUP); ignored while off.
+      // Edit at rest, Save mapping while editing; Reset to preset is an icon
+      // action.
+      fx: {
+        mainActionId: 'save',
+        iconFor: { 'reset-to-preset': 'refresh' },
+        discardName: `${entityLabel(entityType)} field mapping`,
+      },
     };
   }, [
     can,

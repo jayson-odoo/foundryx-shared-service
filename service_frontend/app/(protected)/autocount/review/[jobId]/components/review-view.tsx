@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Check, Eye, LoaderCircleIcon, Trash2 } from 'lucide-react';
 import { PageHeader } from '@/components/platform/page-header';
@@ -26,6 +26,14 @@ import {
 import { StatusBadge } from '@/components/platform/status-badge';
 import { PreviewPanel } from '@/components/platform/autocount/preview-panel';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { FxConfirmDialog } from '@/components/fx/actions/confirm-dialog';
+import {
+  useRegisterMainAction,
+  useRegisterOtherActions,
+  type FxMainActionSpec,
+  type FxOtherActionSpec,
+} from '@/components/fx/actions/page-actions-context';
 import { useAutocountReview } from '@/hooks/use-autocount-review';
 import { useAutocountPreview } from '@/hooks/use-autocount-preview';
 import type { AutocountJobStatus } from '@/types/autocount';
@@ -66,6 +74,52 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
   // Back returns to wherever the operator came from - the originating company
   // when a sync routed them here, otherwise the Review list (its real parent).
   const backHref = from || AC_REVIEW_PATH;
+  const fx = useFx();
+
+  // Foundryx UIUX switch only (slice W5-AC-OPS): Approve is the page's red
+  // action (blocked with its reason until the dry run has been previewed, the
+  // same gate as the legacy button) and Discard an icon action. Switch off
+  // registers nothing and renders the legacy header below, untouched.
+  const approveBlocked = useMemo<FxMainActionSpec['blocked']>(() => {
+    if (!job) return undefined;
+    if (!canDecide) return { reason: blockedReason ?? 'This batch is not awaiting approval.' };
+    if (preview.failed) return { reason: 'Resolve the dry run first.', pulseTarget: 'preview-push' };
+    if (preview.isLoading) return { reason: 'The preview is still running.' };
+    if (!preview.hasRun) return { reason: 'Preview the push first.', pulseTarget: 'preview-push' };
+    return undefined;
+  }, [job, canDecide, blockedReason, preview.failed, preview.isLoading, preview.hasRun]);
+  const changedForLabel = Math.max(total - noChangeCount, 0);
+  const mainSpec = useMemo<FxMainActionSpec | null>(() => {
+    if (!fx || !job) return null;
+    return {
+      id: 'approve',
+      label: 'Approve',
+      fullLabel: `Approve ${total} record${total === 1 ? '' : 's'} (${changedForLabel} changed) for push`,
+      onClick: () => void approve(),
+      blocked: approveBlocked,
+      working: isSubmitting,
+    };
+  }, [fx, job, total, changedForLabel, approve, approveBlocked, isSubmitting]);
+  useRegisterMainAction(mainSpec);
+  const otherSpecs = useMemo<FxOtherActionSpec[]>(
+    () =>
+      fx && job
+        ? [
+            {
+              id: 'discard',
+              label: 'Discard batch',
+              icon: 'discard',
+              onClick: () => setConfirmDiscard(true),
+              disabledReason:
+                !canDecide || isSubmitting
+                  ? (blockedReason ?? 'This batch is not awaiting approval.')
+                  : undefined,
+            },
+          ]
+        : [],
+    [fx, job, canDecide, isSubmitting, blockedReason],
+  );
+  useRegisterOtherActions(otherSpecs);
 
   if (isLoading) {
     return (
@@ -101,64 +155,89 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
             <StatusBadge status={job.status as AutocountJobStatus} registry={AC_JOB_STATUS_REGISTRY} size="sm" />
           }
           actions={
+            fx ? (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button variant="outline" size="sm" mode="icon" asChild>
+                  <Link href={backHref} aria-label="Back">
+                    <ArrowLeft className="size-4" />
+                  </Link>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!canDecide || isSubmitting || preview.isLoading}
+                  onClick={() => void preview.run()}
+                  data-testid="preview-push"
+                  data-fx-pulse-target="preview-push"
+                >
+                  {preview.isLoading ? (
+                    <LoaderCircleIcon className="size-4 animate-spin" />
+                  ) : (
+                    <Eye className="size-4" />
+                  )}
+                  Preview push
+                </Button>
+              </div>
+            ) : (
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button variant="outline" size="sm" mode="icon" asChild>
-                <Link href={backHref} aria-label="Back">
-                  <ArrowLeft className="size-4" />
-                </Link>
-              </Button>
-              {blockedReason && (
-                <span className="text-xs text-muted-foreground">{blockedReason}</span>
-              )}
-              {preview.failed ? (
-                <span className="text-xs text-destructive" data-testid="approve-blocked">
-                  Resolve the dry run first
-                </span>
-              ) : !preview.hasRun ? (
-                <span className="text-xs text-muted-foreground" data-testid="approve-blocked">
-                  Preview before approving
-                </span>
-              ) : null}
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!canDecide || isSubmitting || preview.isLoading}
-                onClick={() => void preview.run()}
-                data-testid="preview-push"
-              >
-                {preview.isLoading ? (
-                  <LoaderCircleIcon className="size-4 animate-spin" />
-                ) : (
-                  <Eye className="size-4" />
+                <Button variant="outline" size="sm" mode="icon" asChild>
+                  <Link href={backHref} aria-label="Back">
+                    <ArrowLeft className="size-4" />
+                  </Link>
+                </Button>
+                {blockedReason && (
+                  <span className="text-xs text-muted-foreground">{blockedReason}</span>
                 )}
-                Preview push
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!canDecide || isSubmitting}
-                onClick={() => setConfirmDiscard(true)}
-                data-testid="discard-batch"
-              >
-                <Trash2 className="size-4" />
-                Discard
-              </Button>
-              <Button
-                size="sm"
-                disabled={
-                  !canDecide || isSubmitting || preview.isLoading || !preview.hasRun || preview.failed
-                }
-                onClick={() => void approve()}
-                data-testid="approve-batch"
-              >
-                {isSubmitting ? (
-                  <LoaderCircleIcon className="size-4 animate-spin" />
-                ) : (
-                  <Check className="size-4" />
-                )}
-                Approve
-              </Button>
-            </div>
+                {preview.failed ? (
+                  <span className="text-xs text-destructive" data-testid="approve-blocked">
+                    Resolve the dry run first
+                  </span>
+                ) : !preview.hasRun ? (
+                  <span className="text-xs text-muted-foreground" data-testid="approve-blocked">
+                    Preview before approving
+                  </span>
+                ) : null}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!canDecide || isSubmitting || preview.isLoading}
+                  onClick={() => void preview.run()}
+                  data-testid="preview-push"
+                >
+                  {preview.isLoading ? (
+                    <LoaderCircleIcon className="size-4 animate-spin" />
+                  ) : (
+                    <Eye className="size-4" />
+                  )}
+                  Preview push
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!canDecide || isSubmitting}
+                  onClick={() => setConfirmDiscard(true)}
+                  data-testid="discard-batch"
+                >
+                  <Trash2 className="size-4" />
+                  Discard
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={
+                    !canDecide || isSubmitting || preview.isLoading || !preview.hasRun || preview.failed
+                  }
+                  onClick={() => void approve()}
+                  data-testid="approve-batch"
+                >
+                  {isSubmitting ? (
+                    <LoaderCircleIcon className="size-4 animate-spin" />
+                  ) : (
+                    <Check className="size-4" />
+                  )}
+                  Approve
+                </Button>
+              </div>
+            )
           }
         />
       </Container>
@@ -200,21 +279,37 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
         </div>
       </Container>
 
-      <AlertDialog open={confirmDiscard} onOpenChange={setConfirmDiscard}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Discard this batch?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Nothing is pushed to the consumer. The records stay on file for audit
-              and the next sync re-reads the same window.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void discard()}>Discard</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {fx ? (
+        <FxConfirmDialog
+          open={confirmDiscard}
+          title="Discard this batch?"
+          line="Nothing is pushed to the consumer. The records stay on file for audit and the next sync re-reads the same window."
+          keepLabel="Keep batch"
+          actionLabel="Discard batch"
+          hold={false}
+          onKeep={() => setConfirmDiscard(false)}
+          onConfirm={() => {
+            setConfirmDiscard(false);
+            void discard();
+          }}
+        />
+      ) : (
+        <AlertDialog open={confirmDiscard} onOpenChange={setConfirmDiscard}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Discard this batch?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Nothing is pushed to the consumer. The records stay on file for audit
+                and the next sync re-reads the same window.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={() => void discard()}>Discard</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </>
   );
 }
