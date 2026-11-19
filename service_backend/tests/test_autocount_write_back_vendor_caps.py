@@ -482,7 +482,12 @@ def test_gateway_relocate_validation_is_422(client, h, body):
 
 # ---- a deadline that trips after PUT1 was read back and verified (AC-55-62) -----------------
 
-def _slow_readback_after_first_put(h, delay=0.3):
+# Budget and delay are wide on purpose: a loaded CI runner once spent the old
+# 0.2 s budget before PUT1 was sent (outcome pending_verification, not done).
+SLOW_DEADLINE_S = 2.0
+
+
+def _slow_readback_after_first_put(h, delay=SLOW_DEADLINE_S + 0.5):
     import time
 
     def handler(request):
@@ -503,7 +508,7 @@ def _expected_staged(h):
 def test_deadline_after_a_verified_link_ends_done_location_not_moved(h, monkeypatch):
     from modules.autocount.write_back import service as service_mod
 
-    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", SLOW_DEADLINE_S)
     _slow_readback_after_first_put(h)
     res = h.link_split()
     assert res.outcome == "done" and res.error_code == "LOCATION_NOT_MOVED"
@@ -521,7 +526,7 @@ def test_deadline_with_a_verified_readback_in_hand_is_not_discarded(h, monkeypat
     from modules.autocount.write_back import service as service_mod
 
     h.ac.force_hq = False  # the vendor keeps the location: nothing left to move
-    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", SLOW_DEADLINE_S)
     _slow_readback_after_first_put(h)
     res = h.link_split()
     # plan 65 D4: the note's restore is due and the deadline skips it: done, the link stands, with the code
