@@ -7,6 +7,8 @@ import { ClampedText } from '@/components/platform/clamped-text';
 import { StatusBadge } from '@/components/platform/status-badge';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { FxListMoment } from '@/components/fx/pages/w3-logs/fx-log-parts';
 import { endOfLocalDay, startOfLocalDay } from '@/lib/date-filter';
 import { autocountService } from '@/services/autocount-service';
 import type { AutocountCall, AutocountCallFilterOptions, CallOutcome } from '@/types/autocount';
@@ -64,6 +66,7 @@ function cell(value: string | number | null | undefined, className = 'text-sm te
  */
 export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}): ResourceListConfig<AutocountCall> {
   const { formatDmyDateTime, timeZone } = useDatetime();
+  const fx = useFx();
   const [options, setOptions] = useState<AutocountCallFilterOptions>(EMPTY_OPTIONS);
   const [companies, setCompanies] = useState<{ label: string; value: string }[]>([]);
 
@@ -114,7 +117,12 @@ export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}):
         id: 'createdAt',
         accessorFn: (row) => row.createdAt,
         ...header('Time'),
-        cell: ({ row }) => cell(formatDmyDateTime(row.original.createdAt)),
+        cell: ({ row }) =>
+          fx ? (
+            <FxListMoment iso={row.original.createdAt} className="text-sm text-(--fx-ink)" />
+          ) : (
+            cell(formatDmyDateTime(row.original.createdAt))
+          ),
         size: 170,
       },
       {
@@ -248,6 +256,18 @@ export function useCallsListConfig({ onOpenCall }: CallsListConfigOptions = {}):
       exportColumns: [],
       actions: [],
       fetcher,
+      // Foundryx UIUX switch only. Hold to Copy on identifiers alone (path,
+      // document number, request id); request and response bodies stay in
+      // the dialog and never copy.
+      fx: {
+        noun: 'calls',
+        copyable: ['path', 'docNo', 'requestId'],
+        // The outcome is the card's status; the document type stays off
+        // phone cards.
+        phoneHidden: ['book', 'method', 'docType', 'responseStatus', 'durationMs', 'requestId', 'errorCode'],
+        columnKind: { outcome: 'status' },
+        cardLines: [['path'], ['docNo'], ['companyName'], ['actingUserName']],
+      },
     };
-  }, [formatDmyDateTime, fetcher, options, companies, onOpenCall]);
+  }, [formatDmyDateTime, fetcher, options, companies, onOpenCall, fx]);
 }
