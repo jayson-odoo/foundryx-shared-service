@@ -220,6 +220,12 @@ def is_business_refusal(status: int, body: Any) -> bool:
     return isinstance(body, str) and 400 <= status < 500 and bool(body.strip())
 
 
+def _unchanged(before: Doc, after: Doc) -> bool:
+    """The document reads back exactly as before the PUT (its stamp and every row)."""
+    return (before.get("LastModified") == after.get("LastModified")
+            and (before.get("Details") or []) == (after.get("Details") or []))
+
+
 def _vendor_refusal(primitive: str, status: int, body: Any) -> Optional[str]:
     """Plan 61 answer mapping: a "D" AutoCount refuses because the row was transferred
     onward (F7) is ``ROW_HAS_TRANSFERS``; a cancel refused because the document was
@@ -797,8 +803,14 @@ class PrimitiveService(WriteFrame):
             if is_business_refusal(response.status_code, response.body):
                 message = vendor_message(response.stored, base_url)
                 row.response_json = {"message": message}  # the same safe text, never the stack
+                vendor_class = vendor_class_of(response.body)
+                if request.method == "PUT":  # plan 69 Q1: the read decides, never the answer text
+                    looked = self._look_after_refusal(call, company, row, reader, request, before, read_date,
+                                                      extra, message, vendor_class)
+                    if looked is not None:
+                        return looked
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message),
-                                  vendor_class=vendor_class_of(response.body))
+                                  vendor_class=vendor_class)
             # a bare failure (an IIS page, a stack): the status and redacted text only (AC-57-47)
             text = vendor_message(response.stored, base_url)
             row.response_json = {"text": text}
@@ -810,6 +822,35 @@ class PrimitiveService(WriteFrame):
             after = self._read_back(call, reader, response.body, request, before, read_date, row)
         except DocReadError as exc:
             return self._wrap(self._finish(row, OUTCOME_PENDING, exc.code))
+        return self._verified(call, company, row, request, before, after, extra)
+
+    def _look_after_refusal(
+        self, call: _Call, company: AcCompany, row: AcWriteAction, reader: Any, request: VendorRequest,
+        before: Optional[Doc], read_date: Optional[date], extra: Dict[str, Any], message: str,
+        vendor_class: Optional[str],
+    ) -> Optional[PrimitiveResult]:
+        """Plan 69 Q1 / D3: an edit PUT hapi answered with an AutoCount message (hapi's request is over:
+        a refusal, or a command timeout that may have come after the save). ONE read decides: the document
+        as it was = a real refusal (None: the caller answers ``VENDOR_REFUSED``); changed = it landed, judged
+        like a 2xx answer; cannot be read = unknown (``pending_verification``, never refused)."""
+        self.db.commit()  # the vendor answer is on the row before the read
+        try:
+            after = self._read_back(call, reader, None, request, before, read_date, row)
+        except DocReadError:
+            return self._wrap(self._finish(row, OUTCOME_PENDING, VENDOR_REFUSED, message=message),
+                              vendor_class=vendor_class)
+        if before is not None and _unchanged(before, after):
+            row.after_json = after
+            return None
+        logger.warning("autocount PUT answered a refusal but the document changed (action %s): judged landed",
+                       row.id)
+        return self._verified(call, company, row, request, before, after, extra)
+
+    def _verified(
+        self, call: _Call, company: AcCompany, row: AcWriteAction, request: VendorRequest,
+        before: Optional[Doc], after: Doc, extra: Dict[str, Any],
+    ) -> PrimitiveResult:
+        """A read-back in hand: verify it, finish the row, stage it."""
         row.after_json = after  # a read-back in hand is always verified
         verdict_code, message, warnings, new_key = self._verify(call, request, before, after)
         extra.update(doc_key=after.get("DocKey"), doc_no=after.get("DocNo"), new_dtl_key=new_key)

@@ -112,7 +112,8 @@ LINK_BATCH = "link_batch"  # plan 62: one PO row to N SO rows in one PUT
 ALL_LINKS_SKIPPED = "ALL_LINKS_SKIPPED"
 RESTORE_NOT_LANDED = "RESTORE_NOT_LANDED"  # plan 65 D3: the batch's restore PUT did not land (resumable)
 FOC_ON_ROW = "FOC_ON_ROW"  # plan 65 D2a: the line would take the whole of a row carrying FOC (hapi cannot move it)
-MAX_BATCH_LINKS = 20
+# Plan 69 D2: no size refusal a real press can reach - only a body guard far above a PO's row count.
+MAX_BATCH_LINKS = 2000
 TEMPLATE_KEY = "autocount_write_needs_attention"
 
 # Plan 62 review: vendor exception classes proven to refuse BEFORE anything is saved (db3 probe, 11 Nov
@@ -179,6 +180,10 @@ class OperationResult:
     doc_no: Optional[str] = None
     batch: Optional[Dict[str, Any]] = None  # link_batch only: {"links": [...], "freeLine": {...} | None}
     detail: Optional[Doc] = None  # plan 64: link_row / split_link - the PO row the link landed on
+    # plan 69 D5 (ISO-Z): the request reached SS / the first write landed in AutoCount / the answer was settled
+    requested_at: Optional[str] = None
+    linked_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 @dataclass
@@ -229,6 +234,23 @@ def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
     if not isinstance(value, str):
         return None
     return value.strip() or None
+
+
+def _iso_z(value: Optional[datetime]) -> Optional[str]:
+    """An aware (or SQLite-naive UTC) datetime as ``YYYY-MM-DDTHH:MM:SS.mmmZ`` (one width, so the strings order like the times)."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _landed_at(steps: Any) -> Optional[str]:
+    """Plan 69 D5: when the operation's first AutoCount write landed (its first ``done`` write step)."""
+    for step in steps if isinstance(steps, list) else []:
+        if isinstance(step, dict) and step.get("outcome") == OUTCOME_DONE and step.get("at"):
+            return str(step["at"])
+    return None
 
 
 def _json_safe(value: Any) -> Any:
@@ -571,7 +593,8 @@ class OperationService:
             stored.get("message") or "", list(stored.get("warnings") or []),
             [(int(o), int(n)) for o, n in stored.get("replacedLines") or []], stored.get("document"),
             row.doc_key, _doc_no(stored.get("document"), row.snapshot_json), stored.get("batch"),
-            stored.get("detail"),
+            stored.get("detail"), stored.get("requestedAt") or _iso_z(row.created_at),
+            stored.get("linkedAt") or _landed_at(row.steps_json), stored.get("finishedAt"),
         )
 
     def _finish(self, row: AcWriteOperation, status: str, code: Optional[str] = None, *, message: str = "",
@@ -581,20 +604,23 @@ class OperationService:
         result = OperationResult(
             row.id, status, code, message, list(self._warnings), list(replaced or []), document,
             row.doc_key, _doc_no(document, row.snapshot_json), batch, detail if status == DONE else None,
+            _iso_z(row.created_at), _landed_at(self._steps), _iso_z(datetime.now(timezone.utc)),
         )
         row.status, row.error_code = status, code
         row.steps_json = _json_safe(self._steps)
         row.result_json = _json_safe({
             "outcome": status, "errorCode": code, "message": message, "warnings": result.warnings,
             "replacedLines": [list(p) for p in result.replaced_lines], "document": document,
-            "batch": batch, "detail": result.detail,
+            "batch": batch, "detail": result.detail, "requestedAt": result.requested_at,
+            "linkedAt": result.linked_at, "finishedAt": result.finished_at,
         })
         self.db.commit()
         return result
 
     def _step(self, name: str, res: PrimitiveResult) -> None:
         self._steps.append({"step": name, "outcome": res.outcome, "code": res.error_code,
-                            "actionId": res.action_id, "newDtlKey": res.new_dtl_key})
+                            "actionId": res.action_id, "newDtlKey": res.new_dtl_key,
+                            "at": _iso_z(datetime.now(timezone.utc))})
         if self._row is not None:  # heartbeat: a live operation never looks stale (AC-57-43)
             self._row.updated_at = datetime.now(timezone.utc)
             self._row.steps_json = _json_safe(self._steps)
@@ -1338,7 +1364,7 @@ class OperationService:
     # ── link batch (plan 62 D1-D5): one PO row to N SO rows in ONE PUT ───────
 
     def _batch_params(self, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """The batch's links, checked before anything is read: 1..20, no repeated SO row. A quantity that is
+        """The batch's links, checked before anything is read: 1..MAX_BATCH_LINKS, no repeated SO row. A quantity that is
         not valid does not refuse the batch: that line is skipped (``QTY_INVALID``)."""
         raw = params["links"]
         if not 1 <= len(raw) <= MAX_BATCH_LINKS:

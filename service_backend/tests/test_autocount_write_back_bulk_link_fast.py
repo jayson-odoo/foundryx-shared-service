@@ -16,7 +16,8 @@ import pytest
 
 from app.main import app  # noqa: F401
 from tests.test_autocount_write_back_link_batch import OP, ROUTE, Rig, batch_rows, puts, run
-from tests.test_autocount_write_back_gateway_qtso import Gw
+from tests.test_autocount_write_back_gateway import _hdr
+from tests.test_autocount_write_back_gateway_qtso import PREFIX, Gw
 from tests.test_autocount_write_back_operations import OpHarness, db, h  # noqa: F401
 from tests.test_autocount_write_back_primitives import _line
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
@@ -140,8 +141,7 @@ def test_ac_69_06_answer_carries_requested_linked_and_finished_times(client, h, 
     for name in ("requestedAt", "linkedAt", "finishedAt"):
         assert isinstance(ans.get(name), str) and ans[name].endswith("Z"), (name, ans.get(name))
     assert ans["requestedAt"] <= ans["linkedAt"] <= ans["finishedAt"]
-    op = client.get(f"{ROUTE.rsplit('/po-links', 1)[0]}/write-operations/{ans['operationId']}",
-                    headers=gw.hdr("b-times-get"))
+    op = client.get(f"{PREFIX}/write-operations/{ans['operationId']}?companyCode=SRT", headers=_hdr(gw.plain))
     assert op.status_code == 200, op.text
     assert op.json()["linkedAt"] == ans["linkedAt"]
 
