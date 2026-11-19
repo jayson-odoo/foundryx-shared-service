@@ -250,3 +250,440 @@
     }
   }
 }
+
+/* ------------------------------------------------------------------------
+   Foundryx UIUX shell (slice F5, playbook-uiux.md). Everything below sits
+   under `data-fx="on"` on <html>, so with the switch off (the default) none
+   of it applies (css/fx-scope.inventory.test.ts).
+
+   The side panel is `.fx-rail` (app/components/layouts/demo1/components/
+   fx-sidebar.tsx), never `.sidebar`, so the legacy collapse rules above and
+   the reduced-motion reset of `.demo1 .sidebar` (css/styles.css) never reach
+   it: the playbook keeps the rail's slide under reduced motion. The top bar
+   is `.fx-topbar` (fx-header.tsx), never `.header`, for the same reason.
+   ------------------------------------------------------------------------ */
+
+:root[data-fx='on'] {
+  /* The icon rail: max(64px, 5% width). Open, it is the legacy panel width. */
+  --fx-rail-w: max(64px, 5vw);
+  --fx-rail-open-w: 280px;
+  /* The rail's icon column: the rail less the scrollbar gutter on both edges
+     (`scrollbar-gutter: stable both-edges`), so icons sit centred. */
+  --fx-rail-icon-col: calc(var(--fx-rail-w) - 2 * var(--fx-scroll-size, 4px));
+  /* Where the frozen page header sits: under the top bar, or at the very top
+     once the bar has merged into it. Anything frozen under the page header
+     (a list's header row) counts from here, so it follows the merge. */
+  --fx-head-top: calc(var(--header-height) + var(--shell-top-offset, 0px));
+}
+
+:root[data-fx='on']:has(.fx-topbar[data-merged]) {
+  --fx-head-top: var(--shell-top-offset, 0px);
+}
+
+/* The page makes room for the rail (and for the full panel while pinned). The
+   legacy rule sets the same property with !important in this layer, so this
+   one does too, at a higher specificity. Hover-opened, the panel floats over
+   the page and moves nothing. */
+@layer components {
+  @media (min-width: 992px) {
+    :root[data-fx='on'] .demo1.sidebar-fixed:has(.fx-rail) .wrapper {
+      padding-inline-start: var(--fx-rail-w) !important;
+    }
+
+    :root[data-fx='on'] .demo1.sidebar-fixed:has(.fx-rail[data-pinned]) .wrapper {
+      padding-inline-start: var(--fx-rail-open-w) !important;
+    }
+  }
+}
+
+/* --- Side panel ------------------------------------------------------- */
+
+:root[data-fx='on'] .fx-rail {
+  position: fixed;
+  top: var(--shell-top-offset, 0px);
+  bottom: 0;
+  inset-inline-start: 0;
+  z-index: var(--z-sidebar);
+  display: flex;
+  flex-direction: column;
+  width: var(--fx-rail-w);
+  overflow: hidden;
+  border-inline-end: 1px solid var(--fx-line);
+  color: var(--fx-ink-2);
+  /* Closing: 0.65 s, ease-in-out (a long move shows its whole duration). */
+  transition:
+    width var(--fx-t-close) var(--fx-ease-in-out),
+    box-shadow var(--fx-t-close) var(--fx-ease-in-out);
+}
+
+:root[data-fx='on'] .fx-rail[data-open] {
+  width: var(--fx-rail-open-w);
+  box-shadow: 0 12px 32px var(--fx-shade);
+  transition-duration: var(--fx-t-open);
+}
+
+:root[data-fx='on'] .fx-rail[data-pinned] {
+  box-shadow: none;
+}
+
+:root[data-fx='on'] .fx-rail-head {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: var(--header-height);
+  padding-inline-end: 8px;
+}
+
+:root[data-fx='on'] .fx-rail-logo {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+}
+
+:root[data-fx='on'] .fx-rail-tile {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--fx-rail-w);
+}
+
+/* The pin shows only while the panel is open and never covers the logo. */
+:root[data-fx='on'] .fx-rail-pin {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--fx-r-pill);
+  color: var(--fx-ink-3);
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--fx-t-close) var(--fx-ease-in-out),
+    visibility var(--fx-t-close),
+    translate var(--fx-t-hover) var(--fx-ease-out),
+    color var(--fx-t-hover) var(--fx-ease-out);
+}
+
+:root[data-fx='on'] .fx-rail[data-open] .fx-rail-pin {
+  opacity: 1;
+  visibility: visible;
+  transition-duration: var(--fx-t-open), 0s, var(--fx-t-hover), var(--fx-t-hover);
+}
+
+:root[data-fx='on'] .fx-rail-pin[aria-pressed='true'] {
+  color: var(--fx-link);
+}
+
+/* The list scrolls only while open; its gutter is kept on both edges either
+   way, so the icons never shift and stay centred in the rail. */
+:root[data-fx='on'] .fx-rail-scroll {
+  flex: 1;
+  min-height: 0;
+  padding-block: 8px;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  scrollbar-gutter: stable both-edges;
+}
+
+:root[data-fx='on'] .fx-rail[data-open] .fx-rail-scroll,
+:root[data-fx='on'] [data-vaul-drawer] .fx-rail-scroll {
+  overflow-y: auto;
+}
+
+/* The content keeps the open panel's width while the rail slides, so the
+   words fade in place instead of reflowing. */
+:root[data-fx='on'] .fx-rail .fx-rail-scroll > .fx-side-menu {
+  width: calc(var(--fx-rail-open-w) - 2 * var(--fx-scroll-size, 4px));
+}
+
+:root[data-fx='on'] .fx-rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root[data-fx='on'] .fx-rail-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 40px;
+  padding-inline-end: 12px;
+  border: 0;
+  border-radius: var(--fx-r-m);
+  background: none;
+  color: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    translate var(--fx-t-hover) var(--fx-ease-out),
+    color var(--fx-t-hover) var(--fx-ease-out);
+}
+
+:root[data-fx='on'] .fx-rail-row[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+:root[data-fx='on'] .fx-rail-row[data-current] {
+  color: var(--fx-link);
+}
+
+:root[data-fx='on'] .fx-rail-ic {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--fx-rail-icon-col);
+}
+
+/* The highlight behind a row: a square around the icon in the rail, the
+   whole row once open, changing in step with the slide. */
+:root[data-fx='on'] .fx-rail-hl {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc((var(--fx-rail-icon-col) - 40px) / 2);
+  width: 40px;
+  border-radius: var(--fx-r-m);
+  transition:
+    inset-inline-start var(--fx-t-close) var(--fx-ease-in-out),
+    width var(--fx-t-close) var(--fx-ease-in-out),
+    background-color var(--fx-t-hover) var(--fx-ease-out),
+    box-shadow var(--fx-t-hover) var(--fx-ease-out);
+}
+
+:root[data-fx='on'] .fx-side-menu[data-expanded] .fx-rail-hl {
+  inset-inline-start: 4px;
+  width: calc(100% - 8px);
+  transition-duration: var(--fx-t-open), var(--fx-t-open), var(--fx-t-hover), var(--fx-t-hover);
+}
+
+:root[data-fx='on'] .fx-rail-row[data-current] > .fx-rail-hl {
+  background-color: var(--fx-link-bg);
+}
+
+:root[data-fx='on'] .fx-rail-label,
+:root[data-fx='on'] .fx-rail-chev {
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity var(--fx-t-close) var(--fx-ease-in-out);
+}
+
+:root[data-fx='on'] .fx-rail-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+:root[data-fx='on'] .fx-rail-chev {
+  flex: none;
+  color: var(--fx-ink-3);
+  transition:
+    opacity var(--fx-t-close) var(--fx-ease-in-out),
+    rotate var(--fx-t-toggle) var(--fx-ease-in-out);
+}
+
+:root[data-fx='on'] [aria-expanded='true'] > .fx-rail-chev {
+  rotate: 180deg;
+}
+
+:root[data-fx='on'] .fx-side-menu[data-expanded] .fx-rail-label,
+:root[data-fx='on'] .fx-side-menu[data-expanded] .fx-rail-chev,
+:root[data-fx='on'] .fx-rail[data-open] .fx-rail-logo .fx-rail-label {
+  opacity: 1;
+  transition-duration: var(--fx-t-open);
+}
+
+:root[data-fx='on'] .fx-rail-logo .fx-rail-label {
+  display: flex;
+  align-items: center;
+}
+
+:root[data-fx='on'] .fx-rail-badge {
+  flex: none;
+  font-size: 0.6875rem;
+  color: var(--fx-ink-3);
+}
+
+/* Items below a group: no icon, indented past the icon column. */
+:root[data-fx='on'] .fx-rail-child {
+  height: 34px;
+  padding-inline-start: var(--fx-rail-icon-col);
+  font-weight: 400;
+  font-size: 0.8125rem;
+}
+
+:root[data-fx='on'] .fx-side-menu[data-expanded] .fx-rail-child > .fx-rail-hl {
+  inset-inline-start: calc(var(--fx-rail-icon-col) - 8px);
+  width: calc(100% - var(--fx-rail-icon-col) + 4px);
+}
+
+:root[data-fx='on'] .fx-rail-sub .fx-rail-sub .fx-rail-child {
+  padding-inline-start: calc(var(--fx-rail-icon-col) + 12px);
+}
+
+:root[data-fx='on'] .fx-rail-heading {
+  display: flex;
+  align-items: flex-end;
+  height: 28px;
+  padding-inline-start: 12px;
+  color: var(--fx-ink-3);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Groups fold in step with the slide. */
+:root[data-fx='on'] .fx-rail-sub {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--fx-t-close) var(--fx-ease-in-out);
+}
+
+:root[data-fx='on'] .fx-rail-sub[data-open] {
+  grid-template-rows: 1fr;
+  transition-duration: var(--fx-t-open);
+}
+
+:root[data-fx='on'] .fx-rail-sub-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+:root[data-fx='on'] .fx-rail-sub:not([data-open]) .fx-rail-sub-inner {
+  visibility: hidden;
+}
+
+/* Hover pop: side-panel items rise 2px (mouse screens, setting "Hover lift"). */
+@media (hover: hover) {
+  :root[data-fx='on']:not([data-fx-lift='off']) .fx-rail-row:not([aria-disabled='true']):hover,
+  :root[data-fx='on']:not([data-fx-lift='off']) .fx-rail-pin:hover {
+    translate: 0 -2px;
+  }
+
+  :root[data-fx='on'] .fx-side-menu[data-expanded] .fx-rail-row:not([aria-disabled='true']):hover > .fx-rail-hl {
+    box-shadow: 0 4px 12px var(--fx-shade);
+  }
+
+  :root[data-fx='on'] .fx-rail-row:not([aria-disabled='true']):hover,
+  :root[data-fx='on'] .fx-rail-pin:hover {
+    color: var(--fx-ink);
+  }
+}
+
+/* --- Top bar ---------------------------------------------------------- */
+
+:root[data-fx='on'] .fx-topbar {
+  position: fixed;
+  top: var(--shell-top-offset, 0px);
+  inset-inline: 0;
+  z-index: var(--fx-z-header);
+  height: var(--header-height);
+  padding-inline-end: var(--removed-body-scroll-bar-size, 0px);
+  transition:
+    translate var(--fx-t-layout) var(--fx-ease-in-out),
+    opacity var(--fx-t-layout) var(--fx-ease-in-out),
+    inset-inline-start var(--fx-t-layout) var(--fx-ease-in-out);
+}
+
+@media (min-width: 992px) {
+  :root[data-fx='on'] body:has(.fx-rail) .fx-topbar {
+    inset-inline-start: var(--fx-rail-w);
+  }
+
+  :root[data-fx='on'] body:has(.fx-rail[data-pinned]) .fx-topbar {
+    inset-inline-start: var(--fx-rail-open-w);
+  }
+}
+
+/* Merged into the page header: the bar slides up and fades out, while the
+   frozen page header slides up into its place. Nothing in the page moves. */
+:root[data-fx='on'] .fx-topbar[data-merged] {
+  translate: 0 -100%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+:root[data-fx='on'] [data-fx-header] {
+  transition: top var(--fx-t-layout) var(--fx-ease-in-out);
+}
+
+:root[data-fx='on'] body:has(.fx-topbar[data-merged]) [data-fx-header] {
+  top: var(--fx-head-top);
+}
+
+/* The moved search box, wherever it sits. */
+:root[data-fx='on'] .fx-search-box {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+/* In the page header it drops in (8px) once the bar has gone. */
+@keyframes fx-drop-in {
+  from {
+    opacity: 0;
+    translate: 0 -8px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+:root[data-fx='on'] [data-fx-header-merge] > .fx-search-box {
+  animation: fx-drop-in var(--fx-t-hover) var(--fx-ease-out) var(--fx-t-layout) both;
+}
+
+/* A page change puts everything straight back, with no replay. */
+:root[data-fx='on'] .fx-topbar[data-instant],
+:root[data-fx='on'] body:has(.fx-topbar[data-instant]) [data-fx-header] {
+  transition: none;
+}
+
+/* Reduced motion, or Animations off: the merge changes at once. The rail's
+   slide stays (the playbook keeps it); group folding stops. */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-fx='on'] .fx-topbar,
+  :root[data-fx='on'] [data-fx-header],
+  :root[data-fx='on'] .fx-rail-sub {
+    transition: none;
+  }
+
+  :root[data-fx='on'] [data-fx-header-merge] > .fx-search-box {
+    animation: none;
+  }
+}
+
+:root[data-fx='on'][data-fx-motion='off'] .fx-topbar,
+:root[data-fx='on'][data-fx-motion='off'] [data-fx-header],
+:root[data-fx='on'][data-fx-motion='off'] .fx-rail-sub {
+  transition: none;
+}
+
+:root[data-fx='on'][data-fx-motion='off'] [data-fx-header-merge] > .fx-search-box {
+  animation: none;
+}
+
+/* Phones: the top bar stays frozen while the page header scrolls away under
+   it, and the page keeps room at its bottom for the floating red action. */
+@media (max-width: 720px) {
+  :root[data-fx='on'] [data-fx-header] {
+    position: relative;
+    top: auto;
+  }
+}
+
+:root[data-fx='on'] body:has([data-fx-floating-action]) #main {
+  padding-bottom: 88px;
+}

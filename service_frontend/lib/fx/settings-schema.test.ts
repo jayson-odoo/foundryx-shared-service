@@ -66,6 +66,10 @@ describe('Foundryx UIUX settings schema', () => {
       'shimmer',
       'hold',
       'hold-time',
+      'rail-wait',
+      'merge',
+      'condense',
+      'float-act',
       'h2c',
       'h2c-time',
       'h2c-reach',
@@ -85,7 +89,9 @@ describe('Foundryx UIUX settings schema', () => {
       'scroll',
       'scroll-size',
     ]);
-    // F1 did not build the theme cross-fade, so its row stays hidden.
+    // F1 did not build the theme cross-fade, so its row stays hidden; the
+    // side panel has no flyout submenus, so neither is the safe zone.
     expect(fxSettingBuilt(fxSetting('theme-fade')!)).toBe(false);
+    expect(fxSettingBuilt(fxSetting('safe-zone')!)).toBe(false);
   });
 });

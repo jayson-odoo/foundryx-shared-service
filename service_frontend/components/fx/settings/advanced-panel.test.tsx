@@ -100,11 +100,15 @@ describe('Advanced settings panel', () => {
     expect(sw('Animations')).toBeInTheDocument();
     expect(sw('Slim scrollbars')).toBeInTheDocument();
     expect(within(p).getByText('Thickness')).toBeInTheDocument();
-    // Built by the actions (F2) and lists (F3a, F3b) slices.
+    // Built by the actions (F2), lists (F3a, F3b) and shell (F5) slices.
     for (const built of [
       'Hover lift',
       'Press and hold to confirm',
       'Styled tooltips',
+      'Wait before it folds to icons',
+      'Merge into the page header on scroll',
+      'Condense the top bar on scroll',
+      'Floating red action',
       'Smart view and Table view',
       'Shimmer on loading placeholders',
       'Reach around the text',
@@ -118,8 +122,8 @@ describe('Advanced settings panel', () => {
       'Tool Background strength',
     ])
       expect(within(p).queryByText(notBuilt), notBuilt).toBeNull();
-    // Master switch plus the fifteen built switches.
-    expect(within(p).getAllByRole('switch')).toHaveLength(16);
+    // Master switch plus the eighteen built switches.
+    expect(within(p).getAllByRole('switch')).toHaveLength(19);
   });
 
   it('finds a setting by name or note and hides sections with nothing left', () => {

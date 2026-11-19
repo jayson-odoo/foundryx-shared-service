@@ -14,7 +14,7 @@
  * (components/fx/__parity__/parity-utils.ts). Both render nothing outside the
  * switch provider or inside `<FxOff>`.
  */
-import { useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import { Palette } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useFxControls } from '@/hooks/use-fx';
@@ -52,9 +52,46 @@ function panelClass(on: boolean): string {
 
 const TITLE_CLASS = 'mb-3 text-sm font-semibold';
 
+/**
+ * Whether the Theme panel is open, kept outside the button. Turning the switch
+ * on or off swaps the whole top bar (and remounts the user menu), so state
+ * held in the button would close the panel the user is still using.
+ */
+type ThemePanelPlace = 'popover' | 'dialog';
+const panelOpen: Record<ThemePanelPlace, boolean> = {
+  popover: false,
+  dialog: false,
+};
+const panelListeners = new Set<() => void>();
+
+function subscribePanel(listener: () => void): () => void {
+  panelListeners.add(listener);
+  return () => panelListeners.delete(listener);
+}
+
+/** The Theme panel's open state for one place, shared across remounts. */
+export function useFxThemePanelOpen(
+  place: ThemePanelPlace,
+): [boolean, (open: boolean) => void] {
+  const open = useSyncExternalStore(
+    subscribePanel,
+    () => panelOpen[place],
+    () => false,
+  );
+  const setOpen = useCallback(
+    (next: boolean) => {
+      if (panelOpen[place] === next) return;
+      panelOpen[place] = next;
+      panelListeners.forEach((listener) => listener());
+    },
+    [place],
+  );
+  return [open, setOpen];
+}
+
 export function ThemeButton() {
   const fx = useFxControls();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useFxThemePanelOpen('popover');
   if (!fx) return null;
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -63,11 +100,15 @@ export function ThemeButton() {
           <PopoverTrigger asChild>
             <Button
               data-fx-entry=""
-              variant="ghost"
+              variant={fx.on ? 'fx-icon' : 'ghost'}
               mode="icon"
               shape="circle"
               aria-label="Theme"
-              className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
+              className={
+                fx.on
+                  ? 'size-9 px-0'
+                  : 'size-9 hover:bg-primary/10 hover:[&_svg]:text-primary'
+              }
             >
               <Palette className="size-4.5!" />
             </Button>
