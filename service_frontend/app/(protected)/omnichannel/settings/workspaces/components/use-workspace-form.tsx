@@ -32,7 +32,9 @@ import { WorkspaceTagsTab } from './workspace-tags-tab';
 import { WorkspaceCloseReasonsTab } from './workspace-close-reasons-tab';
 import { WorkspaceBusinessHoursTab, type BusinessHoursController } from './workspace-business-hours-tab';
 import { WorkspaceTeamSettingsTab } from './workspace-team-settings-tab';
-import { useWorkspaceActions } from './use-workspace-actions';
+import { useWorkspaceActions, WORKSPACE_FX_ICONS } from './use-workspace-actions';
+import { useFx } from '@/hooks/use-fx';
+import { useFxUserName } from './use-fx-user-name';
 import { useCan } from '@/hooks/use-can';
 import { workspaceFormHref, workspaceFormPath, workspacesListPath } from './paths';
 import { workspaceFormSchema, type WorkspaceFormValues } from './workspace-schema';
@@ -56,6 +58,8 @@ export function useWorkspaceForm(
   const router = useRouter();
   const actions = useWorkspaceActions();
   const { can } = useCan();
+  const fx = useFx();
+  const byWhom = useFxUserName();
   const creating = !workspaceId;
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -131,7 +135,8 @@ export function useWorkspaceForm(
             name: values.name,
             status: values.status,
           });
-          toast.success('Workspace created.');
+          if (fx) toast.fxDone({ what: `Workspace ${created.name} created`, byWhom });
+          else toast.success('Workspace created.');
           router.push(workspaceFormPath(created.id));
         } else {
           const updated = await workspaceService.update(workspaceId, {
@@ -140,7 +145,8 @@ export function useWorkspaceForm(
           });
           setWorkspace(updated);
           form.reset(toFormValues(updated));
-          toast.success('Workspace updated.');
+          if (fx) toast.fxDone({ what: `Workspace ${updated.name} saved`, byWhom });
+          else toast.success('Workspace updated.');
         }
         ok = true;
       })();
@@ -309,6 +315,13 @@ export function useWorkspaceForm(
       recordNav: creating
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (slice W2-WS); ignored while off. Save is
+      // the red action while editing; Trash sits beside it at rest.
+      fx: {
+        mainActionId: 'save',
+        iconFor: WORKSPACE_FX_ICONS,
+        discardName: creating ? 'the new workspace' : workspace?.name,
+      },
     };
   }, [
     formDirty,
@@ -324,6 +337,8 @@ export function useWorkspaceForm(
     can,
     lifecycleDirty,
     businessHoursDirty,
+    fx,
+    byWhom,
     fetchRecordAt,
     buildRecordHref,
   ]);
