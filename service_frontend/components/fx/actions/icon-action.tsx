@@ -14,13 +14,14 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { FxTooltip } from '@/components/fx/fx-tooltip';
-import { FxIcon, type FxAnyIconName } from '@/components/fx/icons';
+import { FxIcon, type FxIconRef } from '@/components/fx/icons';
 
 export interface FxIconActionProps
   extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> {
   label: string;
-  icon: FxAnyIconName;
-  /** Drawn instead of `icon` (an action that brings its own icon). */
+  /** A meaning from `components/fx/icons.tsx`, or a drawn icon node. */
+  icon: FxIconRef;
+  /** Drawn instead of `icon` (kept for callers that pass both). */
   iconNode?: ReactNode;
   /** Greys the button; the reason becomes its tooltip. */
   disabledReason?: string;

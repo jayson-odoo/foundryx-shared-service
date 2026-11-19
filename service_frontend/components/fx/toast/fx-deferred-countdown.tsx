@@ -18,18 +18,20 @@ function asUtc(iso: string): string {
   return /[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`;
 }
 
-/** "Deleting 12 contacts in 8 s" / "Deleting in 8 s" / "Deleting" (pure). */
+/** "Deleting 12 contacts in 8 s" / "Deleting Barcode scanner in 8 s" /
+ *  "Deleting in 8 s" / "Deleting" (pure). */
 export function fxCountdownLabel(
   verb: string,
   remainingMs: number,
   count?: number,
   noun?: string,
+  name?: string,
 ): string {
   if (remainingMs <= 0) return `${verb}…`;
   const secs = Math.ceil(remainingMs / 1000);
-  return count && count > 1 && noun
-    ? `${verb} ${count} ${noun} in ${secs} s`
-    : `${verb} in ${secs} s`;
+  if (count && count > 1 && noun) return `${verb} ${count} ${noun} in ${secs} s`;
+  const what = name?.trim();
+  return what ? `${verb} ${what} in ${secs} s` : `${verb} in ${secs} s`;
 }
 
 export function FxDeferredCountdown({
@@ -38,6 +40,7 @@ export function FxDeferredCountdown({
   windowSeconds,
   count,
   noun,
+  fxName,
   onCancel,
   className,
   fxSurface,
@@ -108,7 +111,7 @@ export function FxDeferredCountdown({
     >
       <div className="flex items-center gap-3 py-1.5 ps-4 pe-2 text-sm">
         <span className="min-w-0 flex-1 font-semibold tabular-nums" role="timer">
-          {fxCountdownLabel(verb, remainingMs, count, noun)}
+          {fxCountdownLabel(verb, remainingMs, count, noun, fxName)}
         </span>
         <button
           type="button"
