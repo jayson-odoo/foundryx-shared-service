@@ -134,7 +134,7 @@ function parseRaw(raw: string, country: CountryCode): FieldState {
     !international &&
     digits.startsWith(calling) &&
     isValidE164(`+${digits}`) &&
-    !isValidE164(toE164(country, trunkPrefix(country) === '0' ? digits.replace(/^0+/, '') : digits));
+    !isValidE164(toE164(country, digits));
   if (international || ownPrefix) {
     const typer = new AsYouType();
     typer.input(`+${digits}`);

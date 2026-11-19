@@ -315,7 +315,6 @@ class PhoneStep:
         # Claim one try atomically (``attempts < MAX`` in the UPDATE itself):
         # concurrent guesses can never exceed the cap, whatever the interleave.
         claimed = 0
-        used_before = row.attempts if row is not None else 0
         if row is not None:
             claimed = (
                 self.db.query(IdeaPhoneCode)
@@ -335,7 +334,13 @@ class PhoneStep:
                 IdeaPhoneCode.id == row.id, IdeaPhoneCode.attempts >= CODE_MAX_ATTEMPTS
             ).update({IdeaPhoneCode.used_at: _now()}, synchronize_session=False)
             self.db.commit()
-            raise _wrong_code(CODE_MAX_ATTEMPTS - (used_before + 1))
+            # Read the count back after the claim: a guess racing this one may
+            # have taken a try too, and the message must not overstate.
+            used = (
+                self.db.query(IdeaPhoneCode.attempts).filter(IdeaPhoneCode.id == row.id).scalar()
+                or CODE_MAX_ATTEMPTS
+            )
+            raise _wrong_code(CODE_MAX_ATTEMPTS - used)
         # Single use, atomically: only the first correct request wins.
         won = (
             self.db.query(IdeaPhoneCode)
