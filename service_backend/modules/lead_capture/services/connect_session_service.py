@@ -568,7 +568,17 @@ def finish(db: Session, principal: WizardPrincipal) -> Dict[str, Any]:
         "testLeadAt": test_lead.received_at if test_lead else None,
         "testLeadFormName": test_lead.form_name if test_lead else None,
         "waitingForRealLead": real_lead is None,
+        "signedInAs": _google_email(principal),
     }
+
+
+def _google_email(principal: WizardPrincipal) -> Optional[str]:
+    """Who signed in with Google on this session (plan 68 AC-68-22), if anyone."""
+    if not principal.session.google_encrypted:
+        return None
+    from .google_signin_service import signed_in_email
+
+    return signed_in_email(principal)
 
 
 def wizard_branding(db: Session, tenant_id: str) -> Dict[str, Optional[str]]:

@@ -110,3 +110,10 @@ export const GOOGLE_TEST_DATA_GUIDE: GuideFrame[] = [
   { caption: 'Paste the webhook URL and the key', items: ['Webhook URL', 'Key'], target: 0 },
   { caption: 'Press Send test data', items: ['Send test data', 'Save'], target: 0 },
 ];
+
+/** Google sign-in path: the webhook is already written; only "Send test data". */
+export const GOOGLE_SIGNIN_TEST_GUIDE: GuideFrame[] = [
+  GOOGLE_TEST_DATA_GUIDE[0],
+  GOOGLE_TEST_DATA_GUIDE[1],
+  GOOGLE_TEST_DATA_GUIDE[3],
+];

@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
-from app.api.v1.documents import _serve_blob
+from app.api.v1.documents import stream_blob
 from app.database import get_db
 from app.dependencies import effective_permission_keys
 from app.models.user import UserStatus
@@ -494,7 +494,7 @@ def embed_attachment_content(
     key, mime, filename = IdeaAttachmentService(db).content(
         principal.tenant_id, idea_id, attachment_id, variant
     )
-    return _serve_blob(db, principal.tenant_id, key, mime, filename, "inline")
+    return stream_blob(db, principal.tenant_id, key, mime, filename, "inline")
 
 
 @router.get("/ideas/{idea_id}", response_model=IdeaOut)

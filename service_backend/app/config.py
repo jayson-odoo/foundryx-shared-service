@@ -131,6 +131,10 @@ class Settings(BaseSettings):
     # (unknown / cancelled) link exchanges per client IP; window-throttle.
     throttle_idea_feedback_link_max_fails: int = 20
     throttle_idea_feedback_link_window_minutes: int = 15
+    # Files read through a feedback share link (lane FEEDBACK-IMAGE-PREVIEW):
+    # every read (thumbnails + previews) per client IP; window-throttle.
+    throttle_idea_share_file_max: int = 600
+    throttle_idea_share_file_window_minutes: int = 15
     # Share-link phone step (lane FEEDBACK-SUBSCRIBE): send/verify requests per
     # client IP and per phone; window-throttle (the product also locks a phone).
     throttle_idea_follow_phone_max: int = 10
