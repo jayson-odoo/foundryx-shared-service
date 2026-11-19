@@ -13,6 +13,10 @@ import { refreshTerminology } from '@/hooks/use-terminology';
 import { terminologyService } from '@/services/terminology-service';
 import type { TermCatalogItem } from '@/types/terminology';
 import { toCsv } from '@/lib/csv';
+import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
+import type { ResourceActionRuntime } from '@/components/platform/resource-list/types';
+import { useFxUserName } from '../general/fx-settings-bits';
 import { Pencil, RotateCcw } from 'lucide-react';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -68,6 +72,31 @@ function sortItems(rows: TermCatalogItem[], sort: ListQuery['sort']): TermCatalo
   return sort.desc ? sorted.reverse() : sorted;
 }
 
+/** The labels an override holds, when it holds both (only then can a
+ *  rename or a reset be put back exactly with the API's one PUT). */
+export function fxOverrideLabels(item: TermCatalogItem): { singular: string; plural: string } | null {
+  return item.overrideSingular !== null && item.overridePlural !== null
+    ? { singular: item.overrideSingular, plural: item.overridePlural }
+    : null;
+}
+
+/** Foundryx UIUX switch only: the done toast after "Reset to default". */
+function fxResetDone(item: TermCatalogItem, runtime: ResourceActionRuntime, byWhom?: string) {
+  const back = fxOverrideLabels(item);
+  toast.fxDone({
+    what: `${item.singular} reset to ${item.defaultSingular}`,
+    byWhom,
+    undo: back
+      ? () =>
+          void terminologyService
+            .setTerm(item.key, back)
+            .then(() => refreshTerminology())
+            .then(() => runtime.reload())
+            .catch(() => toast.error(`Couldn't undo. ${item.defaultSingular} keeps its default name.`))
+      : undefined,
+  });
+}
+
 /**
  * Terminology list config (sprint-3/08, F10) - the catalog on the FULL Resource
  * shell: search, the filter builder, column visibility/reorder/resize (per-user
@@ -76,9 +105,13 @@ function sortItems(rows: TermCatalogItem[], sort: ListQuery['sort']): TermCatalo
  * client-side (the shell is otherwise identical to a server-paginated list).
  */
 export function useTerminologyListConfig(
-  onEdit: (item: TermCatalogItem) => void,
+  onEdit: (item: TermCatalogItem, runtime?: ResourceActionRuntime) => void,
 ): ResourceListConfig<TermCatalogItem> {
   const pathname = usePathname();
+  // Foundryx UIUX switch only (slice W4-SETTINGS): a done toast after a
+  // reset, and the list's phone cards. The requests are the same either way.
+  const fx = useFx();
+  const byWhom = useFxUserName();
 
   return useMemo<ResourceListConfig<TermCatalogItem>>(() => {
     const actions: ResourceAction<TermCatalogItem>[] = [
@@ -88,7 +121,7 @@ export function useTerminologyListConfig(
         icon: Pencil,
         surfaces: { row: true, form: false, bulk: false },
         permission: 'terminology.manage',
-        run: (rows) => onEdit(rows[0]),
+        run: (rows, runtime) => onEdit(rows[0], runtime),
       },
       {
         id: 'reset',
@@ -101,6 +134,7 @@ export function useTerminologyListConfig(
           await terminologyService.resetTerm(rows[0].key);
           await refreshTerminology();
           runtime.reload();
+          if (fx) fxResetDone(rows[0], runtime, byWhom);
         },
       },
     ];
@@ -246,6 +280,12 @@ export function useTerminologyListConfig(
         { id: 'current', label: 'Current label' },
       ],
       actions,
+      fx: {
+        noun: 'terms',
+        copyable: ['entity'],
+        cardLines: [['entity'], ['current'], ['group']],
+        phoneHidden: ['default'],
+      },
     };
-  }, [onEdit, pathname]);
+  }, [onEdit, pathname, fx, byWhom]);
 }

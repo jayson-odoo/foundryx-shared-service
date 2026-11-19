@@ -17,7 +17,6 @@ import {
   SquareChevronRight,
 } from 'lucide-react';
 import { useSession } from 'next-auth/react';
-import { toAbsoluteUrl } from '@/lib/helpers';
 import { cn } from '@/lib/utils';
 import { useFx } from '@/hooks/use-fx';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -35,6 +34,8 @@ import { ThemeButton } from '@/components/fx/theme/theme-button';
 import { ActivityTriggers } from '@/components/platform/document-drive';
 import { UserAvatar } from '@/components/platform/user-avatar';
 import { FxHeader } from './fx-header';
+import { AppLogo } from '@/components/platform/branding/app-logo';
+import { useTenantBranding } from '@/hooks/use-branding';
 import { MegaMenu } from './mega-menu';
 import { MegaMenuMobile } from './mega-menu-mobile';
 import { SidebarMenu } from './sidebar-menu';
@@ -52,6 +53,7 @@ function HeaderLegacy() {
   const pathname = usePathname();
   const mobileMode = useIsMobile();
   const { data: session } = useSession();
+  const { branding } = useTenantBranding();
 
   // Close sheet when route changes
   useEffect(() => {
@@ -71,11 +73,7 @@ function HeaderLegacy() {
         {/* HeaderLogo */}
         <div className="flex gap-1 lg:hidden items-center gap-2.5">
           <Link href="/" className="shrink-0">
-            <img
-              src={toAbsoluteUrl('/media/app/mini-logo.svg')}
-              className="h-[25px] w-[25px] object-contain"
-              alt="mini-logo"
-            />
+            <AppLogo branding={branding} variant="mini" />
           </Link>
           <div className="flex items-center">
             {mobileMode && (

@@ -7,7 +7,8 @@
  * table, and the view toggle hides. Each card is the row's own cells:
  * - the top line holds what it is (the first data column) and its status;
  * - then the page's `fx.cardLines`, or every other shown column as an info
- *   line ("Branch : Penang", labels in one width so the colons line up);
+ *   line ("Branch : Penang", labels in one width so the colons line up); an
+ *   amount column (`meta.fxAlign: 'end'`) in a card line sits at its end;
  * - cells marked phone-hidden (`fx.phoneHidden`) are dropped;
  * - the tick box sits at the card's start, the row's action menu at its end.
  *
@@ -177,7 +178,15 @@ function FxPhoneCard<TData>({
         {layout.lines.map((line, i) => (
           <div key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-(--fx-ink-2)">
             {line.map((id) => (
-              <span key={id} className="min-w-0 break-words">
+              <span
+                key={id}
+                className={cn(
+                  'min-w-0 break-words',
+                  // An amount (`meta.fxAlign: 'end'`) closes its line at the
+                  // card's end, as in the table's right-aligned column.
+                  byId(id)?.column.columnDef.meta?.fxAlign === 'end' && 'ms-auto text-end tabular-nums',
+                )}
+              >
                 {value(byId(id))}
               </span>
             ))}

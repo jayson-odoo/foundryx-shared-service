@@ -36,6 +36,7 @@ import {
   productDependencyWarning,
 } from '@/lib/autocount-etl';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { AutocountCompany, AutocountEntityConfig, AutocountEtlTask } from '@/types/autocount';
 import {
   AC_COMPANIES_MANAGE,
@@ -99,6 +100,9 @@ export function ActivateTab({
 }: ActivateTabProps) {
   const { formatDateTime } = useDatetime();
   const { can } = useCan();
+  // Foundryx UIUX switch: the header carries Run now / Resume as the page's
+  // one red action, so these in-tab twins turn quiet (the buttons stay).
+  const fxVariant = useFx() ? ('outline' as const) : undefined;
   // Backend split (S2 review SHOULD-FIX 7): preview/run are gated
   // `autocount.sync.run` on the server, a DIFFERENT resource than the page's
   // own `autocount.companies.manage` - a user can reach this tab (manage)
@@ -448,6 +452,7 @@ export function ActivateTab({
             <Button
               type="button"
               size="sm"
+              variant={fxVariant}
               disabled={blocked || busy || !canRun}
               onClick={() => void runNow()}
               data-testid="etl-run-now"
@@ -466,6 +471,7 @@ export function ActivateTab({
           <Button
             type="button"
             size="sm"
+            variant={fxVariant}
             disabled={blocked || busy}
             onClick={() => void lifecycle.resume()}
             data-testid="etl-resume"

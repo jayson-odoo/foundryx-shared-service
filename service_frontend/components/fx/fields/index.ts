@@ -5,7 +5,8 @@
  * `Slider`, `Switch` and `SecretInput` render them while the switch is on.
  * The rest are new building blocks a page uses under `useFx()`.
  */
-export { FxField, FxFieldMessage, FxInput, FxNoteField, FxTextarea } from './fx-input';
+export { FX_FIELD_LABEL, FxField, FxFieldMessage, FxInput, FxNoteField, FxTextarea } from './fx-input';
+export { FxFieldContext, fxControlName, useFxControlName, useFxFieldIds, type FxFieldIds } from './fx-field-context';
 export { FxSearchSelect } from './fx-search-select';
 export { FxMultiSelect } from './fx-multi-select';
 export { FxCalendar } from './fx-calendar';

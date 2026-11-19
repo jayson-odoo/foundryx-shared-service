@@ -74,7 +74,16 @@ export function useAutocountPullListConfig({
         // The CORE deferred-action grace window (AC-10-38) - never a
         // hand-rolled confirm dialog. Registered server-side (S3/S4)
         // beside `autocount_etl_task.repush`.
-        deferred: { actionKey: 'autocount_pull_api_key.revoke', entityType: 'autocount_pull_api_key' },
+        deferred: {
+          actionKey: 'autocount_pull_api_key.revoke',
+          entityType: 'autocount_pull_api_key',
+          // Foundryx UIUX switch only (slice W5-AC-OPS): names the key in the
+          // grace-window toast.
+          fxName: (rows) => {
+            const row = rows[0];
+            return row?.kind === 'key' ? row.name : undefined;
+          },
+        },
       },
     ];
 
@@ -226,7 +235,7 @@ export function useAutocountPullListConfig({
       {
         id: 'records',
         accessorFn: (row) => (row.kind === 'snapshot' ? row.recordCount : 0),
-        meta: { headerTitle: 'Records' },
+        meta: { headerTitle: 'Records', fxAlign: 'end' },
         header: ({ column }) => <DataGridColumnHeader title="Records" column={column} />,
         cell: ({ row }) =>
           row.original.kind === 'snapshot' ? (
@@ -339,6 +348,12 @@ export function useAutocountPullListConfig({
       createLabel: activeSegment === 'snapshots' ? 'Build snapshot' : 'Issue key',
       createPermission: AC_PULL_MANAGE,
       onCreate: activeSegment === 'snapshots' ? onBuildSnapshot : onIssueKey,
+      // Foundryx UIUX switch only (slice W5-AC-OPS); ignored while off. Issue
+      // key and Build snapshot stay the list's own red action (Create).
+      fx: {
+        noun: activeSegment === 'snapshots' ? 'snapshots' : 'keys',
+        columnKind: { status: 'status' },
+      },
     };
   }, [activeSegment, companies, formatDateTime, onBuildSnapshot, onIssueKey]);
 }
