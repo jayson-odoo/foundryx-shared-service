@@ -1,11 +1,12 @@
 import { LoaderCircleIcon } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { useFx } from '@/hooks/use-fx';
 import { FxCouldNotLoad, FxLoadingBox } from '../../components/fx-report-parts';
 
 export interface ReportLoadingCardProps {
   errored?: boolean;
-  /** Foundryx UIUX switch only: the couldn't-load state's "Try again". */
+  /** The couldn't-load state's "Try again". */
   onRetry?: () => void;
 }
 
@@ -21,14 +22,25 @@ export function ReportLoadingCard(props: ReportLoadingCardProps) {
       <FxLoadingBox label="Loading the report" />
     );
   }
-  return <ReportLoadingCardLegacy errored={props.errored} />;
+  return <ReportLoadingCardLegacy errored={props.errored} onRetry={props.onRetry} />;
 }
 
-function ReportLoadingCardLegacy({ errored = false }: { errored?: boolean }) {
+function ReportLoadingCardLegacy({ errored = false, onRetry }: ReportLoadingCardProps) {
   return (
     <Card>
-      <CardContent className="flex h-56 items-center justify-center text-sm text-muted-foreground">
-        {errored ? "Couldn't load this report." : <LoaderCircleIcon className="size-6 animate-spin" />}
+      <CardContent className="flex h-56 items-center justify-center gap-2 text-sm text-muted-foreground">
+        {errored ? (
+          <>
+            <span role="alert">Couldn&apos;t load this report.</span>
+            {onRetry && (
+              <Button mode="link" size="sm" onClick={onRetry}>
+                Try again
+              </Button>
+            )}
+          </>
+        ) : (
+          <LoaderCircleIcon className="size-6 animate-spin" />
+        )}
       </CardContent>
     </Card>
   );

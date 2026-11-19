@@ -2,13 +2,15 @@
 
 /**
  * The dashboard's body under its filter bar. Switch off: today's markup,
- * moved here unchanged. Foundryx UIUX switch on (playbook 0.71.0 "Charts"):
+ * except that a failed load shows couldn't-load with "Try again" instead of
+ * spinning forever. Foundryx UIUX switch on (playbook 0.71.0 "Charts"):
  * quiet boxes, each chart asks one question in its title with the answer
  * above it, numbers in tabular figures, and loading and couldn't-load sit
  * inside the boxes, with "Try again".
  */
 import { LoaderCircleIcon } from 'lucide-react';
 import { Badge, BadgeDot } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { ReportChart } from '@/components/platform/report-chart';
 import { useFx } from '@/hooks/use-fx';
@@ -32,14 +34,18 @@ export function DashboardContent(props: DashboardContentProps) {
   return useFx() ? <FxDashboardContent {...props} /> : <DashboardContentLegacy {...props} />;
 }
 
-function DashboardContentLegacy({ dashboard, loading, error }: DashboardContentProps) {
-  return loading || !dashboard ? (
+function DashboardContentLegacy({ dashboard, loading, error, reload }: DashboardContentProps) {
+  // A failed load wins over the spinner, so it never spins forever.
+  return error ? (
+    <div className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground">
+      <span role="alert">Couldn&apos;t load the dashboard.</span>
+      <Button mode="link" size="sm" onClick={reload}>
+        Try again
+      </Button>
+    </div>
+  ) : loading || !dashboard ? (
     <div className="flex items-center justify-center py-24 text-muted-foreground">
       <LoaderCircleIcon className="size-6 animate-spin" />
-    </div>
-  ) : error ? (
-    <div className="flex items-center justify-center py-24 text-sm text-muted-foreground">
-      Couldn&apos;t load the dashboard.
     </div>
   ) : (
     <div className="flex flex-col gap-4">
