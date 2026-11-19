@@ -27,6 +27,7 @@ import {
 import { buildListNav, encodeListQuery } from '@/lib/list-context';
 import { cn } from '@/lib/utils';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
 import { useResourceList } from '@/hooks/use-resource-list';
 import { useViewPreferences } from '@/hooks/use-view-preferences';
 import { useImportActivity } from '@/providers/import-activity-provider';
@@ -66,6 +67,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import { ExportDialog } from './export-dialog';
 import { FilterBuilder } from './filter-builder';
 import type { ResourceListConfig } from './types';
+import { FxResourceList } from '@/components/fx/list/fx-resource-list';
 
 /**
  * Row drag handle - a plain muted GripVertical (matches the triage board's card
@@ -140,7 +142,11 @@ export interface ResourceListProps<T extends object> {
  * columns persisted per user, row-click into the form (carrying record-nav
  * ctx), bulk actions, and CSV export.
  */
-export function ResourceList<T extends object>({
+export function ResourceList<T extends object>(props: ResourceListProps<T>) {
+  return useFx() ? <FxResourceList {...props} /> : <ResourceListLegacy {...props} />;
+}
+
+function ResourceListLegacy<T extends object>({
   config,
   hideHeader,
   restoreFromCtx,

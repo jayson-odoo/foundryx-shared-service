@@ -44,7 +44,7 @@ export type FxSlice =
  * panel shows a row only when its behaviour exists, so each slice that builds
  * a setting's behaviour adds itself here in the same change.
  */
-export const FX_BUILT_SLICES: readonly FxSlice[] = ['F1', 'F2', 'F4', 'F5'];
+export const FX_BUILT_SLICES: readonly FxSlice[] = ['F1', 'F2', 'F3a', 'F3b', 'F4', 'F5'];
 
 interface FxSettingBase {
   key: string;
