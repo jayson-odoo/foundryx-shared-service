@@ -195,6 +195,9 @@ export function useBroadcastForm(
     }
   }, [workspaceId, form, ensureDraftId, router]);
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<Broadcast> | null>(() => {
     if (loading || notFound) return null;
 
@@ -254,11 +257,12 @@ export function useBroadcastForm(
       editable: creating || broadcast?.status === 'DRAFT',
       editPermission: 'broadcasts.manage',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
     };
   }, [
+    formDirty,
     loading,
     notFound,
     creating,

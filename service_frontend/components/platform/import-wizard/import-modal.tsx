@@ -22,8 +22,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { importService } from '@/services/import-service';
 import type { ImportColumnDef, ImportConfig, ImportMode } from '@/types/import';
 import { Download, UploadCloud } from 'lucide-react';
+import { useFx } from '@/hooks/use-fx';
+import { FxImportModal } from './fx-import-modal';
 
-const MODE_LABELS: Record<ImportMode, string> = {
+export const MODE_LABELS: Record<ImportMode, string> = {
   create_only: 'Create new records only',
   update_only: 'Update existing records only',
   upsert: 'Create or update',
@@ -35,7 +37,18 @@ const MODE_LABELS: Record<ImportMode, string> = {
  * columns) live in a SEPARATE dialog opened from "Download template" - the main
  * modal stays focused on the import itself.
  */
-export function ImportModal({
+export interface ImportModalProps {
+  entityType: string;
+  context?: Record<string, unknown>;
+  onClose: () => void;
+}
+
+export function ImportModal(props: ImportModalProps) {
+  // Foundryx UIUX: the file step of the import wizard (same upload request).
+  return useFx() ? <FxImportModal {...props} /> : <ImportModalLegacy {...props} />;
+}
+
+function ImportModalLegacy({
   entityType,
   context,
   onClose,
@@ -171,7 +184,7 @@ export function ImportModal({
  * always in (checked + locked). Searchable, scrollable list - scales to many
  * columns (no pills).
  */
-function TemplateDialog({
+export function TemplateDialog({
   entityType,
   columns,
   onClose,

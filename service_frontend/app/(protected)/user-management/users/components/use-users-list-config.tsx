@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { RotateCcw } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
@@ -212,6 +213,17 @@ export function useUsersListConfig(): ResourceListConfig<User> {
       onCreate: () => router.push(userNewPath),
       // Opt-in bulk import (plan sprint-3/09) - the first engine consumer.
       importer: { entityType: 'user', writePermission: 'users.create' },
+      // Foundryx UIUX switch only (ignored while off).
+      fx: {
+        noun: 'users',
+        iconFor: {
+          'send-invitation': 'send',
+          trash: 'trash',
+          restore: <RotateCcw aria-hidden="true" className="size-[18px]" />,
+        },
+        columnKind: { status: 'status' },
+        phoneHidden: ['lastSignIn'],
+      },
     };
   }, [actions, router, filterFields, formatDate, formatDateTime]);
 }

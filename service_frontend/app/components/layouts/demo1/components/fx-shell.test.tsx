@@ -378,23 +378,18 @@ describe('top bar: one Jobs button', () => {
     expect(screen.getByRole('button', { name: 'Jobs' })).toBeInTheDocument();
   });
 
-  it('opens one sheet on the tab with work running; other openers pick their tab', async () => {
+  it('opens one sheet listing every kind; any opener opens it, closing clears them all', async () => {
     await settle(<Header />);
     fireEvent.click(screen.getByRole('button', { name: 'Jobs, 6 running' }));
     const sheet = await screen.findByRole('dialog', { name: 'Jobs' });
-    expect(within(sheet).getByRole('tab', { name: /Uploads/ })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    // One list, no tabs (W3-JOBS); opening it also loads downloads.
+    expect(within(sheet).queryByRole('tab')).toBeNull();
     expect(activity.uploads).toBe(true);
+    expect(activity.downloads).toBe(true);
 
-    // A storage migration starting opens the Jobs tab; Uploads closes.
+    // A storage migration starting while it is open keeps the one sheet.
     act(() => setFlag('jobs', true));
-    expect(within(sheet).getByRole('tab', { name: /^Jobs/ })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    expect(activity.uploads).toBe(false);
+    expect(screen.getAllByRole('dialog', { name: 'Jobs' })).toHaveLength(1);
 
     fireEvent.keyDown(sheet, { key: 'Escape' });
     expect(Object.values(activity).some(Boolean)).toBe(false);

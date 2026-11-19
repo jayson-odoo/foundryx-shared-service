@@ -8,6 +8,8 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { ResourceList } from '@/components/platform/resource-list';
 import { NumberEditDialog } from './number-edit-dialog';
 import { useNumberingListConfig } from './use-numbering-list-config';
+import { useFx } from '@/hooks/use-fx';
+import { FxNumberingPage } from './fx-numbering-page';
 
 /**
  * Numbering settings (sprint-4/07, Cluster F - AC-07-07) - the per-tenant
@@ -17,6 +19,10 @@ import { useNumberingListConfig } from './use-numbering-list-config';
  * number reflects it.
  */
 export default function NumberingPage() {
+  return useFx() ? <FxNumberingPage /> : <NumberingPageLegacy />;
+}
+
+function NumberingPageLegacy() {
   const [editing, setEditing] = useState<NumberCatalogItem | null>(null);
   // Bumping the key remounts ResourceList → refetch the catalog after a save.
   const [nonce, setNonce] = useState(0);

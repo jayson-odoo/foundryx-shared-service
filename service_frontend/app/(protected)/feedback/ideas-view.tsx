@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useFx } from '@/hooks/use-fx';
 import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
 import { Switch } from '@/components/ui/switch';
@@ -16,6 +17,11 @@ import { MergeIdeasDialog } from './merge-ideas-dialog';
 import { promoteIdeasToBr } from './promote-to-br';
 import { formatFeedbackNumber } from '@/lib/feedback-number';
 
+/** The short name a done toast uses for an idea. */
+function ideaName(idea: Idea): string {
+  return idea.title ?? idea.problem;
+}
+
 /**
  * The Ideas repository grid - the SINGLE list/grid component used by BOTH the
  * operator page and the chrome-less host iframe (WS-C1 / AC-CAP-9/10). The
@@ -28,6 +34,9 @@ export function IdeasView() {
   const router = useRouter();
   const runtime = useIdeationRuntime();
   const { mode } = runtime;
+  // Foundryx UIUX switch only: done toasts say what, for whom and by whom.
+  // Every request is the same in both looks.
+  const fx = useFx();
   const {
     ideas,
     products,
@@ -71,7 +80,14 @@ export function IdeasView() {
         if (!target) return;
         try {
           await setStatus(idea.id, target.toStatusId);
-          toast.success(`Moved to ${target.toStatusLabel}.`);
+          if (fx) {
+            toast.fxDone({
+              what: `${ideaName(idea)} moved to ${target.toStatusLabel}`,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success(`Moved to ${target.toStatusLabel}.`);
+          }
         } catch (e) {
           toast.error(e instanceof Error ? e.message : 'Could not advance the feedback.');
         }
@@ -81,7 +97,11 @@ export function IdeasView() {
         if (!target) return;
         try {
           await setStatus(idea.id, target.toStatusId);
-          toast.success('Feedback restored.');
+          if (fx) {
+            toast.fxDone({ what: `${ideaName(idea)} restored`, byWhom: 'you' });
+          } else {
+            toast.success('Feedback restored.');
+          }
         } catch (e) {
           toast.error(e instanceof Error ? e.message : 'Could not restore the feedback.');
         }
@@ -100,20 +120,28 @@ export function IdeasView() {
         if (!unmerge) return;
         try {
           await unmerge(id);
-          toast.success('Feedback unmerged.');
+          if (fx) {
+            toast.fxDone({ what: 'Feedback unmerged', byWhom: 'you' });
+          } else {
+            toast.success('Feedback unmerged.');
+          }
         } catch (e) {
           toast.error(e instanceof Error ? e.message : 'Could not unmerge the feedback.');
         }
       },
     }),
-    [vote, setStatus, remove, unmerge, router, runtime],
+    [vote, setStatus, remove, unmerge, router, runtime, fx],
   );
 
   const config = useIdeasListConfig(ideas, handlers, { includeTest });
 
   const handleCreate = async (input: IdeaCreateInput) => {
     await create(input);
-    toast.success('Feedback captured.');
+    if (fx) {
+      toast.fxDone({ what: `${input.title?.trim() || input.problem} captured`, byWhom: 'you' });
+    } else {
+      toast.success('Feedback captured.');
+    }
   };
 
   if (error && ideas.length === 0) {
@@ -157,7 +185,16 @@ export function IdeasView() {
               mergeRows.map((r) => r.id),
               fields,
             );
-            toast.success(`Merged into ${formatFeedbackNumber(survivor.ideaNumber) ?? survivor.title ?? survivor.problem}.`);
+            const into = formatFeedbackNumber(survivor.ideaNumber) ?? survivor.title ?? survivor.problem;
+            if (fx) {
+              toast.fxDone({
+                what: `Merged into ${into}`,
+                howMany: `${mergeRows.length} feedback items`,
+                byWhom: 'you',
+              });
+            } else {
+              toast.success(`Merged into ${into}.`);
+            }
           }}
         />
       )}
