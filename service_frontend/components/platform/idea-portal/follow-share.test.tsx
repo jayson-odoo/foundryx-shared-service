@@ -339,4 +339,77 @@ describe('the read-only share view', () => {
     await userEvent.type(code, '123456');
     expect(await screen.findByRole('alert')).toHaveTextContent('Unable to reach the server. Please try again.');
   });
+  // Lane FEEDBACK-COMMENT-PHONE-LIKE-PORTAL: the rest of the CRM sign-in
+  // phone + code behaviour (crew matrix s2). Every number is made up.
+  it('Continue is disabled while the phone field is empty', async () => {
+    mockPage();
+    const field = await openPhoneStep();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+    await userEvent.type(field, '0123');
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
+  });
+
+  it('Enter in the phone field does not send', async () => {
+    mockPage();
+    svc.share.sendCode.mockResolvedValue({ sent: true });
+    const field = await openPhoneStep();
+    await userEvent.type(field, '012-345 0002{Enter}');
+    expect(svc.share.sendCode).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Phone number')).toBeInTheDocument();
+  });
+
+  it('the phone field does not take focus on its own', async () => {
+    mockPage();
+    const field = await openPhoneStep();
+    expect(field).not.toHaveFocus();
+  });
+
+  it('the send error shows in an alert box', async () => {
+    mockPage();
+    svc.share.sendCode.mockRejectedValue(new ApiError('Enter a valid phone number.', 422, null, null));
+    const field = await openPhoneStep();
+    await userEvent.type(field, '012-345 0002');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveAttribute('data-slot', 'alert');
+    expect(alert).toHaveTextContent('Enter a valid phone number.');
+  });
+
+  it('too many tries names the minutes, like the CRM', async () => {
+    mockPage();
+    svc.share.sendCode.mockRejectedValue(new ApiError('Too many tries. Try again in 15 minutes.', 429, 900, null));
+    const field = await openPhoneStep();
+    await userEvent.type(field, '012-345 0002');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Too many tries. Try again in 15 minutes.');
+  });
+
+  it('a 429 without a message still names the minutes from Retry-After', async () => {
+    mockPage();
+    svc.share.sendCode.mockRejectedValue(new ApiError('', 429, 120, null));
+    const field = await openPhoneStep();
+    await userEvent.type(field, '012-345 0002');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Too many tries. Try again in 2 minutes.');
+  });
+
+  it('Change number goes back with the number kept and the code cleared', async () => {
+    mockPage();
+    const code = await reachCodeStep();
+    await userEvent.type(code, '12');
+    await userEvent.click(screen.getByRole('button', { name: 'Change number' }));
+    expect(await screen.findByLabelText('Phone number')).toHaveValue('12-345 0002');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByLabelText('Verification code')).toHaveValue('');
+  });
+
+  it('while the code is checked the field is locked and the status names the number', async () => {
+    mockPage();
+    svc.share.verifyCode.mockReturnValue(new Promise(() => {}));
+    const code = await reachCodeStep();
+    await userEvent.type(code, '123456');
+    expect(await screen.findByRole('status')).toHaveTextContent('Checking the code for +60 12 345 0002');
+    expect(code).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /Resend/ })).toBeNull();
+  });
 });

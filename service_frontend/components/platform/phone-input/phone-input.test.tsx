@@ -110,4 +110,25 @@ describe('PhoneInput', () => {
     await userEvent.type(field, '{Backspace}', { initialSelectionStart: 3, initialSelectionEnd: 3 });
     expect(field.value.replace(/\D/g, '')).toBe('10000509');
   });
+  // CRM rule (crew matrix s2): digits that start with the own calling code
+  // read as international only when they are NOT also a valid national number.
+  // In the UAE (+971) "97180070" is valid both ways, so it stays national.
+  it('a valid national number that starts with the calling code stays national', async () => {
+    const onChange = vi.fn();
+    render(
+      <>
+        <label htmlFor="ae">Phone</label>
+        <PhoneInput id="ae" value="" defaultCountry="AE" onChange={onChange} />
+      </>,
+    );
+    await userEvent.type(screen.getByLabelText('Phone'), '97180070');
+    expect(onChange).toHaveBeenLastCalledWith('+97197180070', expect.objectContaining({ country: 'AE' }));
+  });
+
+  it('digits that are only valid with the calling code read as international', async () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    await userEvent.type(screen.getByLabelText('Phone'), '60123456789');
+    expect(onChange).toHaveBeenLastCalledWith('+60123456789', { valid: true, country: 'MY' });
+  });
 });
