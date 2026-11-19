@@ -8,13 +8,27 @@ import { ClampedText } from '@/components/platform/clamped-text';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { BroadcastRecipient } from '@/types/omnichannel';
-import type { FilterFieldDef, ListQuery } from '@/types/resource';
+import type { FilterCondition, FilterFieldDef, FilterGroup, ListQuery } from '@/types/resource';
 import { RECIPIENT_STATE_OPTIONS, RECIPIENT_STATE_REGISTRY } from './broadcast-status';
 import { useBroadcastRecipients } from '@/hooks/use-broadcast-recipients';
 
 const FILTER_FIELDS: FilterFieldDef[] = [
   { field: 'state', label: 'State', type: 'enum', options: RECIPIENT_STATE_OPTIONS },
 ];
+
+/** The state condition wherever it sits in the tree: the Filters panel puts
+ *  it at the top, the Foundryx UIUX header filter one group down. */
+function findStateCondition(group: FilterGroup): FilterCondition | undefined {
+  for (const rule of group.rules) {
+    if (rule.kind === 'condition') {
+      if (rule.field === 'state') return rule;
+    } else {
+      const found = findStateCondition(rule);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
 
 export interface UseRecipientsListConfigResult {
   config: ResourceListConfig<BroadcastRecipient>;
@@ -97,8 +111,14 @@ export function useRecipientsListConfig(
       getRowId: (row) => row.id,
       rowHref: () => '#',
       fetcher: (query: ListQuery) => {
-        const state = query.filter?.rules.find((r) => r.kind === 'condition' && r.field === 'state');
-        const stateValue = state && state.kind === 'condition' ? String(state.value) : undefined;
+        const state = query.filter ? findStateCondition(query.filter) : undefined;
+        // One state ("is") or several ("is any of"): the API takes a
+        // comma-separated list, so several states go as "sent,read".
+        const stateValue = state
+          ? Array.isArray(state.value)
+            ? state.value.join(',')
+            : String(state.value)
+          : undefined;
         return fetcher({ page: query.page, pageSize: query.pageSize, search: query.search, state: stateValue });
       },
       filterFields: FILTER_FIELDS,

@@ -20,9 +20,9 @@ export function AssignmentsReport({ workspaceId, filters }: { workspaceId: strin
   const config = useAssignmentLogConfig(workspaceId, filters);
   const fx = useFx();
 
-  if (fx && error) return <ReportLoadingCard errored onRetry={reload} />;
+  // A failed load wins over the spinner in both looks, so it never spins forever.
+  if (error) return <ReportLoadingCard errored onRetry={reload} />;
   if (loading || !report) return <ReportLoadingCard />;
-  if (error) return <ReportLoadingCard errored />;
 
   const totals = report.totals as AssignmentsReportTotals;
 
