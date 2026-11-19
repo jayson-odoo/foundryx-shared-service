@@ -28,6 +28,7 @@ import type { PublicBranding } from '@/types/branding';
 import { DoneScreen } from './components/done-screen';
 import { WizardProblem } from './components/wizard-problem';
 import {
+  AccountStep,
   ChannelStep,
   CopyStep,
   FieldsStep,
@@ -60,6 +61,7 @@ const BODIES: Record<WizardStepKey, (props: { wizard: UseLeadCaptureWizard }) =>
   fields: FieldsStep,
   test: TestStep,
   copy: CopyStep,
+  account: AccountStep,
 };
 
 export default function LeadCaptureConnectPage() {
@@ -110,7 +112,7 @@ export default function LeadCaptureConnectPage() {
               <div className="flex flex-col gap-2">
                 <Progress value={progressPercent(state)} aria-label="Setup progress" className="h-1.5" />
                 <ol className="flex justify-between gap-1 text-xs">
-                  {stepsFor(state.channel).map((s) => (
+                  {stepsFor(state.channel, state.googleSignIn).map((s) => (
                     <li
                       key={s.key}
                       className={cn(

@@ -42,6 +42,7 @@ const CONTEXT: WizardContext = {
   branding: { name: 'Acme', logoUrl: null },
   channels: [{ key: 'facebook', label: 'Facebook', setup: 'automatic' }],
   login: { available: true, simulated: true, appId: null, configId: null, graphVersion: 'v25.0', scopes: [] },
+  googleLogin: { available: false, simulated: true, clientId: null, scopes: [] },
   returnOrigin: 'https://crm.example.com',
   source: LIVE,
 };

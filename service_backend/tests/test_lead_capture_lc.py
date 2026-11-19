@@ -572,6 +572,7 @@ def test_consumer_guide_names_every_gateway_route():
     for route in router.routes:
         path = route.path.replace("{source_id}", "{id}").replace("{endpoint_id}", "{id}")
         path = path.replace("{delivery_id}", "{id}").replace("{form_id}", "{formId}").replace("{login_id}", "{loginId}")
+        path = path.replace("{account_id}", "{accountId}")
         path = path.replace("{key_id}", "{id}")
         if f"`{path}`" not in guide:
             missing.append(path)

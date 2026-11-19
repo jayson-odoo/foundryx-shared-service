@@ -49,10 +49,31 @@ export interface WizardLoginConfig {
   scopes: string[];
 }
 
+/** Google sign-in (plan 68); `simulated` = no Google client on the server. */
+export interface WizardGoogleLoginConfig {
+  available: boolean;
+  simulated: boolean;
+  clientId: string | null;
+  scopes: string[];
+}
+
+export interface WizardGoogleFormResult {
+  id: string;
+  name: string;
+  ok: boolean;
+  message: string | null;
+}
+
+export interface WizardGoogleConnect {
+  source: WizardSource;
+  forms: WizardGoogleFormResult[];
+}
+
 export interface WizardContext {
   branding: { name: string; logoUrl: string | null };
   channels: WizardChannel[];
   login: WizardLoginConfig;
+  googleLogin: WizardGoogleLoginConfig;
   returnOrigin: string | null;
   source: WizardSource | null;
 }
@@ -115,6 +136,8 @@ export interface WizardDone {
   testLeadAt: string | null;
   testLeadFormName: string | null;
   waitingForRealLead: boolean;
+  /** Google sign-in (plan 68): the Google account that signed in. */
+  signedInAs?: string | null;
 }
 
 /** postMessage contract to the opener (AC-64-08). */
