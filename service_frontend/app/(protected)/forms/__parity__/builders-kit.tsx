@@ -185,6 +185,7 @@ function read(path: string): unknown {
   if (p === '/workflows/metadata') return { entities: [], codeRunnerAvailable: false };
   if (p === '/workflows/template-options') return [];
   if (p === `/workflows/${WORKFLOW.id}`) return state.workflow;
+  if (p === '/workflows/w-2') return { ...state.workflow, id: 'w-2', name: 'Second' };
   if (p === '/forms') return list([FORM_ROW]);
   if (p === '/forms/at') return { form: FORM_ROW, total: 1 };
   if (p === `/forms/${FORM.id}`) return state.form;

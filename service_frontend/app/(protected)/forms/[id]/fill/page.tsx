@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FormRenderer } from '@/components/platform/form-renderer';
 import { useFormFill } from '@/hooks/use-form-fill';
+import { useFx } from '@/hooks/use-fx';
 
 export default function FormFillPage() {
   const params = useParams();
@@ -24,6 +25,8 @@ export default function FormFillPage() {
   const formId = String(params.id);
   const revisionId = search.get('revision') ?? undefined;
   const fill = useFormFill(formId, { revisionId });
+  // Foundryx UIUX switch only: the new date field. The answers are the same.
+  const fx = useFx();
 
   // A saved revision returns to its submission detail (history shows the chain).
   useEffect(() => {
@@ -104,6 +107,7 @@ export default function FormFillPage() {
           submitting={fill.submitting}
           onSubmit={fill.submit}
           submitLabel={fill.isRevision ? 'Submit revision' : undefined}
+          fxFields={fx}
         />
       </div>
     </Container>
