@@ -13,6 +13,10 @@ import { numberingService } from '@/services/numbering-service';
 import type { NumberCatalogItem, NumberReset } from '@/types/numbering';
 import { NUMBER_RESET_OPTIONS } from '@/types/numbering';
 import { toCsv } from '@/lib/csv';
+import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
+import type { ResourceActionRuntime } from '@/components/platform/resource-list/types';
+import { useFxUserName } from '../general/fx-settings-bits';
 import { Pencil, RotateCcw } from 'lucide-react';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -77,9 +81,13 @@ function sortItems(rows: NumberCatalogItem[], sort: ListQuery['sort']): NumberCa
  * filters/sorts/paginates client-side. Edit is an inline dialog (no detail page).
  */
 export function useNumberingListConfig(
-  onEdit: (item: NumberCatalogItem) => void,
+  onEdit: (item: NumberCatalogItem, runtime?: ResourceActionRuntime) => void,
 ): ResourceListConfig<NumberCatalogItem> {
   const pathname = usePathname();
+  // Foundryx UIUX switch only (slice W4-SETTINGS): a done toast after a
+  // reset, and the list's phone cards. The requests are the same either way.
+  const fx = useFx();
+  const byWhom = useFxUserName();
 
   return useMemo<ResourceListConfig<NumberCatalogItem>>(() => {
     const actions: ResourceAction<NumberCatalogItem>[] = [
@@ -89,7 +97,7 @@ export function useNumberingListConfig(
         icon: Pencil,
         surfaces: { row: true, form: false, bulk: false },
         permission: 'numbering.manage',
-        run: (rows) => onEdit(rows[0]),
+        run: (rows, runtime) => onEdit(rows[0], runtime),
       },
       {
         id: 'reset',
@@ -101,6 +109,10 @@ export function useNumberingListConfig(
         run: async (rows, runtime) => {
           await numberingService.resetFormat(rows[0].docType);
           runtime.reload();
+          // No Undo: the API sets prefix, format and reset together, so an
+          // override of only some of them cannot be put back exactly, and
+          // numbers may be handed out under the default in the meantime.
+          if (fx) toast.fxDone({ what: `${rows[0].label} numbering reset to its default`, byWhom });
         },
       },
     ];
@@ -256,6 +268,12 @@ export function useNumberingListConfig(
         { id: 'nextVal', label: 'Next value' },
       ],
       actions,
+      fx: {
+        noun: 'document types',
+        copyable: ['prefix'],
+        cardLines: [['docType'], ['prefix', 'format'], ['nextVal']],
+        phoneHidden: ['reset'],
+      },
     };
-  }, [onEdit, pathname]);
+  }, [onEdit, pathname, fx, byWhom]);
 }
