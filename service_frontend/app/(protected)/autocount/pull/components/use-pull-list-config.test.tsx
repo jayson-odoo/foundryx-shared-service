@@ -114,6 +114,7 @@ describe('useAutocountPullListConfig (AC-10-38)', () => {
     expect(revoke.deferred).toEqual({
       actionKey: 'autocount_pull_api_key.revoke',
       entityType: 'autocount_pull_api_key',
+      fxName: expect.any(Function),
     });
     expect(revoke.confirm).toBeUndefined();
   });
