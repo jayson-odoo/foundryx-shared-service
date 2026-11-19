@@ -14,6 +14,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
 import { MultiSelect } from '@/components/platform/multi-select';
+import { FxField } from '@/components/fx/fields/fx-input';
+import { useFx } from '@/hooks/use-fx';
 import type { LifecycleStageOption } from '@/hooks/use-contact-lifecycle-stages';
 import type { ContactField, ContactTag } from '@/types/omnichannel';
 import type { ContactCreateValues } from './contact-schema';
@@ -30,7 +32,133 @@ export interface ContactFormFieldsProps {
   customErrors: Record<string, string>;
 }
 
-export function ContactFormFields({
+/**
+ * Foundryx UIUX switch on: the same fields, with each message hanging under
+ * its field so nothing moves when one appears. Off: unchanged.
+ */
+export function ContactFormFields(props: ContactFormFieldsProps) {
+  return useFx() ? (
+    <FxContactFormFields {...props} />
+  ) : (
+    <ContactFormFieldsLegacy {...props} />
+  );
+}
+
+const FX_LABEL = 'text-xs font-medium text-(--fx-ink-3)';
+
+function FxContactFormFields({
+  form,
+  stages,
+  tags,
+  fields,
+  customValues,
+  onCustomChange,
+  customErrors,
+}: ContactFormFieldsProps) {
+  const errors = form.formState.errors;
+  return (
+    <div className="grid grid-cols-1 gap-x-6 gap-y-6 sm:grid-cols-2">
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="c-first-name" className={FX_LABEL}>
+          First name
+        </label>
+        <Input id="c-first-name" {...form.register('firstName')} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="c-last-name" className={FX_LABEL}>
+          Last name
+        </label>
+        <Input id="c-last-name" {...form.register('lastName')} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="c-phone" className={FX_LABEL}>
+          Phone *
+        </label>
+        <FxField message={errors.phone?.message}>
+          <Input
+            id="c-phone"
+            aria-invalid={errors.phone ? true : undefined}
+            {...form.register('phone')}
+          />
+        </FxField>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="c-email" className={FX_LABEL}>
+          Email
+        </label>
+        <FxField message={errors.email?.message}>
+          <Input
+            id="c-email"
+            type="email"
+            aria-invalid={errors.email ? true : undefined}
+            {...form.register('email')}
+          />
+        </FxField>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="c-language" className={FX_LABEL}>
+          Language
+        </label>
+        <Input
+          id="c-language"
+          placeholder="en"
+          {...form.register('language')}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="c-country" className={FX_LABEL}>
+          Country
+        </label>
+        <Input
+          id="c-country"
+          placeholder="MY"
+          maxLength={2}
+          className="uppercase"
+          {...form.register('countryCode')}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span className={FX_LABEL}>Lifecycle stage</span>
+        <SearchSelect
+          ariaLabel="Lifecycle stage"
+          value={form.watch('lifecycleStatusId')}
+          onChange={(v) => form.setValue('lifecycleStatusId', v)}
+          options={stages.map((s) => ({ label: s.label, value: s.id }))}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span className={FX_LABEL}>Tags</span>
+        <MultiSelect
+          options={tags.map((t) => ({
+            label: `${t.emoji ? `${t.emoji} ` : ''}${t.name}`,
+            value: t.id,
+          }))}
+          value={form.watch('tagIds')}
+          onChange={(v) => form.setValue('tagIds', v)}
+          placeholder="Select tags…"
+        />
+      </div>
+      {fields
+        .filter((f) => f.visibility === 'always')
+        .map((f) => (
+          <div key={f.id} className="flex flex-col gap-1.5">
+            <label htmlFor={`c-cf-${f.id}`} className={FX_LABEL}>
+              {f.label}
+            </label>
+            <FxField message={customErrors[f.key]}>
+              <CustomFieldInput
+                field={f}
+                value={customValues[f.key] ?? null}
+                onChange={(v) => onCustomChange(f.key, v)}
+              />
+            </FxField>
+          </div>
+        ))}
+    </div>
+  );
+}
+
+function ContactFormFieldsLegacy({
   form,
   stages,
   tags,
