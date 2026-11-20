@@ -39,7 +39,7 @@ PUT may have landed; `GET /write-operations/{id}` / `resume` reads AutoCount bef
 ## Rules
 
 - **take** = `min(qty, open)`, `open` = SPO line qty - its received qty (unknown received = 0, with
-  the `TRANSFER_STATE_UNKNOWN` warning, same as relink). `qty <= 0` = `INVALID_PARAMS`.
+  the `TRANSFER_STATE_UNKNOWN` warning, same as relink). A qty outside the house rule (above 0, at most 1e9, at most 8 decimal places) = `QTY_INVALID`.
 - take = the whole line (nothing received, take = line qty): the line is moved whole, `remainder: null`.
 - otherwise split: the old line keeps `qty - take` on its old PO line (that is the `remainder`), a new
   line of `take` is tied to the target PO line.

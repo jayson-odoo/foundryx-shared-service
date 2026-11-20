@@ -228,13 +228,13 @@ All keys are integers (1..9223372036854775807).
   poDocDate?, expectedLastModified? }` (`docDate` = the SPO's date, `poDocDate` = the target PO's date).
 - `spo-links/move` (plan 71): `{ companyCode, spoDocKey, spoDtlKey, toPoDocKey, toPoDtlKey, qty, docDate?,
   poDocDate?, expectedLastModified? }`. take = min(`qty`, the row's open qty = qty minus received); `qty`
-  must be a number above 0. ONE PUT on the SPO: the row deleted when all of it moves, else kept with its
+  follows the house rule (above 0, at most 1e9, at most 8 decimal places, else `QTY_INVALID`). ONE PUT on the SPO: the row deleted when all of it moves, else kept with its
   rest on its own PO row, plus one new row of the take tied to the target PO row; no PO document is
   written. The answer adds `moved { spoDtlKey (the NEW row), fromPoDtlKey, toPoDtlKey, qty }` and
   `remainder { spoDtlKey (the original row), poDtlKey, qty } | null` (both null unless `done`; a whole
   move has `remainder: null`; on a partly received row the received part is the remainder). Refusals
   (nothing sent): `ROW_NOT_LINKED`, `NO_CHANGE`, `ROW_RECEIVED`, `ITEM_MISMATCH`, `UOM_MISMATCH`,
-  `TARGET_RECEIVED`, `QTY_ABOVE_OUTSTANDING`, `ROW_NOT_FOUND`, `DOC_CANCELLED`, `INVALID_PARAMS`, plus the
+  `TARGET_RECEIVED`, `QTY_ABOVE_OUTSTANDING`, `ROW_NOT_FOUND`, `DOC_CANCELLED`, `QTY_INVALID`, plus the
   common ones. Plan: `71-autocount-spo-link-move.md`.
 
 The plan 55 routes `po-links`, `po-links/unlink` and `spo-links/unlink` also take optional `docDate`

@@ -2229,12 +2229,12 @@ class OperationService:
         F8), so no outcome leaves an SPO row without a PO row. No PO document is written."""
         if not spo_move_capable():
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
-        try:
-            wanted = Decimal(str(params["qty"]))
+        try:  # the house quantity rule (above 0, at most 1e9, at most 8 places), as every sibling
+            wanted = payloads.validate_qty(Decimal(str(params["qty"])))
         except (KeyError, ArithmeticError, ValueError):
             raise _Done(REFUSED, INVALID_PARAMS, "qty must be a number") from None
-        if not wanted.is_finite() or wanted <= 0:
-            raise _Done(REFUSED, INVALID_PARAMS, "qty must be above zero")
+        except WriteRefusal as exc:
+            raise _Done(REFUSED, exc.code, str(exc)) from None
         defn = _OpDef("SPO", "PO", "relink")
         self._check_not_busy(company, spec.doc_key, "SPO")
         doc_date, doc = self._read(company, "SPO", spec.doc_key, spec.doc_date,

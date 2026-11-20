@@ -176,9 +176,9 @@ def test_ac_71_04_fully_received_spo_line_is_row_received(h):
     _refused(h, w, "ROW_RECEIVED", reader="default")
 
 
-@pytest.mark.parametrize("qty", [0, -1])
-def test_ac_71_04_qty_not_above_zero_is_invalid_params(h, w, qty):
-    _refused(h, w, "INVALID_PARAMS", qty=qty)
+@pytest.mark.parametrize("qty", [0, -1, "1000000001", "3.123456789"])
+def test_ac_71_04_qty_outside_the_house_rule_is_qty_invalid(h, w, qty):
+    _refused(h, w, "QTY_INVALID", qty=qty)
 
 
 def test_ac_71_04_cancelled_target_po_is_doc_cancelled(h, w):
