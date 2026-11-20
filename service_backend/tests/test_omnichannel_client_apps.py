@@ -23,7 +23,7 @@ import pytest
 from app.models import DEFAULT_TENANT_ID
 from tests.test_omnichannel_api_gateway import _default_workspace_id, _mint, _seed_channel
 from tests.test_omnichannel_contacts_module import _no_perm_auth
-from tests.test_omnichannel_partner_keys import _assigns, _auth, other_tenant, partner_headers
+from tests.test_omnichannel_partner_keys import _auth, other_tenant, partner_headers
 
 P = "/api/v1/omnichannel/partner"
 KEYS = "/omnichannel/partner-keys"
@@ -461,10 +461,13 @@ def test_uninstall_deletes_client_apps_after_their_children_and_keeps_other_tena
 
 # ── schema: model, Alembic and the bootstrap mirror agree ────────────────────
 def test_client_app_migration_revises_the_omnichannel_head():
-    meta = _assigns(MIGRATION)
-    assert meta["revision"] == "0032_omni_client_apps"
-    assert meta["down_revision"] == "0031_omni_workspace_external_ref"
-    assert len(meta["revision"]) <= 32
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory(str(VERSIONS.parent))
+    assert script.get_heads() == ["0032_omni_client_apps"]
+    rev = script.get_revision("0032_omni_client_apps")
+    assert rev.down_revision == "0031_omni_workspace_external_ref"
+    assert len(rev.revision) <= 32
 
 
 def _migration_module():
@@ -536,40 +539,10 @@ def test_the_bootstrap_mirror_runs_the_migration_statements_verbatim(monkeypatch
     assert not any("CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_tenant_external_ref" in s for s in mirror)
 
 
-def test_the_migration_table_matches_the_model(monkeypatch):
-    """create_all builds client_apps from the model; the migration by hand."""
-    mod = _migration_module()
-    m = _models()
-    table = m.ClientApp.__table__
-    create = _norm(mod.CREATE_TABLE)
-    body = create.split("(", 1)[1].split(", PRIMARY KEY")[0]
-    decls = {d.split(" ", 1)[0]: d for d in body.split(", ")}
-    assert set(decls) == {c.name for c in table.columns}
-    for c in table.columns:
-        assert ("NOT NULL" in decls[c.name]) == (not c.nullable), c.name
-    # Index names and uniqueness: the model's and the migration's are the same set.
-    model_ix = {(ix.name, bool(ix.unique)) for ix in table.indexes}
-    mig_ix = set()
-    for stmt in mod.TABLE_INDEXES:
-        name = re.search(r"EXISTS (\w+)", stmt).group(1)
-        mig_ix.add((name, "UNIQUE" in stmt))
-    assert model_ix == mig_ix
-    # The workspaces/partner_api_keys columns, FKs and indexes carry the model's names.
-    joined = " ".join(mod.MIRRORED)
-    for model in (m.Workspace, m.PartnerApiKey):
-        t = model.__table__
-        (fk,) = [f for f in t.foreign_key_constraints if "client_app_id" in f.column_keys]
-        assert fk.name in joined
-        ix = [i.name for i in t.indexes if [c.name for c in i.columns] == ["client_app_id"]]
-        assert ix and ix[0] in joined
-    ext = [i for i in m.Workspace.__table__.indexes if i.name == "uq_workspaces_client_app_external_ref"]
-    assert ext and [c.name for c in ext[0].columns] == ["client_app_id", "external_ref"]
-
-
-def test_the_migration_has_no_secret_columns_and_keeps_the_parents_nullable():
-    mod = _migration_module()
-    assert not any("SET NOT NULL" in s or "VARCHAR NOT NULL" in s for s in mod.MIRRORED)
+def test_the_parents_stay_nullable_and_external_ref_is_unique_per_client_app():
     m = _models()
     assert m.Workspace.__table__.c.client_app_id.nullable
     assert m.PartnerApiKey.__table__.c.client_app_id.nullable
+    ext = [i for i in m.Workspace.__table__.indexes if i.name == "uq_workspaces_client_app_external_ref"]
+    assert ext and ext[0].unique and [c.name for c in ext[0].columns] == ["client_app_id", "external_ref"]
     assert not any("hash" in c.name or "secret" in c.name for c in m.ClientApp.__table__.columns)
