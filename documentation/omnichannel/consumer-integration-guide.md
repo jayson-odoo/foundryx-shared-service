@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-20** | **Partner API: hosted WhatsApp connect sessions** (section 6e, "Connecting WhatsApp numbers"). New `POST /partner/workspaces/{workspaceId}/connect-sessions` returns a Meta sign-up link for one of your workspaces; the user signs in to Meta and is sent back to your `returnUrl`, whose origin must be one of the partner key's allowed return origins. Then `GET /partner/connect-sessions/{id}`, `POST /partner/connect-sessions/{id}/complete` (creates one channel per number of the Meta account that is not connected anywhere yet) and `POST /partner/connect-sessions/{id}/cancel`. New public `POST /api/v1/omnichannel/connect/wa-callback`, used only by the sign-up page. New codes `connect_not_configured` (503), `connect_session_not_found` (404), `invalid_return_url` (422), `connect_session_not_authorized` (409). Off until the deployment configures it. Additive: no existing route, field or code changes. |
 > | **2026-11-20** | **Partner API: client apps** (section 6e). Every workspace and partner key now belongs to a **client app** (one consuming application inside a tenant; a tenant may hold several). Each existing workspace became (or joined) the client app named after it, and existing partner keys belong to the tenant's default client app (the one of its default workspace). A partner key can be minted for a specific client app. Partner routes are limited to the calling key's client app: `GET /partner/workspaces` lists only that client app's workspaces, a workspace of another client app answers the same `404 workspace_not_found`, and `externalOrgId` is unique per client app. `GET /partner/me` gains `clientAppId` and `clientAppName`. A disabled client app answers `403 client_app_disabled` on partner routes only. Nothing changes for workspace keys (`fxw_live_`), webhooks, the dashboard or any route in sections 3 to 6d. |
 > | **2026-11-18** | **Partner API: one workspace key per organisation** (section 6e). `POST /partner/workspaces/{workspaceId}/api-keys` mints an ordinary `fxw_live_` workspace key (shown once) that works on the existing API unchanged; list and revoke (revoke pauses the key's webhook endpoints, as a dashboard revoke does). Additive: existing keys keep exactly their power; no existing route or field changes. |
 > | **2026-11-18** | **Partner API: workspaces per organisation** (section 6e). `PUT /partner/workspaces/{externalOrgId}` creates or returns the organisation's workspace (idempotent), plus list, get and channel list. Every route is limited to the partner key's tenant with one uniform `404 workspace_not_found`. Additive: existing routes and fields are unchanged. |
@@ -916,7 +917,7 @@ An invalid body answers `422 invalid_request` with the problems keyed by field, 
 
 ### How a partner key is issued
 
-A partner key (`fxp_live_...`) is minted from the Foundryx dashboard by an admin of your tenant who holds the **Partner API Keys: Manage** permission. It is never self-serve from the API. The full key is shown **once** at mint time; store it like a password. When the tenant holds several client apps, the admin picks the one the key acts for (otherwise the key belongs to the tenant's default client app); ask for the key of your own client app. The admin can list keys, revoke one, and set each key's **allowed return origins** (exact `https://host[:port]` origins, used by the hosted connect flow that comes later; `http://` only for `localhost`).
+A partner key (`fxp_live_...`) is minted from the Foundryx dashboard by an admin of your tenant who holds the **Partner API Keys: Manage** permission. It is never self-serve from the API. The full key is shown **once** at mint time; store it like a password. When the tenant holds several client apps, the admin picks the one the key acts for (otherwise the key belongs to the tenant's default client app); ask for the key of your own client app. The admin can list keys, revoke one, and set each key's **allowed return origins** (exact `https://host[:port]` origins, checked by the hosted connect sessions below; `http://` only for `localhost`).
 
 ```
 Authorization: Bearer fxp_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -978,6 +979,62 @@ Your partner key does not send messages. For each organisation, mint one ordinar
 `fullKey` is shown **once**; store it encrypted. The key also appears in the dashboard's key list for that workspace.
 
 **`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys`** lists the workspace's keys (`{ "data": [key...] }`, never the full key). **`POST /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys/{keyId}/revoke`** revokes one and answers the key with `status: "REVOKED"`; repeating it changes nothing. As with a dashboard revoke, the webhook endpoints the key owns are paused (section 7); resume them with another live key. An unknown key id, or one of another workspace, answers `404 api_key_not_found`; a workspace outside your client app answers `404 workspace_not_found`.
+
+### Connecting WhatsApp numbers (hosted connect sessions)
+
+A connect session lets one of your organisations connect its own WhatsApp numbers through Meta's sign-up window, without a Foundryx admin. It finishes in **two steps**: the Meta sign-in only authorizes the session, and the channels are created when **your backend** calls `complete`, after it has checked that the user who came back is the one who started. Only WhatsApp is supported.
+
+**Off until configured.** Until the Foundryx deployment switches the feature on, every route of this section answers `503 connect_not_configured` ("Hosted connect is not configured.").
+
+**`POST /api/v1/omnichannel/partner/workspaces/{workspaceId}/connect-sessions`**
+
+```json
+{ "channelType": "WHATSAPP", "returnUrl": "https://app.example.com/settings/messaging/whatsapp/return", "clientState": "your-nonce" }
+```
+
+* `channelType`: optional, only `"WHATSAPP"` (the default).
+* `returnUrl`: required, at most 2048 characters, an absolute URL whose exact origin (`scheme://host[:port]`) is one of the partner key's **allowed return origins**. A path and a query are allowed; credentials, a fragment and spaces are not. A key with no allowed origins refuses every URL. Otherwise `422 invalid_return_url`.
+* `clientState`: optional, at most 512 characters, opaque. It is given back to you on the return URL as `state`. Use it to tie the return to the user who started (for example a nonce you store hashed).
+
+Answers `201`:
+
+```json
+{ "id": "c1a2...", "workspaceId": "5f0c...", "status": "OPEN", "url": "https://www.facebook.com/{version}/dialog/oauth?...", "expiresAt": "2026-11-20T10:30:00Z" }
+```
+
+Open `url` in a popup or the same tab. The link works once and expires at `expiresAt` (30 minutes by default). A workspace outside your client app answers `404 workspace_not_found`.
+
+**The return.** After the Meta sign-in, the Foundryx sign-up page sends the browser to your `returnUrl` with three query parameters added (any earlier values of these three names are replaced; your other parameters are kept):
+
+| Parameter | Value |
+|---|---|
+| `session` | the session `id` |
+| `status` | `authorized` (signed in; call `complete`), `cancelled` (the user stopped at Meta) or `failed` (the Meta sign-in could not be used) |
+| `state` | your `clientState`, when you sent one |
+
+Treat the return as a hint only: always read the session from your backend before acting.
+
+**`GET /api/v1/omnichannel/partner/connect-sessions/{id}`** answers the session:
+
+```json
+{ "id": "c1a2...", "workspaceId": "5f0c...", "channelType": "WHATSAPP", "status": "AUTHORIZED", "channelIds": [], "errorCode": null, "createdAt": "2026-11-20T10:00:00Z", "expiresAt": "2026-11-20T10:30:00Z", "completedAt": null }
+```
+
+`status` is one of `OPEN` (waiting for the Meta sign-in), `AUTHORIZED` (signed in, ready to complete), `COMPLETED`, `FAILED`, `CANCELLED`, `EXPIRED`. Check that `workspaceId` is the workspace of the organisation the returning user belongs to before you complete.
+
+**`POST /api/v1/omnichannel/partner/connect-sessions/{id}/complete`** (no body) creates the channels and answers the session plus `channels` (section 5a items of the channels it created that are still live):
+
+* Every number of the Meta account that is not already connected anywhere on Foundryx becomes **its own channel** in the session's workspace. A number already connected (in any workspace) is skipped.
+* `COMPLETED` with `channelIds` when at least one channel was created. Otherwise `FAILED` with `errorCode`: `phone_number_in_use` (every number is already connected; no other organisation is named), `no_number_found` (the Meta account has no WhatsApp number) or `code_exchange_failed`.
+* Repeating `complete` on a `COMPLETED` session answers the same result and creates nothing.
+* A session that is not `AUTHORIZED` (still `OPEN`, or `CANCELLED`, `FAILED`, `EXPIRED`) answers `409 connect_session_not_authorized`.
+* Each new channel fires `channel.updated` (section 7) for endpoints that subscribed to it, and appears in `GET /partner/workspaces/{workspaceId}/channels` and in the workspace key's `GET /channels`.
+
+**`POST /api/v1/omnichannel/partner/connect-sessions/{id}/cancel`** (no body) ends an `OPEN` or `AUTHORIZED` session (`CANCELLED`) and answers the session. It is idempotent; on a session that already ended it changes nothing and answers it as it is.
+
+**Scope.** Any active partner key of the same client app may read, complete or cancel a session (so a key rotation does not strand one). A session id of another tenant or another client app, or an unknown id, answers the same `404 connect_session_not_found` ("Connect session not found."). A disabled client app answers `403 client_app_disabled`, as on every partner route.
+
+**`POST /api/v1/omnichannel/connect/wa-callback`** is public and is called only by the Foundryx sign-up page (`/wa-callback`), never by your backend: body `{ "state", "code"?, "error"? }`, answer `200 { "redirect" }`. An unknown, already used or expired state, or a session whose client app is disabled or whose workspace was trashed, answers `404 connect_session_not_found`; repeated misses from one address answer `429 rate_limited` with `Retry-After`.
 
 ### Isolation
 

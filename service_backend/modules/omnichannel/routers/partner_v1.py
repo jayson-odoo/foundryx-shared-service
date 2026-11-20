@@ -23,6 +23,10 @@ from ..schemas import (
     ApiKeyItem,
     ApiKeyListResponse,
     ApiKeyMintResponse,
+    PartnerConnectSessionCompleteResponse,
+    PartnerConnectSessionCreateRequest,
+    PartnerConnectSessionCreated,
+    PartnerConnectSessionItem,
     PartnerMeResponse,
     PartnerWorkspaceKeyCreateRequest,
     PartnerWorkspaceItem,
@@ -31,6 +35,13 @@ from ..schemas import (
     PublicChannelListResponse,
 )
 from ..services.api_key_service import ApiKeyService
+from ..services.partner_connect_service import (
+    ConnectNotConfigured,
+    ConnectSessionNotAuthorized,
+    ConnectSessionNotFound,
+    InvalidReturnUrl,
+    PartnerConnectService,
+)
 from ..services.partner_key_service import PartnerKeyService
 from ..services.partner_workspace_service import (
     PartnerScope,
@@ -177,3 +188,100 @@ def revoke_workspace_key(
         raise _key_not_found()
     counts = service.active_endpoint_counts(partner.tenant_id, ws.id)
     return api_key_item(row, counts.get(row.id, 0))
+
+
+# ── Connect sessions (FSS-1): hosted WhatsApp connect for one workspace ──────
+# Off until configured (503 connect_not_configured). Scoped to the key's tenant
+# AND client app; any other session id answers one uniform 404.
+def _not_configured() -> ApiError:
+    return ApiError(503, "connect_not_configured", "Hosted connect is not configured.")
+
+
+def _session_not_found() -> ApiError:
+    return ApiError(404, "connect_session_not_found", "Connect session not found.")
+
+
+@router.post(
+    "/workspaces/{workspace_id}/connect-sessions",
+    response_model=PartnerConnectSessionCreated,
+    status_code=201,
+)
+def create_connect_session(
+    workspace_id: str,
+    payload: PartnerConnectSessionCreateRequest,
+    partner: PartnerTenant = Depends(get_partner_tenant),
+    db: Session = Depends(get_db),
+) -> PartnerConnectSessionCreated:
+    try:
+        return PartnerConnectService(db).create(
+            _scope(partner),
+            partner.key_id,
+            workspace_id,
+            payload.channelType,
+            payload.returnUrl,
+            payload.clientState,
+        )
+    except ConnectNotConfigured:
+        raise _not_configured()
+    except PartnerWorkspaceNotFound:
+        raise _not_found()
+    except InvalidReturnUrl:
+        raise ApiError(
+            422,
+            "invalid_return_url",
+            "returnUrl must be an absolute URL whose origin is one of this key's allowed return origins.",
+        )
+
+
+@router.get("/connect-sessions/{session_id}", response_model=PartnerConnectSessionItem)
+def get_connect_session(
+    session_id: str,
+    partner: PartnerTenant = Depends(get_partner_tenant),
+    db: Session = Depends(get_db),
+) -> PartnerConnectSessionItem:
+    service = PartnerConnectService(db)
+    try:
+        return service.item(service.get(_scope(partner), session_id))
+    except ConnectNotConfigured:
+        raise _not_configured()
+    except ConnectSessionNotFound:
+        raise _session_not_found()
+
+
+@router.post(
+    "/connect-sessions/{session_id}/complete",
+    response_model=PartnerConnectSessionCompleteResponse,
+)
+def complete_connect_session(
+    session_id: str,
+    partner: PartnerTenant = Depends(get_partner_tenant),
+    db: Session = Depends(get_db),
+) -> PartnerConnectSessionCompleteResponse:
+    service = PartnerConnectService(db)
+    try:
+        return service.completion(service.complete(_scope(partner), session_id))
+    except ConnectNotConfigured:
+        raise _not_configured()
+    except ConnectSessionNotFound:
+        raise _session_not_found()
+    except ConnectSessionNotAuthorized as exc:
+        raise ApiError(
+            409,
+            "connect_session_not_authorized",
+            f"The connect session is {exc.status}; it can be completed only when AUTHORIZED.",
+        )
+
+
+@router.post("/connect-sessions/{session_id}/cancel", response_model=PartnerConnectSessionItem)
+def cancel_connect_session(
+    session_id: str,
+    partner: PartnerTenant = Depends(get_partner_tenant),
+    db: Session = Depends(get_db),
+) -> PartnerConnectSessionItem:
+    service = PartnerConnectService(db)
+    try:
+        return service.item(service.cancel(_scope(partner), session_id))
+    except ConnectNotConfigured:
+        raise _not_configured()
+    except ConnectSessionNotFound:
+        raise _session_not_found()

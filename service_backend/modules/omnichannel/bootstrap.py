@@ -794,6 +794,12 @@ def create_schema_and_tables(engine: Engine) -> None:
             # foreign keys, the indexes, and the external_ref index move.
             for statement in _client_app_statements():
                 conn.execute(text(statement))
+            # Partner connect sessions (module Alembic 0033): a brand-new
+            # table, so `create_all` above already created it with every
+            # column, index, check and foreign key the migration creates
+            # (the two are compared by tests/test_omnichannel_connect_sessions.py).
+            # No existing table changes and nothing to backfill, so there is
+            # no ALTER to mirror here.
 
 
 def install(engine: Engine, db: Session) -> None:
