@@ -394,3 +394,36 @@ def test_route_pull_only_key_is_403(client, h, db):
     r = client.post(MOVE, json=body(w), headers={**_hdr(plain), "Idempotency-Key": "k"})
     assert r.status_code == 403, r.text
     assert h.vendor.writes() == []
+
+
+# ---- the db3 probe script runs end to end (fake vendor) ------------------------------------------------------
+
+def _probe(h, monkeypatch, argv):
+    import app.database as database
+    from modules.autocount.write_back import capabilities, operations
+    from scripts import autocount_spo_move_probe as probe
+
+    real = operations.OperationService
+    monkeypatch.setattr(database, "SessionLocal", h.session_factory)
+    monkeypatch.setattr(operations, "OperationService",
+                        lambda db, **kw: real(db, **{**h.factories(), "receipt_reader": lambda *a: Decimal(0), **kw}))
+    monkeypatch.setattr(capabilities, "VENDOR_CAPABILITIES", capabilities.VENDOR_CAPABILITIES)  # restored after
+    return probe.main(argv)
+
+
+def test_probe_script_splits_then_moves_back_on_db3(h, monkeypatch, capsys):
+    w = World(h)  # switch left OFF: the script turns it on for its own process only
+    code = _probe(h, monkeypatch, ["--company", h.company.id, "--spo", "7103", "--line", str(w.l3),
+                                   "--from-po", "7101", "--to-po", "7102", "--to-line", str(w.b1), "--qty", "24"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert '"outcome": "done"' in out and "## 2. whole move back" in out
+    on_a = [r for r in w.spo_rows() if r["FromDocDtlKey"] == w.a1]
+    assert sorted(r["Qty"] for r in on_a) == [24, 36] and not [r for r in w.spo_rows() if r["FromDocDtlKey"] == w.b1]
+    assert "ac.example.test" not in out  # no host in the evidence
+
+
+def test_probe_script_look_writes_nothing(h, monkeypatch, capsys):
+    World(h)
+    assert _probe(h, monkeypatch, ["--company", h.company.id, "--spo", "7103", "--look"]) == 0
+    assert h.vendor.writes() == []
