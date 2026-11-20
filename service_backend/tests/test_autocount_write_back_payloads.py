@@ -166,8 +166,11 @@ def test_ac_55_11_split_real_case_srtkt38ss(po, so):
     assert new["FromDocDtlKey"] == 11989
     assert new["FOCQty"] == 0
     src = _row(po, 12017)
-    for k in ("ItemCode", "UOM", "UserUOM", "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Description", "Desc2", "ProjNo"):
+    for k in ("ItemCode", "UOM", "UserUOM", "UnitPrice", "Discount", "TaxCode", "Description", "Desc2", "ProjNo"):
         assert new[k] == src[k]
+    # PO-LINK-STUCK-RECONCILE-B (owner rule 16 Nov): the new tied row takes the SO line's date, never the PO
+    # row's; this SO line has none, so none is sent
+    assert "DeliveryDate" not in new
     for r in body["Details"]:
         assert set(r) <= ROW_KEYS
         assert not (set(r) & FORBIDDEN_ROW)
@@ -327,8 +330,10 @@ def test_vendor_link_in_place_omits_empty_date_keeps_valid_one(po, so):
     _row(po2, 12009)["DeliveryDate"] = EMPTY
     body = build_link(po2, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
     assert all("DeliveryDate" not in r for r in body["Details"])
-    body_ok = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
-    assert _new(body_ok)["DeliveryDate"] == "2026-03-15T00:00:00"
+    so2 = copy.deepcopy(so)
+    _row(so2, 11990)["DeliveryDate"] = "2027-01-01T00:00:00"
+    body_ok = build_link(po, 12009, so2, 11990, Decimal(1), so_linked_qty=Decimal(9))
+    assert _new(body_ok)["DeliveryDate"] == "2027-01-01T00:00:00"  # the SO line's date (owner rule 16 Nov)
 
 
 def test_vendor_split_omits_empty_date_on_edited_and_new_row(po, so):
@@ -340,8 +345,11 @@ def test_vendor_split_omits_empty_date_on_edited_and_new_row(po, so):
 
 
 def test_vendor_split_keeps_a_valid_date_on_both_rows(po, so):
-    body = build_link(po, 12017, so, 11989, Decimal(10))
-    assert [r["DeliveryDate"] for r in body["Details"]] == ["2026-03-15T00:00:00"] * 2
+    so2 = copy.deepcopy(so)
+    _row(so2, 11989)["DeliveryDate"] = "2027-01-01T00:00:00"
+    body = build_link(po, 12017, so2, 11989, Decimal(10))
+    # the kept row keeps its own date; the new tied row takes the SO line's (owner rule 16 Nov)
+    assert [r["DeliveryDate"] for r in body["Details"]] == ["2026-03-15T00:00:00", "2027-01-01T00:00:00"]
 
 
 def test_vendor_missing_date_stays_missing(po, so):
