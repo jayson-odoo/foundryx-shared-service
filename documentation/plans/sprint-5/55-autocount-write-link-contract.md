@@ -162,8 +162,10 @@ once the write had time to finish saving (about 7 minutes; before that it stays 
 `POST /write-operations/{id}/close-superseded` (body `{companyCode}`, scope `write_back`; PO-LINK-STUCK-RECONCILE-B):
 an operator closes a parked operation (`pending_verification`, `needs_attention`, or a `VENDOR_TIMEOUT`
 `vendor_error`) after fixing the document by hand. It becomes a final `refused` / `SUPERSEDED` (HTTP 200), nothing is
-sent to AutoCount, and the CRM's next look-up with the same key gets that answer back. A final or running operation
-is answered as it stands (unchanged). Unknown id: `404 UNKNOWN_OPERATION`.
+sent to AutoCount, and the CRM's next look-up with the same key gets that answer back. While the operation's write
+may still be saving (under about 7 minutes since it was sent) it is not closed: the answer is the operation as it
+stands, with a "not confirmed yet" message; close again later. A final or running operation is answered as it stands
+(unchanged). Unknown id: `404 UNKNOWN_OPERATION`.
 Before it claims the operation, Resume clears a stale run on the same PO: an operation left `in_progress` for longer
 than the busy window (600 s, a request that died mid-way) becomes `pending_verification`, so it no longer holds the
 PO; a Resume of that stale operation itself is then answered like any `pending_verification` one. An operation

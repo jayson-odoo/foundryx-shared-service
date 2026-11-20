@@ -528,6 +528,12 @@ class OperationService:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
         if row.status not in self._parked_statuses(row):
             return self._from_row(row)
+        if not self._write_settled(row):
+            # its write may still be saving (a late commit after a timeout): closing now could let a new press
+            # link it a second time. Answered as it stands until the save had time to finish.
+            answer = self._from_row(row)
+            answer.message = NOT_YET_CONFIRMED_MESSAGE
+            return answer
         now = _iso_z(datetime.now(timezone.utc))
         stored = _json_safe({
             "outcome": REFUSED, "errorCode": SUPERSEDED, "message": SUPERSEDED_MESSAGE, "warnings": [],

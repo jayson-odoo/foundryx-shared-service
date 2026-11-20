@@ -222,6 +222,8 @@ def is_vendor_timeout(message: str, vendor_class: Optional[str] = None) -> bool:
     """AutoCount answered that its SQL command timed out (``CriticalSqlException`` / ``SqlException``
     "Timeout expired", "The wait operation timed out"): the save may have landed later. Judged on AutoCount's
     own (redacted) message, never on the HTTP status."""
+    if vendor_class and "sql" not in vendor_class.lower():  # a business exception quoting the words is no timeout
+        return False
     return bool(_TIMEOUT_TEXT.search(message or ""))
 
 

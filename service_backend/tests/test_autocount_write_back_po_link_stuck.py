@@ -320,6 +320,7 @@ def test_s2_same_key_resend_of_a_parked_split_reverifies_and_never_puts_again(h,
 
 def test_s2_close_as_superseded_is_final_refused_and_calls_nothing(h, w):
     res = _parked_split(h, w, key="s-sup")
+    age_actions(h, res)
     calls = len(h.vendor.calls)
     out = h.ops().close_superseded(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id,
                                    operation_id=res.operation_id)
@@ -329,6 +330,33 @@ def test_s2_close_as_superseded_is_final_refused_and_calls_nothing(h, w):
     assert (look.outcome, look.error_code) == ("refused", "SUPERSEDED")
     assert len(h.vendor.calls) == calls
     assert resume(h, res).error_code == "SUPERSEDED"
+
+
+def test_s2_close_as_superseded_waits_while_a_timed_out_save_may_land(h, w):
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
+    res = split(h, w, key="s-sup-young")
+    assert res.error_code == "VENDOR_TIMEOUT"
+    out = h.ops().close_superseded(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id,
+                                   operation_id=res.operation_id)
+    assert (out.outcome, out.error_code) == ("vendor_error", "VENDOR_TIMEOUT")  # not closed yet
+    age_actions(h, res)
+    out = h.ops().close_superseded(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id,
+                                   operation_id=res.operation_id)
+    assert (out.outcome, out.error_code) == ("refused", "SUPERSEDED")
+
+
+def test_s3_a_business_refusal_quoting_timeout_words_is_still_a_refusal(h, w):
+    original = h.vendor._route
+
+    def route(method, leaf, call):
+        if method == "PUT":
+            return httpx.Response(500, json={"ExceptionMessage": "Note 'timeout expired' is not allowed.",
+                                             "ExceptionType": "AutoCount.Invoicing.SomeBusinessException"})
+        return original(method, leaf, call)
+
+    h.vendor._route = route
+    res = _batch(h, w, "to-biz")
+    assert (res.outcome, res.error_code) == ("vendor_error", "VENDOR_REFUSED")
 
 
 def test_s2_close_as_superseded_leaves_a_final_operation_as_it_is(h, w):
@@ -437,6 +465,7 @@ def gw(h, db, w):
 
 def test_route_close_superseded(client, h, gw, w):
     res = _parked_split(h, w, key="r-sup")
+    age_actions(h, res)
     r = client.post(f"{PREFIX}/write-operations/{res.operation_id}/close-superseded", headers=gw.hdr("r-sup-c"),
                     json={"companyCode": "SRT"})
     assert r.status_code == 200, r.text
