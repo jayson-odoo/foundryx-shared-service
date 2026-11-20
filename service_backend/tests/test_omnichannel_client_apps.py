@@ -237,6 +237,16 @@ def test_dashboard_create_gets_the_client_app_named_after_it(client, session_fac
     db.close()
 
 
+def test_a_repeated_non_ascii_name_reuses_its_client_app(client, session_factory):
+    h = _auth(client)
+    first = client.post("/omnichannel/workspaces", json={"name": "Été"}, headers=h)
+    again = client.post("/omnichannel/workspaces", json={"name": "Été"}, headers=h)
+    assert first.status_code in (200, 201) and again.status_code in (200, 201), again.text
+    db = session_factory()
+    assert _app_of(db, again.json()["id"]).id == _app_of(db, first.json()["id"]).id
+    db.close()
+
+
 def test_partner_create_and_key_mint_use_the_keys_client_app(client, session_factory):
     m = _models()
     hdr = partner_headers(client)  # no clientAppId: the tenant default

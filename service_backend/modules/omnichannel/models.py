@@ -68,9 +68,6 @@ class Status(OmniBase):
     __table_args__ = (UniqueConstraint("tenant_id", "scope", "key", name="uq_status_scope_key"),)
 
 
-CLIENT_APP_STATUSES = ("ACTIVE", "DISABLED")
-
-
 class ClientApp(OmniBase):
     """One consuming application (for example EcoHub) inside a tenant.
 

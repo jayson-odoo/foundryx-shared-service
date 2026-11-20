@@ -1,15 +1,10 @@
 """Client app repository - tenant-scoped queries. Pure SQLAlchemy."""
 from typing import Dict, List, Optional, Set
 
-from sqlalchemy import func
+from sqlalchemy import String, func, literal
 from sqlalchemy.orm import Session
 
 from ..models import ClientApp, PartnerApiKey, Workspace
-
-
-def normalise(name: Optional[str]) -> str:
-    """The grouping key: trimmed, case-insensitive (SQL: lower(trim(name)))."""
-    return (name or "").strip().lower()
 
 
 class ClientAppRepository:
@@ -35,7 +30,7 @@ class ClientAppRepository:
             self.db.query(ClientApp)
             .filter(
                 ClientApp.tenant_id == tenant_id,
-                func.lower(func.trim(ClientApp.name)) == normalise(name),
+                func.lower(func.trim(ClientApp.name)) == func.lower(func.trim(literal(name, String))),
             )
             .order_by(ClientApp.created_at.asc(), ClientApp.id.asc())
             .first()

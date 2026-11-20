@@ -35,7 +35,6 @@ from ..models import ClientApp, PartnerApiKey
 from ..repositories.client_app_repository import ClientAppRepository
 
 STATUS_ACTIVE = "ACTIVE"
-STATUS_DISABLED = "DISABLED"
 FALLBACK_NAME = "Default"
 
 
@@ -66,13 +65,14 @@ class ClientAppService:
     def find_or_create_by_name(self, tenant_id: str, name: str, created_by: str) -> ClientApp:
         """The tenant's client app with this normalised name, created (not
         default) when missing."""
+        name = (name or "").strip()
         existing = self.repo.get_by_name(tenant_id, name)
         if existing is not None:
             return existing
         return self._insert(
             lambda: ClientApp(
                 tenant_id=tenant_id,
-                name=(name or "").strip(),
+                name=name,
                 is_default=False,
                 status=STATUS_ACTIVE,
                 created_by=created_by,
@@ -153,9 +153,6 @@ class ClientAppService:
         if app is None:
             raise ClientAppNotFound()
         return app
-
-    def get(self, client_app_id: Optional[str], tenant_id: str) -> Optional[ClientApp]:
-        return self.repo.get(client_app_id, tenant_id) if client_app_id else None
 
     # ---- dashboard read ----
     def list_with_counts(self, tenant_id: str) -> List[Tuple[ClientApp, int]]:
