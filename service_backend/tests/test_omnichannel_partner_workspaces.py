@@ -333,11 +333,11 @@ def test_a_restore_that_loses_the_race_at_commit_is_a_409(client, monkeypatch):
     real = WorkspaceRepository.get_live_by_external_ref
     calls = {"n": 0}
 
-    def stale_first_read(self, tenant_id, external_ref):
+    def stale_first_read(self, tenant_id, external_ref, client_app_id):
         calls["n"] += 1
         if calls["n"] == 1:
             return None  # the other workspace had not committed yet
-        return real(self, tenant_id, external_ref)
+        return real(self, tenant_id, external_ref, client_app_id)
 
     monkeypatch.setattr(WorkspaceRepository, "get_live_by_external_ref", stale_first_read)
     res = client.post(f"{W}/restore", json={"ids": [old]}, headers=h)
