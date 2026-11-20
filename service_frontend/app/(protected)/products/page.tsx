@@ -11,6 +11,7 @@ import { Container } from '@/components/common/container';
 import { ResourceList } from '@/components/platform/resource-list';
 import { ProductFormDialog } from './product-form-dialog';
 import { useProductsListConfig } from './use-products-list-config';
+import { useFxProductSavedToast } from './use-fx-product-saved-toast';
 
 /**
  * Products catalog (core master-data) on the shared ResourceList. Create + Edit
@@ -60,6 +61,8 @@ function ProductsView() {
   );
 
   const config = useProductsListConfig(handlers);
+  // Foundryx UIUX switch on: the done toast with Undo; null while off.
+  const fxSavedToast = useFxProductSavedToast(bump);
 
   return (
     <Fragment>
@@ -69,8 +72,9 @@ function ProductsView() {
           product={editing}
           kinds={kinds}
           onClose={() => setDialogOpen(false)}
-          onSaved={() => {
-            toast.success(editing ? 'Product updated.' : 'Product created.');
+          onSaved={(result) => {
+            if (fxSavedToast) fxSavedToast(result);
+            else toast.success(editing ? 'Product updated.' : 'Product created.');
             bump();
           }}
         />

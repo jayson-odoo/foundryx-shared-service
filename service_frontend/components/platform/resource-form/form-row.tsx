@@ -1,4 +1,8 @@
+'use client';
+
 import { cn } from '@/lib/utils';
+import { useFx } from '@/hooks/use-fx';
+import { FxHoldToCopy } from '@/components/fx/copy/hold-to-copy';
 
 /** Red required marker - system-wide convention for required fields (plan 02 review). */
 export function RequiredMark() {
@@ -20,7 +24,23 @@ export interface FormRowProps {
  * One label/value row in a Resource form. Read mode shows plain values; edit
  * mode passes inputs as children. Required fields render a `*` uniformly.
  */
-export function FormRow({ label, required, children, className }: FormRowProps) {
+export function FormRow(props: FormRowProps) {
+  return useFx() ? <FxFormRow {...props} /> : <FormRowLegacy {...props} />;
+}
+
+/**
+ * With the Foundryx UIUX switch on, a plain read-mode value (text or a
+ * number) is Hold to Copy; inputs and other elements stay as they are,
+ * since fields never copy.
+ */
+function FxFormRow({ children, ...rest }: FormRowProps) {
+  const plain = typeof children === 'string' || typeof children === 'number';
+  return (
+    <FormRowLegacy {...rest}>{plain ? <FxHoldToCopy>{children}</FxHoldToCopy> : children}</FormRowLegacy>
+  );
+}
+
+function FormRowLegacy({ label, required, children, className }: FormRowProps) {
   return (
     <div
       className={cn(

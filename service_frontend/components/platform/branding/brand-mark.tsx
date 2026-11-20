@@ -24,9 +24,14 @@ import { useState } from 'react';
 import Image from 'next/image';
 import type { PublicBranding } from '@/types/branding';
 
-function FoundryxWordmark() {
+export function FoundryxWordmark({ className = 'h-7' }: { className?: string }) {
   return (
-    <svg role="img" aria-label="Foundryx" viewBox="0 0 132 28" className="h-7 w-auto text-primary">
+    <svg
+      role="img"
+      aria-label="Foundryx"
+      viewBox="0 0 132 28"
+      className={`${className} w-auto text-primary`}
+    >
       <text
         x="0"
         y="21"

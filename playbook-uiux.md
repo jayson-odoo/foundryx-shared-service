@@ -91,6 +91,13 @@ From the build:
 - **Undo by waiting:** the tenant windows stay (10 s deletes, 5 s otherwise, Settings > General); under the switch the countdown reads "Deleting 12 contacts in 8 s" with "Undo", and it does not pause under the pointer because the server's clock does not stop. Done toasts (`toast.fxDone`) keep the playbook's 6 s with a pause.
 - **The attention pulse keeps its 1.8 s under reduced motion** (the playbook says it is not decoration), so it names its own duration rather than the `--fx-t-pulse` token, which reduced motion stills.
 - **Keyboard focus slides an icon action's label out** (playbook) although SS's design language bans motion on a keyboard-initiated action; the playbook rule wins under the switch, and reduced motion still stops it.
+- **Header search and filters run on the server**, so a column gets one only where its list already declares that field filterable: text searches (contains), date ranges (whole days, both ends) and status ticks. Status ticks show no counts and number or amount columns get no range, because the list API returns neither counts per value nor number ranges (its range filter takes dates only). A column with nothing to filter sorts when its header is clicked.
+- **"Showing 51-100 of 12,340"** uses a hyphen, not the playbook's en dash (SS bans en dashes in every tracked file).
+- **Lists under the switch keep the page and filters in the address** (`ctx`) whenever the list owns its page; an embedded list never writes the record's own `ctx`. With the switch off only lists that opted in do, as before.
+- **Smart view never shortens a value:** long values wrap inside their capped width (no two-line limit, since a clamp would add the "..." the playbook bans). Lists that reorder their rows by dragging keep today's table (the toggle and moving columns would fight the row order). Hand-resizing columns is off under the switch; the widths come from the content.
+- **Dragging a header** moves the header row live and the column's cells on drop; the Columns panel drags on touch after a short press anywhere on the row rather than only from the grip, so a quick swipe still scrolls the list.
+- **View and column choices are stored with the user's other list preferences** (new keys next to the list's own), so they follow the person across devices, unlike the per-browser switch.
+- **The Advanced settings show the actions and lists rows** now that both are built; "Hover lift" turned off stops the lift on fields and list cards.
 
 ## Mocks
 
@@ -103,7 +110,6 @@ The owner said the mocks need no major change.
 
 Each is still with the owner; the build uses the default shown until answered.
 
-- **Q-TOP:** keep Chat and Apps in the top bar beside the one Jobs button (the mock removed them). Default: one Jobs button; Notifications, Chat and Apps stay as icons.
 - **Q-PLACE:** where the switch lives while off. Default: a Theme icon button in the top bar, as mocked (phones: the user menu, see above).
 - **Q-PHONE:** inbox on phones as browser-style tabs (mock) or one pane at a time with a back button. Default: browser-style tabs, as mocked.
 - **Q-24H:** a closed WhatsApp window shows a warning strip with "Choose template" or the inline template picker (mock). Default: the warning strip with "Choose template".
@@ -111,9 +117,13 @@ Each is still with the owner; the build uses the default shown until answered.
 - **Q-SEND:** add "ask first, press and hold" before a broadcast sends. Default: no; it sends at once, as today.
 - **Q-TPL:** "template sends" means sending a WhatsApp template in a conversation, or submitting a template for approval. Default: only the broadcast done page until clarified.
 - **Q-WL:** may tenant users see the label "Foundryx UIUX (0.71.0)", and does the red action stay #CC3333 for branded tenants. Default: the label shows as built (one constant in `lib/fx/version.ts`, easy to rename) and the red action stays #CC3333.
-- **Q-QT:** build the Clipboard, Quick Tool and right-click tool now. Default: not built until asked.
 
 Also in place as build defaults, still open with the owner: the switch and theme are per browser (Q-SYNC); sign-in, public portal and embedded pages stay outside the switch (Q-SCOPE); fx CSS stays in the four sanctioned CSS files (Q-CSS); Advanced settings are per browser (Q-ADV).
+
+Decided since:
+
+- **Q-TOP (decided by the owner):** one Jobs button replaces Uploads, Imports, Jobs and Downloads in the top bar; Notifications, Chat and Apps stay beside it as icon buttons (the mock had removed Chat and Apps), and so does the Theme button (phones: the Theme row in the user menu).
+- **Q-QT (decided by the owner):** the Clipboard, Quick Tool and right-click tool are not built.
 
 ## Fields (slice F4)
 
@@ -126,6 +136,133 @@ Built defaults for the field rules, each kept in one place so it is easy to chan
 - **Secret fields:** the show/hide eye is reachable by Tab and carries `aria-pressed` while the switch is on (today it is skipped by Tab).
 - **The bare `Select`** (a few screens) gets the playbook look only; it does not switch to the phone's own picker on touch, because its options are not known to the field.
 
+## Shell (slice F5)
+
+Built defaults for the side panel, top bar and banners:
+
+- **Side panel:** the icon rail is max(64px, 5% width) and opens to SS's own 280px panel width. It opens on hover or keyboard focus, waits for the "Wait before it folds to icons" setting (0.3 s), then slides shut over 0.65 s; the slide stays under reduced motion, as the playbook says. The pin is remembered per browser. Icons take the six side-menu hues in menu order. The menu and its gating (permissions, modules, platform entries) are exactly the legacy panel's. Touch screens at desktop width get no hover opening: a tap on an icon goes straight to its page.
+- **No safe triangle:** SS's side panel has no flyout submenus (its groups open in place) and every other submenu is a Radix menu with its own pointer grace area, so no safe-zone code was built and the "Show the submenu safe zone" setting stays hidden.
+- **Top bar:** the mega menu stays on wider screens, so no way to a page is lost. The search box opens SS's existing search; cross-record search is a separate feature. SS has no branch picker, so only the search box moves into the page header on merge. Search fades into the header over 0.2 s (the playbook's hover step) rather than 0.25 s, which is not one of its timing steps.
+- **Phones:** the page header scrolls away under the frozen top bar (it is frozen only on wider screens). Condensed, the bar's icon buttons and the avatar fold into one menu button.
+- **One Jobs place:** until slice W3-JOBS builds the playbook's single Jobs list, the Jobs sheet shows SS's four existing lists (Uploads, Imports, Jobs, Downloads) as tabs; whatever opened one of the old drawers now opens the sheet on that tab. The badge is the number of uploads, imports, jobs and downloads still running.
+- **Impersonation banner:** a system banner in the warn set, "Viewing as <name>. Anything you create or change is still recorded under your own account.", with "Stop viewing as <name>"; "Hide banner" stays (agreed difference 17) and folds it to a pill as today.
+- **Lost connection:** the system banner "Reconnecting. New messages may be late." shows after 5 s without the live connection (owner choice) and leaves once it is back (`useConnectionBanner`).
+- **Blocked area:** a thin warn strip at the top of the blocked part, one line and one text button (`FxBlockedArea`, gap audit item 7).
+
+## What was applied (record of the build, 2026-11-18 to 2026-11-19)
+
+Every slice below is merged into `development` and sits behind the switch, off by default. Numbers are pull requests in this repo.
+
+Foundation:
+
+- #276 F1: the switch, theme tokens, Theme panel and the switch-off parity harness.
+- #277 F4: fields (dates, money, steppers, notes, secrets, password strength, moments and zone lines).
+- #278 F2: the red Main Action, icon actions, confirm dialogs, done toasts and the page header.
+- #279 S-ADV: Advanced settings panel and presets.
+- #285 F3a: lists (Smart and Table view, Columns panel, header search, filter and sort, pager).
+- #288 F3b: list selection bar, empty and error states, phone cards, Hold to Copy, record arrows.
+- #287 F5: side panel rail, top bar, the one Jobs button, banners.
+- #291: dropdown options clickable under the new look.
+- #295: the reason shows when impersonation is refused; the app logos are restored.
+- #297: foundation follow-up from the first page wave (record pages get their red action and More menu from the form config, list Create handed to the page header, the countdown names its record, steppers clamp without snapping, end-aligned amount columns, more icons).
+- #305: fix batch (list date filters use the user's day, the live feed reconnects, the discard guard asks before leaving typed values in both looks, media limit, frozen list header, phone card status, merged search).
+
+Pages (109 routes under `app/(protected)/`):
+
+- Wave 1: #292 conversation pane, #294 inbox, #289 contacts list, #296 contact record and new contact, #293 new broadcast and its done page, #290 products.
+- Wave 2: #299 broadcasts list and detail, dashboard, reports; #298 channels, connect wizard, WhatsApp template builder; #300 workspaces, media limits, quick replies, embed access, migration.
+- Wave 3: #301 users, roles, teams; #303 jobs, imports, the import steps, the Jobs sheet; #302 tenants, status engine, platform rules, App Store; #306 documents drive, shared links, document types, document settings; #304 developer logs, log settings, email log, AI traces, AutoCount calls.
+- Wave 4: #308 general, branding, terminology, numbering, statuses, rules, workflow settings, import settings, meeting settings; #311 email templates and integrations; #307 Claude connector, AI agents, AI skills; #312 My Account and My meetings.
+- Wave 5: #313 AutoCount companies, entities and the task editor chrome; #314 AutoCount review, pull and find.
+- Wave 6: #317 feedback, triage board, business requirements, embed connections; #315 workflows, forms, the fill page and submissions.
+
+Fixes to today's look that the check of the new look found, merged 2026-11-19 by the owner's word:
+
+- #319: the share dialog's Expiry and Password switches open their fields; a share's expiry ends at midnight in the viewer's zone.
+- #320: the broadcast Recipients filter works with several delivery states ticked (includes a small backend change); the dashboard and reports stop loading and offer "Try again" when a load fails.
+
+Not converted, on purpose: `/` (template dashboard), `/dark-sidebar`, `/i18n-test`; sign-in, the public portal, embedded pages and `/wa-callback` (see "How the switch is built").
+
+## Agreed differences added during the page waves
+
+Owner decisions carried by the page-wave brief (2026-11-18 to 2026-11-19), on top of the lists above:
+
+- **Workflow unchanged:** no new steps and no removed steps beyond what the answers approve. Every write or send made under the switch is the same request as today's for the same input; each page slice carries a test comparing both looks.
+- **Deletes:** where the playbook asks for a strong confirm, the user types the record's name or number (no press and hold): erase a contact (its name), tenant purge (the slug), module uninstall (the module name), delete forever in Documents (the entry's name, or the count when several are ticked), bulk revoke of shared links and of Claude connector grants (the count). This settles Q-ERASE and Q-BULK.
+- **Undo** only where the existing API can really reverse the action; everywhere else the done toast has no Undo. Deletes keep the tenant's deferred window (10 s deletes, 5 s otherwise).
+- **Per-section editing stays** on the contact record (settles Q-EDIT): the record has no single red action; each section keeps its own Edit.
+- **Money:** "RM" only when the currency is MYR, the ISO code otherwise (settles Q-CUR). **Day totals** use the report's own zone (settles Q-TZ). **Every dropdown is searchable** (settles Q-DD).
+- **Secrets and keys** are shown once, then as "ending a91c"; write-only where the answers say so.
+- **One Jobs place** (the shell's Jobs sheet) and **Check always before Import**.
+
+Owner decisions of 2026-11-19:
+
+- A product with no currency keeps showing "RM" (the frontend has no tenant default currency to fall back to).
+- A failed send keeps the message in the thread and the text in the box.
+- Rotate secret keeps the 3 second press and hold.
+- The pasted-token "Try again" is kept.
+- Rotating the embed signing secret keeps its confirm.
+- The contacts branch (workspace) picker stays in the page header for now; the top bar has no slot for it.
+
+Differences that came out of the build (each recorded in its pull request):
+
+- **Connect on each card:** Channels and Integrations have no red action; each service card carries its own Connect (gap-audit choice). Read-only pages (dashboard, reports, jobs, imports, logs, email log, AI traces, AutoCount calls, review, shared links, triage board) and list-of-settings pages (terminology, numbering, statuses, rules, branding) have no red action either, because they have no single main thing to do.
+- **Channel disconnect** stays the deferred action with Undo, not a confirm (the confirm carve-out list does not grow).
+- **Import steps 2 to 4 stay on the import page** instead of moving into the dialog: a dialog cannot refresh the list behind it after an import.
+- **AutoCount batch review:** "Preview push" stays a visible button so the blocked red action can point at it.
+- **Form fill page:** number fields keep today's input (a stepper cannot hold an empty answer, and the decimal field submits a padded string today).
+- **Inbox rail** shows no counts (the API returns none per view, stage or team).
+
+## Not built, and why
+
+- **"Template sends" done page** (owner decision, Q-TPL): only the broadcast done page exists.
+- **Clipboard, Quick Tool, right-click tool** (owner decision, Q-QT).
+- **Ask first before a broadcast sends** (Q-SEND default): it sends at once, as today.
+- **Undo** after: a lifecycle move, erase, reopening a closed conversation, send now, cancel and duplicate of a broadcast, API key mint, revoke and rotate, workspace create and save, migration start and abort, user and role edits, invitations, tenant create, save and purge, module install and uninstall, every import step, email retry, numbering changes, grant revoke, AutoCount company saves, batch approve and discard, feedback status moves, comments and captures. The API has no reverse for any of them.
+- **Done toast buttons other than Undo** ("Download", "View errors"): the toast takes only Undo.
+- **"A job that ended with errors stays marked until opened":** nothing stores a seen state.
+- **Counts on status filter ticks and number or amount ranges in list headers:** the list API returns neither.
+- **Counts on the inbox rail:** see above.
+- **Company-wide admin settings and a synced switch** (Q-ADV, Q-SYNC): both need backend work; everything stays per browser.
+- **Storage migration wizard:** restyled and unit-tested, but no page mounts it, so it cannot be reached.
+- **The playbook's own audit script was skipped by the owner on 2026-11-19** (this settles Q-AUDIT): it drives a browser tool this repo has retired and bans from every tracked file. The full check below was done by hand with the repo's allowed browser tool instead.
+
+## Full check (2026-11-19)
+
+Run on `development` at `b89a7184` (before #319 and #320 merged; both are fixes to today's look and were not re-run in a browser), against a throwaway local stack (scratch database, sandbox channels, demo admin and platform operator).
+
+- Lint 0 errors (259 warnings); 675 test files and 5,607 tests pass; production build passes; the four convention greps are empty.
+- 105 of the 109 converted routes were opened at 1280 and 375, switch on and off (420 page loads). Menu pages were reached by side-menu clicks at 1280 in both looks; record and "new" pages by clicks from their list under the switch at 1280, then by address for the other three passes. No page scrolled sideways at 375 in either look. With the switch off no page carried `data-fx`. With it on every page carried the new shell, and every page except the form fill and submission pages carried the new page header (FX-39 below).
+- Not reached (no local way to create the record): a migration job, an AI trace, a Claude connector grant, an AutoCount review batch. The AutoCount mapping page was opened only in its "not configured" state.
+- Flows done once in each look with the same input, and the write requests compared: add product, new broadcast and Send now (sandbox), send a message in a conversation, new quick reply, new team, users import (upload, check, import), save general settings, capture feedback, fill and submit a form. All identical. Under the switch only: the Theme panel and the switch, Jobs sheet, users search, trash a user and Undo, erase a contact by typing its name, the discard guard, reopen a conversation, light and dark, reduced motion (three pages).
+- Could not run locally: real WhatsApp and Meta sends and AutoCount calls (checked up to the request or the blocking message).
+- Console: no page errors. Failed requests seen: the Branding page asks for `/media/foundryx/foundryx-logo.png`, which is not in the build (both looks); the new email template page sends two preview requests that are refused (422) before anything is typed (new look only).
+
+## Known open items
+
+Still open after the full check (ids from the programme's findings list):
+
+- FX-05: on phones the breadcrumb wraps beside the red action (not seen in this check; not fixed by any slice).
+- FX-06: the see-through Advanced settings panel lets the red action glow through. Needs an owner decision.
+- FX-07: status filter ticks show no counts (needs backend counts).
+- FX-08: the default sort shows as an active sort.
+- FX-14: a product with no currency shows "RM" (decided 2026-11-19: keep).
+- FX-18: the top bar has no slot for a branch picker (decided 2026-11-19: stays in the page header for now).
+- FX-23: shared form sections show field errors as text that takes layout space.
+- FX-24: with the switch off, the contacts page can scroll 3px sideways at 375 when Manage segments shows (exists today; not seen in this check).
+- FX-28: a list cannot be refetched in place from outside.
+- FX-29: the conversation socket reports its connection only to the inbox, so the broadcast page cannot show the lost-connection banner.
+- FX-34: the typed-confirm hint says "name" also for a number.
+- FX-35: confirm dialogs have no new-look-only title or wording fields.
+- FX-36: the storage migration wizard is mounted on no page.
+- FX-37 (new): the Branding page's logo preview asks for a file that is not shipped (`/media/foundryx/foundryx-logo.png`, 404), in both looks.
+- FX-38 (new): under the switch the new email template page sends two refused preview requests (422) on load.
+- FX-39 (new): under the switch the form fill and submission pages keep today's header and orange Submit button (no page header, no red action).
+
+Closed during the programme: FX-01, FX-02, FX-03, FX-04, FX-09, FX-10, FX-11, FX-12, FX-13, FX-15, FX-16, FX-17, FX-19, FX-20, FX-21, FX-22, FX-25, FX-26, FX-30 (#320), FX-31 (#320), FX-33 (#319). FX-27 and FX-32 were process notes.
+
 ## Final confirmation
 
-Final confirmation of the design, in words: not yet. Until then the switch stays off by default, and the original UI is not replaced.
+Final confirmation: confirmed by the owner on 2026-11-19
+
+Final confirmation of the design, in words: confirmed by the owner on 2026-11-19, after the owner tested the new look on a local build of `development` that included the two fixes #319 and #320 and the record #321. The switch still ships off by default, and this record changes no product code. FX-37, FX-38 and FX-39 from the full check stay open and unfixed.

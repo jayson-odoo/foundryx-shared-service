@@ -27,6 +27,8 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart';
 import type { ReportBucket, ReportSeries } from '@/types/omnichannel';
+import { useFx } from '@/hooks/use-fx';
+import { FxReportChart } from './fx-report-chart';
 
 const SERIES_COLORS = [
   'var(--chart-1)',
@@ -71,9 +73,18 @@ export interface ReportChartProps {
   /** Shown instead of the chart when there is nothing to plot. */
   emptyMessage?: string;
   className?: string;
+  /** Foundryx UIUX switch only: each series' total for the key line above
+   *  the chart, when the report already counts them (else the points are
+   *  summed). Ignored with the switch off. */
+  fxTotals?: Record<string, number>;
 }
 
-export function ReportChart({ buckets, series, variant = 'bar', emptyMessage, className }: ReportChartProps) {
+/** Foundryx UIUX switch: the playbook chart while on; today's while off. */
+export function ReportChart(props: ReportChartProps) {
+  return useFx() ? <FxReportChart {...props} /> : <ReportChartLegacy {...props} />;
+}
+
+function ReportChartLegacy({ buckets, series, variant = 'bar', emptyMessage, className }: ReportChartProps) {
   const hasData = buckets.length > 0 && series.some((s) => s.points.some((p) => p > 0));
 
   if (!hasData) {

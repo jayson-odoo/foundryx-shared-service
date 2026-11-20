@@ -5,6 +5,7 @@ import { CheckCircle2, CircleAlert, Loader2, Settings2, XCircle } from 'lucide-r
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { useFx } from '@/hooks/use-fx';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
 import { JOB_IN_FLIGHT, type Job } from '@/types/jobs';
@@ -28,41 +29,62 @@ export interface JobsDrawerProps {
  * status + progress. Click a job → its detail page. Poll/refresh is owned by the
  * provider; this is presentational.
  */
-export function JobsDrawer({ open, onOpenChange, jobs }: JobsDrawerProps) {
-  const router = useRouter();
+export function JobsDrawer(props: JobsDrawerProps) {
+  // Foundryx UIUX: one Jobs place (components/fx/shell/jobs-sheet.tsx) shows
+  // this list as a tab, so the drawer itself stays closed while the switch is on.
+  return useFx() ? null : <JobsDrawerLegacy {...props} />;
+}
 
+function JobsDrawerLegacy({ open, onOpenChange, jobs }: JobsDrawerProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
         <SheetHeader className="border-b px-4 py-3">
           <SheetTitle>Jobs</SheetTitle>
         </SheetHeader>
-        <div className="flex-1 overflow-y-auto">
-          {jobs.length === 0 ? (
-            <p className="text-muted-foreground p-6 text-center text-sm">
-              No background jobs yet.
-            </p>
-          ) : (
-            <ul className="divide-y">
-              {jobs.map((job) => (
-                <li
-                  key={job.id}
-                  className="hover:bg-accent flex cursor-pointer items-start gap-3 px-4 py-3"
-                  onClick={() => {
-                    onOpenChange(false);
-                    router.push(`/jobs/${job.id}`);
-                  }}
-                >
-                  <Settings2 className="text-muted-foreground mt-0.5 size-5 shrink-0" />
-                  <JobRow job={job} />
-                  <StatusIcon job={job} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        <JobsList jobs={jobs} onNavigate={() => onOpenChange(false)} />
       </SheetContent>
     </Sheet>
+  );
+}
+
+/** The drawer's list: each job, click through to its page. Shared with the
+ *  Foundryx UIUX Jobs sheet, so both show the same rows. */
+export function JobsList({
+  jobs,
+  onNavigate,
+}: {
+  jobs: Job[];
+  /** Called before following a job's link (the panel closes). */
+  onNavigate: () => void;
+}) {
+  const router = useRouter();
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {jobs.length === 0 ? (
+        <p className="text-muted-foreground p-6 text-center text-sm">
+          No background jobs yet.
+        </p>
+      ) : (
+        <ul className="divide-y">
+          {jobs.map((job) => (
+            <li
+              key={job.id}
+              className="hover:bg-accent flex cursor-pointer items-start gap-3 px-4 py-3"
+              onClick={() => {
+                onNavigate();
+                router.push(`/jobs/${job.id}`);
+              }}
+            >
+              <Settings2 className="text-muted-foreground mt-0.5 size-5 shrink-0" />
+              <JobRow job={job} />
+              <StatusIcon job={job} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

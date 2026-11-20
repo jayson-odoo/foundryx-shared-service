@@ -101,6 +101,14 @@ function threadQueryString(query: ThreadListQuery): string {
 
 const RECONNECT_DELAY_MS = 3_000;
 
+/**
+ * Wait before reconnect try `attempt` (0-based): 1 s, then doubling, at most
+ * 30 s, so a long outage never hammers the server and a short one recovers fast.
+ */
+export function reconnectDelayMs(attempt: number): number {
+  return Math.min(30_000, 1_000 * 2 ** Math.max(0, attempt));
+}
+
 export const realConversationService: ConversationService = {
   async listThreads(query) {
     const res = await apiFetch<{ data: ConversationThread[] }>(
@@ -268,56 +276,128 @@ export const realConversationService: ConversationService = {
     return apiFetch<LifecycleMove[]>(`/omnichannel/contacts/${contactId}/lifecycle-moves`);
   },
 
-  subscribe(workspaceId, handler: (event: ConversationSocketEvent) => void) {
+  subscribe(
+    workspaceId,
+    handler: (event: ConversationSocketEvent) => void,
+    onConnectionChange?: (connected: boolean) => void,
+  ) {
     let socket: WebSocket | null = null;
     let stopped = false;
+    let connecting = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    // Failed tries in a row since the last open: the next wait doubles.
+    let attempt = 0;
     // A 4403 can be transient - the JWT expired between getSession() and the
     // handshake. getSession() refreshes the token, so retry a bounded few times
     // (slower cadence) rather than giving up forever on the first auth close.
     let authRetries = 0;
     const MAX_AUTH_RETRIES = 3;
+    // Told only when it changes (null: not known yet).
+    let connected: boolean | null = null;
+    const report = (next: boolean) => {
+      if (connected === next) return;
+      connected = next;
+      onConnectionChange?.(next);
+    };
+
+    const isOffline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
+
+    const retryLater = (delay = reconnectDelayMs(attempt++)) => {
+      if (stopped) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void connect();
+      }, delay);
+    };
 
     const connect = async () => {
+      if (stopped || socket || connecting) return;
+      // Offline: nothing can connect; the browser's `online` event starts again.
+      if (isOffline()) return;
+      connecting = true;
       // Embed runtime authenticates the WS with the in-memory embed access
       // token (read fresh each connect so a refreshed token is picked up on
       // reconnect); otherwise the NextAuth JWT. Browsers can't set WS headers,
       // so it rides the `token` query param either way.
-      const embed = embedAuthStore.getState();
-      const token = embed?.accessToken ?? (await getSession())?.accessToken;
-      if (stopped || !token) return;
+      let token: string | undefined;
+      try {
+        const embed = embedAuthStore.getState();
+        token = embed?.accessToken ?? (await getSession())?.accessToken;
+      } catch {
+        token = undefined;
+      }
+      connecting = false;
+      if (stopped) return;
+      // No token: the session could not be read (the network is down, or it
+      // just came back). Try again later instead of stopping for good.
+      if (!token) {
+        report(false);
+        retryLater();
+        return;
+      }
 
-      socket = new WebSocket(
+      const ws = new WebSocket(
         wsUrl(`/omnichannel/ws?workspaceId=${encodeURIComponent(workspaceId)}&token=${encodeURIComponent(token)}`),
       );
-      socket.onopen = () => {
+      socket = ws;
+      ws.onopen = () => {
         authRetries = 0; // a successful connect clears the auth-retry budget
+        attempt = 0;
+        report(true);
       };
-      socket.onmessage = (e) => {
+      ws.onmessage = (e) => {
         try {
           handler(JSON.parse(e.data) as ConversationSocketEvent);
         } catch {
           // Malformed frame - drop it; the DB remains the source of truth.
         }
       };
-      socket.onclose = (e) => {
+      ws.onclose = (e) => {
+        // A socket already dropped (offline) or replaced says nothing new.
+        if (socket !== ws) return;
         socket = null;
         if (stopped) return;
+        report(false);
         if (e.code === 4403) {
           // Genuine permission denial stops after a few tries; a refreshed
           // token on the next attempt recovers an expired-token close.
-          if (authRetries++ < MAX_AUTH_RETRIES) {
-            retryTimer = setTimeout(() => void connect(), RECONNECT_DELAY_MS * 2);
-          }
+          if (authRetries++ < MAX_AUTH_RETRIES) retryLater(RECONNECT_DELAY_MS * 2);
           return;
         }
-        retryTimer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
+        retryLater();
       };
     };
+
+    // The browser lost its network: the socket is gone even if it has not
+    // noticed yet, so drop it now and wait for the network to return.
+    const onOffline = () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      const ws = socket;
+      socket = null;
+      report(false);
+      ws?.close();
+    };
+    // Back online: connect straight away, with the waits starting over.
+    const onOnline = () => {
+      attempt = 0;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      void connect();
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('offline', onOffline);
+      window.addEventListener('online', onOnline);
+    }
     void connect();
 
     return () => {
       stopped = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('offline', onOffline);
+        window.removeEventListener('online', onOnline);
+      }
       if (retryTimer) clearTimeout(retryTimer);
       socket?.close();
     };

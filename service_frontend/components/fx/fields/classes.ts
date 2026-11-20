@@ -16,6 +16,7 @@ export const FX_FIELD =
   'rounded-(--fx-r-m) shadow-none outline-none ' +
   'transition-[translate,border-color,background-color,box-shadow] duration-(--fx-t-hover) ease-(--fx-ease-out) ' +
   'enabled:hover:-translate-y-0.5 enabled:hover:border-(--fx-ink-3) enabled:hover:bg-(--fx-surface-2) ' +
+  '[:root[data-fx-lift=off]_&]:hover:translate-y-0 ' +
   'enabled:hover:shadow-[0_4px_12px_var(--fx-shade)] ' +
   'focus-visible:border-(--fx-link) focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-(--fx-link)/20 ' +
   'disabled:cursor-not-allowed disabled:opacity-60 read-only:bg-(--fx-surface-2) ' +
@@ -29,6 +30,7 @@ export const FX_FIELD_BOX =
   'flex items-center border border-(--fx-line-2) bg-(--fx-surface) text-(--fx-ink) rounded-(--fx-r-m) ' +
   'transition-[translate,border-color,background-color,box-shadow] duration-(--fx-t-hover) ease-(--fx-ease-out) ' +
   'not-has-disabled:hover:-translate-y-0.5 not-has-disabled:hover:border-(--fx-ink-3) not-has-disabled:hover:bg-(--fx-surface-2) ' +
+  '[:root[data-fx-lift=off]_&]:hover:translate-y-0 ' +
   'not-has-disabled:hover:shadow-[0_4px_12px_var(--fx-shade)] ' +
   'has-focus-visible:border-(--fx-link) has-focus-visible:ring-[3px] has-focus-visible:ring-(--fx-link)/20 ' +
   'has-disabled:cursor-not-allowed has-disabled:opacity-60 ' +
@@ -54,8 +56,15 @@ export type FxFieldSize = keyof typeof FX_FIELD_SIZE;
 export const FX_MENU =
   'rounded-[12px] border border-(--fx-line) bg-(--fx-surface) text-(--fx-ink) shadow-[0_12px_32px_var(--fx-lift)]';
 
-/** One row of a menu: tinted under the pointer or the keyboard. */
+/**
+ * One row of a menu: tinted under the pointer or the keyboard.
+ *
+ * Disabled is matched on the attribute VALUE, never on the bare attribute:
+ * cmdk writes `data-disabled="false"` on every enabled row (and "true" when
+ * disabled), which a bare `data-disabled:` variant would treat as disabled.
+ * Radix rows write `data-disabled=""` only while disabled, hence the second form.
+ */
 export const FX_MENU_ROW =
   'flex w-full cursor-default select-none items-center gap-2 rounded-(--fx-r-s) px-2 py-1.5 text-sm text-(--fx-ink) outline-none ' +
   'data-[selected=true]:bg-(--fx-link-bg) data-[highlighted]:bg-(--fx-link-bg) focus:bg-(--fx-link-bg) ' +
-  'data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-disabled:pointer-events-none data-disabled:opacity-50';
+  "data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[disabled='']:pointer-events-none data-[disabled='']:opacity-50";

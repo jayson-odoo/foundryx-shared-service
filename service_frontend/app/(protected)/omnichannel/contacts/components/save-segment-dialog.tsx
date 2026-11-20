@@ -31,9 +31,12 @@ export interface SaveSegmentDialogProps {
   onOpenChange: (open: boolean) => void;
   filter: FilterGroup;
   onSave: (values: SegmentFormValues) => Promise<unknown>;
+  /** Foundryx UIUX switch only: says it was saved instead of the plain
+   *  "Segment saved." toast (the page passes it only with the switch on). */
+  onSaved?: (values: SegmentFormValues, created: unknown) => void;
 }
 
-export function SaveSegmentDialog({ open, onOpenChange, filter, onSave }: SaveSegmentDialogProps) {
+export function SaveSegmentDialog({ open, onOpenChange, filter, onSave, onSaved }: SaveSegmentDialogProps) {
   void filter; // the tree itself is carried by the caller; this dialog only names it
   const [submitting, setSubmitting] = useState(false);
   const form = useForm<SegmentFormValues>({
@@ -50,8 +53,9 @@ export function SaveSegmentDialog({ open, onOpenChange, filter, onSave }: SaveSe
   const submit = form.handleSubmit(async (values) => {
     setSubmitting(true);
     try {
-      await onSave(values);
-      toast.success('Segment saved.');
+      const created = await onSave(values);
+      if (onSaved) onSaved(values, created);
+      else toast.success('Segment saved.');
       onOpenChange(false);
     } catch (error) {
       if (error instanceof ApiError && error.status === 422) {

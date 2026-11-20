@@ -116,9 +116,10 @@ function usePageHeaderTrail(
  * frozen under the top bar on a see-through surface; title and crumbs on the
  * left; at the top right the Other Actions, then the one red action that any
  * component on the page registered (`useRegisterMainAction`), with its
- * blocked reason hanging under it. On phones, when the title would get less
- * than 140px, it takes its own line and the actions stay together under it
- * at the right. `data-fx-header` is where the top bar merges in (F5).
+ * blocked reason hanging under it. Other Actions the page config names in
+ * `fx.moreActionIds` sit in the More menu (`useRegisterOtherActions`). On
+ * phones, when the title would get less than 140px, it takes its own line
+ * and the actions stay together under it at the right. `data-fx-header` is where the top bar merges in (F5).
  */
 function FxPageHeader({
   title,
@@ -194,13 +195,21 @@ function FxPageHeader({
           <div className="text-sm text-(--fx-ink-3)">{description}</div>
         )}
       </div>
+      {/* The top bar's search moves in here once the page scrolls (F5,
+          app/components/layouts/demo1/components/fx-header.tsx). */}
+      <div
+        data-fx-header-merge=""
+        className="flex min-w-0 items-center self-center empty:hidden"
+      />
       {hasActions && (
         <div
           data-fx-header-actions=""
-          className="ms-auto flex flex-nowrap items-start gap-2"
+          className="ms-auto flex flex-wrap items-start justify-end gap-2"
         >
           {actions && <div className="flex items-center gap-2">{actions}</div>}
-          {page.others.length > 0 && <FxOtherActions actions={page.others} />}
+          {page.others.length > 0 && (
+            <FxOtherActions actions={page.others} moreIds={page.moreIds} />
+          )}
           {main && (
             <FxMainAction
               key={main.id}

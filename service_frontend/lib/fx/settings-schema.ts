@@ -44,7 +44,7 @@ export type FxSlice =
  * panel shows a row only when its behaviour exists, so each slice that builds
  * a setting's behaviour adds itself here in the same change.
  */
-export const FX_BUILT_SLICES: readonly FxSlice[] = ['F1'];
+export const FX_BUILT_SLICES: readonly FxSlice[] = ['F1', 'F2', 'F3a', 'F3b', 'F4', 'F5'];
 
 interface FxSettingBase {
   key: string;
@@ -556,10 +556,11 @@ export const FX_SETTINGS: FxSetting[] = [
     { min: 2, max: 12, step: 1, unit: 'px' },
     'scroll',
   ),
-  // Testing
+  // Testing. SS's side panel has no flyout submenus (its groups open in
+  // place), so no slice draws a safe zone yet and the row stays hidden.
   sw(
     'testing',
-    'F5',
+    'unassigned',
     'safe-zone',
     'Show the submenu safe zone',
     'Draws the area a submenu keeps open.',

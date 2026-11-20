@@ -112,6 +112,14 @@ export function GrantDetailView({ grantId }: { grantId: string }) {
       onCancel: reload,
       onReload: reload,
       recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): revoking is what this
+      // page is for, so it is the red action while the grant is active (it
+      // still asks first). A revoked or expired grant has none.
+      fx: {
+        mainActionId: 'revoke',
+        fullLabel: ([g]) => (g ? `Revoke ${g.userName}'s access to ${g.productName}` : 'Revoke'),
+        discardName: grant.userName,
+      },
     };
   }, [grant, activity, actions, reload, fetchRecordAt, buildRecordHref]);
 

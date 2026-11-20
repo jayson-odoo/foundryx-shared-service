@@ -5,7 +5,7 @@
  * key, filter or pagination change. Each renderer casts `rows`/`totals` to
  * its own concrete shape (see `types/omnichannel.ts` per-report row types).
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { omnichannelReportService, type ReportQuery } from '@/services/omnichannel-report-service';
 import type { ReportKey, ReportResponse } from '@/types/omnichannel';
 
@@ -13,6 +13,8 @@ export interface UseOmnichannelReportResult {
   report: ReportResponse | null;
   loading: boolean;
   error: boolean;
+  /** Reads the report again (the "Try again" after a failed load). */
+  reload: () => void;
 }
 
 export function useOmnichannelReport(
@@ -23,6 +25,8 @@ export function useOmnichannelReport(
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
+  const reload = useCallback(() => setReloadToken((t) => t + 1), []);
 
   useEffect(() => {
     if (!workspaceId) {
@@ -42,7 +46,7 @@ export function useOmnichannelReport(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, reportKey, JSON.stringify(query)]);
+  }, [workspaceId, reportKey, JSON.stringify(query), reloadToken]);
 
-  return { report, loading, error };
+  return { report, loading, error, reload };
 }

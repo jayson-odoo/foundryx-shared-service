@@ -12,7 +12,6 @@ import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { PageHeader } from '@/components/platform/page-header';
 import { SearchSelect } from '@/components/platform/search-select';
-import { Button } from '@/components/ui/button';
 import { useCan } from '@/hooks/use-can';
 import { useActiveWorkspace } from '@/hooks/use-contacts';
 import { useReportFilters } from '@/hooks/use-report-filters';
@@ -21,6 +20,8 @@ import { useWorkspaceChannels } from '@/hooks/use-workspace-channels';
 import { useWorkspaceMembers } from '@/hooks/use-workspace-members';
 import type { ReportKey } from '@/types/omnichannel';
 import { ReportFilterBar } from '../components/report-filter-bar';
+import { ReportZoneLine } from '../components/report-zone-line';
+import { ReportExportButton } from './components/report-export-button';
 import { AssignmentsReport } from './components/assignments-report';
 import { ConversationsReport } from './components/conversations-report';
 import { LeaderboardReport } from './components/leaderboard-report';
@@ -78,6 +79,7 @@ export default function OmnichannelReportsPage() {
   );
   const { exporting, runExport } = useReportExport(workspaceId, reportKey, scopedFilters);
   const canExport = can('reports.export');
+  const onExport = useCallback(() => void runExport(), [runExport]);
 
   const onReportChange = useCallback(
     (next: ReportKey) => {
@@ -127,7 +129,7 @@ export default function OmnichannelReportsPage() {
       <Fragment>
         <Container width="fluid">
           <PageHeader
-            description={`Timezone: ${filters.tz}`}
+            description={<ReportZoneLine timeZone={filters.tz} />}
             actions={
               workspaces.length > 1 ? (
                 <SearchSelect
@@ -146,9 +148,12 @@ export default function OmnichannelReportsPage() {
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <ReportPicker value={reportKey} onChange={onReportChange} reports={meta?.reports ?? []} />
             {canExport && (currentDescriptor?.exportable ?? true) && (
-              <Button variant="outline" size="sm" disabled={!workspaceId || exporting} onClick={() => void runExport()}>
-                {exporting ? 'Exporting...' : 'Export'}
-              </Button>
+              <ReportExportButton
+                disabled={!workspaceId || exporting}
+                exporting={exporting}
+                onExport={onExport}
+                reportLabel={currentDescriptor?.label}
+              />
             )}
           </div>
           <ReportFilterBar

@@ -11,9 +11,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { snapToStep, stepValue } from '@/lib/fx/fields';
+import { clampValue, decimalsOf, roundTo, snapToStep, stepValue } from '@/lib/fx/fields';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { FX_FIELD_BOX } from './classes';
+import { useFxControlName } from './fx-field-context';
 
 /** Holding a button: first repeat after 400 ms, then every 80 ms. */
 export const FX_HOLD_DELAY_MS = 400;
@@ -24,7 +25,16 @@ export interface FxStepperProps {
   onChange: (value: number) => void;
   min?: number;
   max?: number;
+  /** What − and + (and the arrow keys) add or take away. */
   step?: number;
+  /** Also put a typed value on the step grid. Off by default: a typed value
+   *  is only kept inside min and max (FX-12), so 6.5 stays 6.5 at step 1. */
+  snap?: boolean;
+  /** The most decimals the value may hold. Every value the field shows or
+   *  sends is rounded to it, so a stored 6.510000228881836 reads 6.51 at
+   *  precision 2. Without it, − and + keep the step's decimals and a typed
+   *  value keeps what was typed. */
+  precision?: number;
   /** Written after the number ("%", "days"). */
   unit?: string;
   disabled?: boolean;
@@ -56,8 +66,27 @@ function useHoldRepeat(run: () => boolean) {
   return { start, stop };
 }
 
+/**
+ * The decimals − and + land on: the step's (and the grid start's), never
+ * more than `precision`. A value between two steps moves onto the grid, so
+ * 6.5 at step 1 goes to 7 and 6.
+ */
+export function fxStepperDecimals(step: number, min: number, precision?: number): number {
+  const fromStep = Math.max(decimalsOf(step), Number.isFinite(min) ? decimalsOf(min) : 0);
+  return precision === undefined ? fromStep : Math.min(fromStep, precision);
+}
+
+/** A number as the field holds it: rounded to `precision` when there is one. */
+function clean(n: number, precision?: number): number {
+  return precision === undefined ? n : roundTo(n, precision);
+}
+
 /** The stepper's number, its keys, and the hold-to-repeat buttons. */
-function useStepper({ value, onChange, min = -Infinity, max = Infinity, step = 1 }: FxStepperProps) {
+function useStepper({ value: raw, onChange, min = -Infinity, max = Infinity, step = 1, snap = false, precision }: FxStepperProps) {
+  // A value from the API may carry binary residue (a 32-bit 6.51 reads
+  // 6.510000228881836): the field shows and steps it rounded to its
+  // precision, and leaves the stored value alone until it is changed.
+  const value = clean(raw, precision);
   const valueRef = useRef(value);
   valueRef.current = value;
   const [text, setText] = useState(String(value));
@@ -67,7 +96,10 @@ function useStepper({ value, onChange, min = -Infinity, max = Infinity, step = 1
   }, [value, typing]);
 
   const move = (direction: 1 | -1) => {
-    const next = stepValue(valueRef.current, direction, min, max, step);
+    const stepped = stepValue(valueRef.current, direction, min, max, step);
+    // Every button, arrow-key and hold-to-repeat value is rounded to the
+    // field's precision, so no residue (6.510000000000001) reaches onChange.
+    const next = clampValue(roundTo(stepped, fxStepperDecimals(step, min, precision)), min, max);
     if (next === valueRef.current) return false;
     valueRef.current = next;
     onChange(next);
@@ -83,7 +115,7 @@ function useStepper({ value, onChange, min = -Infinity, max = Infinity, step = 1
       setText(String(value));
       return;
     }
-    const next = snapToStep(n, min, max, step);
+    const next = clean(snap ? snapToStep(n, min, max, step) : clampValue(n, min, max), precision);
     setText(String(next));
     if (next !== value) onChange(next);
   };
@@ -125,6 +157,13 @@ const ROUND =
 export function FxStepper(props: FxStepperProps) {
   const { disabled, unit, id, className } = props;
   const { inputProps, down, up, atMin, atMax } = useStepper(props);
+  // Its own aria-label, else the labelled FxField around it, else the page's
+  // `<label htmlFor={id}>`.
+  const naming = useFxControlName({
+    id,
+    ariaLabel: props['aria-label'],
+    ariaLabelledBy: props['aria-labelledby'],
+  });
   return (
     <div className={cn('inline-flex items-center gap-2', className)} data-fx-stepper="">
       <button
@@ -146,12 +185,10 @@ export function FxStepper(props: FxStepperProps) {
       </button>
       <div className={cn(FX_FIELD_BOX, 'h-8.5 min-w-16 justify-center gap-1 px-2 text-[0.8125rem] pointer-coarse:text-base')}>
         <input
-          id={id}
           type="text"
           autoComplete="off"
           disabled={disabled}
-          aria-label={props['aria-label']}
-          aria-labelledby={props['aria-labelledby']}
+          {...naming}
           {...inputProps}
           className="w-12 min-w-0 bg-transparent text-center tabular-nums text-(--fx-ink) outline-none"
         />

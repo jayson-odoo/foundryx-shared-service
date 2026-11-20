@@ -1,8 +1,10 @@
 'use client';
 
+import { useFxActor } from './use-fx-actor';
 import { useEffect, useState } from 'react';
 import { Loader2, Webhook } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -52,6 +54,8 @@ export function WebhookEndpointDialog({
   onSaved,
 }: WebhookEndpointDialogProps) {
   const { saving, create, update } = useWebhooks(channelId);
+  const fx = useFx();
+  const byWhom = useFxActor();
   const editing = endpoint !== null;
 
   const [name, setName] = useState('');
@@ -85,7 +89,8 @@ export function WebhookEndpointDialog({
     try {
       if (editing && endpoint) {
         await update(endpoint.id, { name: trimmedName, url: trimmedUrl, events });
-        toast.success('Endpoint updated.');
+        if (fx) toast.fxDone({ what: `${trimmedName} updated`, byWhom: byWhom });
+        else toast.success('Endpoint updated.');
         onSaved();
         onOpenChange(false);
       } else {
