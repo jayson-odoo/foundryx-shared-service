@@ -135,7 +135,8 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
         answer.update(lines=result.batch.get("lines") or [], freeLines=result.batch.get("freeLines") or [])
     elif result.batch is not None:  # link_batch (plan 62 D5): the new PO row per SO row + the free row
         answer.update(links=result.batch.get("links") or [], skipped=result.batch.get("skipped") or [],
-                      freeLine=result.batch.get("freeLine"))
+                      freeLine=result.batch.get("freeLine"),
+                      spoLines=result.batch.get("spoLines") or [])  # plan 71 slice 2: SPO rows that followed
     return answer
 
 
@@ -538,7 +539,7 @@ def link_po_row_batch(
                 "expected_last_modified": _optional_text(raw, "expectedLastModified"),
             }
         except PullGatewayError as exc:  # a request-shape error still carries the batch fields
-            exc.extra = {"links": [], "skipped": [], "freeLine": None}
+            exc.extra = {"links": [], "skipped": [], "freeLine": None, "spoLines": []}
             raise
         result = ops.run(
             tenant_id=key.tenant_id, company_id=company.id, key_id=key.id,
@@ -548,6 +549,7 @@ def link_po_row_batch(
         answer.setdefault("links", [])  # every outcome of this route carries these fields (contract section 4.1a)
         answer.setdefault("skipped", [])
         answer.setdefault("freeLine", None)
+        answer.setdefault("spoLines", [])
         return _respond(answer)
 
     return _frame(request, db, raw_body, "write_link_batch", run, key_required=True, services=(ops,))

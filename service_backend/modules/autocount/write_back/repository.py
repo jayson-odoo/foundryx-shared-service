@@ -666,6 +666,20 @@ class SpoPoLinkRepository:
             query = query.filter(AcSpoPoLink.spo_source_ref != except_ref)
         return Decimal(str(query.scalar() or 0))
 
+    def rows_on_po_row(self, tenant_id: str, company_id: str, po_dtl_key: int) -> List[AcSpoPoLink]:
+        """Every indexed SPO row pointing at the PO row (plan 71 slice 2: the rows a PO split may carry along),
+        in a stable order."""
+        return (
+            self.db.query(AcSpoPoLink)
+            .filter(
+                AcSpoPoLink.tenant_id == tenant_id,
+                AcSpoPoLink.company_id == company_id,
+                AcSpoPoLink.po_dtl_key == po_dtl_key,
+            )
+            .order_by(AcSpoPoLink.spo_source_ref, AcSpoPoLink.spo_dtl_key)
+            .all()
+        )
+
 
 class SoRowIndexRepository:
     """The SO-row index ``ac_so_row_index`` (lane AUTOCOUNT-STRANDED-OPS, C.d); every call is tenant + company

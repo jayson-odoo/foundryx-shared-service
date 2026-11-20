@@ -169,7 +169,7 @@ def test_other_spo_lines_the_kept_po_line_cannot_hold_is_row_on_spo(h):
 # ---- the follow PUT fails: the PO link stands, the SPO line still has a PO line, Resume finishes it --------------
 
 def test_follow_refused_by_autocount_needs_attention_and_resume_finishes_it(h, w):
-    h.vendor.refuse_json_next("PUT", LEAF, after=1)  # the PO PUT passes, the SPO PUT is refused
+    h.vendor.refuse_json_next("PUT", LEAF, after=2)  # the PO link + restore PUTs pass, the SPO PUT is refused
     res = h.run(OP, w.params(40), key="kf1")
     assert res.outcome == "needs_attention" and res.error_code == "SPO_NOT_FOLLOWED", (res.outcome, res.error_code)
     assert res.batch["links"][0]["poDtlKey"] == w.new_po_row()["DtlKey"]  # the PO link landed and is answered
@@ -187,7 +187,7 @@ def test_follow_refused_by_autocount_needs_attention_and_resume_finishes_it(h, w
 
 
 def test_follow_that_landed_but_timed_out_is_confirmed_by_resume_without_a_second_spo_put(h, w):
-    h.vendor.apply_then_500_next("PUT", LEAF, after=1)
+    h.vendor.apply_then_500_next("PUT", LEAF, after=2)
     res = h.run(OP, w.params(40), key="kf2")
     if res.outcome == "done":
         pytest.skip("the read-back already confirmed it")
@@ -200,7 +200,7 @@ def test_follow_that_landed_but_timed_out_is_confirmed_by_resume_without_a_secon
 
 
 def test_spo_line_changed_by_hand_before_the_follow_needs_a_person(h, w):
-    h.vendor.refuse_json_next("PUT", LEAF, after=1)
+    h.vendor.refuse_json_next("PUT", LEAF, after=2)
     res = h.run(OP, w.params(40), key="kf3")
     assert res.outcome == "needs_attention"
     w.spo_rows()[0]["Qty"] = 39  # edited in AutoCount meanwhile
@@ -208,3 +208,40 @@ def test_spo_line_changed_by_hand_before_the_follow_needs_a_person(h, w):
     out = resume(h, res)
     assert out.outcome == "needs_attention" and out.error_code == "SPO_NOT_FOLLOWED", (out.outcome, out.error_code)
     assert len(puts(h, 7203)) == spo_puts  # nothing sent on a line that is not as it was
+
+
+# ---- the route: POST /api/v1/autocount/po-links/batch answers the SPO lines that followed ------------------------
+
+BATCH = "/api/v1/autocount/po-links/batch"
+
+
+@pytest.fixture
+def gw(h, db):
+    from tests.test_autocount_write_back_gateway_qtso import Gw
+
+    switch(h)
+    return Gw(h, db)
+
+
+def body(w, qty=40):
+    return {"companyCode": "SRT", "poDocKey": 7201, "poDtlKey": w.b1,
+            "links": [{"soDocKey": 7202, "soDtlKey": w.so_a, "qty": qty}]}
+
+
+def test_route_answers_the_spo_lines_that_followed(client, gw):
+    w = World(gw.h)
+    r = client.post(BATCH, json=body(w), headers=gw.hdr())
+    assert r.status_code == 200, r.text
+    got = r.json()
+    new_po = got["links"][0]["poDtlKey"]
+    assert got["outcome"] == "done" and len(got["spoLines"]) == 1
+    line = got["spoLines"][0]
+    assert line["spoDocKey"] == 7203 and line["fromSpoDtlKey"] == w.s1 and line["toPoDtlKey"] == new_po
+    assert line["fromPoDtlKey"] == w.b1 and line["qty"] == "40" and line["spoDtlKey"] != w.s1
+
+
+def test_route_refusal_carries_an_empty_spo_lines(client, gw):
+    w = World(gw.h)
+    r = client.post(BATCH, json=body(w, qty=30), headers=gw.hdr())
+    assert r.status_code == 409, r.text
+    assert r.json()["errorCode"] == "ROW_ON_SPO" and r.json()["spoLines"] == []

@@ -35,7 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from modules.autocount.alerts import _safe_subject, alert_recipients
-from modules.autocount.models import AcCompany, AcWriteOperation
+from modules.autocount.models import AcCompany, AcSpoPoLink, AcWriteOperation
 from modules.autocount.repositories import CompanyRepository
 from modules.autocount.write_back import call_log as cl, capabilities, frame, guard, payloads
 from modules.autocount.write_back.guard import WriteConnectionError
@@ -113,6 +113,7 @@ LINK_DOC_BATCH = "link_doc_batch"  # plan 69: every linked row of ONE PO documen
 SPO_MOVE = "spo_move_row"  # plan 71: move / split one SPO row onto another PO row, ONE PUT on the SPO
 _COMPOSITE_OPS = (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH, SPO_MOVE)  # the operations outside ``OPS``
 TARGET_RECEIVED = "TARGET_RECEIVED"  # plan 71: the target PO row is fully received
+SPO_NOT_FOLLOWED = "SPO_NOT_FOLLOWED"  # plan 71 slice 2: the PO link landed, an SPO row did not follow (resumable)
 # Plan 69 D2: new linked rows per link PUT (a chunk); a longer document batch is split, never refused.
 MAX_LINES_PER_PUT = 40
 SOME_LINES_NOT_LINKED = "SOME_LINES_NOT_LINKED"  # plan 69: a done document batch with skipped / failed lines
@@ -1507,7 +1508,7 @@ class OperationService:
         doc_date, doc = self._read(company, "PO", spec.doc_key, spec.doc_date)
         if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
             raise _Done(REFUSED, DOC_STALE)
-        old, free = self._link_row_checks(company, defn, spec, doc)
+        old, free = self._link_row_checks(company, defn, spec, doc, spo_follow=spo_move_capable())
         # Owner rule (plan 62, 12 Nov): a bad line never fails the batch. Each line is checked on its own,
         # in request order; a failing line is skipped and named, the rest are linked.
         sources: Dict[int, Doc] = {}
@@ -1532,6 +1533,7 @@ class OperationService:
         if not applied:  # nothing to link: refused, nothing sent, the key is released
             return self._finish(row, REFUSED, ALL_LINKS_SKIPPED, message="every link was skipped",
                                 batch={"links": [], "skipped": skipped, "freeLine": None})
+        follows = self._spo_follow_plan(company, spec, old, applied, running) if spo_move_capable() else []
         snapshot = _json_safe({
             "kind": "PO", "mode": "batch", "docKey": spec.doc_key, "docNo": doc.get("DocNo"),
             "docDate": doc_date.isoformat(), "lastModified": doc.get("LastModified"),
@@ -1541,7 +1543,7 @@ class OperationService:
                        "soNo": link["so_no"], "location": link["location"],
                        "soDeliveryDate": link["so_link"]["soDeliveryDate"], "note": link["so_link"]["note"]}
                       for link in applied],
-            "skipped": skipped,
+            "skipped": skipped, "spoFollows": follows,
         })
         self._store_snapshot(row, snapshot)
         self._log_remark_overwrite(doc)
@@ -1570,15 +1572,18 @@ class OperationService:
         self.db.commit()  # the next guard sees these links before the lock is released
         return snapshot, res.document
 
-    def _link_row_checks(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc) -> Tuple[Doc, Decimal]:
+    def _link_row_checks(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc, *,
+                         spo_follow: bool = False) -> Tuple[Doc, Decimal]:
         """The PO row ``spec.dtl_key`` may be linked: ``(row, free qty)``, else ``_Done(REFUSED, code)``. One
-        rule for the one-row batch (plan 62) and every row of a document batch (plan 69)."""
+        rule for the one-row batch (plan 62) and every row of a document batch (plan 69). ``spo_follow``
+        (plan 71 slice 2, the one-row batch with the SPO move switch on): an SPO row on the PO row is judged
+        later by ``_spo_follow_plan`` instead of refused here."""
         try:
             old = payloads.check_row("PO", doc, spec.dtl_key)  # kind, cancelled, row exists
             payloads._refuse_other_transfer(old)
         except WriteRefusal as exc:
             raise _Done(REFUSED, exc.code, str(exc)) from None
-        spo_ref = self._spo_ref(company, spec.dtl_key)
+        spo_ref = None if spo_follow else self._spo_ref(company, spec.dtl_key)
         if spo_ref:
             raise _Done(REFUSED, "ROW_ON_SPO", payloads.on_spo_message(spo_ref))
         if _link_of("PO", old):
@@ -1695,9 +1700,115 @@ class OperationService:
         kept = next((r for r in document.get("Details") or [] if r.get("DtlKey") == old_key), None)
         batch = {"links": answer, "skipped": list(snap.get("skipped") or []),
                  "freeLine": None if kept is None else {"poDtlKey": old_key, "qty": str(_dec(kept.get("Qty")))}}
+        if snap.get("spoFollows"):  # plan 71 slice 2: the SPO rows follow their new PO rows (one PUT per SPO row)
+            batch["spoLines"], followed = self._spo_follow_run(row, company, snap, answer)
+            if not followed:  # the PO link stands; the SPO row still sits on the kept PO row (Resume finishes it)
+                return self._needs_attention(row, company, snap, SPO_NOT_FOLLOWED, batch=batch, document=document)
         if failed:
             return self._needs_attention(row, company, snap, RESTORE_NOT_LANDED, batch=batch)
         return self._finish(row, DONE, None, document=document, batch=batch)
+
+    # ── SPO rows follow a PO split (plan 71 slice 2, crew ruling 20 Nov) ──────
+
+    def _spo_follow_plan(self, company: AcCompany, spec: _Spec, old: Doc, applied: List[Dict[str, Any]],
+                         taken: Decimal) -> List[Doc]:
+        """The SPO rows that follow this batch's new PO rows; ``[]`` when no SPO row sits on the PO row.
+        One SPO row follows one link of the SAME quantity (the row ``/spo-links/move`` put there for it).
+        Still ``ROW_ON_SPO`` (nothing sent, as before): no SPO row matches a link; the batch takes the whole
+        PO row (no kept row to hold on to until the follow); the kept row cannot hold the SPO rows that stay;
+        a follower that is not movable as a whole (received, changed since the index, busy)."""
+        index = SpoPoLinkRepository(self.db).rows_on_po_row(company.tenant_id, company.id, spec.dtl_key)
+        if not index:
+            spo_ref = self._spo_ref(company, spec.dtl_key)  # the staged copies know one the index does not
+            if spo_ref:
+                raise _Done(REFUSED, "ROW_ON_SPO", payloads.on_spo_message(spo_ref))
+            return []
+        refusal = _Done(REFUSED, "ROW_ON_SPO", payloads.on_spo_message(
+            str(index[0].spo_doc_no or index[0].spo_source_ref)))
+        pool = list(index)
+        picked: List[Tuple[Dict[str, Any], AcSpoPoLink]] = []
+        for link in applied:
+            match = next((r for r in pool if r.spo_dtl_key and _dec(r.qty) == link["qty"]), None)
+            if match is not None:
+                pool.remove(match)
+                picked.append((link, match))
+        rest = _dec(old.get("Qty")) - taken
+        if not picked or rest <= 0 or sum((_dec(r.qty) for r in pool), Decimal(0)) > rest:
+            raise refusal
+        follows: List[Doc] = []
+        docs: Dict[int, Tuple[date, Doc]] = {}
+        for link, found in picked:
+            try:
+                spo_key = int(str(found.spo_source_ref).rsplit(":", 1)[-1])
+            except ValueError:
+                raise refusal from None
+            if spo_key not in docs:
+                self._check_not_busy(company, spo_key, "SPO")
+                docs[spo_key] = self._read(company, "SPO", spo_key, None)
+            spo_date, spo = docs[spo_key]
+            line = _row_in(spo, int(found.spo_dtl_key))
+            if (spo.get("Cancelled") == "T" or line is None or _link_of("SPO", line) != spec.dtl_key
+                    or _dec(line.get("Qty")) != link["qty"] or line.get("ItemCode") != old.get("ItemCode")
+                    or line.get("UOM") != old.get("UOM") or self._spo_received(company, "SPO", spo, line) > 0):
+                raise refusal
+            follows.append({
+                "soDtlKey": link["so_dtl_key"], "kind": "SPO", "docKey": spo_key, "docNo": spo.get("DocNo"),
+                "docDate": spo_date.isoformat(), "row": line, "take": str(link["qty"]),
+                "knownKeys": [r.get("DtlKey") for r in spo.get("Details") or []],
+                "location": line.get("Location"), "fromPoDtlKey": spec.dtl_key,
+            })
+        return follows
+
+    def _spo_follow_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc,
+                        answer: List[Dict[str, Any]]) -> Tuple[List[Doc], bool]:
+        """Move each planned SPO row onto ITS link's new PO row: ``(the rows that followed, all followed)``.
+        Per SPO row: read the SPO fresh; the new row already there = landed (no PUT); the old row exactly as
+        planned = ONE PUT (old row ``"D"``, a new row of the same qty tied to the new PO row, the move's own
+        shape); anything else = not followed and nothing sent (a person looks). A row that did not follow
+        still sits on the kept PO row. Safe to run again (Resume)."""
+        moved: List[Doc] = []
+        ok = True
+        for index, follow in enumerate(snap["spoFollows"]):
+            new_po = next((int(a["poDtlKey"]) for a in answer if int(a["soDtlKey"]) == int(follow["soDtlKey"])), None)
+            if new_po is None:
+                ok = False
+                continue
+            fsnap = dict(follow, newLink={"FromDocType": "PO", "FromDocNo": snap.get("docNo"),
+                                          "FromDocDtlKey": new_po})
+            old_key = int(follow["row"]["DtlKey"])
+            try:
+                _d, spo = self._read(company, "SPO", int(follow["docKey"]), date.fromisoformat(follow["docDate"]))
+            except _Done:
+                ok = False
+                continue
+            new, kept = self._spo_move_rows(fsnap, spo)
+            if new is None:
+                base = follow["row"]
+                untouched = (kept is not None and _dec(kept.get("Qty")) == _dec(base.get("Qty"))
+                             and _link_of("SPO", kept) == _link_of("SPO", base))
+                if not untouched:
+                    ok = False
+                    continue
+                res = self.prims.batch_link(
+                    **self._call(row, company, fsnap, f"follow_spo{index}"), dtl_key=old_key,
+                    lines=[self._line_of(fsnap, fsnap["newLink"], Decimal(follow["take"]))],
+                    expected_last_modified=spo.get("LastModified"))
+                self._step(f"follow_spo{index}", res)
+                if res.outcome != OUTCOME_DONE or res.document is None:
+                    ok = False
+                    continue
+                spo = res.document
+                new, kept = self._spo_move_rows(fsnap, spo)
+            if new is None or kept is not None:  # the whole row moves: no old row may stay
+                ok = False
+                continue
+            new_key = int(new["DtlKey"])
+            spo = self._move(row, company, fsnap, new_key, spo, follow.get("location"), deadline=False)
+            self.prims._stage(company, "SPO", spo, {new_key: old_key})
+            moved.append({"spoDocKey": int(follow["docKey"]), "fromSpoDtlKey": old_key, "spoDtlKey": new_key,
+                          "fromPoDtlKey": int(follow["fromPoDtlKey"]), "toPoDtlKey": new_po,
+                          "qty": _qty_text(follow["take"])})
+        return moved, ok
 
     def _resume_batch(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc) -> OperationResult:
         """A pending batch. Everything landed (every expected (FromSODtlKey, qty) new row is on the PO)
