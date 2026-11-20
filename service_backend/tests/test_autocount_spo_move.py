@@ -237,12 +237,43 @@ def test_ac_71_07_resume_of_a_put_that_never_landed_is_not_applied(h, w):
     h.vendor.timeout_next("PUT", PUT[1])
     res = h.run(OP, w.params(24), key="k7b")
     assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    puts = len(h.vendor.writes())
     out = h.ops().resume(tenant_id=h.company.tenant_id, company_id=h.company.id, operation_id=res.operation_id)
-    if out.outcome == "done":  # the fake applied the timed-out PUT: confirmed, never sent twice
-        assert len([r for r in w.spo_rows() if r["FromDocDtlKey"] == w.b1]) == 1
-    else:
-        assert out.outcome == "recovered" and out.error_code == "OPERATION_NOT_APPLIED"
-        assert w.row(w.l3)["Qty"] == 60
+    assert out.outcome == "recovered" and out.error_code == "OPERATION_NOT_APPLIED", (out.outcome, out.error_code)
+    assert w.row(w.l3)["Qty"] == 60 and len(h.vendor.writes()) == puts  # nothing sent by the resume
+    again = h.run(OP, w.params(24), key="k7b")  # the key is free again: the press runs fresh
+    assert again.outcome == "done", again.error_code
+
+
+def test_ac_71_07_resume_when_the_line_changed_by_hand_needs_a_person(h, w):
+    h.vendor.timeout_next("PUT", PUT[1])
+    res = h.run(OP, w.params(24), key="k7c")
+    assert res.outcome == "pending_verification"
+    w.row(w.l3)["Qty"] = 59  # edited in AutoCount meanwhile, no new line
+    out = h.ops().resume(tenant_id=h.company.tenant_id, company_id=h.company.id, operation_id=res.operation_id)
+    assert out.outcome == "needs_attention", (out.outcome, out.error_code)
+
+
+def test_u13_resume_of_a_landed_put_whose_kept_line_lost_its_po_row_needs_a_person(h, w):
+    h.vendor.apply_then_500_next("PUT", PUT[1])
+    res = h.run(OP, w.params(24), key="k13")
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    w.row(w.l3).update(FromDocDtlKey=0, FromDocType="", FromDocNo="")
+    out = h.ops().resume(tenant_id=h.company.tenant_id, company_id=h.company.id, operation_id=res.operation_id)
+    assert out.outcome == "needs_attention", (out.outcome, out.error_code)
+
+
+def test_u13_verify_refuses_a_kept_spo_row_that_lost_its_link():
+    from modules.autocount.write_back.payloads import verify_link_doc
+
+    before = {"DocKey": 1, "Details": [{"DtlKey": 10, "ItemCode": "I", "UOM": "U", "Qty": 60, "FromDocDtlKey": 5}]}
+    sent = [{"ItemCode": "I", "UOM": "U", "Qty": 24, "FromDocDtlKey": 7}]
+    good = {"DocKey": 1, "Details": [dict(before["Details"][0], Qty=36),
+                                     {"DtlKey": 11, "ItemCode": "I", "UOM": "U", "Qty": 24, "FromDocDtlKey": 7}]}
+    assert verify_link_doc("SPO", before, [(10, sent)], good).outcome == "done"
+    bad = {"DocKey": 1, "Details": [dict(good["Details"][0], FromDocDtlKey=0), good["Details"][1]]}
+    verdict = verify_link_doc("SPO", before, [(10, sent)], bad)
+    assert verdict.outcome != "done" and verdict.code == "LINK_MISMATCH"
 
 
 # ---- AC-71-08 idempotency --------------------------------------------------------------------------------
