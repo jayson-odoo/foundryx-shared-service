@@ -474,7 +474,8 @@ def test_client_app_migration_revises_the_omnichannel_head():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory(str(VERSIONS.parent))
-    assert script.get_heads() == ["0032_omni_client_apps"]
+    # Later revisions build on it; the single-head check lives with the newest.
+    assert len(script.get_heads()) == 1
     rev = script.get_revision("0032_omni_client_apps")
     assert rev.down_revision == "0031_omni_workspace_external_ref"
     assert len(rev.revision) <= 32

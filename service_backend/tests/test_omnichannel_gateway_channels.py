@@ -405,5 +405,5 @@ def test_ac_38_26_guide_reaction_media_refusal_and_changelog_wording():
     section = text[start : text.index("\n### ", start + 10)]
     assert "403" in section and "detail" in section, section[:400]
     # the changelog row does not call the change only additive without the key rule
-    row = next(ln for ln in _changelog_rows(text) if "/channels" in ln)
+    row = next(ln for ln in _changelog_rows(text) if "GET /api/v1/omnichannel/channels" in ln)
     assert "suspended" in row.lower() and "trashed" in row.lower(), row

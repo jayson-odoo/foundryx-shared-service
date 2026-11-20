@@ -135,6 +135,11 @@
       "public": true
     },
     {
+      "name": "connect_public",
+      "prefix": "/api/v1/omnichannel/connect",
+      "public": true
+    },
+    {
       "name": "api_v1",
       "prefix": "/api/v1/omnichannel",
       "public": true

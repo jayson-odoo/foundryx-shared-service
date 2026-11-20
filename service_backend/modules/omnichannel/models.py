@@ -878,6 +878,61 @@ class PartnerApiKey(OmniBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
+# Partner connect session lifecycle (FSS-1). OPEN -> AUTHORIZED (callback) ->
+# COMPLETED (partner /complete); CANCELLED, FAILED and EXPIRED are terminal.
+CONNECT_SESSION_STATUSES = ("OPEN", "AUTHORIZED", "COMPLETED", "FAILED", "CANCELLED", "EXPIRED")
+
+
+class PartnerConnectSession(OmniBase):
+    """A hosted WhatsApp connect started by a partner key for one workspace
+    (FSS-1, migration 0033). Scoped by ``tenant_id`` AND ``client_app_id``:
+    any active key of that client app may read, complete or cancel it.
+    ``partner_key_id`` records the key that created it (its return-origin
+    allow-list was checked at create). Only the sha256 of the single-use
+    ``state`` is stored. ``credentials_json`` holds the exchanged Meta token,
+    Fernet-encrypted, from the callback until the session ends; it is cleared
+    on every terminal status. ``return_url`` is the exact URL the callback
+    redirects to (never taken from the callback request)."""
+
+    __tablename__ = "partner_connect_sessions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    client_app_id = Column(
+        String,
+        ForeignKey("client_apps.id", name="fk_partner_connect_sessions_client_app_id"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        String,
+        ForeignKey("workspaces.id", name="fk_partner_connect_sessions_workspace_id"),
+        nullable=False,
+        index=True,
+    )
+    partner_key_id = Column(String, nullable=False)
+    state_hash = Column(String, nullable=False)
+    channel_type = Column(String, nullable=False, default="WHATSAPP")
+    return_url = Column(Text, nullable=False)
+    client_state = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="OPEN")
+    credentials_json = Column(Text, nullable=True)  # Fernet-encrypted
+    result_channel_ids = Column(JSON(none_as_null=True), nullable=True)
+    error_code = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    expires_at = Column(UTCDateTime(), nullable=False, index=True)
+    claimed_at = Column(UTCDateTime(), nullable=True)
+    completed_at = Column(UTCDateTime(), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('OPEN', 'AUTHORIZED', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED')",
+            name="ck_partner_connect_sessions_status",
+        ),
+        Index("uq_partner_connect_sessions_state_hash", "state_hash", unique=True),
+    )
+
+
 class WebhookEndpoint(OmniBase):
     """A consumer's webhook subscription (plan sprint-1/01 Slice 4, AC-01-22).
 
