@@ -44,6 +44,7 @@ from ..services.partner_connect_service import (
 )
 from ..services.partner_key_service import PartnerKeyService
 from ..services.partner_workspace_service import (
+    PartnerChannelNotFound,
     PartnerScope,
     PartnerWorkspaceNotFound,
     PartnerWorkspaceService,
@@ -135,6 +136,29 @@ def list_workspace_channels(
     ws = _require(db, partner, workspace_id)
     return PublicChannelListResponse(
         data=PublicGatewayService(db).list_channels(partner.tenant_id, ws.id)
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/channels/{channel_id}/disconnect",
+    response_model=PublicChannelListResponse,
+)
+def disconnect_workspace_channel(
+    workspace_id: str,
+    channel_id: str,
+    partner: PartnerTenant = Depends(get_partner_tenant),
+    db: Session = Depends(get_db),
+) -> PublicChannelListResponse:
+    """FSS-3: the dashboard's disconnect for one channel of the workspace;
+    answers the workspace's remaining channels."""
+    try:
+        PartnerWorkspaceService(db).disconnect_channel(_scope(partner), workspace_id, channel_id)
+    except PartnerWorkspaceNotFound:
+        raise _not_found()
+    except PartnerChannelNotFound:
+        raise ApiError(404, "channel_not_found", "Channel not found.")
+    return PublicChannelListResponse(
+        data=PublicGatewayService(db).list_channels(partner.tenant_id, workspace_id)
     )
 
 

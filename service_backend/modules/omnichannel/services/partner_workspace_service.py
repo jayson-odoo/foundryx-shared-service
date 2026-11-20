@@ -21,9 +21,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import Workspace
+from ..repositories.channel_repository import ChannelRepository
 from ..repositories.workspace_repository import WorkspaceRepository
 from ..schemas import PartnerWorkspaceItem, WorkspaceCreate, WorkspaceUpdate
 from . import statuses
+from .channel_service import ChannelService
 from .public_gateway_service import PublicGatewayService
 from .workspace_service import WorkspaceService
 
@@ -36,6 +38,10 @@ class PartnerScope(NamedTuple):
 
 
 class PartnerWorkspaceNotFound(Exception):
+    pass
+
+
+class PartnerChannelNotFound(Exception):
     pass
 
 
@@ -88,6 +94,17 @@ class PartnerWorkspaceService:
             )
             self.db.refresh(existing)
         return existing
+
+    def disconnect_channel(self, scope: PartnerScope, workspace_id: str, channel_id: str) -> None:
+        """FSS-3: disconnect one live channel of one of the client app's
+        workspaces through the existing ``ChannelService.disconnect`` (the
+        dashboard's own path). Another workspace's, an unknown or an already
+        disconnected channel raises ``PartnerChannelNotFound``."""
+        ws = self.require(scope, workspace_id)
+        channel = ChannelRepository(self.db).get_by_id(channel_id, scope.tenant_id)
+        if channel is None or channel.workspace_id != ws.id or channel.is_trashed:
+            raise PartnerChannelNotFound()
+        ChannelService(self.db).disconnect([channel.id], scope.tenant_id)
 
     # ---- shapes ----
     def item(self, ws: Workspace) -> PartnerWorkspaceItem:
