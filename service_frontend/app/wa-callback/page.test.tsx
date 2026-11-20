@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WaCallbackPage from './page';
@@ -125,13 +126,11 @@ describe('wa-callback page, with state (partner connect)', () => {
     ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
 
   it('strips the query, posts state and code, then follows the redirect', async () => {
-    const fetchSpy = vi
-      .fn()
-      .mockResolvedValue(
-        okResponse({
-          redirect: 'https://app.example/return?status=authorized',
-        }),
-      );
+    const fetchSpy = vi.fn().mockResolvedValue(
+      okResponse({
+        redirect: 'https://app.example/return?status=authorized',
+      }),
+    );
     vi.stubGlobal('fetch', fetchSpy);
     setUrl('?state=st_1&code=secret_code');
 
@@ -240,5 +239,58 @@ describe('wa-callback page, with state (partner connect)', () => {
     render(<WaCallbackPage />);
     await screen.findByText(/could not complete the connection/i);
     expect(replaceSpy).not.toHaveBeenCalled();
+  });
+
+  it('runs once under StrictMode and never falls into the no-state path', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const postMessage = vi.fn();
+    Object.defineProperty(window, 'opener', {
+      configurable: true,
+      value: { postMessage },
+    });
+    const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(okResponse({ redirect: 'https://app.example/r' }));
+    vi.stubGlobal('fetch', fetchSpy);
+    setUrl('?state=st_7&code=c');
+
+    render(
+      <StrictMode>
+        <WaCallbackPage />
+      </StrictMode>,
+    );
+
+    await waitFor(() =>
+      expect(replaceSpy).toHaveBeenCalledWith('https://app.example/r'),
+    );
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Signup cancelled/)).toBeNull();
+    expect(window.sessionStorage.getItem('fx_wa_code')).toBeNull();
+  });
+
+  it('caps a long Meta error at 512 characters', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse({ redirect: 'https://app.example/return?status=cancelled' }),
+      );
+    vi.stubGlobal('fetch', fetchSpy);
+    const longError = 'e'.repeat(600);
+    setUrl(`?state=st_8&error=access_denied&error_description=${longError}`);
+
+    render(<WaCallbackPage />);
+
+    await waitFor(() => expect(replaceSpy).toHaveBeenCalled());
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
+      state: 'st_8',
+      error: 'e'.repeat(512),
+    });
   });
 });

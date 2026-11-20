@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRef } from 'react';
 import { publicFetch } from '@/lib/api-client';
 
 /**
@@ -18,12 +19,15 @@ import { publicFetch } from '@/lib/api-client';
  */
 export default function WaCallbackPage() {
   const [message, setMessage] = useState('Completing your WhatsApp connection…');
+  const partnerLoad = useRef(false);
 
   useEffect(() => {
+    if (partnerLoad.current) return;
     const params = new URLSearchParams(window.location.search);
 
     // Partner connect session: the single-use `state` is the credential.
     if (params.has('state')) {
+      partnerLoad.current = true;
       const state = params.get('state');
       const partnerCode = params.get('code');
       const partnerError =
@@ -34,7 +38,7 @@ export default function WaCallbackPage() {
         state,
       };
       if (partnerCode) body.code = partnerCode;
-      if (partnerError) body.error = partnerError;
+      if (partnerError) body.error = partnerError.slice(0, 512);
       publicFetch<{ redirect: string }>(
         '/api/v1/omnichannel/connect/wa-callback',
         {
