@@ -1682,6 +1682,39 @@ class PublicChannelListResponse(ApiModel):
     data: List[PublicChannelItem]
 
 
+# ── Partner workspaces (S7) ──────────────────────────────────────────────────
+class PartnerWorkspacePutRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("name must not be blank")
+        return v
+
+
+class PartnerWorkspaceItem(ApiModel):
+    id: str
+    externalOrgId: Optional[str] = None  # null for a workspace made in the dashboard
+    name: str
+    status: str
+    createdAt: datetime
+    channels: List[PublicChannelItem]
+
+
+class PartnerWorkspaceKeyCreateRequest(ApiModel):
+    """S8: name of the organisation's workspace key (an ordinary `fxw_live_` key)."""
+    name: str = Field(min_length=1, max_length=120)
+
+
+class PartnerWorkspaceListResponse(ApiModel):
+    data: List[PartnerWorkspaceItem]
+    total: int
+    page: int
+    pageSize: int
+
+
 class PublicMessageListResponse(VersionedPayload, ApiModel):
     """A contact's message history for the consumer API - full-fidelity
     ``MessageItem`` (every message type). ``nextBefore`` = pass back as
