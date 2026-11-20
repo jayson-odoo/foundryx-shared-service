@@ -458,3 +458,91 @@ def test_probe_script_look_writes_nothing(h, monkeypatch, capsys):
     World(h)
     assert _probe(h, monkeypatch, ["--company", h.company.id, "--spo", "7103", "--look"]) == 0
     assert h.vendor.writes() == []
+
+
+# ---- review round 1: gaps ---------------------------------------------------------------------------------------
+
+def test_review_expected_last_modified_mismatch_is_doc_stale(h, w):
+    _refused(h, w, "DOC_STALE", expected_last_modified="1999-01-01T00:00:00.00")
+
+
+def test_review_spo_changed_between_read_and_put_is_doc_stale_not_sent(h, w):
+    from modules.autocount.write_back import operations
+
+    real = operations.OperationService._spo_move_plan
+
+    def plan_then_edit(self, *a, **kw):  # someone edits the SPO in AutoCount right after our read
+        snap = real(self, *a, **kw)
+        doc = h.vendor.find("SPO", 7103)
+        doc["LastModified"] = "2099-01-01T00:00:00.00"
+        return snap
+
+    h.monkeypatch.setattr(operations.OperationService, "_spo_move_plan", plan_then_edit)
+    res = h.run(OP, w.params(24))
+    assert res.outcome == "refused" and res.error_code == "DOC_STALE", (res.outcome, res.error_code)
+    assert h.vendor.writes() == [] and w.row(w.l3)["Qty"] == 60
+
+
+def test_review_unknown_receipt_proceeds_with_the_warning(h, w):
+    res = h.run(OP, w.params(24), receipt_reader=lambda *a: None)
+    assert res.outcome == "done", res.error_code
+    assert "TRANSFER_STATE_UNKNOWN" in res.warnings
+
+
+def test_review_pending_move_on_another_spo_holds_its_room_on_the_target(h):
+    switch(h)
+    w = World(h, b_qty=30)
+    other = h.seed_doc("SPO", 7104, [_line("ITEM-A", 20, 5.0, "BR1", FromDocType="PO", FromDocNo="PO-7101",
+                                           FromDocDtlKey=w.a1)])
+    h.vendor.timeout_next("PUT", PUT[1])
+    first = h.run(OP, dict(w.params(20), spo_doc_key=7104, spo_dtl_key=other["Details"][0]["DtlKey"]), key="p1")
+    assert first.outcome == "pending_verification"
+    second = h.run(OP, w.params(24), key="p2")  # 30 - 20 pending = 10 left on B1
+    assert second.outcome == "refused" and second.error_code == "QTY_ABOVE_OUTSTANDING", second.error_code
+    ok = h.run(OP, w.params(10), key="p3")
+    assert ok.outcome == "done", ok.error_code
+
+
+def test_review_same_key_resend_of_a_pending_move_resumes_it_without_a_second_put(h, w):
+    h.vendor.apply_then_500_next("PUT", PUT[1])
+    first = h.run(OP, w.params(24), key="rs")
+    assert first.outcome == "pending_verification"
+    adds = lambda: [c for c in h.vendor.writes() if any(r.get("DtlKey") == 0 for r in c.body["Details"])]  # noqa: E731
+    assert len(adds()) == 1
+    again = h.run(OP, w.params(24), key="rs")
+    assert again.outcome == "done", (again.outcome, again.error_code)
+    assert len(adds()) == 1 and again.batch["remainder"]["qty"] == "36"
+
+
+def test_review_needs_attention_alert_names_the_take_and_the_target(h, w):
+    original = h.vendor._edit
+
+    def edit(kind, body):
+        out = original(kind, body)
+        kept = w.row(w.l3)
+        if kept is not None:
+            kept.update(FromDocDtlKey=0)
+        return out
+
+    h.vendor._edit = edit
+    res = h.run(OP, w.params(24))
+    assert res.outcome == "needs_attention"
+    (event,) = h.alerts
+    assert event["qty"] == "24" and event["mode"] == "check" and event["moveTo"].endswith(f"row {w.b1}")
+
+
+def test_review_target_po_document_is_locked_for_every_spo_op_with_a_target(h, w, monkeypatch):
+    from modules.autocount.write_back import operations
+
+    seen = []
+    real = operations.link_locks
+
+    def spy(db, company_id, po_doc_keys=(), so_dtl_keys=()):
+        seen.append(list(po_doc_keys))
+        return real(db, company_id, po_doc_keys=po_doc_keys, so_dtl_keys=so_dtl_keys)
+
+    monkeypatch.setattr(operations, "link_locks", spy)
+    h.run(OP, w.params(24), key="l1")
+    h.delete_on()
+    h.run("spo_relink_row", dict(spo_doc_key=7103, spo_dtl_key=w.free, po_doc_key=7102, po_dtl_key=w.b1), key="l2")
+    assert seen[0] == [7102] and seen[1] == [7102]

@@ -118,6 +118,10 @@ def main(argv=None) -> int:
         if old is None or not old.get("FromDocDtlKey"):
             print("refused: --line is not an SPO line tied to a PO row")
             return 2
+        open_qty = Decimal(str(old.get("Qty"))) - Decimal(str(old.get("TransferedQty") or 0))
+        if not 0 < args.qty < open_qty:
+            print(f"refused: --qty must be above 0 and below the line's open qty {open_qty} (the probe splits)")
+            return 2
         split = move("1. split", args.line, args.to_po, args.to_line, args.qty)
         after_split = read("SPO", args.spo)
         _print("SPO after split", _lines(after_split))

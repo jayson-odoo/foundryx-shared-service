@@ -343,6 +343,26 @@ class OperationRepository:
             is not None
         )
 
+    def pending_spo_move_qty(self, tenant_id: str, company_id: str, po_dtl_key: int,
+                             exclude_doc_key: Optional[int]) -> Decimal:
+        """Plan 71: quantity PENDING SPO moves (outcome unknown, they may have landed) would put on one PO row,
+        from their stored snapshot's ``take``; moves on ``exclude_doc_key`` (the SPO being written, whose
+        fresh rows already say) are left out."""
+        total = Decimal(0)
+        rows = self.db.query(AcWriteOperation).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.status == OUTCOME_PENDING,
+            AcWriteOperation.op == "spo_move_row",
+        )
+        for op in rows:
+            snap = op.snapshot_json
+            if not isinstance(snap, dict) or (exclude_doc_key is not None and op.doc_key == exclude_doc_key):
+                continue
+            if int((snap.get("newLink") or {}).get("FromDocDtlKey") or 0) == po_dtl_key:
+                total += Decimal(str(snap.get("take") or 0))
+        return total
+
     def has_recent_pending(
         self, tenant_id: str, company_id: str, doc_type: str, doc_key: int, since: datetime
     ) -> bool:

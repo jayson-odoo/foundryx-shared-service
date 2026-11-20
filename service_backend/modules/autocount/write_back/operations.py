@@ -708,8 +708,8 @@ class OperationService:
         that follows must not interleave with another caller's on the same PO or the same SO row. A lock not
         won is ``DOC_BUSY`` (never stored under the key)."""
         po_keys = [spec.doc_key] if row.doc_type == "PO" else []
-        if op == SPO_MOVE and spec.target_doc_key:  # plan 71: the target PO row's room, guard to write
-            po_keys = [spec.target_doc_key]
+        if row.doc_type == "SPO" and spec.target_doc_key:  # plan 71: the target PO row's room, guard to write
+            po_keys = [spec.target_doc_key]  # (every SPO op with a target, so a move and a relink serialise)
         so_keys = [spec.target_dtl_key] if op in (SPLIT_LINK, "link_row", "relink_row") and spec.target_dtl_key else []
         try:
             with link_locks(self.db, company.id, po_doc_keys=po_keys, so_dtl_keys=so_keys):
@@ -2247,7 +2247,9 @@ class OperationService:
         self._check_deadline()  # the only stop point: before the one write
         old_key = int(snapshot["row"]["DtlKey"])
         line = self._line_of(snapshot, snapshot["newLink"], Decimal(snapshot["take"]))
-        res = self.prims.batch_link(**self._call(row, company, snapshot, "move_spo"), dtl_key=old_key, lines=[line])
+        res = self.prims.batch_link(  # the snapshot's LastModified: an SPO changed since is DOC_STALE, never sent
+            **self._call(row, company, snapshot, "move_spo"), dtl_key=old_key, lines=[line],
+            expected_last_modified=snapshot.get("lastModified"))
         self._step("move_spo", res)
         if res.outcome == OUTCOME_VENDOR_ERROR:
             if res.error_code == VENDOR_REFUSED:  # AutoCount said no: nothing landed
@@ -2294,6 +2296,8 @@ class OperationService:
         if self._spo_received(company, "PO", tdoc, trow) >= _dec(trow.get("Qty")):
             raise _Done(REFUSED, TARGET_RECEIVED, received_message("PO", trow))
         used = self._spo_linked_qty(company, doc, int(spec.target_dtl_key or 0), spec.dtl_key)
+        used += self.ops.pending_spo_move_qty(  # moves on other SPOs whose outcome is still unknown
+            company.tenant_id, company.id, int(spec.target_dtl_key or 0), exclude_doc_key=spec.doc_key)
         if take > payloads.so_outstanding(trow, used):
             raise _Done(REFUSED, "QTY_ABOVE_OUTSTANDING")
         return _json_safe({
@@ -2720,6 +2724,10 @@ class OperationService:
             )
         if snap.get("mode") in ("batch", "doc_batch") or snap.get("mergeInto"):  # an outcome that could not be confirmed
             event["mode"] = "check"
+        if snap.get("mode") == SPO_MOVE_MODE:  # plan 71: the qty asked to move, and where to
+            new = snap.get("newLink") or {}
+            event.update(mode="check", qty=_qty_text(snap.get("take")),
+                         moveTo=f"PO {new.get('FromDocNo')} row {new.get('FromDocDtlKey')}")
         try:
             self._notifier(event)
         except Exception:  # noqa: BLE001 - a mail fault never changes the outcome
@@ -2737,6 +2745,8 @@ class OperationService:
         lead = "A line was deleted in AutoCount and could not be re-created. Re-key it:"
         if event.get("mode") == "check":
             lead = "A change to this line may or may not have reached AutoCount. Check the document there:"
+        if event.get("moveTo"):  # plan 71: an SPO move: where the quantity was going
+            rows.append(("Moving to", event["moveTo"]))
         if event.get("mode") == "partial":
             rows[4] = ("Remainder quantity", event["remainderQty"])
             rows.insert(5, ("Cut to (received)", event["cutQty"]))
