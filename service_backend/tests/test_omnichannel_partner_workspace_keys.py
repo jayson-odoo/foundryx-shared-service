@@ -123,3 +123,33 @@ def test_another_tenants_workspace_key_cannot_be_revoked(client, session_factory
     assert res.status_code == 404 and res.json() == NOT_FOUND
     listed = client.get(f"{P}/workspaces/{ws_b}/api-keys", headers=hdr_b).json()["data"]
     assert listed[0]["status"] == "ACTIVE"
+
+
+def test_a_trashed_workspace_is_404_on_every_key_route(client, session_factory):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.omnichannel.services.workspace_service import WorkspaceService
+
+    hdr, wid = org(client, session_factory, ext="org-keys-trash", phone="pn-org-keys-trash")
+    minted = mint(client, hdr, wid).json()
+    db = session_factory()
+    WorkspaceService(db).trash([wid], DEFAULT_TENANT_ID)
+    db.close()
+    assert mint(client, hdr, wid).json() == NOT_FOUND
+    listed = client.get(f"{P}/workspaces/{wid}/api-keys", headers=hdr)
+    assert listed.status_code == 404 and listed.json() == NOT_FOUND
+    rev = client.post(f"{P}/workspaces/{wid}/api-keys/{minted['key']['id']}/revoke", headers=hdr)
+    assert rev.status_code == 404 and rev.json() == NOT_FOUND
+
+
+def test_another_tenants_workspace_cannot_be_listed_or_minted_into(client, session_factory):
+    hdr_a, hdr_b, ws_b = two_tenants(client, session_factory, slug="partner-keys-b4")
+    key_b = mint(client, hdr_b, ws_b).json()
+    minted = mint(client, hdr_a, ws_b)
+    assert minted.status_code == 404 and minted.json() == NOT_FOUND
+    listed = client.get(f"{P}/workspaces/{ws_b}/api-keys", headers=hdr_a)
+    assert listed.status_code == 404 and listed.json() == NOT_FOUND
+    # the workspace check runs before the key lookup: an unknown key is still workspace_not_found
+    assert client.post(f"{P}/workspaces/{ws_b}/api-keys/nope/revoke", headers=hdr_a).json() == NOT_FOUND
+    assert [k["id"] for k in client.get(f"{P}/workspaces/{ws_b}/api-keys", headers=hdr_b).json()["data"]] == [
+        key_b["key"]["id"]
+    ]
