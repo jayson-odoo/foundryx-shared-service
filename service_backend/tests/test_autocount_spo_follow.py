@@ -245,3 +245,78 @@ def test_route_refusal_carries_an_empty_spo_lines(client, gw):
     r = client.post(BATCH, json=body(w, qty=30), headers=gw.hdr())
     assert r.status_code == 409, r.text
     assert r.json()["errorCode"] == "ROW_ON_SPO" and r.json()["spoLines"] == []
+
+
+# ---- review round 1 -------------------------------------------------------------------------------------------
+
+def test_review_a_second_split_cannot_take_the_spo_line_an_unfinished_one_planned(h, w):
+    h.vendor.refuse_json_next("PUT", LEAF, after=2)
+    first = h.run(OP, w.params(40), key="r1a")
+    assert first.error_code == "SPO_NOT_FOLLOWED", (first.outcome, first.error_code)
+    writes = len(h.vendor.writes())
+    second = h.run(OP, w.params(40, so_dtl=w.so_b), key="r1b")
+    assert second.outcome == "refused" and second.error_code == "ROW_NEEDS_ATTENTION", (second.outcome, second.error_code)
+    assert len(h.vendor.writes()) == writes  # nothing sent
+    done = resume(h, first)  # the first one still finishes, onto ITS new PO line
+    assert done.outcome == "done", (done.outcome, done.error_code)
+    assert w.spo_rows()[0]["FromDocDtlKey"] == w.new_po_row()["DtlKey"]
+    again = h.run(OP, w.params(20, so_dtl=w.so_b), key="r1c")  # resolved: the kept line is free again
+    assert again.outcome == "done", (again.outcome, again.error_code)
+
+
+def test_review_past_the_deadline_no_spo_put_is_sent_and_resume_finishes(h, w, monkeypatch):
+    from modules.autocount.write_back import operations
+
+    real = operations.OperationService._batch_done
+
+    def late(self, *a, **kw):
+        self._op_deadline = 0.0  # the budget ran out after the link PUT landed
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(operations.OperationService, "_batch_done", late)
+    res = h.run(OP, w.params(40), key="r2")
+    assert res.outcome == "needs_attention" and res.error_code == "SPO_NOT_FOLLOWED", (res.outcome, res.error_code)
+    assert puts(h, 7203) == []
+    monkeypatch.setattr(operations.OperationService, "_batch_done", real)
+    done = resume(h, res)
+    assert done.outcome == "done", (done.outcome, done.error_code)
+    assert len(done.batch["spoLines"]) == 1
+
+
+def test_review_doc_batch_keeps_row_on_spo_with_the_switch_on(h, w):
+    res = h.run("link_doc_batch", dict(doc_key=7201, links=[
+        dict(po_dtl_key=w.b1, so_doc_key=7202, so_dtl_key=w.so_a, qty=Decimal(40))]), key="r3")
+    assert res.outcome == "refused", (res.outcome, res.error_code)
+    assert res.batch["lines"][0]["code"] == "ROW_ON_SPO" and h.vendor.writes() == []
+
+
+def test_review_a_received_spo_line_does_not_follow(h, w):
+    def received(kind, doc, row):
+        return Decimal(5) if kind == "SPO" else Decimal(0)
+
+    res = h.run(OP, w.params(40), key="r4", receipt_reader=received)
+    assert res.outcome == "refused" and res.error_code == "ROW_ON_SPO", (res.outcome, res.error_code)
+    assert h.vendor.writes() == []
+
+
+# ---- kill tests ------------------------------------------------------------------------------------------------
+
+def test_kill_the_follower_is_the_spo_line_of_the_links_quantity_not_the_first_one(h):
+    switch(h)
+    w = World(h, spo_qtys=(50, 40))  # the 50 line stays (kept PO line = 60), the 40 line follows
+    res = h.run(OP, w.params(40))
+    assert res.outcome == "done", (res.error_code, res.message)
+    assert [s["fromSpoDtlKey"] for s in res.batch["spoLines"]] == [w.s_keys[1]]
+    stay = next(r for r in w.spo_rows() if r["DtlKey"] == w.s_keys[0])
+    assert stay["Qty"] == 50 and stay["FromDocDtlKey"] == w.b1
+
+
+def test_kill_spo_line_re_pointed_by_hand_is_not_moved_by_resume(h, w):
+    h.vendor.refuse_json_next("PUT", LEAF, after=2)
+    res = h.run(OP, w.params(40), key="k4")
+    assert res.error_code == "SPO_NOT_FOLLOWED"
+    w.spo_rows()[0]["FromDocDtlKey"] = 999999  # a person tied it to another PO line meanwhile (qty unchanged)
+    spo_puts = len(puts(h, 7203))
+    out = resume(h, res)
+    assert out.outcome == "needs_attention" and out.error_code == "SPO_NOT_FOLLOWED", (out.outcome, out.error_code)
+    assert len(puts(h, 7203)) == spo_puts

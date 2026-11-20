@@ -93,5 +93,10 @@ slice the second call was refused `ROW_ON_SPO`. Now, with the `spo_move` switch 
   SPO line still sits on the kept PO line (never without a PO line). Resume reads the SPO first: the new line
   there = confirmed, no PUT; the old line exactly as planned = the one PUT; anything else stays with a person.
   The link PUT is never sent twice.
+- Review round 1: an earlier link on the same PO line whose SPO line has not followed yet holds the line (a new
+  `/po-links/batch` on it is `ROW_NEEDS_ATTENTION`, nothing sent, until that one is resumed), so a second split
+  can never take the SPO line the first planned. Past the operation's time budget no SPO PUT is sent on the
+  first run (`SPO_NOT_FOLLOWED`, Resume finishes it). Pending `/spo-links/move` operations onto the PO line
+  count against the kept line's room. A follower whose SPO is busy is `DOC_BUSY`.
 - Not in this slice (still `ROW_ON_SPO`): a link that takes the WHOLE PO line (AutoCount would have to delete a
   PO line an SPO line points at, unproven, F15), `/po-links/doc-batch` and the single part-row `/po-links`.
