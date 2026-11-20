@@ -118,6 +118,16 @@ def test_a_partly_received_source_row_is_still_open_and_takes_the_qty(h, world):
     assert res.warnings == []
 
 
+def test_an_unknown_receipt_on_the_source_row_still_takes_the_qty(h, world):
+    def reader(kind, doc, r):
+        return None if r.get("DtlKey") == world.p_other else Decimal(0)
+
+    res = unlink(h, world, "r-src-unknown", world.p_other, receipt_reader=reader)
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert res.replaced_lines == [(world.p_linked, world.p_other)]
+    assert qty(row(h, world.p_other)) == Decimal(8)
+
+
 def test_route_answer_names_the_source_row(client, h, gw, world):
     r = client.post(UNLINK, headers=gw.hdr("r-route"), json={
         "companyCode": "SRT", "poDocKey": 7001, "poDtlKey": world.p_linked,
@@ -228,6 +238,33 @@ def test_a_source_row_an_spo_points_at_falls_back(h, world):
     assert qty(row(h, world.p_spo)) == Decimal(4)
 
 
+def test_a_source_row_an_unresolved_link_op_covers_falls_back(h, world, monkeypatch):
+    """Plan 65 R1: growing a row an unresolved link operation covers breaks that operation's Resume."""
+    from modules.autocount.write_back.primitives import PrimitiveService
+
+    real = PrimitiveService.row_needs_attention
+
+    def covered(self, company, doc_key, r, *, exclude_id=None):
+        return r.get("DtlKey") == world.p_other or real(self, company, doc_key, r, exclude_id=exclude_id)
+
+    monkeypatch.setattr(PrimitiveService, "row_needs_attention", covered)
+    before = keys_before(h)
+    res = unlink(h, world, "r-busy", world.p_other)
+    _assert_fell_back_to_pool(h, world, before, res, "RETURN_ROW_BUSY")
+    assert qty(row(h, world.p_other)) == Decimal(4)
+
+
+def test_a_resumed_fallback_still_says_why(h, world):
+    from app.models import DEFAULT_TENANT_ID
+
+    h.vendor.apply_then_500_next("PUT", "EditPurchaseOrderbydockey")  # the pool replace landed, answered 500
+    res = unlink(h, world, "r-fb-resume", 999999)
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    out = h.ops().resume(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=res.operation_id)
+    assert out.outcome == "done", (out.outcome, out.error_code, out.message)
+    assert "RETURN_ROW_NOT_FOUND" in out.warnings
+
+
 def test_fallback_without_pool_is_todays_same_location_merge_plus_the_warning(h, world):
     before = keys_before(h)
     res = unlink(h, world, "r-fb-nopool", 999999, pool=None)
@@ -253,9 +290,13 @@ def test_a_partly_received_tied_row_falls_back_to_cut_and_pool(h, world):
 # ============================== rule 3: absent = today ==========================================
 
 def test_relink_ignores_a_return_to(h, world):
+    def reader(kind, doc, r):  # a partly received row: a relink must not pick up RETURN_PARTLY_RECEIVED
+        return Decimal(1) if r.get("DtlKey") == world.p_linked else Decimal(0)
+
     params = dict(world.params["relink_row"], return_to_dtl_key=world.p_other)
-    res = h.run("relink_row", params, key="r-relink")
+    res = h.run("relink_row", params, key="r-relink", receipt_reader=reader)
     assert res.outcome == "done", (res.outcome, res.error_code)
+    assert not [w for w in res.warnings if w.startswith("RETURN_")], res.warnings
     assert qty(row(h, world.p_other)) == Decimal(4)
 
 

@@ -126,6 +126,8 @@ RETURN_ROW_CLOSED = "RETURN_ROW_CLOSED"  # the row is fully received
 RETURN_ROW_ON_SPO = "RETURN_ROW_ON_SPO"  # an SPO row points at the row
 RETURN_ROW_BUSY = "RETURN_ROW_BUSY"  # an unresolved link operation covers the row (its Resume needs it as it is)
 RETURN_PARTLY_RECEIVED = "RETURN_PARTLY_RECEIVED"  # the tied row is partly received: the received part stays
+RETURN_WARNINGS = frozenset({RETURN_ROW_NOT_FOUND, RETURN_ROW_LINKED, RETURN_ROW_ITEM_MISMATCH, RETURN_ROW_CLOSED,
+                             RETURN_ROW_ON_SPO, RETURN_ROW_BUSY, RETURN_PARTLY_RECEIVED})
 # Plan 69 D2: no size refusal a real press can reach - only a body guard far above a PO's row count.
 MAX_BATCH_LINKS = 2000
 TEMPLATE_KEY = "autocount_write_needs_attention"
@@ -519,6 +521,8 @@ class OperationService:
             self._row = row
             self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
             self._steps, self._warnings = list(row.steps_json or []), []
+            snap = row.snapshot_json if isinstance(row.snapshot_json, dict) else {}
+            self._warnings.extend(w for w in snap.get("returnWarnings") or [] if w in RETURN_WARNINGS)  # plan 71
             return self._guarded(row, company, lambda: self._resume(row, company, was), restore=was)
 
     # ── frame ────────────────────────────────────────────────────────────────
@@ -1098,6 +1102,8 @@ class OperationService:
             "row": row, "received": None if plan["received"] is None else str(plan["received"]),
             "newLink": new_link, "oldLink": self._old_link(company, defn, row), "mergeInto": plan.get("merge"), "mergeBeforeQty": plan.get("mergeQty"),
             "location": row.get("Location"), "companyName": company.company_name or company.name,
+            # plan 71: why the source row was not used, kept so a Resume answer still says it (review)
+            **({"returnWarnings": [w for w in self._warnings if w in RETURN_WARNINGS]} if self._return_to else {}),
         })
 
     @staticmethod

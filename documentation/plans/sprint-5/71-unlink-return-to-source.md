@@ -51,7 +51,19 @@ the PO first (`_resume_merge` keys on the snapshot's `mergeInto`, which is the s
 | 4 | L1 tied; L2 ITEM-A 4 HQ, 4 received | | new ITEM-A 4 BRW free | RETURN_ROW_CLOSED |
 | 5 | L1 tied, 1 received; L2 free | | L1 cut to 1; new ITEM-A 3 BRW | RETURN_PARTLY_RECEIVED |
 
+## Review round 1 (reviewer seat, kill test)
+- Fixed: tests now pin the busy-row rule (`RETURN_ROW_BUSY`), an unknown receipt still taking the qty, and relink
+  never picking up a `RETURN_*` warning. The `RETURN_*` warning is kept in the snapshot (`returnWarnings`) so a
+  Resume answer still says why the source row was not used.
+- Open risk for the db3 check: `verify_unlink_merge` checks the merged row's Qty, not its Location / price / date
+  (it is a skip row for the drift check), so AutoCount re-deriving price or date on a partly received source row
+  would still read `done`. Before the CRM turns the field on, on db3: merge into (a) a free source row at another
+  price and date, (b) a partly received source row at another price and date; both keep Location, price, date.
+- Backlog candidate (pre-existing, pool merges have it too): `row_needs_attention` does not count another pending
+  operation's `mergeInto` row as covered, so a second unlink growing that row makes the first one's Resume read
+  "needs attention" (a false alarm, nothing lost).
+
 ## Tests
-`service_backend/tests/test_autocount_write_back_unlink_return_to_source.py` (25). Red at 159ecaaf (23 failed),
+`service_backend/tests/test_autocount_write_back_unlink_return_to_source.py` (28). Red at 159ecaaf (23 failed),
 green at 4865315e. Live db3 (AutoCount TEST book) check: not runnable from the cloud sandbox (no db3 access);
 recommended before the CRM turns it on: merge into an HQ source row at another price keeps its own price/date.

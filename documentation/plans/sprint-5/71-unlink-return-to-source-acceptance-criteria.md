@@ -15,4 +15,5 @@ Plan: `71-unlink-return-to-source.md`. Tests: `service_backend/tests/test_autoco
 | AC-71-09 | [BE][T] | `returnToDtlKey` is part of the idempotency body (same key, other row = `IDEMPOTENCY_CONFLICT`) |
 | AC-71-10 | [BE][T] | A merge answered 5xx is `pending_verification`; Resume finds it landed and answers the source row |
 | AC-71-11 | [BE][T] | Relink ignores `returnToDtlKey` |
-| AC-71-12 | [BE] | Live db3 merge into a source row at another price keeps its own price/date (DEFERRED: no db3 from the cloud sandbox) |
+| AC-71-12 | [BE] | Live db3: a merge into a free and into a partly received source row at another price and date keeps its Location, price and date (DEFERRED: no db3 from the cloud sandbox) |
+| AC-71-13 | [BE][T] | A Resume of a fallback that went pending still carries its `RETURN_*` warning |
