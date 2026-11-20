@@ -60,6 +60,8 @@ logger = logging.getLogger(__name__)
 ES_EXTRAS = '{"setup":{},"featureType":"","sessionInfoVersion":"3"}'
 SIM_CODE = "dev"
 MAX_RETURN_URL = 2048
+COMPLETE_LEASE = timedelta(minutes=5)
+CALLBACK_OUTCOMES = {"AUTHORIZED": "authorized", "CANCELLED": "cancelled", "FAILED": "failed"}
 
 
 class ConnectNotConfigured(Exception):
@@ -90,6 +92,11 @@ def _hash_state(raw: str) -> str:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _stale_before(now: datetime) -> datetime:
+    """A completion claim older than this has died; another may take it over."""
+    return now - COMPLETE_LEASE
 
 
 def simulation_active() -> bool:
@@ -215,7 +222,7 @@ class PartnerConnectService:
         allowed = key.allowed_return_origins if key is not None else None
         url = check_return_url(return_url, allowed)
         now = _now()
-        self.repo.expire_due(now, tenant_id=scope.tenant_id)
+        self.repo.expire_due(now, tenant_id=scope.tenant_id, stale_before=_stale_before(now))
         raw_state = secrets.token_urlsafe(32)
         ttl = max(1, int(settings.partner_connect_session_ttl_minutes or 30))
         row = self.repo.add(
@@ -246,13 +253,15 @@ class PartnerConnectService:
         row = self.repo.get_scoped(session_id, scope.tenant_id, scope.client_app_id)
         if row is None:
             raise ConnectSessionNotFound()
-        if self.repo.expire_due(_now(), session_id=row.id):
+        now = _now()
+        if self.repo.expire_due(now, session_id=row.id, stale_before=_stale_before(now)):
             self.db.refresh(row)
         return row
 
     def cancel(self, scope: PartnerScope, session_id: str) -> PartnerConnectSession:
         row = self.get(scope, session_id)
-        if self.repo.cancel_live(row.id, _now()):
+        now = _now()
+        if self.repo.cancel_live(row.id, now, stale_before=_stale_before(now)):
             logger.info("partner connect session %s cancelled", row.id)
         self.db.refresh(row)
         return row
@@ -277,9 +286,9 @@ class PartnerConnectService:
         self.db.refresh(row)
 
         if error or not code:
-            self._finish(row, "CANCELLED", None)
+            self._finish_callback(row, {"status": "CANCELLED", "error_code": None, "completed_at": _now()})
             logger.info("partner connect session %s cancelled at Meta", row.id)
-            return build_redirect(row.return_url, row.id, "cancelled", row.client_state)
+            return self._callback_redirect(row)
 
         try:
             credentials = get_adapter("WHATSAPP").exchange_code(
@@ -292,16 +301,34 @@ class PartnerConnectService:
             # Never store a dev token while a real Meta app is configured.
             credentials = None
         if not credentials or not credentials.get("access_token"):
-            self._finish(row, "FAILED", "code_exchange_failed")
-            return build_redirect(row.return_url, row.id, "failed", row.client_state)
+            self._finish_callback(
+                row, {"status": "FAILED", "error_code": "code_exchange_failed", "completed_at": _now()}
+            )
+            return self._callback_redirect(row)
 
         if credentials.get("dev"):
             credentials = {**credentials, "dev_seed": row.id}
-        row.credentials_json = encrypt_credentials(credentials)
-        row.status = "AUTHORIZED"
-        self.repo.save(row)
-        logger.info("partner connect session %s authorized", row.id)
-        return build_redirect(row.return_url, row.id, "authorized", row.client_state)
+        if self._finish_callback(
+            row, {"status": "AUTHORIZED", "credentials_json": encrypt_credentials(credentials)}
+        ):
+            logger.info("partner connect session %s authorized", row.id)
+        return self._callback_redirect(row)
+
+    def _finish_callback(self, row: PartnerConnectSession, values: dict) -> bool:
+        """The callback's outcome, written only while the session is still OPEN
+        and claimed. A session cancelled or expired meanwhile keeps that end
+        and never receives a token."""
+        written = self.repo.finish_callback(row.id, {"credentials_json": None, **values})
+        if not written:
+            logger.info("partner connect session %s ended during the callback", row.id)
+        self.db.refresh(row)
+        return written
+
+    def _callback_redirect(self, row: PartnerConnectSession) -> str:
+        outcome = CALLBACK_OUTCOMES.get(row.status)
+        if outcome is None:
+            raise ConnectSessionNotFound()
+        return build_redirect(row.return_url, row.id, outcome, row.client_state)
 
     def _scope_usable(self, row: PartnerConnectSession) -> bool:
         app = self.repo.get_client_app(row.client_app_id, row.tenant_id)
@@ -327,7 +354,8 @@ class PartnerConnectService:
             raise ConnectSessionNotAuthorized(row.status)
         if not self._scope_usable(row):
             raise ConnectSessionNotFound()
-        if not self.repo.claim_complete(row.id, _now()):
+        now = _now()
+        if not self.repo.claim_complete(row.id, now, stale_before=_stale_before(now)):
             self.db.refresh(row)
             if row.status == "COMPLETED":
                 return row
@@ -350,17 +378,22 @@ class PartnerConnectService:
         channel_credentials = {k: v for k, v in credentials.items() if k != "dev_seed"}
         adapter = get_adapter("WHATSAPP")
         numbers = adapter.list_onboarded_numbers(credentials)
-        if not numbers:
+        # Channels an earlier, interrupted attempt of this session already made.
+        created: List[Channel] = [
+            c
+            for c in self.repo.get_channels(row.result_channel_ids or [], row.tenant_id, row.workspace_id)
+            if not c.is_trashed
+        ]
+        if not numbers and not created:
             self._finish(row, "FAILED", "no_number_found")
             logger.info("partner connect session %s found no number", row.id)
             return
 
         statuses.ensure_statuses(self.db, row.tenant_id)
         onboarding = OnboardingService(self.db)
-        created: List[Channel] = []
         skipped = 0
-        seen = set()
-        for num in numbers:
+        seen = {c.phone_number_id for c in created if c.phone_number_id}
+        for num in numbers or []:
             phone_number_id = num.get("phone_number_id")
             if not phone_number_id or phone_number_id in seen:
                 continue
@@ -395,6 +428,7 @@ class PartnerConnectService:
             except PhoneNumberInUse:
                 skipped += 1
                 continue
+            self.repo.record_channel(row.id, channel.id)
             created.append(channel)
 
         subscribed = set()

@@ -5,11 +5,23 @@ up by its state hash, which is unique service-wide."""
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..models import Channel, ClientApp, PartnerApiKey, PartnerConnectSession, Workspace
 
 LIVE_STATUSES = ("OPEN", "AUTHORIZED")
+
+
+def _claim_free_or_stale(stale_before: Optional[datetime]):
+    """No completion runs: ``completed_at`` unset, or (a lease) set before
+    ``stale_before`` by a completion that died without releasing it."""
+    if stale_before is None:
+        return PartnerConnectSession.completed_at.is_(None)
+    return or_(
+        PartnerConnectSession.completed_at.is_(None),
+        PartnerConnectSession.completed_at < stale_before,
+    )
 
 
 class PartnerConnectSessionRepository:
@@ -101,19 +113,51 @@ class PartnerConnectSessionRepository:
         self.db.commit()
         return n == 1
 
-    def claim_complete(self, session_id: str, now: datetime) -> bool:
-        """AUTHORIZED and not yet being completed -> being completed."""
+    def finish_callback(self, session_id: str, values: dict) -> bool:
+        """Write the callback's outcome only while the session is still OPEN
+        and claimed; False when it was cancelled or expired meanwhile."""
+        n = (
+            self.db.query(PartnerConnectSession)
+            .filter(
+                PartnerConnectSession.id == session_id,
+                PartnerConnectSession.status == "OPEN",
+                PartnerConnectSession.claimed_at.isnot(None),
+            )
+            .update(values, synchronize_session=False)
+        )
+        self.db.commit()
+        return n == 1
+
+    def claim_complete(
+        self, session_id: str, now: datetime, stale_before: Optional[datetime] = None
+    ) -> bool:
+        """AUTHORIZED and not being completed (or its claim is stale) -> being completed."""
         n = (
             self.db.query(PartnerConnectSession)
             .filter(
                 PartnerConnectSession.id == session_id,
                 PartnerConnectSession.status == "AUTHORIZED",
-                PartnerConnectSession.completed_at.is_(None),
+                _claim_free_or_stale(stale_before),
             )
             .update({"completed_at": now}, synchronize_session=False)
         )
         self.db.commit()
         return n == 1
+
+    def record_channel(self, session_id: str, channel_id: str) -> None:
+        """Add one created channel to the session's result as soon as it exists."""
+        row = (
+            self.db.query(PartnerConnectSession)
+            .filter(PartnerConnectSession.id == session_id)
+            .first()
+        )
+        if row is None:
+            return
+        ids = list(row.result_channel_ids or [])
+        if channel_id not in ids:
+            ids.append(channel_id)
+            row.result_channel_ids = ids
+            self.db.commit()
 
     def release_complete(self, session_id: str) -> None:
         self.db.query(PartnerConnectSession).filter(
@@ -122,13 +166,15 @@ class PartnerConnectSessionRepository:
         ).update({"completed_at": None}, synchronize_session=False)
         self.db.commit()
 
-    def cancel_live(self, session_id: str, now: datetime) -> bool:
+    def cancel_live(
+        self, session_id: str, now: datetime, stale_before: Optional[datetime] = None
+    ) -> bool:
         n = (
             self.db.query(PartnerConnectSession)
             .filter(
                 PartnerConnectSession.id == session_id,
                 PartnerConnectSession.status.in_(LIVE_STATUSES),
-                PartnerConnectSession.completed_at.is_(None),
+                _claim_free_or_stale(stale_before),
             )
             .update(
                 {"status": "CANCELLED", "credentials_json": None, "completed_at": now},
@@ -138,12 +184,19 @@ class PartnerConnectSessionRepository:
         self.db.commit()
         return n == 1
 
-    def expire_due(self, now: datetime, tenant_id: Optional[str] = None, session_id: Optional[str] = None) -> int:
+    def expire_due(
+        self,
+        now: datetime,
+        tenant_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        stale_before: Optional[datetime] = None,
+    ) -> int:
         """Live sessions past their expiry become EXPIRED, token dropped. A
-        session being completed right now (``completed_at`` set) is left alone."""
+        session being completed right now (``completed_at`` set, not stale) is
+        left alone."""
         q = self.db.query(PartnerConnectSession).filter(
             PartnerConnectSession.status.in_(LIVE_STATUSES),
-            PartnerConnectSession.completed_at.is_(None),
+            _claim_free_or_stale(stale_before),
             PartnerConnectSession.expires_at < now,
         )
         if tenant_id is not None:

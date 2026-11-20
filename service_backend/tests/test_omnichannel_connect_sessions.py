@@ -449,6 +449,171 @@ def test_ttl_setting_sets_the_expiry(client, sim, monkeypatch):
     assert timedelta(minutes=4) < left <= timedelta(minutes=5)
 
 
+# ── races and interrupted steps ──────────────────────────────────────────────
+def _exchange_then(monkeypatch, during):
+    """A Meta code exchange that lets another request act while it runs."""
+    from modules.omnichannel.adapters.whatsapp_cloud import WhatsAppCloudAdapter
+    from modules.omnichannel.services import partner_connect_service
+
+    class Slow(WhatsAppCloudAdapter):
+        def exchange_code(self, code, redirect_uri=None):
+            during()
+            return {"access_token": TOKEN}
+
+    monkeypatch.setattr(partner_connect_service, "get_adapter", lambda channel_type="WHATSAPP": Slow())
+
+
+def _in_other_request(session_factory, action):
+    from modules.omnichannel.repositories.partner_connect_session_repository import (
+        PartnerConnectSessionRepository,
+    )
+
+    db = session_factory()
+    try:
+        action(PartnerConnectSessionRepository(db), datetime.now(timezone.utc))
+    finally:
+        db.close()
+
+
+def test_a_cancel_during_the_code_exchange_stays_cancelled_and_stores_no_token(
+    client, session_factory, real, monkeypatch
+):
+    hdr, ws = setup(client)
+    res = create(client, hdr, ws).json()
+    sid = res["id"]
+    _exchange_then(
+        monkeypatch,
+        lambda: _in_other_request(session_factory, lambda repo, now: repo.cancel_live(sid, now)),
+    )
+    cb = callback(client, state_of(res["url"]), code=CODE)
+    assert cb.status_code == 200, cb.text
+    assert parse_qs(urlsplit(cb.json()["redirect"]).query)["status"] == ["cancelled"]
+    row = session_row(session_factory, sid)
+    assert row.status == "CANCELLED" and row.credentials_json is None
+    done = client.post(f"{P}/connect-sessions/{sid}/complete", headers=hdr)
+    assert done.status_code == 409 and done.json()["error"]["code"] == "connect_session_not_authorized"
+    assert channels(client, hdr, ws) == []
+
+
+def test_an_expiry_during_the_code_exchange_stays_expired_and_stores_no_token(
+    client, session_factory, real, monkeypatch
+):
+    hdr, ws = setup(client)
+    res = create(client, hdr, ws).json()
+    sid = res["id"]
+
+    def expire(repo, now):
+        update_row(session_factory, sid, expires_at=now - timedelta(seconds=1))
+        assert repo.expire_due(now, session_id=sid) == 1
+
+    _exchange_then(monkeypatch, lambda: _in_other_request(session_factory, expire))
+    assert callback(client, state_of(res["url"]), code=CODE).json() == SESSION_NOT_FOUND
+    row = session_row(session_factory, sid)
+    assert row.status == "EXPIRED" and row.credentials_json is None
+
+
+def _fail_once(monkeypatch, target, name, after_calls):
+    """Make ``target.name`` raise once, on call number ``after_calls + 1``."""
+    original = getattr(target, name)
+    calls = {"n": 0}
+
+    def wrapper(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == after_calls + 1:
+            raise RuntimeError("simulated crash")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, wrapper)
+    return lambda: monkeypatch.setattr(target, name, original)
+
+
+def test_a_retry_after_a_partial_failure_reports_every_channel_it_made(client, session_factory, real, monkeypatch):
+    from modules.omnichannel.services.onboarding_service import OnboardingService
+
+    hdr, ws = setup(client)
+    graph(monkeypatch, {"waba-1": [("pn-a", "+60 11-000 0001"), ("pn-b", "+60 11-000 0002")]})
+    res = create(client, hdr, ws).json()
+    callback(client, state_of(res["url"]), code=CODE)
+    restore = _fail_once(monkeypatch, OnboardingService, "_persist_channel", after_calls=1)
+    with pytest.raises(RuntimeError):
+        client.post(f"{P}/connect-sessions/{res['id']}/complete", headers=hdr)
+    restore()
+    assert len(channels(client, hdr, ws)) == 1
+    assert client.get(f"{P}/connect-sessions/{res['id']}", headers=hdr).json()["status"] == "AUTHORIZED"
+
+    done = client.post(f"{P}/connect-sessions/{res['id']}/complete", headers=hdr)
+    assert done.status_code == 200, done.text
+    out = done.json()
+    listed = channels(client, hdr, ws)
+    assert out["status"] == "COMPLETED" and len(listed) == 2
+    assert sorted(out["channelIds"]) == sorted(c["id"] for c in listed)
+    assert sorted(c["id"] for c in out["channels"]) == sorted(out["channelIds"])
+    assert session_row(session_factory, res["id"]).credentials_json is None
+
+
+def test_a_retry_after_a_failure_past_the_last_channel_completes_with_it(client, session_factory, real, monkeypatch):
+    from modules.omnichannel.services import partner_connect_service
+
+    hdr, ws = setup(client)
+    graph(monkeypatch, {"waba-1": [("pn-a", "+60 11-000 0001")]})
+    res = create(client, hdr, ws).json()
+    callback(client, state_of(res["url"]), code=CODE)
+    restore = _fail_once(monkeypatch, partner_connect_service, "emit_channel_updated", after_calls=0)
+    with pytest.raises(RuntimeError):
+        client.post(f"{P}/connect-sessions/{res['id']}/complete", headers=hdr)
+    restore()
+
+    out = client.post(f"{P}/connect-sessions/{res['id']}/complete", headers=hdr).json()
+    listed = channels(client, hdr, ws)
+    assert out["status"] == "COMPLETED" and out["errorCode"] is None
+    assert out["channelIds"] == [listed[0]["id"]] and len(listed) == 1
+
+
+def test_a_completion_still_running_holds_its_claim(client, session_factory, sim):
+    hdr, ws = setup(client)
+    res = create(client, hdr, ws).json()
+    callback(client, state_of(res["url"]))
+    update_row(session_factory, res["id"], completed_at=datetime.now(timezone.utc) - timedelta(seconds=30))
+    done = client.post(f"{P}/connect-sessions/{res['id']}/complete", headers=hdr)
+    assert done.status_code == 409
+    assert channels(client, hdr, ws) == []
+
+
+def test_a_completion_that_died_can_be_taken_over(client, session_factory, sim):
+    hdr, ws = setup(client)
+    res = create(client, hdr, ws).json()
+    callback(client, state_of(res["url"]))
+    update_row(session_factory, res["id"], completed_at=datetime.now(timezone.utc) - timedelta(minutes=10))
+    done = client.post(f"{P}/connect-sessions/{res['id']}/complete", headers=hdr)
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "COMPLETED" and len(channels(client, hdr, ws)) == 1
+
+
+def test_a_session_whose_completion_died_expires_and_drops_its_token(client, session_factory, sim):
+    hdr, ws = setup(client)
+    res = create(client, hdr, ws).json()
+    callback(client, state_of(res["url"]))
+    now = datetime.now(timezone.utc)
+    update_row(
+        session_factory,
+        res["id"],
+        completed_at=now - timedelta(minutes=10),
+        expires_at=now - timedelta(minutes=1),
+    )
+    assert client.get(f"{P}/connect-sessions/{res['id']}", headers=hdr).json()["status"] == "EXPIRED"
+    assert session_row(session_factory, res["id"]).credentials_json is None
+
+
+def test_a_session_whose_completion_died_can_be_cancelled(client, session_factory, sim):
+    hdr, ws = setup(client)
+    res = create(client, hdr, ws).json()
+    callback(client, state_of(res["url"]))
+    update_row(session_factory, res["id"], completed_at=datetime.now(timezone.utc) - timedelta(minutes=10))
+    out = client.post(f"{P}/connect-sessions/{res['id']}/cancel", headers=hdr).json()
+    assert out["status"] == "CANCELLED"
+    assert session_row(session_factory, res["id"]).credentials_json is None
+
+
 # ── complete / cancel order ──────────────────────────────────────────────────
 def test_complete_before_authorized_is_refused(client, sim):
     hdr, ws = setup(client)
