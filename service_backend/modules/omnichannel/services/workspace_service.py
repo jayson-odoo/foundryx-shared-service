@@ -1,8 +1,9 @@
 """Workspace business logic - tenant-scoped. Routers stay thin; this owns rules
 (default-workspace protection, status resolution, membership)."""
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.tenant import DEFAULT_TENANT_ID
@@ -25,6 +26,12 @@ class WorkspaceNotFound(Exception):
 
 class DefaultWorkspaceProtected(Exception):
     pass
+
+
+class WorkspaceExternalRefInUse(Exception):
+    def __init__(self, workspace_id: str):
+        super().__init__(workspace_id)
+        self.workspace_id = workspace_id
 
 
 class WorkspaceService:
@@ -168,9 +175,30 @@ class WorkspaceService:
         self.db.commit()
 
     def restore(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:
-        for ws in self.repo.get_many(ids, tenant_id):
+        rows = self.repo.get_many(ids, tenant_id)
+        self._assert_external_refs_free(rows, tenant_id)
+        for ws in rows:
             ws.is_trashed = False
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            self._assert_external_refs_free(rows, tenant_id)
+            raise
+
+    def _assert_external_refs_free(self, rows: List[Workspace], tenant_id: str) -> None:
+        """A trashed partner workspace can come back only while no other live
+        workspace of the tenant holds its ``external_ref``."""
+        claimed: Dict[str, str] = {}
+        for ws in sorted(rows, key=lambda w: w.id):
+            if not ws.is_trashed or ws.external_ref is None:
+                continue
+            if ws.external_ref in claimed:
+                raise WorkspaceExternalRefInUse(ws.id)
+            live = self.repo.get_live_by_external_ref(tenant_id, ws.external_ref)
+            if live is not None and live.id != ws.id:
+                raise WorkspaceExternalRefInUse(ws.id)
+            claimed[ws.external_ref] = ws.id
 
     # ---- members ----
     def members(

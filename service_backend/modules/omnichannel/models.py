@@ -83,8 +83,8 @@ class Workspace(OmniBase):
     round_robin_cursor = Column(String, nullable=True)
     # S7 partner path: the partner's own organisation id (`externalOrgId`).
     # NULL for every dashboard-created workspace. Unique per tenant among live
-    # rows (partial index, migration 0028), which makes the partner PUT
-    # idempotent and race-safe.
+    # rows (partial index, migration 0031_omni_workspace_external_ref), which
+    # makes the partner PUT idempotent and race-safe.
     external_ref = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(

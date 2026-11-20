@@ -697,7 +697,8 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS visitor_profile_json JSON"
                 )
             )
-            # S7 partner workspaces (module Alembic 0028): the partner's
+            # S7 partner workspaces (module Alembic
+            # 0031_omni_workspace_external_ref): the partner's
             # organisation id. New, NULL on every existing row (no backfill:
             # no workspace ever had a partner id), plus its partial unique index.
             conn.execute(
