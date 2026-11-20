@@ -1,0 +1,9 @@
+distinct products: 11840
+ref_prefix AED_SORENTO: 11840 / bad: 0
+list_price present (enrich matched): 11840
+enrich miss: 0
+delivered list_price == 0 (post-clamp): 5129
+price as JSON string: 11840, NOT string: 0
+uom_code present: 0, cost_price present: 0, remark present: 0, is_discontinued present: 0
+description with internal double space: 2768
+negative source BaseUOMPrice: 121, clamped-confirmed: 121

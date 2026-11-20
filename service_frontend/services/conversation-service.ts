@@ -7,9 +7,13 @@
  * (bottom), exactly like channel-service did.
  */
 import type {
+  CloseThreadInput,
+  ConversationEvent,
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  LifecycleMove,
+  PatchContactInput,
   QuickReply,
   ReactionResult,
   SendContactsInput,
@@ -18,6 +22,8 @@ import type {
   SendMediaInput,
   SendMessageInput,
   SendTemplateInput,
+  ShortcutItem,
+  ShortcutRunResult,
   ThreadListQuery,
   ThreadPriority,
   ThreadStatus,
@@ -61,11 +67,37 @@ export interface ConversationService {
   /** Canned responses for the workspace (★ composer picker). */
   listQuickReplies(workspaceId: string): Promise<QuickReply[]>;
   /**
+   * Plan 25 - system fields + typed custom fields + tag replace-set, ONE
+   * partial-merge PATCH (AC-CDM-06/07/10, AC-CDM-36). 422 `fieldErrors` map
+   * onto `customFields.<key>` / `tagIds` / `language` / `countryCode` / etc.
+   */
+  patchContact(contactId: string, patch: PatchContactInput): Promise<ConversationThread>;
+  /** Move the contact's lifecycle stage via the status-engine machine
+   *  (AC-CDM-17). 409 when no edge exists from the current stage. */
+  moveLifecycle(contactId: string, toStatusId: string): Promise<ConversationThread>;
+  /** The fireable outgoing edges from the contact's CURRENT stage only - the
+   *  "Move to" picker offers ONLY these (AC-CDM-18, foolproof-UI). */
+  lifecycleMoves(contactId: string): Promise<LifecycleMove[]>;
+  /**
    * Subscribe to realtime events for a workspace. Returns an unsubscribe fn.
    * Phase B: WebSocket + Redis pub/sub; Phase A: mock timer emitter.
    */
   subscribe(workspaceId: string, handler: (event: ConversationSocketEvent) => void): () => void;
+
+  // -- Plan 27 additions (§5.1) -----------------------------------------
+  /** Close with a required reason + optional note (AC-IVE-28/29/30). */
+  closeThread(contactId: string, input: CloseThreadInput): Promise<ConversationThread>;
+  /** This thread's event history, newest-first (AC-IVE-13). */
+  listEvents(contactId: string): Promise<ConversationEvent[]>;
+  /** Published `entity.shortcut` workflows bound to this contact's entity
+   *  type (AC-IVE-36). */
+  listShortcuts(contactId: string): Promise<ShortcutItem[]>;
+  /** Fire a shortcut against the PUBLISHED version (AC-IVE-37). */
+  runShortcut(contactId: string, workflowId: string): Promise<ShortcutRunResult>;
 }
 
-// Phase B: real api-client + WS implementation. (Mock retained in *.mock.ts.)
+// Real backend (plan 25 S4 + plan 27 S4) - every method (including the plan-27
+// close/events/shortcuts additions, backed since S1-S3) hits the live API.
+// `conversation-service.mock.ts` remains the standing frontend-first mock for
+// future tuning, but the app no longer binds to it.
 export const conversationService: ConversationService = realConversationService;

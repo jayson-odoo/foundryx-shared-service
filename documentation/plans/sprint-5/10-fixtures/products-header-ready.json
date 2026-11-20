@@ -1,0 +1,17 @@
+{
+  "snapshotId": "8f1e4c2a-6b3d-4e91-9a7c-1d2e3f4a5b6c",
+  "entity": "products",
+  "companyCode": "SRT",
+  "status": "ready",
+  "extractedAt": "2026-09-19T22:05:11Z",
+  "expiresAt": "2026-09-20T22:05:11Z",
+  "recordCount": 10,
+  "complete": true,
+  "contentHash": "57f0462741425519df34d21ecbf4602f94ccd810bd5933a841ed1ecce8580a5f",
+  "sourcePageSize": 1000,
+  "zeroListPriceCount": 3,
+  "negativeListPriceCount": 1,
+  "enrichMissCount": 0,
+  "excludedCount": 0,
+  "excludedRows": []
+}

@@ -5,6 +5,7 @@ import { useTheme } from 'next-themes';
 import type { PublicBranding } from '@/types/branding';
 import { overrideVars, TOKEN_DEFS } from '@/lib/branding-tokens';
 import { useTenantBranding } from '@/hooks/use-branding';
+import { getPageTitleOverride } from '@/lib/page-title-override';
 
 function applyFavicon(branding: PublicBranding): void {
   let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
@@ -57,7 +58,9 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     if (branding.tenantName) {
       const name = branding.tenantName;
       const apply = () => {
-        if (document.title !== name) document.title = name;
+        // A page-level override (a product's feedback board) wins.
+        const want = getPageTitleOverride() ?? name;
+        if (document.title !== want) document.title = want;
       };
       apply();
       const observer = new MutationObserver(apply);

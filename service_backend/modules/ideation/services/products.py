@@ -4,6 +4,8 @@ Product CRUD is the CORE catalog's job (``/products``, ``products.*``); this
 service owns ONLY the ideation delivery extension (``product_delivery``): the
 validated ``product_domain_base`` origin that mints product-domain idea links.
 """
+from typing import Optional
+import re
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
@@ -12,6 +14,11 @@ from sqlalchemy.orm import Session
 from app.models.catalog import Product
 
 from ..models import ProductDelivery
+from ..schemas import BUILD_REPO_PATTERN
+
+_UNSET = "\0unset"  # sentinel: an omitted field (None means clear)
+# A product's feedback board colour (lane SS-MULTI-PRODUCT-BOARD).
+BOARD_COLOR_RE = re.compile(r"^#[0-9a-f]{6}$")
 
 
 def validate_origin(value: str) -> str:
@@ -59,16 +66,47 @@ class DeliveryService:
         self._product_or_404(tenant_id, product_id)
         return self._row(tenant_id, product_id)
 
-    def set(self, tenant_id: str, product_id: str, product_domain_base: str) -> ProductDelivery:
+    def set(
+        self,
+        tenant_id: str,
+        product_id: str,
+        product_domain_base: Optional[str],
+        build_repo: Optional[str] = _UNSET,
+        board_color: Optional[str] = _UNSET,
+        board_name: Optional[str] = _UNSET,
+    ) -> ProductDelivery:
         """Upsert the delivery config (one row per product). 404 if the product
-        is missing; 422 if the origin is invalid."""
+        is missing; 422 if the origin is invalid. ``product_domain_base`` omitted keeps the stored value. ``build_repo`` left out keeps
+        the stored value; ``None`` clears it."""
         self._product_or_404(tenant_id, product_id)
-        origin = validate_origin(product_domain_base)
+        if build_repo is not _UNSET and build_repo is not None:
+            if not re.fullmatch(BUILD_REPO_PATTERN, build_repo):
+                message = "Enter the build repository as owner/repo."
+                raise HTTPException(
+                    422, detail={"message": message, "fieldErrors": {"buildRepo": message}}
+                )
+        if board_color is not _UNSET and board_color is not None:
+            board_color = board_color.strip().lower()
+            if not BOARD_COLOR_RE.fullmatch(board_color):
+                message = "Enter the colour as #rrggbb."
+                raise HTTPException(
+                    422, detail={"message": message, "fieldErrors": {"boardColor": message}}
+                )
+        if board_name is not _UNSET and board_name is not None:
+            board_name = board_name.strip()[:80] or None
+        origin = validate_origin(product_domain_base) if product_domain_base is not None else None
         row = self._row(tenant_id, product_id)
         if row is None:
             row = ProductDelivery(tenant_id=tenant_id, product_id=product_id)
             self.db.add(row)
-        row.product_domain_base = origin
+        if origin is not None:
+            row.product_domain_base = origin
+        if build_repo is not _UNSET:
+            row.build_repo = build_repo
+        if board_color is not _UNSET:
+            row.board_color = board_color
+        if board_name is not _UNSET:
+            row.board_name = board_name
         self.db.commit()
         self.db.refresh(row)
         return row

@@ -89,8 +89,19 @@ class WorkflowRunItemOut(ApiModel):
     finished_at: Optional[datetime] = Field(serialization_alias="finishedAt")
     duration_ms: Optional[int] = Field(serialization_alias="durationMs")
     version_number: int = Field(serialization_alias="versionNumber")
+    correlation_key: Optional[str] = Field(
+        default=None,
+        serialization_alias="correlationKey",
+    )
     error: Optional[str] = None
     created_at: datetime = Field(serialization_alias="createdAt")
+    # Plan 31 S6 (AC-WFP-65) - the node a `waiting` run is parked at, so the
+    # Logs list/replay can render the Waiting badge and highlight the parked
+    # node without a second round trip. Always None for a non-waiting run.
+    paused_node_id: Optional[str] = Field(
+        default=None,
+        serialization_alias="pausedNodeId",
+    )
 
     @classmethod
     def from_row(cls, r: WorkflowRun, actor_name: str = "") -> "WorkflowRunItemOut":
@@ -104,8 +115,10 @@ class WorkflowRunItemOut(ApiModel):
             finished_at=r.finished_at,
             duration_ms=_duration_ms(r.started_at, r.finished_at),
             version_number=r.version_number,
+            correlation_key=r.correlation_key,
             error=r.error,
             created_at=r.created_at,
+            paused_node_id=r.paused_node_id,
         )
 
 

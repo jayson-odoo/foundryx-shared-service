@@ -52,6 +52,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.activity_log.context import set_trace_id, trace_id_var
 from app.activity_log.service import ActivityLogService
+from app.db_errors import stored_error_text
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.models.integration_activity import (
@@ -66,6 +67,20 @@ _GATEWAY_PREFIX = "/api/v1/omnichannel"
 # Max bytes buffered per body - beyond this the copy stops + the summary marks
 # {"truncated": true}. A body is NEVER buffered unbounded.
 _BODY_CAP = 16 * 1024
+_ERASED_SEGMENT = "phone:<erased>"
+
+
+def _masked_path(method: str, path: str) -> str:
+    """The erase call (DELETE /contacts/phone:...) logs no phone number: the
+    identifier segment becomes ``phone:<erased>``. Anything else is unchanged."""
+    rest = path[len(_GATEWAY_PREFIX):] if path.startswith(_GATEWAY_PREFIX) else None
+    if method != "DELETE" or rest is None or not rest.startswith("/contacts/"):
+        return path
+    segment = rest[len("/contacts/"):]
+    # strip() mirrors the identifier resolver (public_gateway_service.py, `(identifier or "").strip()`).
+    if "/" in segment or not segment.strip().lower().startswith("phone:"):
+        return path
+    return f"{_GATEWAY_PREFIX}/contacts/{_ERASED_SEGMENT}"
 
 
 def _open_session(request: Request):
@@ -107,20 +122,22 @@ def _summarize_body(
 ) -> Optional[Any]:
     """Turn a teed body into a JSON-storable, un-redacted summary value (the
     service redacts it). ``None`` when there is no body. A JSON body parses to its
-    object; a truncated JSON body / unparseable body stores the capped raw string;
+    object; a truncated or unparseable JSON body stores a size note only;
     a non-JSON (multipart/binary) body stores a size note ONLY - never the bytes."""
     if total_size <= 0:
         return None
     if not is_json:
         label = (content_type or "").split(";", 1)[0].strip() or "binary"
         return {"note": f"{label} body ({total_size} bytes) not captured"}
-    text = raw.decode("utf-8", errors="replace")
+    note = f"json body ({total_size} bytes) not captured"
     if truncated:
-        return {"truncated": True, "raw": text}
+        # Over the capture limit: a size note only, never part of the text.
+        return {"truncated": True, "bytes": total_size, "note": note}
+    text = raw.decode("utf-8", errors="replace")
     try:
         return json.loads(text)
-    except Exception:  # noqa: BLE001 - malformed JSON: keep the capped raw text.
-        return {"raw": text}
+    except Exception:  # noqa: BLE001 - malformed JSON: a size note only.
+        return {"unparseable": True, "bytes": total_size, "note": note}
 
 
 class _BodyTee:
@@ -214,7 +231,7 @@ class GatewayActivityMiddleware:
                 latency_ms = int((time.monotonic() - started) * 1000)
                 err_args = (
                     scope, trace_id, 500, latency_ms,
-                    f"{type(exc).__name__}: {exc}", occurred_at,
+                    stored_error_text(exc, "Request failed", f"{type(exc).__name__}: {exc}"), occurred_at,
                     req_tee, req_ct, resp, resp_tee_ref["tee"],
                 )
                 # Mirror the happy path: inline in eager, else threadpool so the
@@ -289,11 +306,11 @@ class GatewayActivityMiddleware:
         if tenant_id is None:
             return
 
-        path = request.url.path
+        path = _masked_path(request.method, request.url.path)
         operation = f"{request.method} {path[len(_GATEWAY_PREFIX):] or '/'}"
         status = ACTIVITY_SUCCESS if status_code < 400 else ACTIVITY_ERROR
 
-        req_summary = _request_summary(request, req_tee, req_ct)
+        req_summary = _request_summary(request, req_tee, req_ct, path)
         resp_summary = _response_summary(resp, resp_tee)
 
         db, close = _open_session(request)
@@ -319,12 +336,14 @@ class GatewayActivityMiddleware:
             close()
 
 
-def _request_summary(request: Request, tee: _BodyTee, content_type: Optional[str]) -> dict:
+def _request_summary(
+    request: Request, tee: _BodyTee, content_type: Optional[str], path: str
+) -> dict:
     """Metadata (headers redacted downstream) + the teed body (JSON parsed, or a
     size note for multipart/binary, or a truncation marker). The body is captured
     without consuming the stream (the handler already read the real bytes)."""
     summary: dict[str, Any] = {
-        "path": request.url.path,
+        "path": path,
         "method": request.method,
         "query": dict(request.query_params),
         "headers": dict(request.headers),

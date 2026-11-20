@@ -10,15 +10,42 @@ fetch back (through the CDN when configured), byte-compare, delete. That
 verifies credentials, write access AND the CDN wiring in one pass.
 """
 import mimetypes
-import urllib.request
+import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import settings
 from app.integrations.base import TestResult
+from app.services.storage import StorageUnavailable
 
 PRESIGN_TTL_SECONDS = 3600  # resolved per request - never persisted (D4)
 _PROBE_TIMEOUT_SECONDS = 10
+_PROBE_MAX_BYTES = 1024 * 1024  # the probe object is tiny
+
+
+def _body_read_errors() -> Tuple[type, ...]:
+    # Lazy like boto3 itself, so the stub seam works without it installed.
+    from botocore.exceptions import BotoCoreError
+    from urllib3.exceptions import HTTPError as Urllib3HTTPError
+
+    return (OSError, BotoCoreError, Urllib3HTTPError)
+
+
+def _is_transport_error(exc: BaseException) -> bool:
+    """True when the bucket could not be reached or answered 5xx or 429 (retryable)."""
+    from botocore.exceptions import ClientError, ConnectionError as BotoConnectionError
+    from botocore.exceptions import HTTPClientError
+    from urllib3.exceptions import HTTPError as Urllib3HTTPError
+
+    if isinstance(exc, ClientError):
+        try:
+            status = int(exc.response["ResponseMetadata"]["HTTPStatusCode"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return status >= 500 or status == 429
+    return isinstance(
+        exc, (BotoConnectionError, HTTPClientError, Urllib3HTTPError, OSError)
+    )
 
 
 def _ext_for(mime_type: str) -> str:
@@ -38,16 +65,23 @@ def derive_endpoint(provider: str, config: Dict[str, Any]) -> Optional[str]:
     return endpoint or None
 
 
-def _http_get(url: str, timeout: float) -> bytes:
+def _http_get(url: str, timeout: float, operator_owned: bool = False) -> bytes:
     """Probe fetch seam (tests patch this).
 
     Sends a product User-Agent - Cloudflare's WAF (Bot Fight Mode) 403s the
     default `Python-urllib/X.Y` UA, which broke the CDN probe against R2
-    custom domains even when the wiring was correct.
+    custom domains even when the wiring was correct. The read itself is the
+    shared storage URL read (public https only; platform storage excepted).
     """
-    request = urllib.request.Request(url, headers={"User-Agent": "FoundryxEMS-StorageProbe/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310 - config-provided CDN URL
-        return resp.read()
+    from app.services.storage import read_url
+
+    return read_url(
+        url,
+        operator_owned=operator_owned,
+        timeout=timeout,
+        max_bytes=_PROBE_MAX_BYTES,
+        headers={"User-Agent": "FoundryxEMS-StorageProbe/1.0"},
+    )
 
 
 class S3CompatibleAdapter:
@@ -75,6 +109,8 @@ class S3CompatibleAdapter:
         self.secret_access_key = secret_access_key
         self.cdn_base_url = cdn_base_url.rstrip("/")
         self._client = client
+        # True only for the platform's own storage row (set by the factory).
+        self.operator_owned = False
 
     @classmethod
     def from_connection(
@@ -92,9 +128,18 @@ class S3CompatibleAdapter:
 
     def _build_client(self) -> Any:
         import boto3  # noqa: PLC0415 - imported here so the stub seam works without it
+        from botocore.config import Config  # noqa: PLC0415
 
         return boto3.client(
             "s3",
+            config=Config(
+                connect_timeout=settings.storage_s3_connect_timeout_seconds,
+                read_timeout=settings.storage_s3_read_timeout_seconds,
+                retries={
+                    "total_max_attempts": settings.storage_s3_max_attempts,
+                    "mode": "standard",
+                },
+            ),
             region_name=self.region,
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id or None,
@@ -136,12 +181,23 @@ class S3CompatibleAdapter:
         """Read the object bytes straight through boto3 so the serving route
         streams them SAME-ORIGIN (no presigned redirect → no bucket-CORS
         preflight, which browsers 403 against R2/S3). Missing object →
-        FileNotFoundError."""
+        FileNotFoundError. A bucket that cannot be reached (connection or
+        timeout errors, a 5xx or 429 answer) → StorageUnavailable, a clean retry."""
         try:
             obj = self.client.get_object(Bucket=self.bucket, Key=key)
-        except Exception as exc:  # noqa: BLE001 - boto3 ClientError (NoSuchKey etc.)
+        except Exception as exc:  # noqa: BLE001 - classified below, chain kept
+            if _is_transport_error(exc):
+                raise StorageUnavailable(key) from exc
             raise FileNotFoundError(key) from exc
-        return obj["Body"].read(), obj.get("ContentType")
+        try:
+            data = obj["Body"].read()
+        except _body_read_errors() as exc:
+            from botocore.exceptions import FlexibleChecksumError
+
+            if isinstance(exc, FlexibleChecksumError):
+                raise  # a checksum mismatch is permanent, not a retry
+            raise StorageUnavailable(key) from exc
+        return data, obj.get("ContentType")
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
@@ -179,7 +235,11 @@ class S3CompatibleAdapter:
         try:
             key = self.save("foundryx-probe/probe", probe_body, "text/plain")
             if self.cdn_base_url:
-                fetched = _http_get(f"{self.cdn_base_url}/{key}", _PROBE_TIMEOUT_SECONDS)
+                probe_url = f"{self.cdn_base_url}/{key}"
+                if self.operator_owned:
+                    fetched = _http_get(probe_url, _PROBE_TIMEOUT_SECONDS, operator_owned=True)
+                else:
+                    fetched = _http_get(probe_url, _PROBE_TIMEOUT_SECONDS)
                 if fetched != probe_body:
                     return TestResult(
                         ok=False,
@@ -226,17 +286,77 @@ _KEY_FIELDS = [
 ]
 
 
+R2_ACCOUNT_ID = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+def _storage_url_error(
+    provider: str, config: Dict[str, Any], *, operator_owned: bool = False
+) -> Optional[str]:
+    """Message for the first storage URL that is not allowed, else None. Empty
+    values are allowed. An operator-owned row may use http and any address."""
+    from app.services.storage import storage_url_is_plain
+    from app.services.url_guard import UrlGuardError, validate_public_https_url
+
+    checks = [("cdnBaseUrl", "CDN base URL")]
+    if provider == "r2":
+        account_id = str(config.get("accountId", "")).strip()
+        if account_id and not R2_ACCOUNT_ID.match(account_id):
+            return "Account ID may contain only letters, digits and hyphens."
+    else:
+        checks.append(("endpointUrl", "Endpoint URL"))
+    for key, label in checks:
+        value = str(config.get(key, "") or "")
+        if not value:
+            continue
+        if not storage_url_is_plain(value):
+            return f"{label} must be a valid address."
+        if key == "endpointUrl" and ("?" in value or "#" in value):
+            return f"{label} must be a valid address."
+        if operator_owned:
+            if not value.startswith(("http://", "https://")):
+                return f"{label} must start with http:// or https://."
+            continue
+        try:
+            validate_public_https_url(value, strict_dns=False, subject=label)
+        except UrlGuardError as exc:
+            return str(exc)
+        except ValueError:
+            return f"{label} must be a valid address."
+    return None
+
+
 class _StorageProviderBase:
     type = "storage"
     test_label = "Verify storage"
     test_target = None  # probe round-trip needs no user input
 
     provider = ""  # subclasses
+    # The test needs to know whether the platform owns the row (see test()).
+    test_needs_context = True
+
+    def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
+        """Save-time rule: storage URLs a tenant can edit must be public https."""
+        return _storage_url_error(self.provider, config)
+
+    def validate_platform_config(self, config: Dict[str, Any]) -> Optional[str]:
+        """Operator-owned row: any address, http or https."""
+        return _storage_url_error(self.provider, config, operator_owned=True)
 
     def test(
-        self, config: Dict[str, Any], credentials: Dict[str, Any], target: Optional[str] = None
+        self,
+        config: Dict[str, Any],
+        credentials: Dict[str, Any],
+        target: Optional[str] = None,
+        db: Any = None,
+        tenant_id: Optional[str] = None,
     ) -> TestResult:
+        from app.models.tenant import PLATFORM_TENANT_ID
+
+        operator_owned = tenant_id == PLATFORM_TENANT_ID
+        if not operator_owned and _storage_url_error(self.provider, config):
+            return TestResult(ok=False, message="The storage URLs must be public https addresses.")
         adapter = S3CompatibleAdapter.from_connection(self.provider, config, credentials)
+        adapter.operator_owned = operator_owned
         return adapter.run_probe()
 
 
@@ -282,7 +402,3 @@ class R2Provider(_StorageProviderBase):
             *_KEY_FIELDS,
             _CDN_FIELD,
         ]
-
-
-# settings import kept for parity with sibling providers (timeouts later).
-_ = settings

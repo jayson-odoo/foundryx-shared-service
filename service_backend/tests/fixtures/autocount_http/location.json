@@ -1,0 +1,44 @@
+[
+  {
+    "Location": "A1-01-4",
+    "Description": "",
+    "Desc2": "",
+    "Address1": "",
+    "Address2": "",
+    "Address3": "",
+    "Address4": "",
+    "PostCode": "",
+    "Phone1": "",
+    "Contact": "",
+    "AreaCode": "",
+    "IsActive": "F"
+  },
+  {
+    "Location": "ACT-S",
+    "Description": "PROJECT ANG CHENG TUAN",
+    "Desc2": "",
+    "Address1": "",
+    "Address2": "",
+    "Address3": "",
+    "Address4": "",
+    "PostCode": "",
+    "Phone1": "",
+    "Contact": "",
+    "AreaCode": "",
+    "IsActive": "T"
+  },
+  {
+    "Location": "BEYOND",
+    "Description": "BEYOND BATH PROJECT",
+    "Desc2": "",
+    "Address1": "",
+    "Address2": "",
+    "Address3": "",
+    "Address4": "",
+    "PostCode": "",
+    "Phone1": "",
+    "Contact": "",
+    "AreaCode": "",
+    "IsActive": "F"
+  }
+]

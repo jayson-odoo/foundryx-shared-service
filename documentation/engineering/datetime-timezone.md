@@ -1,0 +1,13 @@
+# Datetime & timezone
+
+> Moved verbatim from `CLAUDE.md` on 2026-09-05 (slim-index restructure). The rules here still bind; `PRINCIPLES.md` governs on conflict. Update THIS file when the engine changes.
+
+### Datetime & timezone (multi-country - LIVE end-to-end since sprint-2/05, BL-012)
+**All datetimes are stored in the DB in UTC (offset 0)** and the whole chain enforces it - plan: `documentation/plans/sprint-2/05-datetime-hygiene.md`.
+- **Columns: `UTCDateTime` ONLY** (`app/models/utc_datetime.py` - timestamptz on Postgres; reads come back **aware-UTC on every engine**, SQLite tests included). Never declare a plain `DateTime` column again. Migration `9d2e3f4a5b6c` flipped legacy columns with `USING ... AT TIME ZONE 'UTC'` (an implicit cast would have shifted history via the session tz).
+- **In-memory time = aware UTC**: `datetime.now(timezone.utc)` - the old `.replace(tzinfo=None)` house convention is GONE; reintroducing a naive datetime anywhere poisons comparisons (`TypeError: can't compare offset-naive and offset-aware`).
+- **Wire: Z-suffixed** - datetime-bearing schemas inherit `ApiModel` (`app/schemas/base.py`, wildcard wrap serializer; aware-UTC already emits `Z`, the base is the defensive net). New schema with a datetime field → inherit `ApiModel`.
+- **Frontend: ONE formatter family** - `lib/datetime.ts` (`parseUtc` pins tz-less legacy strings to UTC; `formatDate/DateTime/Time`, `dateKey` for day grouping) bound to the session tz via `hooks/use-datetime.ts useDatetime()`. Never `new Date(iso)` a backend timestamp directly, never re-add tz-blind formatters to `lib/format.ts`/`lib/helpers.ts`.
+- **User tz preference**: `users.timezone` (IANA, NULL = browser tz) - picker on My Account (SearchSelect, "Browser default" sentinel), `PATCH /me/preferences` (422 on unknown zone), rides login payload + `/auth/me` + the NextAuth session (`session.user.timezone`; jwt `update` branch re-pulls it).
+- **Menu pruning (BL-014 closed here)**: `MenuItem.permission` key + recursive `lib/menu-filter.ts filterMenu` (platformOnly + module + permission at EVERY level; parents with zero visible children and orphaned headings disappear). Tag a new gated menu entry with the same key its page's `<RequirePermission>` uses - and tag it in EVERY config array that carries the path (`MENU_SIDEBAR`, `MENU_MEGA`, `MENU_MEGA_MOBILE` are separate copies). ALL menu surfaces run the filter (sidebar + header mega menu + mobile mega menu - the review caught the mega menus leaking gated paths); a new menu surface must call `filterMenu` too, and mega-menu sub-components resolve sections by TITLE, never array index (filtering shifts indices).
+

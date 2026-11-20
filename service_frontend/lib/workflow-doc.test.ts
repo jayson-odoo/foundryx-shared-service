@@ -6,6 +6,8 @@ import {
   createNode,
   hasTrigger,
   nodeDisplayName,
+  removeEdge,
+  removeEdges,
   removeNode,
   replaceNodeType,
   topoOrder,
@@ -105,14 +107,74 @@ describe('hasTrigger', () => {
 });
 
 describe('addEdge', () => {
-  it('replaces an existing edge on the same source port (n8n reconnect)', () => {
+  it('fans out - a second edge from the same source port is kept alongside the first', () => {
     let doc = manualEmailDoc();
     const other = { ...createNode('email.send', { x: 0, y: 200 }), id: 'act2' };
     doc = addNode(doc, other);
     doc = addEdge(doc, { source: 'trg', target: 'act2', sourcePort: 'out' });
     const fromTrigger = doc.edges.filter((e) => e.source === 'trg');
-    expect(fromTrigger).toHaveLength(1);
-    expect(fromTrigger[0].target).toBe('act2');
+    expect(fromTrigger).toHaveLength(2);
+    expect(fromTrigger.map((e) => e.target).sort()).toEqual(['act', 'act2']);
+  });
+
+  it('is idempotent for an exact duplicate connection (same source+port+target)', () => {
+    let doc = manualEmailDoc();
+    const before = doc.edges.length;
+    doc = addEdge(doc, { source: 'trg', target: 'act', sourcePort: 'out' });
+    expect(doc.edges).toHaveLength(before);
+  });
+
+  it('treats an omitted/undefined sourcePort as the same port as explicit \'out\' (normalization dedup)', () => {
+    let doc = createBlankDefinition();
+    doc = addNode(doc, { ...createNode('manual', { x: 0, y: 0 }), id: 'trg' });
+    doc = addNode(doc, { ...createNode('email.send', { x: 0, y: 100 }), id: 'act' });
+    doc = addEdge(doc, { source: 'trg', target: 'act', sourcePort: undefined });
+    expect(doc.edges).toHaveLength(1);
+    doc = addEdge(doc, { source: 'trg', target: 'act', sourcePort: 'out' });
+    expect(doc.edges).toHaveLength(1);
+  });
+
+  it('fans out from an IF node port (e.g. two edges on the true port)', () => {
+    let doc = createBlankDefinition();
+    doc = addNode(doc, { ...createNode('manual', { x: 0, y: 0 }), id: 'trg' });
+    doc = addNode(doc, { ...createNode('if', { x: 0, y: 100 }), id: 'cond' });
+    doc = addNode(doc, { ...createNode('email.send', { x: 0, y: 200 }), id: 'yes1' });
+    doc = addNode(doc, { ...createNode('email.send', { x: 200, y: 200 }), id: 'yes2' });
+    doc = addEdge(doc, { source: 'trg', target: 'cond', sourcePort: 'out' });
+    doc = addEdge(doc, { source: 'cond', target: 'yes1', sourcePort: 'true' });
+    doc = addEdge(doc, { source: 'cond', target: 'yes2', sourcePort: 'true' });
+    const truePort = doc.edges.filter(
+      (e) => e.source === 'cond' && e.sourcePort === 'true',
+    );
+    expect(truePort).toHaveLength(2);
+    expect(truePort.map((e) => e.target).sort()).toEqual(['yes1', 'yes2']);
+  });
+});
+
+describe('removeEdges', () => {
+  it('removes all listed edge ids in one pass and ignores unknown ids', () => {
+    let doc = manualEmailDoc();
+    const other = { ...createNode('email.send', { x: 0, y: 200 }), id: 'act2' };
+    doc = addNode(doc, other);
+    doc = addEdge(doc, { source: 'trg', target: 'act2', sourcePort: 'out' });
+    expect(doc.edges).toHaveLength(2);
+    const ids = doc.edges.map((e) => e.id);
+    doc = removeEdges(doc, [...ids, 'nonexistent-id']);
+    expect(doc.edges).toHaveLength(0);
+  });
+});
+
+describe('removeEdge', () => {
+  it('removes only the named edge, leaving the rest untouched', () => {
+    let doc = manualEmailDoc();
+    const other = { ...createNode('email.send', { x: 0, y: 200 }), id: 'act2' };
+    doc = addNode(doc, other);
+    doc = addEdge(doc, { source: 'trg', target: 'act2', sourcePort: 'out' });
+    expect(doc.edges).toHaveLength(2);
+    const [keep, drop] = doc.edges;
+    doc = removeEdge(doc, drop.id);
+    expect(doc.edges).toHaveLength(1);
+    expect(doc.edges[0].id).toBe(keep.id);
   });
 });
 

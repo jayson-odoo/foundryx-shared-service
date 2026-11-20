@@ -31,6 +31,7 @@ export default function Page() {
     useForgotPassword();
 
   const form = useForm<ForgotPasswordSchemaType>({
+    mode: 'onTouched',
     resolver: zodResolver(getForgotPasswordSchema()),
     defaultValues: { email: '' },
   });

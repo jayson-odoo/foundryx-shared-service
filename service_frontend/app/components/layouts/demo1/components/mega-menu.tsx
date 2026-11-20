@@ -11,6 +11,7 @@ import { useCan } from '@/hooks/use-can';
 import { useInstalledModules } from '@/hooks/use-app-store';
 import { useMenu } from '@/hooks/use-menu';
 import { useTerminology } from '@/hooks/use-terminology';
+import { collectMenuPaths } from '@/lib/menu-path-match';
 import type { MenuItem } from '@/config/types';
 import {
   NavigationMenu,
@@ -26,8 +27,14 @@ import { MegaMenuSubDefault } from '@/app/components/partials/mega-menu/componen
 // rendered as its own component/fiber - calling it positionally inside .map()
 // would run its hooks in MegaMenu's fiber a variable number of times (the count
 // shifts as filterMenu resolves), tripping Rules-of-Hooks and white-screening.
-function MegaMenuSection({ items }: { items: MenuItem[] }) {
-  return <>{MegaMenuSubDefault(items)}</>;
+function MegaMenuSection({
+  items,
+  menuPaths,
+}: {
+  items: MenuItem[];
+  menuPaths: readonly string[];
+}) {
+  return <>{MegaMenuSubDefault(items, menuPaths)}</>;
 }
 
 export function MegaMenu() {
@@ -55,6 +62,11 @@ export function MegaMenu() {
       }),
     [can, installed.isActive, installed.ready, showPlatform],
   );
+
+  // AC-DLA-72 same-class defect (fix round 1 item 4) - "current" against the
+  // VISIBLE menu only, segment-boundary + most-specific-wins
+  // (`lib/menu-path-match.ts`), same discipline as sidebar-menu.tsx.
+  const menuPaths = useMemo(() => collectMenuPaths(visibleMenu), [visibleMenu]);
 
   const linkClass = `
     text-sm text-secondary-foreground font-medium
@@ -87,7 +99,7 @@ export function MegaMenu() {
                 </NavigationMenuTrigger>
                 <NavigationMenuContent className="p-0">
                   <div className="w-full space-y-0.5 p-4 lg:w-[320px] lg:p-5">
-                    <MegaMenuSection items={children} />
+                    <MegaMenuSection items={children} menuPaths={menuPaths} />
                   </div>
                 </NavigationMenuContent>
               </NavigationMenuItem>
@@ -101,7 +113,7 @@ export function MegaMenu() {
                 <Link
                   href={item.path}
                   className={cn(linkClass)}
-                  data-active={isActive(item.path) || undefined}
+                  data-active={isActive(item.path, menuPaths) || undefined}
                 >
                   {label}
                 </Link>

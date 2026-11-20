@@ -129,6 +129,23 @@ class WorkspaceRepository:
             is not None
         )
 
+    def member_ids_subset(self, workspace_id: str, user_ids: List[str]) -> set:
+        """Batched `member_exists` (review round 1, finding 10) - ONE query
+        for a whole roster instead of one `member_exists` call per member.
+        Returns the subset of `user_ids` that ARE `WorkspaceMember`s of this
+        workspace."""
+        if not user_ids:
+            return set()
+        rows = (
+            self.db.query(WorkspaceMember.user_id)
+            .filter(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id.in_(user_ids),
+            )
+            .all()
+        )
+        return {r[0] for r in rows}
+
     def add_member(self, workspace_id: str, tenant_id: str, user_id: str) -> None:
         self.db.add(
             WorkspaceMember(tenant_id=tenant_id, workspace_id=workspace_id, user_id=user_id)

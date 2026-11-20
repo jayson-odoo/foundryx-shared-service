@@ -1,0 +1,108 @@
+{
+  "snapshotId": "8f1e4c2a-6b3d-4e91-9a7c-1d2e3f4a5b6c",
+  "page": 1,
+  "pageSize": 1000,
+  "totalPages": 1,
+  "recordCount": 10,
+  "rows": [
+    {
+      "source_ref": "AED_SORENTO:ACC-SRT8001",
+      "code": "ACC-SRT8001",
+      "name": "****SORENTO BATHTUB WASTE (WITH FOOT PRINT LOGO) ACC-SRT8001",
+      "description": "****SORENTO BATHTUB WASTE (WITH FOOT PRINT LOGO) ACC-SRT8001",
+      "category_code": "SRTPART",
+      "brand_code": "SORENTO",
+      "list_price": "150.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "AED_SORENTO:AP4842",
+      "code": "AP4842",
+      "name": "CABANA KITCHEN SINK (480x420x160MM) SINGLE BOWL-AP4842",
+      "description": "CABANA KITCHEN SINK (480x420x160MM) SINGLE BOWL-AP4842",
+      "category_code": "PROJECT",
+      "brand_code": "CABANA",
+      "list_price": "0.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "AED_SORENTO:SRTW1000",
+      "code": "SRTW1000",
+      "name": "SORENTO SOLID BRASS POP UP WASTE SRTW1000 (UMBRELLA-8CM)",
+      "description": "SORENTO SOLID BRASS POP UP WASTE SRTW1000 (UMBRELLA-8CM) ***PLEASE USE SRTW1000-NEW",
+      "category_code": "SRT-FT",
+      "brand_code": "SORENTO",
+      "list_price": "81.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "AED_SORENTO:SRTSH9112-GM",
+      "code": "SRTSH9112-GM",
+      "name": "SORENTO SERENE CEILING MOUNTED RAIN SHOWER HEAD SRTSH9112-GM",
+      "description": "SORENTO SERENE CEILING MOUNTED RAIN SHOWER HEAD SRTSH9112-GM  WITH LED LIGHT",
+      "category_code": "SRT-SH",
+      "brand_code": "SORENTO",
+      "list_price": "8000.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-SRT9013",
+      "code": "ACC-SRT9013",
+      "name": "SORENTO FLOOR TRAP DISPLAY RACKING WITH LED (700MM) ACC-SRT9013",
+      "description": "SORENTO FLOOR TRAP DISPLAY RACKING WITH LED (700MM) ACC-SRT9013",
+      "category_code": "SRT-BA",
+      "brand_code": "SORENTO",
+      "list_price": "0.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR",
+      "code": "1/2\" ULTRA CIRCULAR",
+      "name": "15MM X 500MM ULTRAGAL PIPE 1/2\"",
+      "description": "15MM X 500MM ULTRAGAL PIPE 1/2\"",
+      "category_code": "PROJECT",
+      "brand_code": "OTHERS",
+      "list_price": "0.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "AED_SORENTO:B2155-BLUE-DIY",
+      "code": "B2155-BLUE-DIY",
+      "name": "ANGLE VALVE B2155-BLUE-DIY",
+      "description": "ANGLE VALVE B2155-BLUE-DIY",
+      "category_code": "CB-FT",
+      "brand_code": "CABANA",
+      "list_price": "15.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "AED_SORENTO:A611",
+      "code": "A611",
+      "name": "SORENTO SHOWER ARM (SQUARE) A611",
+      "description": "SORENTO SHOWER ARM (SQUARE) A611",
+      "category_code": "SRT-SH",
+      "brand_code": "SORENTO",
+      "list_price": "130.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "AED_SORENTO:ACC-SRT1001",
+      "code": "ACC-SRT1001",
+      "name": "SORENTO QQ LEG SCREW ACC-SRT1001",
+      "description": "SORENTO QQ LEG SCREW ACC-SRT1001",
+      "category_code": "SRTPART",
+      "brand_code": "SORENTO",
+      "list_price": "20.0",
+      "is_active": true
+    },
+    {
+      "source_ref": "MCH:MWT2800-N/H",
+      "code": "MWT2800-N/H",
+      "name": "**MOCHA ANGLE VALVE MWT2800-N/H**",
+      "description": "**MOCHA ANGLE VALVE MWT2800-N/H** NOT INCLUDE HANDLE",
+      "category_code": "M-TAP",
+      "list_price": "45.0",
+      "is_active": true
+    }
+  ]
+}

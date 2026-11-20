@@ -1,0 +1,230 @@
+{
+  "snapshotId": "c22a5d8e-3f1b-4c6a-8e9d-2b7c4f1a9d3e",
+  "entity": "stock_balances",
+  "companyCode": "SRT",
+  "status": "ready",
+  "extractedAt": "2026-09-19T22:41:37Z",
+  "expiresAt": "2026-09-20T22:41:37Z",
+  "recordCount": 12133,
+  "complete": true,
+  "contentHash": "3a8d5693f4e86fc1ee64d7e971d0d2efe2dfd783b8752a7f448db3dcf5118d2a",
+  "sourcePageSize": 1000,
+  "zeroPairs": 56422,
+  "negativePairs": 42,
+  "fractionalPairs": 0,
+  "excludedCount": 0,
+  "excludedNonzeroCount": 0,
+  "negativePairList": [
+    {
+      "item_code": "**NEW",
+      "location_code": "BRW",
+      "qty": -75
+    },
+    {
+      "item_code": "**NEW",
+      "location_code": "BRW-AM",
+      "qty": -1
+    },
+    {
+      "item_code": "**NEW",
+      "location_code": "BRW-IB",
+      "qty": -1
+    },
+    {
+      "item_code": "**NEW",
+      "location_code": "BRW-IR",
+      "qty": -8
+    },
+    {
+      "item_code": "**NEW",
+      "location_code": "MWH-IR",
+      "qty": -1
+    },
+    {
+      "item_code": "**REPAIR",
+      "location_code": "BRW",
+      "qty": -9
+    },
+    {
+      "item_code": "**REPLACE",
+      "location_code": "BRW",
+      "qty": -86
+    },
+    {
+      "item_code": "**REPLACE",
+      "location_code": "BRW-AM",
+      "qty": -1
+    },
+    {
+      "item_code": "**REPLACE",
+      "location_code": "BRW-IB",
+      "qty": -1
+    },
+    {
+      "item_code": "**REPLACE",
+      "location_code": "BRW-IR",
+      "qty": -8
+    },
+    {
+      "item_code": "**REPLACE",
+      "location_code": "HQ",
+      "qty": -5
+    },
+    {
+      "item_code": "**REPLACE",
+      "location_code": "MWH-IR",
+      "qty": -1
+    },
+    {
+      "item_code": "**REPLACE",
+      "location_code": "SPARE/P",
+      "qty": -3
+    },
+    {
+      "item_code": "**SPARE PART",
+      "location_code": "BRW",
+      "qty": -40
+    },
+    {
+      "item_code": "**SPARE PART",
+      "location_code": "HQ",
+      "qty": -1
+    },
+    {
+      "item_code": "**SPARE PART",
+      "location_code": "SPARE/P",
+      "qty": -5
+    },
+    {
+      "item_code": "AC-EXP-006",
+      "location_code": "BRW",
+      "qty": -460
+    },
+    {
+      "item_code": "AC-EXP-006",
+      "location_code": "HQ",
+      "qty": -2437
+    },
+    {
+      "item_code": "AC-EXP-006",
+      "location_code": "HQ-ACC 1",
+      "qty": -8
+    },
+    {
+      "item_code": "AC-EXP-006",
+      "location_code": "HQ-ACC 2",
+      "qty": -709
+    },
+    {
+      "item_code": "AC-EXP-022",
+      "location_code": "BRW",
+      "qty": -4
+    },
+    {
+      "item_code": "AC-EXP-022",
+      "location_code": "BRW-BB",
+      "qty": -1
+    },
+    {
+      "item_code": "AC-EXP-022",
+      "location_code": "HQ-ACC 2",
+      "qty": -355
+    },
+    {
+      "item_code": "AC-EXP-027",
+      "location_code": "HQ",
+      "qty": -18
+    },
+    {
+      "item_code": "AC-EXP-027",
+      "location_code": "HQ-ACC 2",
+      "qty": -2186
+    },
+    {
+      "item_code": "DEPOSIT-006",
+      "location_code": "BRW-BB",
+      "qty": -5
+    },
+    {
+      "item_code": "HANDLING CHARGES",
+      "location_code": "BRW-BB",
+      "qty": -160
+    },
+    {
+      "item_code": "HANDLING CHARGES",
+      "location_code": "MWH-IR",
+      "qty": -15
+    },
+    {
+      "item_code": "INSTALLATION FEES",
+      "location_code": "BRW",
+      "qty": -1
+    },
+    {
+      "item_code": "LABOUR CHARGE",
+      "location_code": "BRW",
+      "qty": -388
+    },
+    {
+      "item_code": "RETENTION-006",
+      "location_code": "BRW",
+      "qty": -8
+    },
+    {
+      "item_code": "RETENTION-006",
+      "location_code": "BRW-BB",
+      "qty": -12
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW",
+      "qty": -2610
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW-ACTS",
+      "qty": -2
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW-AM",
+      "qty": -10
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW-BB",
+      "qty": -28
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW-ED",
+      "qty": -1
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW-IB",
+      "qty": -1
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW-IR",
+      "qty": -35
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW-NTC",
+      "qty": -1
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "BRW-SMC",
+      "qty": -35
+    },
+    {
+      "item_code": "TRANSPORT",
+      "location_code": "HQ",
+      "qty": -8
+    }
+  ],
+  "excludedRows": []
+}

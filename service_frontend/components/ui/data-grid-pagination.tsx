@@ -20,7 +20,11 @@ interface DataGridPaginationProps {
 }
 
 function DataGridPagination(props: DataGridPaginationProps) {
-  const { table, recordCount, isLoading } = useDataGrid();
+  const { table, recordCount, isLoading, props: gridProps } = useDataGrid();
+  // AC-DLA-15: the strip stays mounted and interactive while `isPlaceholderData`
+  // holds the previous page's rows - it only draws its own skeletons on a
+  // genuine first load (no rows to report a count for yet).
+  const showSkeleton = isLoading && !gridProps.isPlaceholderData && recordCount === 0;
 
   const defaultProps: Partial<DataGridPaginationProps> = {
     sizes: [5, 10, 25, 50, 100],
@@ -68,6 +72,7 @@ function DataGridPagination(props: DataGridPaginationProps) {
           size="sm"
           mode="icon"
           variant="ghost"
+          aria-current={pageIndex === i ? 'page' : undefined}
           className={cn(btnBaseClasses, 'text-muted-foreground', {
             'bg-accent text-accent-foreground': pageIndex === i,
           })}
@@ -93,6 +98,7 @@ function DataGridPagination(props: DataGridPaginationProps) {
           mode="icon"
           className={btnBaseClasses}
           variant="ghost"
+          aria-label="Show earlier pages"
           onClick={() => table.setPageIndex(currentGroupStart - 1)}
         >
           ...
@@ -111,6 +117,7 @@ function DataGridPagination(props: DataGridPaginationProps) {
           variant="ghost"
           size="sm"
           mode="icon"
+          aria-label="Show later pages"
           onClick={() => table.setPageIndex(currentGroupEnd)}
         >
           ...
@@ -129,7 +136,7 @@ function DataGridPagination(props: DataGridPaginationProps) {
       )}
     >
       <div className="flex flex-wrap items-center space-x-2.5 pb-2.5 sm:pb-0 order-2 sm:order-1">
-        {isLoading ? (
+        {showSkeleton ? (
           mergedProps?.sizesSkeleton
         ) : (
           <>
@@ -157,7 +164,7 @@ function DataGridPagination(props: DataGridPaginationProps) {
         )}
       </div>
       <div className="flex flex-col sm:flex-row justify-center sm:justify-end items-center gap-2.5 pt-2.5 sm:pt-0 order-1 sm:order-2">
-        {isLoading ? (
+        {showSkeleton ? (
           mergedProps?.infoSkeleton
         ) : (
           <>

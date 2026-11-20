@@ -1,12 +1,6 @@
 'use client';
 
 import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ResourceList } from '@/components/platform/resource-list';
@@ -24,17 +18,6 @@ export default function TenantStatusesPage() {
   return (
     <RequirePermission permission="statuses.read">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                Configure statuses, transition flows, approvals and notifications for your
-                workspace.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
         <Container width="fluid">
           <ResourceList config={config} />
         </Container>

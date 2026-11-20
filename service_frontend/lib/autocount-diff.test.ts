@@ -135,4 +135,10 @@ describe('humanizeFieldKey', () => {
   it('humanizes a canonical entity key', () => {
     expect(humanizeFieldKey('goods_received_note')).toBe('Goods received note');
   });
+
+  it('labels po_ref "PO ref" on every screen (SS-PO-REF), other keys unchanged', () => {
+    expect(humanizeFieldKey('po_ref')).toBe('PO ref');
+    expect(humanizeFieldKey('ref')).toBe('Ref');
+    expect(humanizeFieldKey('po_number')).toBe('Po number');
+  });
 });

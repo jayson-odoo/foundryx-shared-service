@@ -5,16 +5,16 @@ import { cn } from '@/lib/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Tooltip as TooltipPrimitive } from 'radix-ui';
 
-function TooltipProvider({ delayDuration = 0, ...props }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
-  return <TooltipPrimitive.Provider data-slot="tooltip-provider" delayDuration={delayDuration} {...props} />;
+function TooltipProvider({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  return <TooltipPrimitive.Provider data-slot="tooltip-provider" {...props} />;
 }
 
+// A bare Root (AC-DLA-16): the ONE provider lives in
+// `providers/tooltips-provider.tsx`, mounted once for the whole app. A
+// per-Tooltip provider would each carry its own 0ms `delayDuration` default
+// and race the app-wide 700ms one.
 function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return (
-    <TooltipProvider>
-      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
-    </TooltipProvider>
-  );
+  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
 }
 
 function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
@@ -22,7 +22,8 @@ function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimiti
 }
 
 const tooltipVariants = cva(
-  'z-50 overflow-hidden rounded-md px-3 py-1.5 text-xs animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+  // Opacity only (AC-DLA-16) - no scale/slide keyframes, at --duration-fast.
+  'z-(--z-modal) overflow-hidden rounded-md px-3 py-1.5 text-xs duration-(--duration-fast) animate-in fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0',
   {
     variants: {
       variant: {

@@ -97,7 +97,7 @@ function FieldBody({ field }: { field: FormField }) {
             {(field.repeater?.fields ?? []).map((sub) => (
               <span
                 key={sub.id}
-                className="rounded border border-input bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                className="rounded border border-input bg-background px-1.5 py-0.5 text-2xs text-muted-foreground"
               >
                 {sub.label || sub.key}
               </span>
@@ -136,7 +136,7 @@ export function FieldPreview({ field }: { field: FormField }) {
         {field.required && <span className="ms-0.5 text-destructive">*</span>}
       </span>
       <FieldBody field={field} />
-      {field.helpText && <span className="text-[11px] text-muted-foreground">{field.helpText}</span>}
+      {field.helpText && <span className="text-2xs text-muted-foreground">{field.helpText}</span>}
     </div>
   );
 }

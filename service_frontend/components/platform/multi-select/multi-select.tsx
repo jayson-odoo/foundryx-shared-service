@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Check, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   Command,
   CommandEmpty,
@@ -34,6 +35,13 @@ export interface MultiSelectProps {
   size?: 'sm' | 'md';
   className?: string;
   disabled?: boolean;
+  /**
+   * Called with the typed search text on every keystroke, IN ADDITION to the
+   * built-in client-side filter over `options` - lets a caller drive a
+   * server-searched/debounced options set (e.g. a large contact picker)
+   * instead of forking a parallel multi-select component.
+   */
+  onQueryChange?: (query: string) => void;
 }
 
 /**
@@ -51,8 +59,17 @@ export function MultiSelect({
   size = 'md',
   className,
   disabled = false,
+  onQueryChange,
 }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  // Clear the typed search whenever the popover closes (same reasoning as
+  // SearchSelect: a programmatic close via a select doesn't fire
+  // onOpenChange, so the next open's text would otherwise append to stale
+  // query text).
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
 
   const selected = options.filter((o) => value.includes(o.value));
   const toggle = (v: string) =>
@@ -105,15 +122,28 @@ export function MultiSelect({
         className="w-[--radix-popover-trigger-width] p-0"
         align="start"
       >
-        <Command>
-          <CommandInput placeholder={searchPlaceholder} />
+        {/* Post-approval nit N1: when a caller drives a server-searched
+            options set (`onQueryChange`), cmdk's own fuzzy filter must NOT
+            ALSO re-filter the page it just fetched - a server page of
+            near-matches (or a page that doesn't contain the literal typed
+            substring, e.g. debounce lag) would otherwise render empty even
+            though the server search is correct. */}
+        <Command shouldFilter={!onQueryChange}>
+          <CommandInput
+            placeholder={searchPlaceholder}
+            value={query}
+            onValueChange={(v) => {
+              setQuery(v);
+              onQueryChange?.(v);
+            }}
+          />
           <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
             <span className="text-xs text-muted-foreground">
               {value.length} selected
             </span>
             <button
               type="button"
-              className="text-xs font-medium text-primary hover:underline"
+              className={cn(PRESSED_CLASS, 'text-xs font-medium text-primary hover:underline')}
               onClick={() =>
                 onChange(allSelected ? [] : options.map((o) => o.value))
               }

@@ -1,0 +1,31 @@
+{
+  "version": "2.5",
+  "entities": [
+    "suppliers",
+    "customers",
+    "product_categories",
+    "units_of_measure",
+    "warehouses",
+    "products",
+    "sales_agents",
+    "sales_orders",
+    "purchase_orders",
+    "shipping_orders",
+    "brands",
+    "stock_balances"
+  ],
+  "fields_added": {
+    "stock_balances": [
+      "item_code",
+      "item_description",
+      "location_code",
+      "uom_code",
+      "qty"
+    ]
+  },
+  "warnings": [
+    "warehouse_unresolved",
+    "warehouse_inactive",
+    "ref_mismatch"
+  ]
+}

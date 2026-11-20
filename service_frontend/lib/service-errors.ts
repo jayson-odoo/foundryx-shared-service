@@ -16,3 +16,19 @@ export class RateLimitError extends Error {
     this.retryAfterSeconds = retryAfterSeconds;
   }
 }
+
+/**
+ * A `background_jobs`-backed export (plan 26 D-A2-6a) hasn't finished inside
+ * the caller's short wait window. The job keeps running - `jobId` lets the
+ * caller point the user at the Jobs surface instead of a bare failure
+ * ("never a silent failure"). Any future export/async-download flow should
+ * reuse this identity rather than declare its own.
+ */
+export class ExportPendingError extends Error {
+  jobId: string;
+  constructor(message: string, jobId: string) {
+    super(message);
+    this.name = 'ExportPendingError';
+    this.jobId = jobId;
+  }
+}

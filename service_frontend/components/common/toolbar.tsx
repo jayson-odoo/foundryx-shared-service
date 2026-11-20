@@ -39,10 +39,13 @@ export const ToolbarHeading = ({
 };
 
 export const ToolbarTitle = ({ className, children }: ToolbarTitleProps) => {
+  // Heading level 2, not 1 (AC-DLA-27): `PageHeader` owns the one top-level
+  // heading per page; this legacy toolbar title (unused today, kept for the
+  // shared-component contract) must never compete with it.
   return (
-    <h1 className={cn('font-semibold text-foreground text-lg', className)}>
+    <h2 className={cn('font-semibold text-foreground text-lg', className)}>
       {children}
-    </h1>
+    </h2>
   );
 };
 

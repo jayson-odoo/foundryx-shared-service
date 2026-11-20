@@ -20,6 +20,8 @@ import { realWhatsappWebhookService } from './whatsapp-webhook-service.real';
 export interface WhatsappWebhookService {
   /** All endpoints registered for a channel (newest-first by the backend). */
   list(channelId: string): Promise<WebhookEndpoint[]>;
+  /** The all-channels endpoints of a workspace (newest-first), no live channel needed. */
+  listForWorkspace(workspaceId: string): Promise<WebhookEndpoint[]>;
   /** Register a new endpoint - returns the ONE-TIME signing secret. */
   create(channelId: string, input: WebhookEndpointInput): Promise<WebhookCreateResult>;
   /** Update an endpoint's name / url / events. */

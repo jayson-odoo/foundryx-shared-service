@@ -7,11 +7,16 @@ import { SearchSelect } from '@/components/platform/search-select/search-select'
 import type { EmbedWorkspaceOption } from '@/services/embed-config-service';
 import { CopyField } from './copy-field';
 
-export interface SnippetCardProps {
-  host: string;
-  connectionId: string;
-  workspaces: EmbedWorkspaceOption[];
-}
+/**
+ * `mode: 'embed'` (default) builds the iframe snippet from a workspace + a
+ * route picker (below). `mode: 'raw'` (plan 34 / A7b Widget tab, AC-WEB-05)
+ * skips the builder entirely and renders EXACTLY the string the caller
+ * supplies (the backend-served `<script>` install snippet - no workspace or
+ * route concept applies to it) through the same `CopyField`.
+ */
+export type SnippetCardProps =
+  | { mode?: 'embed'; host: string; connectionId: string; workspaces: EmbedWorkspaceOption[] }
+  | { mode: 'raw'; title: string; description: string; snippet: string };
 
 type EmbedRoute = 'thread' | 'thread-full' | 'inbox';
 
@@ -47,22 +52,43 @@ export function buildSnippet(
  * `?c=` param; the assertion (minted on the consumer's own backend) carries the
  * workspace + scope.
  */
-export function SnippetCard({ host, connectionId, workspaces }: SnippetCardProps) {
+export function SnippetCard(props: SnippetCardProps) {
+  const isRaw = props.mode === 'raw';
+  const embedWorkspaces = isRaw ? [] : props.workspaces;
+  const embedHost = isRaw ? '' : props.host;
+  const embedConnectionId = isRaw ? '' : props.connectionId;
+
   const [route, setRoute] = useState<EmbedRoute>('thread');
-  const [workspaceId, setWorkspaceId] = useState<string>(workspaces[0]?.id ?? '');
+  const [workspaceId, setWorkspaceId] = useState<string>(embedWorkspaces[0]?.id ?? '');
 
   // The embed pages (`/embed/omnichannel/*`) are served by THIS Next app, so the
   // iframe host is the frontend origin - NOT the backend `host` (public_base_url,
   // which may be a different port/prefix and has no embed *page* routes). Fall
   // back to `host` only for SSR where `window` is absent.
-  const embedOrigin = typeof window !== 'undefined' ? window.location.origin : host;
+  const embedOrigin = typeof window !== 'undefined' ? window.location.origin : embedHost;
 
-  const snippet = useMemo(
-    () => buildSnippet(embedOrigin, connectionId, route, workspaceId),
-    [embedOrigin, connectionId, route, workspaceId],
+  const builtSnippet = useMemo(
+    () => buildSnippet(embedOrigin, embedConnectionId, route, workspaceId),
+    [embedOrigin, embedConnectionId, route, workspaceId],
   );
 
-  const workspaceOptions = workspaces.map((w) => ({ value: w.id, label: w.name }));
+  if (isRaw) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardHeading>
+            <CardTitle>{props.title}</CardTitle>
+            <CardDescription>{props.description}</CardDescription>
+          </CardHeading>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <CopyField value={props.snippet} ariaLabel={props.title} multiline />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const workspaceOptions = embedWorkspaces.map((w) => ({ value: w.id, label: w.name }));
 
   return (
     <Card>
@@ -94,7 +120,7 @@ export function SnippetCard({ host, connectionId, workspaces }: SnippetCardProps
             />
           </div>
         </div>
-        <CopyField value={snippet} ariaLabel="iframe snippet" multiline />
+        <CopyField value={builtSnippet} ariaLabel="iframe snippet" multiline />
       </CardContent>
     </Card>
   );

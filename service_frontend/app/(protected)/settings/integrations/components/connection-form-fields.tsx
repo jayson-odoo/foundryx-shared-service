@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
-import type { UseFormReturn } from 'react-hook-form';
+import { useEffect, useState } from 'react';
+import { useWatch, type UseFormReturn } from 'react-hook-form';
 import { ChevronDown, LoaderCircleIcon, Send } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -29,13 +29,20 @@ import { integrationService } from '@/services/integration-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { Connection, IntegrationProvider, ProviderField } from '@/types/integration';
 import { CONNECTION_STATUS_REGISTRY } from './connection-status';
-import type { ConnectionFormValues } from './connection-schema';
+import {
+  dependentDefault,
+  isFieldVisible,
+  type ConnectionFormValues,
+  storedOrEffective,
+} from './connection-schema';
 
 const TYPE_LABELS: Record<string, string> = {
   email: 'Email',
   storage: 'Storage',
   llm: 'LLM',
   erp: 'ERP',
+  calendar: 'Calendar',
+  meeting_bot: 'Meeting bot',
 };
 
 export interface ConfigurationTabProps {
@@ -81,7 +88,9 @@ function ProviderFieldRow({
   connection: Connection | null;
 }) {
   if (!editing) {
-    const value = f.secret ? undefined : (connection?.config[f.key] ?? '');
+    // Same resolution as the edit prefill (`storedOrEffective`): a legacy
+    // Sorento connection reads "1 (legacy)" here too, never "-".
+    const value = f.secret ? undefined : storedOrEffective(f, connection?.config ?? {});
     return (
       <FormRow label={f.label}>
         {f.secret ? (
@@ -150,8 +159,39 @@ export function ConfigurationTab({
 }: ConfigurationTabProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const basic = provider?.fields.filter((f) => !f.advanced) ?? [];
-  const advanced = provider?.fields.filter((f) => f.advanced) ?? [];
+  // Registry-driven dependent defaults (`ProviderField.defaultsFrom`): when a
+  // driver select changes, reset its dependants that still hold a stock
+  // default (the SQL provider's port follows its dialect, AC-22-04). Generic -
+  // no provider-specific branch here.
+  useEffect(() => {
+    const dependants = (provider?.fields ?? []).filter((f) => f.defaultsFrom && !f.secret);
+    if (dependants.length === 0) return;
+    const subscription = form.watch((values, { name }) => {
+      if (!name?.startsWith('config.')) return;
+      const driverKey = name.slice('config.'.length);
+      for (const f of dependants) {
+        if (f.defaultsFrom?.field !== driverKey) continue;
+        const next = dependentDefault(
+          f,
+          values.config?.[driverKey] ?? '',
+          values.config?.[f.key] ?? '',
+        );
+        if (next !== null) form.setValue(`config.${f.key}`, next, { shouldDirty: true });
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [form, provider]);
+
+  // Live values while editing, the stored record while read-only (plan
+  // sprint-5/08, D11) - a `showWhen` field is hidden/shown reactively as its
+  // driver select changes, and never rendered at all for a saved connection
+  // whose driver currently hides it.
+  const liveConfig = useWatch({ control: form.control, name: 'config' });
+  const visibilityConfig = editing ? (liveConfig ?? {}) : (connection?.config ?? {});
+  const shown = (f: ProviderField) => isFieldVisible(f, visibilityConfig);
+
+  const basic = (provider?.fields.filter((f) => !f.advanced) ?? []).filter(shown);
+  const advanced = (provider?.fields.filter((f) => f.advanced) ?? []).filter(shown);
   // Read mode: surface advanced fields that actually hold a value.
   const advancedVisible = editing
     ? showAdvanced

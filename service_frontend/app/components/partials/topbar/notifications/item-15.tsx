@@ -65,7 +65,7 @@ export default function Item15() {
             </div>
           </div>
 
-          <Button variant="ghost" mode="icon">
+          <Button variant="ghost" mode="icon" aria-label="Download Redesign-2024.xls">
             <svg
               width="14"
               height="14"

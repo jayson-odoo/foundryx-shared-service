@@ -24,7 +24,9 @@ function SliderThumb({ className, ...props }: React.ComponentProps<typeof Slider
     <SliderPrimitive.Thumb
       data-slot="slider-thumb"
       className={cn(
-        'box-content block size-4 shrink-0 cursor-pointer rounded-full border-[2px] border-primary bg-primary-foreground shadow-xs shadow-black/5 outline-hidden focus:outline-hidden',
+        // No press class (AC-DLA-09 fix round 1): a drag is a hold, not a
+        // tap - there is no discrete "pressed" moment to shrink for.
+        'box-content block size-4 shrink-0 cursor-pointer rounded-full border-[2px] border-primary bg-primary-foreground shadow-xs shadow-black/5 outline-hidden focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
         className,
       )}
       {...props}

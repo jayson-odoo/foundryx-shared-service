@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Pencil, RefreshCw, Play, Pause, ListChecks, Trash2, Webhook } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { StatusBadge } from '@/components/platform/status-badge';
@@ -22,11 +22,15 @@ import {
   eventLabel,
 } from './webhook-status';
 
+/** The reason the server stores when staff pause a row; nothing new to show for it. */
+const STAFF_DISABLED_REASON = 'Disabled by user.';
+
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 /** Endpoint-list action callbacks the tab wires to its dialogs. */
 export interface WebhookListCallbacks {
-  onCreate: () => void;
+  /** Omit for a list with no Add button. */
+  onCreate?: () => void;
   onEdit: (endpoint: WebhookEndpoint) => void;
   onRotate: (endpoint: WebhookEndpoint) => void;
   onViewDeliveries: (endpoint: WebhookEndpoint) => void;
@@ -71,6 +75,8 @@ function sortItems(rows: WebhookEndpoint[], sort: ListQuery['sort']): WebhookEnd
   return sort.desc ? sorted.reverse() : sorted;
 }
 
+const loadChannelList = (channelId: string) => whatsappWebhookService.list(channelId);
+
 export interface UseWebhookListResult {
   config: ResourceListConfig<WebhookEndpoint>;
 }
@@ -81,10 +87,13 @@ export interface UseWebhookListResult {
  * channel is small, so the fetcher pulls it whole and applies
  * search/filter/sort/paginate client-side (mirrors the API-keys tab). No detail
  * page (`rowHref` '#'); Add = the create action, the rest are row actions.
+ * `loadList` swaps the source (the workspace tab lists by workspace id) and
+ * omitting `callbacks.onCreate` drops the Add button.
  */
 export function useWebhookList(
   channelId: string,
   callbacks: WebhookListCallbacks,
+  loadList: (scopeId: string) => Promise<WebhookEndpoint[]> = loadChannelList,
 ): UseWebhookListResult {
   const { formatDateTime } = useDatetime();
   const { onCreate, onEdit, onRotate, onViewDeliveries } = callbacks;
@@ -135,21 +144,15 @@ export function useWebhookList(
         permission: 'webhooks.manage',
         surfaces: { row: true },
         isVisible: (rows) => rows.length === 1 && rows[0]?.status === 'ACTIVE',
-        confirm: {
-          title: 'Disable endpoint?',
-          description: 'Deliveries to this endpoint pause until you re-enable it.',
-          confirmLabel: 'Disable',
-        },
-        run: async (rows, rt) => {
-          const [e] = rows;
-          if (!e) return;
-          try {
-            await whatsappWebhookService.disable(e.id);
-            toast.success('Endpoint disabled.');
-            rt.reload();
-          } catch {
-            toast.error('Could not disable the endpoint. Please retry.');
-          }
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `webhooks.set_active`
+        // handler commits it server-side); `payload.active=false` is the
+        // Disable direction (the Enable action above stays a plain, no-
+        // confirm run - it was never gated to begin with).
+        deferred: {
+          actionKey: 'webhooks.set_active',
+          entityType: 'webhook_endpoint',
+          payload: () => ({ active: false }),
         },
       },
       {
@@ -169,23 +172,9 @@ export function useWebhookList(
         permission: 'webhooks.manage',
         surfaces: { row: true },
         isVisible: (rows) => rows.length === 1,
-        confirm: {
-          title: 'Delete endpoint?',
-          description:
-            'Foundryx stops sending events to this endpoint immediately. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, rt) => {
-          const [e] = rows;
-          if (!e) return;
-          try {
-            await whatsappWebhookService.remove(e.id);
-            toast.success('Endpoint deleted.');
-            rt.reload();
-          } catch {
-            toast.error('Could not delete the endpoint. Please retry.');
-          }
-        },
+        // Grace-window deferred action - no confirm, no `run` (the
+        // registered `webhooks.delete` handler commits it server-side).
+        deferred: { actionKey: 'webhooks.delete', entityType: 'webhook_endpoint' },
       },
     ],
     [onEdit, onRotate, onViewDeliveries],
@@ -201,7 +190,18 @@ export function useWebhookList(
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
             <Webhook className="size-4 shrink-0 text-muted-foreground" />
-            <ClampedText text={row.original.name} lines={1} className="font-medium" />
+            <div className="flex min-w-0 flex-col items-start gap-1">
+              <ClampedText
+                text={row.original.name}
+                lines={1}
+                className="min-w-0 max-w-full font-medium"
+              />
+              {row.original.channelId === null && (
+                <Badge variant="secondary" appearance="light" size="sm" className="shrink-0">
+                  All channels
+                </Badge>
+              )}
+            </div>
           </div>
         ),
         size: 180,
@@ -256,7 +256,7 @@ export function useWebhookList(
                   {e.consecutiveFailures} consecutive failures
                 </span>
               )}
-              {e.status === 'AUTO_DISABLED' && e.disabledReason && (
+              {e.status !== 'ACTIVE' && e.disabledReason && e.disabledReason !== STAFF_DISABLED_REASON && (
                 <ClampedText
                   text={e.disabledReason}
                   lines={2}
@@ -268,6 +268,21 @@ export function useWebhookList(
         },
         size: 180,
         enableSorting: true,
+      },
+      {
+        id: 'registeredBy',
+        accessorFn: (r) => r.registeredByKeyName ?? '',
+        meta: { headerTitle: 'Registered by' },
+        header: () => <span>Registered by</span>,
+        cell: ({ row }) => (
+          <ClampedText
+            text={row.original.registeredByKeyName ?? ''}
+            lines={1}
+            className="text-sm text-muted-foreground"
+          />
+        ),
+        size: 160,
+        enableSorting: false,
       },
       {
         id: 'lastSuccess',
@@ -308,7 +323,7 @@ export function useWebhookList(
     ];
 
     const fetcher = async (query: ListQuery): Promise<ListResult<WebhookEndpoint>> => {
-      const all = await whatsappWebhookService.list(channelId);
+      const all = await loadList(channelId);
       let rows = all;
       const search = query.search?.trim().toLowerCase();
       if (search) {
@@ -327,13 +342,14 @@ export function useWebhookList(
     const exporter = async (query: ListQuery): Promise<string> => {
       const { data } = await fetcher({ ...query, page: 0, pageSize: 10_000 });
       return toCsv(
-        ['Name', 'URL', 'Events', 'Status', 'Consecutive failures', 'Last success'],
+        ['Name', 'URL', 'Events', 'Status', 'Consecutive failures', 'Registered by', 'Last success'],
         data.map((r) => [
           r.name,
           r.url,
           r.events.map(eventLabel).join('; '),
           r.status,
           String(r.consecutiveFailures),
+          r.registeredByKeyName ?? '',
           r.lastSuccessAt ?? '',
         ]),
       );
@@ -354,6 +370,7 @@ export function useWebhookList(
         { id: 'url', label: 'URL' },
         { id: 'events', label: 'Events' },
         { id: 'status', label: 'Status' },
+        { id: 'registeredBy', label: 'Registered by' },
         { id: 'lastSuccess', label: 'Last success' },
       ],
       actions,
@@ -362,11 +379,11 @@ export function useWebhookList(
       defaultSort: { id: 'name', desc: false },
       exportFilename: 'webhook-endpoints',
       enableStatusViews: false,
-      createLabel: 'Add endpoint',
-      createPermission: 'webhooks.manage',
-      onCreate,
+      ...(onCreate
+        ? { createLabel: 'Add endpoint', createPermission: 'webhooks.manage', onCreate }
+        : {}),
     };
-  }, [channelId, actions, onCreate, formatDateTime]);
+  }, [channelId, actions, onCreate, formatDateTime, loadList]);
 
   return { config };
 }

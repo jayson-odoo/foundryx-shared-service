@@ -26,7 +26,10 @@ export function NoPermission({
           <ShieldAlert className="size-8" />
         </span>
         <div className="flex flex-col gap-1">
-          <h1 className="text-xl font-semibold font-heading">{title}</h1>
+          {/* `h2`, not `h1` (AC-DLA-27) - this substitutes for a blocked
+              page's content, not the page itself, so it never competes with
+              the (unmounted, permission-gated) page's own `PageHeader`. */}
+          <h2 className="text-xl font-semibold font-heading">{title}</h2>
           <p className="max-w-md text-sm text-muted-foreground">{description}</p>
         </div>
         <Button variant="primary" size="sm" asChild>

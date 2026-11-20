@@ -20,11 +20,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Tuple
 
 from .canonical.grn import VENDOR_ENTITY
 from .client import AutoCountClient, AutoCountError, build_read_filter, parse_last_modified
 from .envelopes import ENVELOPE_STATUS_DICT, envelope_for
+from .http_source.envelope import ENVELOPE_LIST
 from .mapping import read_path
 
 logger = logging.getLogger("foundryx.autocount")
@@ -103,6 +104,28 @@ class SourceRecord:
 
     raw: Dict[str, Any]
     last_modified: Optional[datetime] = None
+    # A pre-mapping fault the SOURCE itself already named (S2, review round
+    # 4 - the LineCount fingerprint mismatch guard) - ``None`` for every
+    # ordinary record. When set, ``_stage_documents`` stages this record
+    # FAILED with this exact message WITHOUT ever calling
+    # ``MappingEngine.map_document`` on it (D13: no canonical payload for a
+    # failed transaction), the same fail-safe contract a mapping-time
+    # failure gets, just detected one layer earlier.
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class LookupVerification:
+    """sprint-5/10 review round 1 follow-up (coordinator ruling, AC-10-24
+    applied honestly to lookups) - ONE lookup endpoint's own completeness,
+    by the SAME rule the main walk already uses (bare array = verified;
+    paged = ``reported_total is not None and rows_scanned == reported_
+    total``), counts from the FINAL walk only (a halving restart discards
+    the timed-out attempt entirely, same as the main path)."""
+
+    verified: bool
+    rows_scanned: int
+    reported_total: Optional[int] = None
 
 
 @dataclass
@@ -120,14 +143,158 @@ class FetchResult:
     # this marker is computed AFTER the record cap is applied, so it is never
     # used to decide truncation.
     reported_total: Optional[int] = None
+    # ── cost + change-detection reporting (plan 22 §2.7, AC-22-17) ───────────
+    # Rows READ from the source. Distinct from ``len(records)`` in principle (a
+    # source may read more than it emits); ``None`` = "same as len(records)",
+    # which is what every API-path fetch means.
+    rows_scanned: Optional[int] = None
+    # How the fetched rows classify against the stored row hashes: a ref never
+    # seen before, or one whose COMPARED columns moved. The API path stores no
+    # hashes and reports zero - a run-history column, never a push decision.
+    added_count: int = 0
+    updated_count: int = 0
+    # Source-refs the reconcile diff found MISSING from a full extract that
+    # were previously known (plan 22 §2.5/S3, AC-22-16) - delete intents. Empty
+    # for every incremental fetch (a partial extract cannot prove absence) and
+    # for the API path (which stores no hashes at all).
+    delete_refs: List[str] = field(default_factory=list)
+    # sprint-5/14 section 11 (D27) - refs a full extract found missing for an
+    # entity in `NO_DELETION_ENTITY_TYPES`: counted (run summary `vanished`),
+    # never a delete intent. 0 for every other entity/source.
+    vanished_count: int = 0
+    # Every source-ref SEEN in this extract (plan 22 S3 review BLOCKER 1). A
+    # delete intent must not outlive the evidence that produced it: when a ref
+    # already carrying a STAGED delete intent reappears here, the caller
+    # discards that stale intent BEFORE staging anything new. Empty for the
+    # API path (which stores no hashes and stages no delete intents at all).
+    current_refs: List[str] = field(default_factory=list)
+    # A source-owned resume point persisted to ``ac_watermark.cursor_json`` on a
+    # clean batch (the DB source's own mark, which need not be a datetime).
+    # ``None`` = leave the stored cursor untouched.
+    cursor: Optional[Dict[str, Any]] = None
+    # sprint-5/02 (AC-02-11) - headers dropped by a document task's
+    # `filterFormula` BEFORE line fetch/mapping/staging: never a delete
+    # candidate (it never enters `current_refs` either), just excluded from
+    # this run's population entirely. 0 for every non-document source.
+    skipped_by_filter: int = 0
+    # sprint-5/10 review round 1 MUST-FIX 2 (AC-10-24) - the MAIN path's own
+    # envelope shape (``http_source.envelope.ENVELOPE_PAGED`` /
+    # ``ENVELOPE_LIST``), so a pull snapshot build can tell "no total to
+    # compare against because this is a genuinely bare-array endpoint" apart
+    # from "a paged endpoint that omitted/nulled TotalCount, so completeness
+    # is UNVERIFIED, not unconditionally true". ``None`` (every push-path
+    # fetch, and the SQL source, which has no such concept) means "not
+    # applicable" - the push path never reads this field, so its behaviour
+    # is unchanged by this default.
+    envelope_kind: Optional[str] = None
+    # sprint-5/10 review round 1 follow-up (coordinator ruling 2026-09-20) -
+    # AC-10-24's own definition applied to lookups too: the main walk being
+    # verified is not enough for a snapshot build's ``complete`` if a lookup
+    # walk was NOT - a truncated lookup silently turns matches into misses.
+    # Keyed by lookup alias (``lookups[i].as``). Empty dict (the default) =
+    # "no lookups configured, or this source never tracks them" (the SQL
+    # source, which has no lookup concept) - a pull snapshot build treats a
+    # MISSING alias as verified (nothing to contradict it), so this default
+    # keeps every existing caller - including the PUSH path, which never
+    # reads this field at all - byte-identical.
+    lookup_verification: Dict[str, LookupVerification] = field(default_factory=dict)
+    # sprint-5/10 S5a (AC-10-81) - the combine step's own generic metadata
+    # (``{excludedRows, excludedCount, dropped, roundedCount}``), entity-
+    # agnostic. ``None`` when the task carries no ``combine`` step - every
+    # existing/control call site stays byte-identical.
+    combine_metadata: Optional[Dict[str, Any]] = None
+    # plan 13 (AC-13-11, D6, closes BL-SS-238) - review-round-2 fix: a
+    # DECLARED field, never a dynamic attribute bolted onto the instance
+    # after construction (the prior shape needed ``getattr(result,
+    # "changed_refs", None)`` at every read site, which is exactly the
+    # kind of "quietly missing" surface a typo or a new source
+    # implementation could silently no-op through). Every ref THIS run's
+    # source counted as added or hash-changed; ``None`` (the default, and
+    # every non-HTTP source: the SQL path, the vendor GRN API source) means
+    # "this source has no changed-set concept at all" - the exact signal
+    # ``_stage_documents`` treats as "stage everything", byte-identical to
+    # before this plan for every source but ``HttpApiSource``.
+    changed_refs: Optional[Set[str]] = None
+    # plan 13 (D8, AC-13-13) review-round-2 fix (B1) - a DECLARED,
+    # source-owned completeness verdict, never derived downstream from
+    # ``reported_total`` for a source that never claims to report one (the
+    # regression this field replaces: applying the snapshot-build's own
+    # ``envelope_kind``/``reported_total`` rule unconditionally to EVERY
+    # source marked a no-watermark SQL run - and the vendor GRN API source,
+    # which sets ``reported_total`` for an unrelated, non-paged reason -
+    # permanently ``truncated`` with every delete suppressed). ``None``
+    # (the default) = "this source has no walk-completeness concept at
+    # all" = treated as complete, the exact pre-plan-13 behaviour for every
+    # source but ``HttpApiSource``, which is the ONLY implementation that
+    # sets this to ``True``/``False`` (`http_source/source.py`, the SAME
+    # envelope/reported-total/lookup rule ``extract_is_complete`` applies
+    # for the SNAPSHOT build, computed locally since that helper is scoped
+    # to `sync.py` and a source module must not import back into it).
+    walk_verified: Optional[bool] = None
+
+
+def main_walk_is_verified(
+    envelope_kind: Optional[str], reported_total: Optional[int], rows_scanned: int
+) -> bool:
+    """plan 13 (D8, AC-13-13) round-2 review fix (F3) - the MAIN walk's own
+    half of the completeness rule. Neutral (this module already sits below
+    both ``sync.py`` and ``http_source/source.py`` in the import graph),
+    so ``sync.extract_is_complete``, ``sync._unverified_endpoint_names`` and
+    ``HttpApiSource.fetch_changes``'s own ``walk_verified`` computation all
+    call it and can never drift apart: a bare-array endpoint
+    (``ENVELOPE_LIST``) has no total to compare against by design -
+    unconditionally verified; a PAGED endpoint (or one that never reported
+    an ``envelope_kind`` at all) whose scanned row count does not match the
+    vendor's own reported total (including a reported total that is
+    entirely absent) is UNVERIFIED."""
+    return (
+        envelope_kind == ENVELOPE_LIST
+        or (reported_total is not None and rows_scanned == reported_total)
+    )
+
+
+def unverified_lookup_items(
+    lookup_verification: Dict[str, LookupVerification],
+) -> List[Tuple[str, LookupVerification]]:
+    """The lookup half of the same rule (review round 1 follow-up, AC-10-24
+    applied honestly to lookups): every configured lookup alias that did
+    NOT verify, in the dict's own (insertion) order."""
+    return [(alias, v) for alias, v in lookup_verification.items() if not v.verified]
+
+
+def walk_is_verified(
+    *,
+    envelope_kind: Optional[str],
+    reported_total: Optional[int],
+    rows_scanned: int,
+    lookup_verification: Dict[str, LookupVerification],
+) -> bool:
+    """plan 13 round-2 review fix (F3) - the FULL completeness verdict: the
+    main walk verified AND every configured lookup also verified (a
+    verified main walk is not enough on its own - a truncated lookup
+    silently turns matches into misses)."""
+    return main_walk_is_verified(
+        envelope_kind, reported_total, rows_scanned
+    ) and not unverified_lookup_items(lookup_verification)
 
 
 class EntitySource(Protocol):
-    """One entity, one company. Returns records changed since the watermark."""
+    """One entity, one company. Returns records changed since the watermark.
+
+    Two OPTIONAL duck-typed members (mirroring ``write_batch`` on sinks):
+
+    * ``drain_activity()`` - buffered observability records (the shape of
+      ``client.CallRecord``) consumed by ``record_client_calls``. A source
+      without it simply records nothing extra.
+    * ``close()`` - release the source's transport. The sync handler calls it
+      in its ``finally`` (it replaced the old ``client.close()``).
+    """
 
     entity_type: str
 
     def fetch_changes(self, since: Watermark) -> FetchResult: ...
+
+    def close(self) -> None: ...
 
 
 class AutoCountReadSource:
@@ -263,6 +430,38 @@ class AutoCountReadSource:
             reported_total=unwrapped.reported_total,
         )
 
+    def drain_activity(self):
+        """The buffered HTTP legs (masked ``CallRecord``s) - the optional
+        observability seam ``record_client_calls`` consumes."""
+        return self.client.drain_calls()
+
+    def close(self) -> None:
+        self.client.close()
+
+
+# ── source context (plan 22 §2.1, AC-22-08) ──────────────────────────────────
+# The factory contract is ``factory(ctx, **cfg)``: each implementation builds
+# its OWN transport from the context (the HTTP client is no longer constructed
+# unconditionally in ``sync.py`` - a DB task must never sign in to the vendor
+# API it does not use).
+
+
+@dataclass
+class SourceContext:
+    """What every source implementation may need to build itself.
+
+    ``company_service`` is the handle for connection resolution (tenant- and
+    provider-scoped, the polymorphic-stored-id rule) and vendor-client
+    construction; ``entity_config`` carries the per-entity task config
+    (``source_config`` for the DB source).
+    """
+
+    db: Any
+    tenant_id: str
+    company: Any
+    entity_config: Any
+    company_service: Any
+
 
 # ── source registry (D6) ──────────────────────────────────────────────────────
 # ``ac_entity_config.source_impl`` selects the implementation PER ENTITY, PER
@@ -294,7 +493,7 @@ def source_factory(name: str) -> SourceFactory:
 
 
 def _autocount_read_factory(
-    client: AutoCountClient,
+    ctx: SourceContext,
     *,
     entity_type: str,
     vendor_entity: str = VENDOR_ENTITY,
@@ -304,9 +503,12 @@ def _autocount_read_factory(
     initial_load: str = INITIAL_LOAD_WINDOWED,
     identifier_key: str = "DocNo",
     last_modified_path: str = "LastModified",
+    **_extra: Any,
 ) -> EntitySource:
+    # The HTTP client is built HERE, by the implementation that uses it -
+    # exactly the client ``sync.py`` used to build unconditionally (AC-22-08).
     return AutoCountReadSource(
-        client,
+        ctx.company_service.client_for(ctx.tenant_id, ctx.company),
         entity_type=entity_type,
         vendor_entity=vendor_entity,
         record_cap=record_cap,

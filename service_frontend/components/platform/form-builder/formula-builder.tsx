@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
@@ -124,7 +125,7 @@ export function FormulaBuilder({
               <button
                 key={op.label}
                 type="button"
-                className="h-9 w-9 rounded-md border border-border bg-muted/40 font-mono text-base hover:bg-accent"
+                className={cn(PRESSED_CLASS, 'h-9 w-9 rounded-md border border-border bg-muted/40 font-mono text-base hover:bg-accent')}
                 onClick={() => insert(op.insert, op.insert !== '(' && op.insert !== ')')}
               >
                 {op.label}
@@ -133,14 +134,14 @@ export function FormulaBuilder({
             <button
               type="button"
               aria-label="Backspace"
-              className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-muted/40 hover:bg-accent"
+              className={cn(PRESSED_CLASS, 'flex h-9 w-9 items-center justify-center rounded-md border border-border bg-muted/40 hover:bg-accent')}
               onClick={backspace}
             >
               <Delete className="size-4" />
             </button>
             <button
               type="button"
-              className="h-9 rounded-md border border-border bg-muted/40 px-3 text-xs hover:bg-accent"
+              className={cn(PRESSED_CLASS, 'h-9 rounded-md border border-border bg-muted/40 px-3 text-xs hover:bg-accent')}
               onClick={() => onChange('')}
             >
               Clear
@@ -163,12 +164,12 @@ export function FormulaBuilder({
                   <button
                     key={v.token}
                     type="button"
-                    className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-start text-sm hover:bg-accent"
+                    className={cn(PRESSED_CLASS, 'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-start text-sm hover:bg-accent')}
                     title={v.token}
                     onClick={() => insert(v.token)}
                   >
                     <span className="truncate">{v.label}</span>
-                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{v.token}</span>
+                    <span className="shrink-0 font-mono text-2xs text-muted-foreground">{v.token}</span>
                   </button>
                 ))
               )}

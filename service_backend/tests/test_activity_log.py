@@ -257,8 +257,12 @@ def test_summarize_body_oversize_truncates():
         is_json=True,
         truncated=True,
     )
+    # crew ruling (plan 38 AC-38-146): over the capture limit -> a note with the size, never raw text
     assert out["truncated"] is True
-    assert out["raw"].startswith('{"blob":"aaaa')
+    assert out["bytes"] == 64 * 1024
+    assert "note" in out and str(64 * 1024) in out["note"]
+    assert "raw" not in out
+    assert "aaaa" not in str(out) and '{"blob"' not in str(out)
 
 
 def test_summarize_body_none_when_empty():

@@ -5,7 +5,7 @@
  * the public service. No server-side drafts (D11) - multi-page state lives here
  * until the final submit. 422 → per-field errors; 429 → a throttle notice. */
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { FormSubmitError } from '@/services/form-service';
 import { publicFormService } from '@/services/public-form-service';
 import { RateLimitError } from '@/lib/service-errors';

@@ -1,0 +1,551 @@
+"""Idea portal router (lane IDEA-PORTAL) - ``/portal/ideas/*``.
+
+Mounted ``"public": true`` (no core JWT / ``require_module`` gate at mount):
+every route below is gated by a PORTAL token (``require_portal_principal``),
+except the three session exchanges, each of which authenticates with its own
+credential (core staff login / ideation embed token / a dealer's personal
+feedback link - lane PUBLIC-IDEAS-BOARD, owner 15 Nov). The portal-token resolve re-checks tenant sign-in +
+module ACTIVE + the user / connection per request.
+
+HTTP + Pydantic only; every query lives in ``services/portal.py``.
+"""
+from typing import List, Optional
+
+from typing import Callable
+
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.routing import APIRoute
+from sqlalchemy.orm import Session
+
+from app.api_errors import ApiError
+from app.database import get_db
+from app.api.v1.documents import stream_blob
+from app.dependencies import get_current_user, get_real_user
+from app.models.user import User
+
+from ..schemas import (
+    IdeaAttachmentOut,
+    IdeaCommentCreate,
+    PortalActivityOut,
+    PortalChangelogOut,
+    PortalCommentOut,
+    PortalEmbedSessionIn,
+    PortalFollowOut,
+    PortalLinkSessionIn,
+    PortalHiddenIn,
+    PortalIdeaCreateIn,
+    PortalIdeaOut,
+    PortalLikeOut,
+    PortalListOut,
+    PortalNoteIn,
+    PortalPrincipalOut,
+    PortalProductOut,
+    PortalRoadmapOut,
+    PortalSessionOut,
+    PortalVoteOut,
+    PortalVoterOut,
+    ShareLinkOut,
+    SharePhoneIn,
+    SharePhoneSentOut,
+    SharePhoneSessionOut,
+    SharePhoneVerifyIn,
+)
+from ..services.portal import (
+    IdeaPortalService,
+    PortalError,
+    PortalPrincipal,
+    principal_out,
+    resolve_portal_token,
+    session_for_embed,
+    session_for_link,
+    session_for_staff,
+    share_content_prefix,
+    share_principal,
+)
+
+NO_STORE_HEADERS = {
+    # Ideas can carry internal business detail: never cache, never index.
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+class _NoStoreRoute(APIRoute):
+    """Security review #4: stamp the private headers on EVERY response of this
+    router - errors (401/403/404/422/429) included, which build their own
+    response and would otherwise drop headers set on the dependency's."""
+
+    def get_route_handler(self) -> Callable:
+        handler = super().get_route_handler()
+
+        async def wrapped(request: Request) -> Response:
+            try:
+                response = await handler(request)
+            except Exception as exc:  # noqa: BLE001 - converted by the app's own handler
+                convert = None
+                for cls in type(exc).__mro__:
+                    convert = request.app.exception_handlers.get(cls)
+                    if convert is not None:
+                        break
+                if convert is None:
+                    raise
+                response = await convert(request, exc)
+            # A served attachment keeps its own ``private`` cache policy (the
+            # browser may reuse its own copy for a few minutes; shared caches
+            # may not) - everything else is never cached.
+            keep_private = "private" in response.headers.get("cache-control", "")
+            for name, value in NO_STORE_HEADERS.items():
+                if keep_private and name == "Cache-Control":
+                    continue
+                response.headers[name] = value
+            return response
+
+        return wrapped
+
+
+router = APIRouter(route_class=_NoStoreRoute)
+MAX_COLUMNS = 20
+ATTACHMENT_CAP_BYTES = 25 * 1024 * 1024
+
+
+def _raise(exc: PortalError):
+    if exc.status_code == 429:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            exc.message,
+            headers={"Retry-After": str(exc.retry_after or 60)},
+        )
+    raise ApiError(exc.status_code, exc.code, exc.message)
+
+
+def _private(response: Response) -> None:
+    # Ideas can carry internal business detail: never cache, never index.
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Robots-Tag"] = "noindex"
+    response.headers["Referrer-Policy"] = "no-referrer"
+
+
+def require_portal_principal(
+    response: Response,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> PortalPrincipal:
+    token = None
+    if authorization:
+        parts = authorization.split(" ", 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1].strip()
+    if not token:
+        raise ApiError(401, "unauthorized", "Sign in to continue.")
+    try:
+        principal = resolve_portal_token(db, token)
+    except PortalError as exc:
+        _raise(exc)
+    _private(response)
+    return principal
+
+
+def _svc(db: Session, p: PortalPrincipal) -> IdeaPortalService:
+    return IdeaPortalService(db, p)
+
+
+# ── sessions ──────────────────────────────────────────────────────────────────
+
+
+@router.post("/session/staff", response_model=PortalSessionOut)
+def staff_session(
+    response: Response,
+    user: User = Depends(get_current_user),
+    real_user: User = Depends(get_real_user),
+    db: Session = Depends(get_db),
+):
+    _private(response)
+    try:
+        return session_for_staff(db, user, impersonating=user.id != real_user.id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/session/embed", response_model=PortalSessionOut)
+def embed_session(body: PortalEmbedSessionIn, response: Response, db: Session = Depends(get_db)):
+    _private(response)
+    try:
+        return session_for_embed(db, body.token)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/session/link", response_model=PortalSessionOut)
+def link_session(body: PortalLinkSessionIn, request: Request, response: Response, db: Session = Depends(get_db)):
+    """A dealer's personal feedback link (lane PUBLIC-IDEAS-BOARD): no login,
+    the link is the credential. Uniform 401 for every bad link; IP-throttled."""
+    from app.services.throttle import client_ip
+
+    _private(response)
+    try:
+        return session_for_link(db, body.token, ip=client_ip(request))
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/me", response_model=PortalPrincipalOut)
+def me(p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    return principal_out(p, db)
+
+
+# ── reads ─────────────────────────────────────────────────────────────────────
+# Card / item reads serialize with ``exclude_unset``: a key the service left
+# out (owner ruling (b) on another dealer's item) is OMITTED, never sent as
+# null. Every other caller gets every key, exactly as before.
+
+
+@router.get("/roadmap", response_model=PortalRoadmapOut, response_model_exclude_unset=True)
+def roadmap(
+    productId: Optional[str] = None,
+    mine: bool = False,
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    return _svc(db, p).roadmap(product_id=productId, mine=mine)
+
+
+@router.get("/changelog", response_model=PortalChangelogOut, response_model_exclude_unset=True)
+def changelog(p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    return _svc(db, p).changelog()
+
+
+@router.get("/products", response_model=List[PortalProductOut])
+def products(p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    return _svc(db, p).products()
+
+
+@router.get("", response_model=PortalListOut, response_model_exclude_unset=True)
+def list_ideas(
+    q: Optional[str] = Query(default=None, max_length=200),
+    column: Optional[List[str]] = Query(default=None),
+    sort: str = Query(default="top", pattern="^(top|new)$"),
+    mine: bool = False,
+    productId: Optional[str] = None,
+    includeClosed: bool = False,
+    page: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=25, ge=1, le=100),
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    if column and len(column) > MAX_COLUMNS:
+        raise ApiError(422, "too_many_columns", "Too many status filters.")
+    return _svc(db, p).list(
+        q=q, columns=column, sort=sort, mine=mine, product_id=productId,
+        include_closed=includeClosed, page=page, page_size=pageSize,
+    )
+
+
+@router.post("", response_model=PortalIdeaOut, status_code=status.HTTP_201_CREATED)
+def submit_idea(
+    body: PortalIdeaCreateIn,
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _svc(db, p).submit(
+            title=body.title,
+            problem=body.problem,
+            product_id=body.productId,
+            desired_outcome=body.desiredOutcome,
+            use_cases=body.useCases,
+            current_workaround=body.currentWorkaround,
+        )
+    except PortalError as exc:
+        _raise(exc)
+
+
+# ── read-only share link (lane FEEDBACK-SUBSCRIBE) - declared before
+#    ``/{idea_id}`` routes. No auth: the share token is the capability, and it
+#    only ever reads. ─────────────────────────────────────────────────────────
+
+
+def _share(db: Session, token: str):
+    try:
+        p, idea_id = share_principal(db, token)
+    except PortalError as exc:
+        _raise(exc)
+    return IdeaPortalService(db, p, content_prefix=share_content_prefix(token)), idea_id
+
+
+@router.get("/shared/{token}", response_model=PortalIdeaOut, response_model_exclude_unset=True)
+def shared_idea(token: str, db: Session = Depends(get_db)):
+    svc, idea_id = _share(db, token)
+    try:
+        return svc.detail(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/shared/{token}/comments", response_model=List[PortalCommentOut])
+def shared_comments(token: str, db: Session = Depends(get_db)):
+    svc, idea_id = _share(db, token)
+    try:
+        return svc.comments(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/shared/{token}/activity", response_model=List[PortalActivityOut])
+def shared_activity(
+    token: str,
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+):
+    svc, idea_id = _share(db, token)
+    try:
+        return svc.activity(idea_id, order=order)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/shared/{token}/{idea_id}/attachments/{attachment_id}/content")
+def shared_attachment_content(
+    token: str,
+    idea_id: str,
+    attachment_id: str,
+    request: Request,
+    variant: Optional[str] = Query(default=None, pattern="^thumb$"),
+    db: Session = Depends(get_db),
+):
+    """A file on the shared item (lane FEEDBACK-IMAGE-PREVIEW): the share token
+    is the credential (no Authorization header - the share page has none), and
+    it reads only its own item's files under the same rules as the share page
+    itself; revoked / unknown token or another item's file = uniform 404.
+    Public and it re-serves the bytes, so every read counts against a per-IP
+    window (429 + Retry-After over it)."""
+    from app.services.throttle import Throttled, ThrottleService, client_ip
+
+    throttle = ThrottleService(db)
+    ip = client_ip(request)
+    try:
+        throttle.enforce_idea_share_file(ip=ip)
+    except Throttled as exc:
+        _raise(PortalError(429, "too_many_requests", "Too many requests. Try again later.", exc.retry_after_seconds))
+    throttle.record_idea_share_file(ip=ip)
+    svc, shared_id = _share(db, token)
+    try:
+        key, mime, filename = svc.shared_attachment_content(shared_id, idea_id, attachment_id, variant)
+    except PortalError as exc:
+        _raise(exc)
+    response = stream_blob(db, svc.p.tenant_id, key, mime, filename, "inline")
+    # Revalidate every time: a revoked link must stop serving a cached copy.
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
+
+
+@router.post("/shared/{token}/phone/send-code", response_model=SharePhoneSentOut)
+def shared_send_code(token: str, body: SharePhoneIn, request: Request, db: Session = Depends(get_db)):
+    """Follow / comment / upvote from a share link, step 1: the item's product
+    sends a WhatsApp code to this phone if it is one of its contacts."""
+    from app.services.throttle import client_ip
+
+    from ..services.phone_verify import PhoneStep
+
+    try:
+        return PhoneStep(db, token, client_ip(request)).send_code(body.phone)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/shared/{token}/phone/verify", response_model=SharePhoneSessionOut)
+def shared_verify_code(token: str, body: SharePhoneVerifyIn, request: Request, db: Session = Depends(get_db)):
+    """Step 2: the product checks the code; on success the visitor continues as
+    THEIR OWN contact (portal session + personal board link)."""
+    from app.services.throttle import client_ip
+
+    from ..services.phone_verify import PhoneStep
+
+    try:
+        return PhoneStep(db, token, client_ip(request)).verify(body.phone, body.code)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/{idea_id}", response_model=PortalIdeaOut, response_model_exclude_unset=True)
+def idea_detail(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).detail(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.put("/{idea_id}/hidden", response_model=PortalIdeaOut)
+def set_hidden(
+    idea_id: str,
+    body: PortalHiddenIn,
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _svc(db, p).set_hidden(idea_id, body.hidden)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.put("/{idea_id}/note", response_model=PortalIdeaOut)
+def set_note(
+    idea_id: str,
+    body: PortalNoteIn,
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _svc(db, p).set_note(idea_id, body.note)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/{idea_id}/vote", response_model=PortalVoteOut)
+def vote(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).vote(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/{idea_id}/follow", response_model=PortalFollowOut)
+def follow(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).follow(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.delete("/{idea_id}/follow", response_model=PortalFollowOut)
+def unfollow(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).unfollow(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/{idea_id}/share", response_model=ShareLinkOut)
+def share(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).share(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/{idea_id}/voters", response_model=List[PortalVoterOut])
+def voters(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).voters(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/{idea_id}/activity", response_model=List[PortalActivityOut])
+def activity(
+    idea_id: str,
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _svc(db, p).activity(idea_id, order=order)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/{idea_id}/comments", response_model=List[PortalCommentOut])
+def comments(idea_id: str, p: PortalPrincipal = Depends(require_portal_principal), db: Session = Depends(get_db)):
+    try:
+        return _svc(db, p).comments(idea_id)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/{idea_id}/comments", response_model=PortalCommentOut, status_code=status.HTTP_201_CREATED)
+def add_comment(
+    idea_id: str,
+    body: IdeaCommentCreate,
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    if len(body.body) > 2000:
+        raise ApiError(422, "too_long", "Comments can be at most 2000 characters.")
+    try:
+        return _svc(db, p).add_comment(idea_id, body=body.body, parent_id=body.parentId)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post(
+    "/{idea_id}/attachments", response_model=IdeaAttachmentOut, status_code=status.HTTP_201_CREATED
+)
+async def upload_attachment(
+    idea_id: str,
+    file: UploadFile = File(...),
+    commentId: Optional[str] = Form(default=None),
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    svc = _svc(db, p)
+    try:
+        # Authorise + throttle before the (up to 25 MB) body is read.
+        idea = svc.begin_upload(idea_id, commentId or None)
+    except PortalError as exc:
+        _raise(exc)
+    content = await file.read(ATTACHMENT_CAP_BYTES + 1)
+    if len(content) > ATTACHMENT_CAP_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
+    try:
+        return svc.store_upload(idea, file.filename or "", content, commentId or None)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.get("/{idea_id}/attachments/{attachment_id}/content")
+def attachment_content(
+    idea_id: str,
+    attachment_id: str,
+    variant: Optional[str] = Query(default=None, pattern="^thumb$"),
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        key, mime, filename = _svc(db, p).attachment_content(idea_id, attachment_id, variant)
+    except PortalError as exc:
+        _raise(exc)
+    response = stream_blob(db, p.tenant_id, key, mime, filename, "inline")
+    # Always revalidate: a browser cache ignores the Authorization header, so a
+    # deleted comment's file or a second person on a shared device must never
+    # get a cached copy back without the server's say-so.
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
+
+
+@router.delete("/{idea_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_comment(
+    idea_id: str,
+    comment_id: str,
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        _svc(db, p).delete_comment(idea_id, comment_id)
+    except PortalError as exc:
+        _raise(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{idea_id}/comments/{comment_id}/like", response_model=PortalLikeOut)
+def like_comment(
+    idea_id: str,
+    comment_id: str,
+    p: PortalPrincipal = Depends(require_portal_principal),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _svc(db, p).toggle_like(idea_id, comment_id)
+    except PortalError as exc:
+        _raise(exc)

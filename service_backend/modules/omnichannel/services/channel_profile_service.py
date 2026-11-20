@@ -19,6 +19,7 @@ from ..repositories.channel_repository import ChannelRepository
 from ..schemas import ChannelItem, ChannelProfileOut, ChannelProfileUpdate
 from ..security import decrypt_credentials
 from ..verticals import WHATSAPP_VERTICAL_SET
+from .channel_guards import assert_whatsapp
 from .channel_service import ChannelNotFound, ChannelService
 
 # Lightweight shapes - Meta does the authoritative validation; we reject the
@@ -44,6 +45,11 @@ class ChannelProfileService:
         c = self.repo.get_by_id(channel_id, tenant_id)
         if c is None:
             raise ChannelNotFound()
+        # AC-CHN-37 (D-A7-17): WABA config sync + Business Profile are Meta
+        # WABA concepts - a Messenger/Instagram channel refuses at THIS single
+        # resolution point, shared by sync_config/get_profile/sync_profile/
+        # save_profile.
+        assert_whatsapp(c)
         return c
 
     def _credentials(self, c: Channel) -> dict:
@@ -123,7 +129,11 @@ class ChannelProfileService:
         c = self._channel(channel_id, tenant_id)
 
         # ── validation (422 per-field) ──
-        if payload.vertical is not None and payload.vertical not in WHATSAPP_VERTICAL_SET:
+        if (
+            payload.vertical is not None
+            and payload.vertical not in WHATSAPP_VERTICAL_SET
+            and (payload.vertical.strip() or c.profile_vertical)
+        ):
             raise _field_error("vertical", "Not a valid WhatsApp business vertical.")
         if payload.email is not None and payload.email.strip() and not _EMAIL_RE.match(payload.email.strip()):
             raise _field_error("email", "Enter a valid email address.")

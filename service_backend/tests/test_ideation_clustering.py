@@ -234,6 +234,79 @@ def test_no_candidates_returns_empty(ideation_client, ideation_session_factory):
     assert out.degraded is False
 
 
+# ── issue #1179 - test ideas never enter clustering, either alone or mixed ────
+
+
+def _test_idea(factory, product_id, problem) -> str:
+    """A console/``--say`` idea (``is_test=True``), inserted directly - the
+    operator create route (used by ``_idea`` above) never accepts ``is_test``."""
+    from modules.ideation.models import Idea
+    from modules.ideation.services.statuses import idea_status_id
+
+    db = factory()
+    try:
+        idea = Idea(
+            tenant_id=DEFAULT_TENANT_ID,
+            product_id=product_id,
+            status_id=idea_status_id(db, "captured", DEFAULT_TENANT_ID),
+            intake_definition_key="ideation",
+            problem=problem,
+            raw_text=problem,
+            source="whatsapp",
+            is_test=True,
+        )
+        db.add(idea)
+        db.commit()
+        return idea.id
+    finally:
+        db.close()
+
+
+def test_two_test_ideas_never_form_a_suggestion(
+    ideation_client, ideation_session_factory
+):
+    """issue #1179 - two near-duplicate console/``--say`` test ideas must never
+    surface as a cluster suggestion (they would only ever offer a Promote the
+    422 in ``_link_ideas`` is guaranteed to refuse)."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    _test_idea(ideation_client._factory, pid, _SLOW_1)
+    _test_idea(ideation_client._factory, pid, _SLOW_2)
+
+    db = ideation_session_factory()
+    try:
+        out = ClusteringService(db).suggest(DEFAULT_TENANT_ID, product_id=pid)
+    finally:
+        db.close()
+
+    assert out.clusters == []
+    assert out.degraded is False
+
+
+def test_test_idea_never_pairs_with_a_real_idea(
+    ideation_client, ideation_session_factory
+):
+    """issue #1179 - a real near-duplicate pair still clusters; a test idea in
+    the same candidate pool never joins it."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    id1 = _idea(ideation_client, h, pid, _SLOW_1)
+    id2 = _idea(ideation_client, h, pid, _SLOW_2)
+    test_id = _test_idea(ideation_client._factory, pid, _SLOW_3)
+
+    db = ideation_session_factory()
+    try:
+        out = ClusteringService(db).suggest(DEFAULT_TENANT_ID, product_id=pid)
+    finally:
+        db.close()
+
+    assert out.degraded is True  # no LLM grouping ran (offline stub)
+    assert len(out.clusters) == 1
+    cluster_ids = set(out.clusters[0].ideaIds)
+    assert cluster_ids == {id1, id2}
+    assert test_id not in cluster_ids
+
+
 # ── route + permission gate (AC-BI-31) ────────────────────────────────────────
 
 

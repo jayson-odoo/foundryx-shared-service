@@ -12,22 +12,13 @@ class ConnectionStatus:
     message: str
 
 
-class CodeExchangeError(Exception):
-    """Provider rejected the Embedded Signup code exchange (carries the provider's
-    human-readable reason so the wizard can show it instead of a generic failure)."""
+# Moved to core (plan 64 D3) - re-exported so every `except SendError` /
+# `except CodeExchangeError` in omnichannel catches the SAME classes.
+from app.integrations.meta.errors import CodeExchangeError, SendError  # noqa: E402,F401
 
 
-class SendError(Exception):
-    """Provider rejected an outbound send (carries the provider's reason so the
-    composer can surface it - e.g. re-engagement outside the 24h window).
-
-    ``transient`` distinguishes a retryable transport/5xx failure (network blip,
-    Meta 5xx → the send task retries with backoff) from a permanent rejection
-    (bad number, 4xx, template issue → stamp FAILED, plan 12 review)."""
-
-    def __init__(self, message: str, *, transient: bool = False):
-        super().__init__(message)
-        self.transient = transient
+class UnexpectedSendError(SendError):
+    """An error the adapter did not expect, reported with fixed text and a class name only."""
 
 
 class ChannelAdapter(Protocol):
@@ -49,7 +40,7 @@ class ChannelAdapter(Protocol):
         """Lightweight ping to verify the number is reachable."""
         ...
 
-    # ── Message processing (plan 05) ─────────────────────────────────────────
+    # ── Message processing (plan 05; plan 32 / A7a generalizes addressing) ──
     def send(
         self,
         credentials: Dict[str, Any],
@@ -58,9 +49,23 @@ class ChannelAdapter(Protocol):
         *,
         text: Optional[str] = None,
         template: Optional[Dict[str, Any]] = None,
+        structured: Optional[Dict[str, Any]] = None,
+        messaging_type: Optional[str] = None,
+        tag: Optional[str] = None,
         context_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Send a text/template message; returns {"external_message_id": ...}."""
+        """Send a text/template message; returns {"external_message_id": ...}.
+
+        Plan 32 (A7a) adds three optional, provider-specific params that keep
+        `send_runner` type-blind: ``structured`` is the RAW friendly
+        interactive/location/contacts definition (`ConversationMessage.
+        payload_json`) - WhatsApp ignores it (it already receives a pre-built
+        native object via ``interactive``/``location``/``contacts``);
+        Messenger/Instagram read it to build Meta quick replies
+        (`structured.build_quick_replies`). ``messaging_type``/``tag`` are the
+        Meta send parameters `messaging_policy.authorize` resolved at enqueue
+        (`RESPONSE`/`MESSAGE_TAG`+`HUMAN_AGENT`) - WhatsApp ignores both (its
+        own re-engagement mode is "template", not a Meta send parameter)."""
         ...
 
     def parse_inbound(self, payload: Dict[str, Any]) -> list:

@@ -1,4 +1,11 @@
 export { ResourceForm } from './resource-form';
 export { RecordNav } from './record-nav';
 export { FormRow, RequiredMark } from './form-row';
-export type { ResourceFormConfig, FormTab, BreadcrumbStep, RecordNavConfig } from './types';
+export type {
+  ResourceFormConfig,
+  FormTab,
+  FormActionsNote,
+  FormPrimaryAction,
+  BreadcrumbStep,
+  RecordNavConfig,
+} from './types';

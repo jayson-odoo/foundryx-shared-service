@@ -1,0 +1,34 @@
+# Run 2 (db2 with AC-10-85 per-connection sizing) - cooldown + re-attach probes
+
+## Re-attach (AC-10-88) - POST while status=building returns the SAME snapshotId instantly
+$ curl -s -i -X POST http://localhost:8009/autocount/pull/snapshots \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"companyId":"cdf1c397-20fe-4a78-b335-bfeaf6bd9b27","entityType":"stock_balance"}'
+
+HTTP/1.1 202 Accepted
+content-length: 584
+content-type: application/json
+
+{"id":"0f7332c3-d5bb-461a-b9aa-a9a3986f0386","entityType":"stock_balance","companyId":"cdf1c397-20fe-4a78-b335-bfeaf6bd9b27","companyCode":"MCH","status":"building", ...}
+
+Wall time: 0.034s (curl -w). SAME snapshotId ("0f7332c3-...") as the build already in flight -
+proves re-attach, not a second extraction. (This request also served as an unintended second
+build trigger a few minutes earlier at 14:32:38Z, because by the time it was issued the PRIOR
+ready snapshot - fda6cf2b, extracted 14:30:53Z - was already outside its 60s cooldown window;
+see the README narrative. That earlier trigger IS "0f7332c3" itself.)
+
+## Cooldown (AC-10-26) - a build POST fired immediately after a snapshot finishes (inside 60s)
+$ curl -s -i -X POST http://localhost:8009/autocount/pull/snapshots \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"companyId":"cdf1c397-20fe-4a78-b335-bfeaf6bd9b27","entityType":"stock_balance"}'
+(fired programmatically the instant the monitor loop observed status != "building", i.e. within
+one poll interval of "0f7332c3" reaching "ready" at 2026-09-20T14:53:03.029246Z)
+
+HTTP/1.1 429 Too Many Requests
+retry-after: 55
+content-type: application/json
+
+{"detail":"A snapshot for this entity was built less than 60 seconds ago. Try again shortly."}
+
+Matches the operator-route 429 shape recorded in Run 1's own cooldown-reattach-transcripts.txt
+(same 429, not the brief text's literal "409" - see Run 1's own note on this, unchanged here).

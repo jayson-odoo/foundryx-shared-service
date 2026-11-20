@@ -27,6 +27,7 @@ import {
   ChevronsUpDown,
   PinOff,
   Settings2,
+  X,
 } from 'lucide-react';
 
 interface DataGridColumnHeaderProps<TData, TValue> extends HTMLAttributes<HTMLDivElement> {
@@ -46,7 +47,7 @@ function DataGridColumnHeader<TData, TValue>({
   filter,
   visibility = false,
 }: DataGridColumnHeaderProps<TData, TValue>) {
-  const { isLoading, table, props, recordCount } = useDataGrid();
+  const { table, props, recordCount, isPlaceholderData } = useDataGrid();
 
   const moveColumn = (direction: 'left' | 'right') => {
     const currentOrder = [...table.getState().columnOrder]; // Get current column order
@@ -101,7 +102,7 @@ function DataGridColumnHeader<TData, TValue>({
           'text-secondary-foreground rounded-md font-normal -ms-2 px-2 h-7 hover:bg-secondary data-[state=open]:bg-secondary hover:text-foreground data-[state=open]:text-foreground',
           className,
         )}
-        disabled={isLoading || recordCount === 0}
+        disabled={recordCount === 0 && !isPlaceholderData}
         onClick={() => {
           const isSorted = column.getIsSorted();
           if (isSorted === 'asc') {
@@ -184,6 +185,12 @@ function DataGridColumnHeader<TData, TValue>({
                   <span className="grow">Desc</span>
                   {column.getIsSorted() === 'desc' && <Check className="size-4 opacity-100! text-primary" />}
                 </DropdownMenuItem>
+                {column.getIsSorted() ? (
+                  <DropdownMenuItem onClick={() => column.clearSorting()}>
+                    <X className="size-3.5!" aria-hidden="true" />
+                    <span className="grow">Clear sort</span>
+                  </DropdownMenuItem>
+                ) : null}
               </>
             )}
 
@@ -240,7 +247,7 @@ function DataGridColumnHeader<TData, TValue>({
                   <DropdownMenuSubContent>
                     {table
                       .getAllColumns()
-                      .filter((col) => typeof col.accessorFn !== 'undefined' && col.getCanHide())
+                      .filter((col) => col.getCanHide())
                       .map((col) => {
                         return (
                           <DropdownMenuCheckboxItem
@@ -248,9 +255,10 @@ function DataGridColumnHeader<TData, TValue>({
                             checked={col.getIsVisible()}
                             onSelect={(event) => event.preventDefault()}
                             onCheckedChange={(value) => col.toggleVisibility(!!value)}
-                            className="capitalize"
+                            
                           >
-                            {col.columnDef.meta?.headerTitle || col.id}
+                            {/* Only the first letter is raised: a label keeps its own casing ("Added by"), a bare id still reads as a word. */}
+                <span className="inline-block first-letter:uppercase">{col.columnDef.meta?.headerTitle || col.id}</span>
                           </DropdownMenuCheckboxItem>
                         );
                       })}

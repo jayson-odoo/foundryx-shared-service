@@ -14,7 +14,7 @@ import {
 import { useSessionSync } from '@/hooks/use-session-sync';
 import { ImportActivityProvider } from '@/providers/import-activity-provider';
 import { JobsActivityProvider } from '@/providers/jobs-activity-provider';
-import { Demo1Layout } from '../components/layouts/demo1/layout';
+import { Demo1Layout } from '../components/layouts/demo1/demo1-layout';
 
 export default function ProtectedLayout({
   children,

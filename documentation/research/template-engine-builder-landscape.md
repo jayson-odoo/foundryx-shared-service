@@ -92,7 +92,7 @@ Fixed-dimension absolute-position editor - genuinely different from flow builder
 | Engine | License | Verdict |
 |---|---|---|
 | **WeasyPrint** (Python) | BSD | **Native FastAPI fit.** Smallest PDFs (8-21KB), no headless browser, no JS execution (fine - badges are static). CSS `@page { size: 54mm 86mm }` for fixed dims. ~230-630ms/doc cold. |
-| **Playwright/Puppeteer print-to-PDF** | Apache/MIT | Only if templates need JS or CSS Grid; ~300MB Chromium + process babysitting. |
+| **Puppeteer print-to-PDF (headless Chromium)** | Apache | Only if templates need JS or CSS Grid; ~300MB Chromium + process babysitting. |
 
 Path: canvas JSON → SVG/PNG → fixed-size HTML → WeasyPrint.
 

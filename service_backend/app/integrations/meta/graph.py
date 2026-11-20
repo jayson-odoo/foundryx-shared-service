@@ -1,0 +1,370 @@
+"""Shared Meta Graph API plumbing - CORE since plan 64 (D3, review R1/R4).
+
+Moved verbatim from ``modules/omnichannel/adapters/meta_graph.py`` (plan 32 /
+A7a) so any Service (omnichannel's WhatsApp/Messenger/Instagram adapters, Lead
+Capture) shares ONE telemetry wrapper, ONE dev-safe/"configured" rule and ONE
+base-URL/HTTP-client plumbing for the ONE Meta app (``META_APP_ID`` /
+``META_APP_SECRET`` / ``META_GRAPH_VERSION``).
+
+``modules/omnichannel/adapters/meta_graph.py`` is now a re-export shim of this
+module, so every existing import site (and every test that patches
+``meta_graph.MetaGraphMixin`` / reads ``meta_graph.httpx``) sees the SAME
+objects as before.
+"""
+import re
+import logging
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
+import httpx
+
+from app.config import settings
+from .errors import SendError
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GraphCall:
+    """Telemetry for ONE outbound Meta/Graph call - what an adapter reports to
+    an (optional) recorder so the Developers -> Logs console gets an
+    ``outbound_meta`` row (sprint-4/12 Slice 2, AC-DLC-14). The adapter stays
+    free of any DB knowledge: it only describes the call; the recorder (owned by
+    the service layer) persists it, attributing tenant + reading the inbound
+    trace id off the contextvar."""
+
+    operation: str  # graph:send | graph:template_submit | graph:sync
+    status: str  # "success" | "error"
+    status_code: Optional[int]
+    latency_ms: int
+    error_code: Optional[str]
+    error_message: Optional[str]
+    external_ref: Optional[str]  # wamid / message_id on a successful send
+
+
+# A recorder is a failure-isolated sink; it must never raise back into the send.
+GraphRecorder = Callable[[GraphCall], None]
+
+
+# Meta throttling/rate-limit error codes (plan 32 S5, AC-CHN-51). Meta does
+# NOT reserve a 5xx status for these - a page or app quota breach still comes
+# back as HTTP 400 (sometimes 200) with one of these `error.code` values, or
+# occasionally a bare HTTP 429. Only Messenger/Instagram call
+# `is_rate_limited_error` (`adapters/messenger.py`) - WhatsApp's own transient
+# rule (`status_code >= 500`) stays byte-identical (AC-CHN-23).
+# Source (error codes 4 "API Too Many Calls", 17 "User request limit
+# reached", 32 "Page request limit reached", 613 "Calls to this api have
+# exceeded the rate limit"; the per-call `X-Business-Use-Case-Usage` header):
+# https://developers.facebook.com/docs/graph-api/guides/error-handling
+# https://developers.facebook.com/docs/graph-api/overview/rate-limiting
+_RATE_LIMIT_ERROR_CODES = {4, 17, 32, 613}
+
+# WhatsApp Cloud API throttles (plan 56 A): the Graph set plus 80007 (WhatsApp
+# Business Account rate limit), 130429 (Cloud API throughput) and 131056
+# (pair rate limit). 131048 (spam rate limit) is deliberately NOT here:
+# retrying a number Meta flags for spam lowers its quality further.
+WHATSAPP_RATE_LIMIT_ERROR_CODES = _RATE_LIMIT_ERROR_CODES | {80007, 130429, 131056}
+
+
+def _meta_error_obj(resp: "httpx.Response") -> dict:
+    """The ``error`` object of a Graph response body, or ``{}`` when the body
+    is not JSON, not an object, or ``error`` is not an object. Never raises."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return {}
+    err = body.get("error") if isinstance(body, dict) else None
+    return err if isinstance(err, dict) else {}
+
+
+def _meta_error_text(resp: "httpx.Response", key: str = "message") -> str:
+    """``error.<key>`` only when it is a string, else ``""``. Never raises."""
+    val = _meta_error_obj(resp).get(key)
+    return val if isinstance(val, str) else ""
+
+
+def _json_obj(resp: "httpx.Response") -> dict:
+    """A SUCCESS body when it is a JSON object, else ``{}`` (not JSON, a list,
+    a scalar, null). Never raises."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _str_field(obj: dict, key: str, default=""):
+    """``obj[key]`` only when it is a string, else ``default``."""
+    val = obj.get(key) if isinstance(obj, dict) else None
+    return val if isinstance(val, str) else default
+
+
+def _id_field(obj: dict, key: str) -> str:
+    """A Meta id: a string as is, a non-bool int as ``str``, else ``""``."""
+    val = obj.get(key) if isinstance(obj, dict) else None
+    if isinstance(val, str):
+        return val
+    return str(val) if isinstance(val, int) and not isinstance(val, bool) else ""
+
+
+def _list_field(obj: dict, key: str) -> list:
+    """``obj[key]`` only when it is a list, else ``[]``."""
+    val = obj.get(key) if isinstance(obj, dict) else None
+    return val if isinstance(val, list) else []
+
+
+def _dict_items(items: object) -> list:
+    """The dict items of a list (``[]`` when it is not a list)."""
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _bool_field(obj: dict, key: str) -> bool:
+    """True only when ``obj[key]`` is the boolean ``True``."""
+    return isinstance(obj, dict) and obj.get(key) is True
+
+
+def is_rate_limited_error(resp: "httpx.Response") -> bool:
+    """True when this Graph response is Meta throttling the call - a raw HTTP
+    429, or an `error.code` in `_RATE_LIMIT_ERROR_CODES` regardless of HTTP
+    status. Never raises - a malformed/non-JSON error body is simply "not a
+    rate limit" (the caller's normal error path still fires)."""
+    if resp.status_code == 429:
+        return True
+    code = _meta_error_obj(resp).get("code")
+    return isinstance(code, int) and not isinstance(code, bool) and code in _RATE_LIMIT_ERROR_CODES
+
+
+# Longest Retry-After (seconds) ever handed on or waited: the last scheduled
+# send delay. A larger Meta value counts as this.
+RETRY_AFTER_CEILING = 600
+RETRY_AFTER_DEFAULT = 30
+
+
+def _error_code(resp: "httpx.Response") -> Optional[int]:
+    """Meta's `error.code` as an int, only when it is an int or a string of
+    digits. Anything else (dict, list, bool, text) is None. Never raises."""
+    code = _meta_error_obj(resp).get("code")
+    if isinstance(code, bool):
+        return None
+    if isinstance(code, int):
+        return code
+    if isinstance(code, str) and code.isascii() and code.isdigit() and len(code) <= 12:
+        return int(code)
+    return None
+
+
+def is_whatsapp_rate_limited(resp: "httpx.Response") -> bool:
+    """`is_rate_limited_error` with the WhatsApp code set. 131048 (spam rate
+    limit) is never a retryable throttle, even on HTTP 429. Never raises."""
+    code = _error_code(resp)
+    if code == 131048:
+        return False
+    if resp.status_code == 429:
+        return True
+    return code in WHATSAPP_RATE_LIMIT_ERROR_CODES
+
+
+_PRICING_TEXT_RE = re.compile(r"[a-z0-9_]{1,40}")
+
+
+def _pricing_text(value: Any) -> Optional[str]:
+    """One pricing string: lower-cased, 1-40 chars of [a-z0-9_], else None."""
+    if not isinstance(value, str):
+        return None
+    low = value.lower()
+    return low if _PRICING_TEXT_RE.fullmatch(low) else None
+
+
+def _pricing_object(billable: Any, model: Any, category: Any, kind: Any) -> Optional[dict]:
+    out = {
+        "billable": billable if isinstance(billable, bool) else None,
+        "pricingModel": _pricing_text(model),
+        "category": _pricing_text(category),
+        "type": _pricing_text(kind),
+    }
+    # All four null is no pricing at all: callers store nothing.
+    return out if any(v is not None for v in out.values()) else None
+
+
+def normalise_pricing(raw: Any) -> Optional[dict]:
+    """A WhatsApp status entry's `pricing` (Meta input, snake_case) as
+    `{billable, pricingModel, category, type}` (plan 56 B), or None when it is
+    not an object or nothing in it is usable. Unknown keys are dropped. Never
+    raises."""
+    if not isinstance(raw, dict):
+        return None
+    return _pricing_object(
+        raw.get("billable"), raw.get("pricing_model"), raw.get("category"), raw.get("type")
+    )
+
+
+def sanitise_stored_pricing(raw: Any) -> Optional[dict]:
+    """The STORED shape (camelCase) re-checked by the same field rules before
+    it is read onto the wire: a non-object, or an object with no usable field,
+    is None. Never raises."""
+    if not isinstance(raw, dict):
+        return None
+    return _pricing_object(
+        raw.get("billable"), raw.get("pricingModel"), raw.get("category"), raw.get("type")
+    )
+
+
+def parse_retry_after(resp: "httpx.Response") -> Optional[int]:
+    """Meta's `Retry-After` header as whole seconds (1 to 600), or None when
+    absent or not a plain integer. A longer value counts as 600; the digits are
+    measured before any int() so a huge header cannot cost anything. Never
+    raises."""
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    if not raw or not raw.isascii() or not raw.isdigit():
+        return None
+    if len(raw) > 6:
+        return RETRY_AFTER_CEILING
+    seconds = int(raw)
+    return min(seconds, RETRY_AFTER_CEILING) if seconds >= 1 else None
+
+
+def client_retry_after(seconds: Optional[int]) -> int:
+    """The `Retry-After` seconds sent to an API client: Meta's value clamped to
+    1..600, or the default when Meta sent none."""
+    if not seconds:
+        return RETRY_AFTER_DEFAULT
+    return max(1, min(int(seconds), RETRY_AFTER_CEILING))
+
+
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"\S{24,}")
+ERROR_TEXT_CAP = 300
+
+
+def provider_error_text(text: str, limit: int = ERROR_TEXT_CAP) -> str:
+    """Provider error text as kept on a row, event or log: links removed, long
+    opaque tokens (24+ characters mixing letters and digits, or 40+ characters
+    of any kind) removed, whitespace collapsed, capped at ``limit``. Ordinary
+    words and short messages pass through unchanged."""
+    out = _URL_RE.sub("", text or "")
+
+    def _opaque(m: "re.Match[str]") -> str:
+        tok = m.group(0)
+        mixed = any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok)
+        return "" if (mixed or len(tok) >= 40) else tok
+
+    out = _TOKEN_RE.sub(_opaque, out)
+    return re.sub(r"\s+", " ", out).strip()[:limit]
+
+
+def meta_error_code(resp: "httpx.Response") -> Optional[str]:
+    """Meta's own ``error.code`` as text, or None (never raises)."""
+    code = _error_code(resp)
+    return str(code) if code else None
+
+
+def _meta_error_detail(resp: "httpx.Response") -> str:
+    """Assemble the most specific message Meta gives. ``error.message`` alone is
+    often the generic title ("Invalid parameter"); the real reason lives in
+    ``error_user_title``/``error_user_msg`` and ``error_data.details``. Surface
+    all of them so the operator sees WHY a template was rejected."""
+    err = _meta_error_obj(resp)
+    parts = []
+    for key in ("error_user_title", "error_user_msg"):
+        raw = err.get(key)
+        val = raw.strip() if isinstance(raw, str) else ""
+        if val and val not in parts:
+            parts.append(val)
+    data = err.get("error_data")
+    details = data.get("details") if isinstance(data, dict) else None
+    details = details.strip() if isinstance(details, str) else ""
+    if details and details not in parts:
+        parts.append(details)
+    if not parts:
+        raw = err.get("message")
+        msg = raw.strip() if isinstance(raw, str) else ""
+        parts.append(msg or f"Meta returned {resp.status_code}.")
+    return " - ".join(parts)
+
+
+def graph_base_url() -> str:
+    """The Graph API base URL for the ONE core ``meta_graph_version`` setting
+    (review R4) - every Meta caller builds its URLs off this, never its own
+    version string."""
+    return f"https://graph.facebook.com/{settings.meta_graph_version}"
+
+
+class MetaGraphMixin:
+    """Shared Graph-call plumbing every Meta-app-backed adapter (WhatsApp,
+    Messenger, Instagram) mixes in: ``_configured``/dev-safe gate, an
+    ``httpx`` client factory, the ``{base}`` Graph URL, and the timed +
+    recorded ``_graph_call`` wrapper. Concrete adapters own everything
+    provider-specific (payload shape, endpoint paths, ``parse_inbound``)."""
+
+    def __init__(
+        self,
+        client: Optional[httpx.Client] = None,
+        recorder: Optional[GraphRecorder] = None,
+    ):
+        self._client = client
+        self._recorder = recorder
+        # Last Meta HTTP status seen inside a wrapped call (one logical exchange
+        # per ``_graph_call``) so the recorder can stamp the real status code on
+        # BOTH success and error rows. Reset per call.
+        self._last_http_status: Optional[int] = None
+        self._base = graph_base_url()
+
+    def _graph_call(
+        self,
+        operation: str,
+        fn: Callable[[], Any],
+        *,
+        extract_ref: Optional[Callable[[Any], Optional[str]]] = None,
+        ref: Optional[str] = None,
+    ) -> Any:
+        """Time + record ONE Graph call (AC-DLC-14). With no recorder this is a
+        transparent pass-through (existing behaviour, tests unaffected). The
+        record is fully failure-isolated - a logging failure can NEVER break the
+        send."""
+        if self._recorder is None:
+            return fn()
+        self._last_http_status = None
+        started = time.monotonic()
+        status = "success"
+        error_code: Optional[str] = None
+        error_message: Optional[str] = None
+        external_ref: Optional[str] = ref  # known up front: kept on a failed call too
+        try:
+            result = fn()
+            if extract_ref is not None:
+                external_ref = extract_ref(result)
+            return result
+        except SendError as exc:
+            status = "error"
+            error_code = "SendError"
+            error_message = str(exc)
+            raise
+        except Exception as exc:  # noqa: BLE001 - report + re-raise unchanged.
+            status = "error"
+            error_code = type(exc).__name__
+            error_message = str(exc)
+            raise
+        finally:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            try:
+                self._recorder(
+                    GraphCall(
+                        operation=operation,
+                        status=status,
+                        status_code=self._last_http_status,
+                        latency_ms=latency_ms,
+                        error_code=error_code,
+                        error_message=error_message,
+                        external_ref=external_ref,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - recording must never break the send.
+                logger.exception("outbound-meta activity record failed (%s)", operation)
+
+    @property
+    def _configured(self) -> bool:
+        return bool(settings.meta_app_id and settings.meta_app_secret)
+
+    def _http(self) -> httpx.Client:
+        return self._client or httpx.Client(timeout=10.0)

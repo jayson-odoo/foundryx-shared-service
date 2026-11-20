@@ -15,12 +15,14 @@ IDEATION_PERMISSION_KEYS = {
     "ideation.ideas.view",
     "ideation.ideas.submit",
     "ideation.ideas.upvote",
+    "ideation.ideas.comment",
     "ideation.triage.manage",
     "ideation.clusters.manage",
     "ideation.bindings.manage",
     "ideation.business_requirements.read",
     "ideation.business_requirements.manage",
     "ideation.business_requirements.promote",
+    "ideation.business_requirements.send_to_build",
 }
 
 

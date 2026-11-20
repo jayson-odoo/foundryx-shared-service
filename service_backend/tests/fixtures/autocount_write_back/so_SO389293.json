@@ -1,0 +1,72 @@
+{
+ "DocKey": 11988,
+ "DocNo": "SO389293",
+ "DocDate": "2026-01-26T00:00:00",
+ "Cancelled": "F",
+ "Details": [
+  {
+   "DtlKey": 11989,
+   "ItemCode": "SRTKT38SS",
+   "Location": "BRW-AM",
+   "UOM": "UNIT",
+   "Qty": 10.0,
+   "Description": "SORENTO 304 KITCHEN COLD TAP (SOLID BODY)  SRTKT38SS"
+  },
+  {
+   "DtlKey": 11990,
+   "ItemCode": "SRTKS7090",
+   "Location": "BRW-AM",
+   "UOM": "UNIT",
+   "Qty": 10.0,
+   "Description": "SORENTO KITCHEN SINK 650x450x230MM  SRTKS7090"
+  },
+  {
+   "DtlKey": 11991,
+   "ItemCode": "",
+   "Location": "BRW-AM",
+   "UOM": "",
+   "Qty": 0.0,
+   "Description": ""
+  },
+  {
+   "DtlKey": 11992,
+   "ItemCode": "SRTKT38SS",
+   "Location": "BRW-AM",
+   "UOM": "UNIT",
+   "Qty": 10.0,
+   "Description": "SORENTO 304 KITCHEN COLD TAP (SOLID BODY)  SRTKT38SS"
+  },
+  {
+   "DtlKey": 11993,
+   "ItemCode": "SRTKS7090",
+   "Location": "BRW-AM",
+   "UOM": "UNIT",
+   "Qty": 10.0,
+   "Description": "SORENTO KITCHEN SINK 650x450x230MM  SRTKS7090"
+  },
+  {
+   "DtlKey": 11994,
+   "ItemCode": "",
+   "Location": "BRW-AM",
+   "UOM": "",
+   "Qty": 0.0,
+   "Description": ""
+  },
+  {
+   "DtlKey": 11995,
+   "ItemCode": "SRTKT38SS",
+   "Location": "BRW-AM",
+   "UOM": "UNIT",
+   "Qty": 9.0,
+   "Description": "SORENTO 304 KITCHEN COLD TAP (SOLID BODY)  SRTKT38SS"
+  },
+  {
+   "DtlKey": 11996,
+   "ItemCode": "SRTKS7090",
+   "Location": "BRW-AM",
+   "UOM": "UNIT",
+   "Qty": 9.0,
+   "Description": "SORENTO KITCHEN SINK 650x450x230MM  SRTKS7090"
+  }
+ ]
+}

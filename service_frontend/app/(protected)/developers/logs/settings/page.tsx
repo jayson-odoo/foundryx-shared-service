@@ -1,20 +1,21 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
-import { toast } from 'sonner';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { RequirePermission } from '@/components/common/require-permission';
+import { useEffect, useState } from 'react';
+import { toast } from '@/lib/toast';
+import { useIntegrationLogSettings } from '@/hooks/use-integration-log-settings';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardHeading,
+  CardTitle,
+} from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { useIntegrationLogSettings } from '@/hooks/use-integration-log-settings';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
+import { PageHeader } from '@/components/platform/page-header';
 
 /**
  * Developer Logs retention settings (sprint-4/12 Slice 3, AC-DLC-21/23) - the
@@ -53,7 +54,9 @@ function LogRetentionForm() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex max-w-xs flex-col gap-1.5">
-          <Label htmlFor="log-retention-days">Keep developer logs for (days)</Label>
+          <Label htmlFor="log-retention-days">
+            Keep developer logs for (days)
+          </Label>
           <Input
             id="log-retention-days"
             type="number"
@@ -70,8 +73,11 @@ function LogRetentionForm() {
           </p>
         </div>
         <div>
-          <Button onClick={() => void onSave()} disabled={isSaving || isLoading}>
-            Save
+          <Button
+            onClick={() => void onSave()}
+            disabled={isSaving || isLoading}
+          >
+            Save log settings
           </Button>
         </div>
       </CardContent>
@@ -82,21 +88,10 @@ function LogRetentionForm() {
 export default function DeveloperLogSettingsPage() {
   return (
     <RequirePermission permission="integration_logs.manage">
-      <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle />
-              <ToolbarDescription>
-                How long integration activity is kept before it is automatically pruned.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
-        <Container width="fluid">
-          <LogRetentionForm />
-        </Container>
-      </Fragment>
+      <Container width="fluid">
+        <PageHeader description="How long integration activity is kept before it is automatically pruned." />
+        <LogRetentionForm />
+      </Container>
     </RequirePermission>
   );
 }

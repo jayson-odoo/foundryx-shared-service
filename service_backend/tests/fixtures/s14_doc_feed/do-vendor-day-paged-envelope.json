@@ -1,0 +1,9 @@
+{
+  "TotalCount": 4,
+  "Page": 1,
+  "PageSize": 2,
+  "TotalPages": 2,
+  "Data": [
+    {"DocKey": 1, "DocNo": "DO-BAD-1", "DocDate": "2026-09-29T00:00:00", "LastModified": "2026-09-29T01:00:00.000", "Details": []}
+  ]
+}

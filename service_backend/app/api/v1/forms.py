@@ -14,6 +14,7 @@ publish → ``{"problems": [...]}``, submit → ``{"fieldErrors": {...}}``; 409s
 carry a plain detail string.
 """
 import json
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -21,11 +22,13 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.api.v1.documents import _content_disposition
 from app.config import settings
 from app.dependencies import (
     effective_permission_keys,
     get_current_user,
     get_db,
+    read_body_after_token_check,
     require_permission,
 )
 from app.models.user import User
@@ -387,7 +390,12 @@ def fill_form(
 # ---- submit (D14/D19) ----
 
 
-@router.post("/{form_id}/submissions", response_model=FormSubmissionOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{form_id}/submissions",
+    response_model=FormSubmissionOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(read_body_after_token_check)],
+)
 async def submit_form(
     form_id: str,
     request: Request,
@@ -538,13 +546,15 @@ def submission_file(
     except Exception:  # noqa: BLE001 - unresolvable key (connection gone)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
     headers = {
-        "Content-Disposition": f'inline; filename="{filename}"',
+        "Content-Disposition": _content_disposition("inline", filename),
         "Content-Security-Policy": "default-src 'none'; sandbox",
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, max-age=300",
     }
     if location in ("presigned", "url"):
         return RedirectResponse(value, headers=headers)
+    if not os.path.isfile(value):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
     return FileResponse(value, media_type=mime, headers=headers)
 
 
@@ -606,7 +616,11 @@ def revise_submission(
     )
 
 
-@submissions_router.post("/{submission_id}/resubmit", response_model=FormSubmissionOut)
+@submissions_router.post(
+    "/{submission_id}/resubmit",
+    response_model=FormSubmissionOut,
+    dependencies=[Depends(read_body_after_token_check)],
+)
 async def resubmit_revision(
     submission_id: str,
     request: Request,

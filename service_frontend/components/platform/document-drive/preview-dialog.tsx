@@ -21,7 +21,8 @@ export interface PreviewDialogProps {
 
 /**
  * Inline preview for images + PDFs. In production these stream from the
- * CSP-sandbox serve route; the iframe also carries `sandbox` defensively.
+ * CSP-sandbox serve route; the blob's display type (a fixed list, else a
+ * download type) is the control, not an iframe attribute.
  */
 export function PreviewDialog({ file, onClose, onDownload }: PreviewDialogProps) {
   const [url, setUrl] = useState<string | null>(null);

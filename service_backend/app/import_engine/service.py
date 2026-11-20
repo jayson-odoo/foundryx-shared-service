@@ -17,6 +17,7 @@ from fastapi import HTTPException, status as http_status
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db_errors import stored_error_text
 from app.import_engine import readers
 from app.import_engine.coerce import coerce, to_utc
 from app.import_engine.registry import (
@@ -39,7 +40,7 @@ from app.models.import_job import (
     STATUS_VALIDATING,
 )
 from app.repositories.import_repository import ImportRepository
-from app.services.storage import storage_for_tenant
+from app.services.storage import READ_CAP_BYTES, StorageReadError, read_object, storage_for_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -205,13 +206,13 @@ class ImportService:
 
     def _read_content(self, job: ImportJob) -> bytes:
         store = storage_for_tenant(self.db, job.tenant_id)
-        kind, value = store.resolve(job.file_storage_key)
-        if kind == "path":
-            with open(value, "rb") as fh:
-                return fh.read()
-        import urllib.request
-
-        return urllib.request.urlopen(value).read()  # noqa: S310 (own storage)
+        _, max_mb = self.caps(job.tenant_id)
+        try:
+            return read_object(store, job.file_storage_key, max_bytes=max_mb * 1024 * 1024)
+        except StorageReadError as exc:
+            raise HTTPException(
+                http_status.HTTP_502_BAD_GATEWAY, "The uploaded file could not be read."
+            ) from exc
 
     def _invert_mapping(self, importer: ImporterDef, mapping: dict):
         """columnKey → fileHeader. Map collisions DEGRADE (D4): 2 file-cols → 1
@@ -242,6 +243,10 @@ class ImportService:
         content = self._read_content(job)
         fmt = readers.sniff_format(content) or readers.FMT_CSV
         _, records = readers.read_rows(content, fmt, job.sheet_name, max_rows)
+        # Effective columns (plan 26 S3): the static set plus any per-tenant/
+        # context DYNAMIC columns (e.g. one per a workspace's registered custom
+        # fields) - resolved once per _prepare call, never per-row.
+        columns = importer.effective_columns(self.db, job.tenant_id, job.context_json)
         col_to_header, warnings = self._invert_mapping(importer, job.mapping_json or {})
         assumed = self._assumed_tz(job)
 
@@ -255,7 +260,7 @@ class ImportService:
         staged: List[Tuple[int, dict, Optional[str], bool, list]] = []
         resolver_inputs: Dict[str, set] = {}
         seen_ids: set = set()
-        unique_seen: Dict[str, set] = {c.key: set() for c in importer.columns if c.unique}
+        unique_seen: Dict[str, set] = {c.key: set() for c in columns if c.unique}
 
         for i, rec in enumerate(records):
             rownum = i + 2  # 1-based + header row
@@ -264,7 +269,7 @@ class ImportService:
             missing_required: list = []
             raw_id = (str(rec.get(id_header)).strip() if id_header and rec.get(id_header) is not None else "") or None
 
-            for col in importer.columns:
+            for col in columns:
                 if col.key == "id":
                     continue
                 header = col_to_header.get(col.key)
@@ -331,17 +336,26 @@ class ImportService:
 
         # Batched resolvers (set-based, ≤ one query per resolver column).
         resolved_maps: Dict[str, Dict[str, str]] = {}
-        for col in importer.columns:
+        for col in columns:
             if col.resolver and col.key in resolver_inputs:
                 vals = list(resolver_inputs[col.key])
                 resolved_maps[col.key] = col.resolver.lookup(self.db, job.tenant_id, vals) or {}
 
-        # Batched match-existence (D7) for update/upsert id matching.
+        # Batched match-existence (D7) for update/upsert id matching. A
+        # context-aware importer (plan 26 S3) narrows the check by the job's
+        # own context (e.g. workspace), never just the tenant.
         existing_id_set: set = set()
-        if importer.existing_ids and (job.mode in (MODE_UPDATE_ONLY, MODE_UPSERT)):
+        if (importer.existing_ids or importer.existing_ids_ctx) and (
+            job.mode in (MODE_UPDATE_ONLY, MODE_UPSERT)
+        ):
             ids = [sid for (_, _, sid, _, _) in staged if sid]
             if ids:
-                existing_id_set = importer.existing_ids(self.db, job.tenant_id, ids)
+                if importer.existing_ids_ctx:
+                    existing_id_set = importer.existing_ids_ctx(
+                        self.db, job.tenant_id, ids, job.context_json or {}
+                    )
+                else:
+                    existing_id_set = importer.existing_ids(self.db, job.tenant_id, ids)
 
         # Batched table-uniqueness (D6) - a `unique` column value already present
         # in the table must fail at VALIDATE (Test), not blow up the commit on a
@@ -350,7 +364,7 @@ class ImportService:
         from sqlalchemy import func
 
         unique_existing: Dict[str, set] = {}
-        for col in importer.columns:
+        for col in columns:
             column = getattr(importer.model, col.attr, None)
             if not col.unique or column is None:
                 continue
@@ -389,7 +403,7 @@ class ImportService:
                 dup_col = next(
                     (
                         col.key
-                        for col in importer.columns
+                        for col in columns
                         if col.unique
                         and data.get(col.key) is not None
                         and str(data[col.key]).lower() in unique_existing.get(col.key, set())
@@ -403,7 +417,7 @@ class ImportService:
                     continue
             # resolver application
             resolver_failed = False
-            for col in importer.columns:
+            for col in columns:
                 if not col.resolver or col.key not in data:
                     continue
                 rmap = resolved_maps.get(col.key, {})
@@ -441,7 +455,7 @@ class ImportService:
                 importer.validate_prepared(
                     self.db,
                     job.tenant_id,
-                    [{"row": p.index, **p.data} for p in prepared],
+                    [{"row": p.index, "__op__": p.op, **p.data} for p in prepared],
                     job.context_json or {},
                 )
                 or []
@@ -503,11 +517,12 @@ class ImportService:
             job.validated_at = datetime.now(timezone.utc)
             db.commit()
         except Exception as exc:  # noqa: BLE001
+            logger.warning("import validation failed", exc_info=exc)
             db.rollback()
             job = ImportRepository(db).get_unscoped(job_id)
             if job:
                 job.status = STATUS_FAILED
-                job.errors_json = [{"row": 0, "column": "", "message": f"Validation failed: {exc}"}]
+                job.errors_json = [{"row": 0, "column": "", "message": stored_error_text(exc, "Validation failed")}]
                 db.commit()
 
     # ── commit (all-or-nothing) ──────────────────────────────────────────────
@@ -524,6 +539,7 @@ class ImportService:
             if job.abort_on_invalid and errors:
                 raise RuntimeError(f"{len(errors)} invalid rows - commit aborted")
 
+            columns = importer.effective_columns(db, job.tenant_id, job.context_json)
             creates = [p for p in prepared if p.op == "create"]
             updates = [p for p in prepared if p.op == "update"]
             created_ids: List[str] = []
@@ -547,7 +563,7 @@ class ImportService:
                         continue
                     old_vals[p.record_id] = {
                         col.attr: getattr(rec, col.attr, None)
-                        for col in importer.columns
+                        for col in columns
                         if col.key != "id" and col.key in p.data
                     }
             if creates and importer.create_rows:
@@ -564,7 +580,7 @@ class ImportService:
                 for p in updates:
                     ov = old_vals.get(p.record_id, {})
                     ch = {}
-                    for col in importer.columns:
+                    for col in columns:
                         if col.key == "id" or col.key not in p.data:
                             continue
                         new = p.data[col.key]
@@ -586,13 +602,14 @@ class ImportService:
             if job.trigger_automations:
                 self._emit_events(db, job, importer, created_ids, updated_ids, update_changes)
         except Exception as exc:  # noqa: BLE001 - D7: roll back EVERYTHING
+            logger.warning("import commit failed", exc_info=exc)
             db.rollback()
             job = repo.get_unscoped(job_id)
             if job:
                 job.status = STATUS_FAILED
                 job.finished_at = datetime.now(timezone.utc)
                 existing = job.errors_json or []
-                job.errors_json = ([{"row": 0, "column": "", "message": f"Commit failed: {exc}"}] + existing)[:ERRORS_CAP]
+                job.errors_json = ([{"row": 0, "column": "", "message": stored_error_text(exc, "Commit failed")}] + existing)[:ERRORS_CAP]
                 db.commit()
 
     def _emit_events(self, db, job, importer, created_ids, updated_ids, update_changes=None):
@@ -600,7 +617,16 @@ class ImportService:
         The import commits internally, so this uses the emit + explicit
         dispatch_pending pattern (not the after-commit drain). Failure-isolated:
         a broken/slow workflow never breaks the import (dispatch_pending swallows).
-        ``actor_id`` (a string id), not ``actor`` (which expects a User)."""
+        ``actor_id`` (a string id), not ``actor`` (which expects a User).
+
+        Emits under ``importer.workflow_entity_type`` when set (plan 26 S3) -
+        an importer's own ``entity_type`` key (e.g. plural ``omnichannel_
+        contacts``, matching its import-engine registration) can differ from
+        the WORKFLOW-engine entity a record actually triggers as (singular
+        ``omnichannel_contact``) - mirrors ``StatusEntity.workflow_entity_
+        type``. None (every pre-existing importer) falls back to
+        ``job.entity_type`` unchanged."""
+        wf_entity_type = importer.workflow_entity_type or job.entity_type
         try:
             from app.workflow_engine.entities import get_workflow_entity, load_record
             from app.workflow_engine.entity_events import (
@@ -608,7 +634,7 @@ class ImportService:
                 emit_entity_event,
             )
 
-            wf_entity = get_workflow_entity(job.entity_type)
+            wf_entity = get_workflow_entity(wf_entity_type)
             if wf_entity is None:
                 return
             changes_map = update_changes or {}
@@ -616,7 +642,7 @@ class ImportService:
                 rec = load_record(db, wf_entity, job.tenant_id, rid)
                 if rec is not None:
                     emit_entity_event(
-                        db, job.entity_type, "created", rec,
+                        db, wf_entity_type, "created", rec,
                         tenant_id=job.tenant_id, actor_id=job.actor_user_id,
                     )
             for rid in updated_ids or []:
@@ -624,7 +650,7 @@ class ImportService:
                 if rec is not None:
                     # field-level changes → entity.field_changed + updated workflows.
                     emit_entity_event(
-                        db, job.entity_type, "updated", rec,
+                        db, wf_entity_type, "updated", rec,
                         tenant_id=job.tenant_id, actor_id=job.actor_user_id,
                         changes=changes_map.get(rid),
                     )
@@ -695,13 +721,13 @@ class ImportService:
         if not job.error_report_key:
             raise HTTPException(404, "No error file.")
         store = storage_for_tenant(self.db, tenant_id)
-        kind, value = store.resolve(job.error_report_key)
-        if kind == "path":
-            with open(value, "rb") as fh:
-                return fh.read(), "errors.csv"
-        import urllib.request
-
-        return urllib.request.urlopen(value).read(), "errors.csv"  # noqa: S310
+        try:
+            # Server-generated and possibly larger than its source: a fixed ceiling.
+            return read_object(store, job.error_report_key, max_bytes=READ_CAP_BYTES), "errors.csv"
+        except StorageReadError as exc:
+            raise HTTPException(
+                http_status.HTTP_502_BAD_GATEWAY, "The error file could not be read."
+            ) from exc
 
     # ── mapping preview (sheets + headers + auto-map) ────────────────────────
 
@@ -721,8 +747,13 @@ class ImportService:
         chosen = sheet or job.sheet_name or (sheets[0] if sheets else None)
         max_rows, _ = self.caps(tenant_id)
         headers, _records = readers.read_rows(content, fmt, chosen, max_rows)
-        by_norm = {self._normalize(c.label): c.key for c in importer.columns}
-        by_norm.update({self._normalize(c.key): c.key for c in importer.columns})
+        # Effective columns (plan 26 S3) - a job already carries its context
+        # (e.g. workspaceId), so dynamic per-tenant columns (registered custom
+        # fields) are recognisable for auto-mapping here even though the
+        # pre-upload GET /config screen only ever sees the static set.
+        cols = importer.effective_columns(self.db, tenant_id, job.context_json)
+        by_norm = {self._normalize(c.label): c.key for c in cols}
+        by_norm.update({self._normalize(c.key): c.key for c in cols})
         auto = {h: by_norm.get(self._normalize(h)) for h in headers}
         return {"sheets": sheets, "sheetName": chosen, "headers": headers, "autoMapping": auto}
 

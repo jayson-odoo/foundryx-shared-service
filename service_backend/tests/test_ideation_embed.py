@@ -439,3 +439,41 @@ def test_omnichannel_embed_session_still_reachable(ideation_client):
     assert res.status_code == 401
     # Omnichannel's typed code (its verifier), not ideation's invalid_connection.
     assert res.json()["error"]["code"] == "invalid_assertion"
+
+
+# ── security addendum: connection create/patch/rotate need BOTH keys ──────────
+TRIAGE = "ideation.triage.manage"
+BR_MANAGE = "ideation.business_requirements.manage"
+
+
+def test_admin_mutations_need_both_keys(ideation_client):
+    from tests.test_ideation_br import _make_user
+
+    c = ideation_client
+    _make_user(c._factory, "triage@x.com", "triage1234", [TRIAGE])
+    _make_user(c._factory, "both@x.com", "both12345", [TRIAGE, BR_MANAGE])
+    _seed_connection(c._factory, connection_id="existing")
+    th = _auth(c, email="triage@x.com", password="triage1234")
+    bh = _auth(c, email="both@x.com", password="both12345")
+
+    # Triage-only: list still works, create / patch / rotate are 403.
+    assert c.get("/ideation/embed-connections", headers=th).status_code == 200
+    assert _admin_create(c, th).status_code == 403
+    assert c.patch("/ideation/embed-connections/existing", headers=th, json={"is_active": False}).status_code == 403
+    rot = c.post(
+        "/ideation/embed-connections/existing/rotate", headers=th, json={"signing_secret": "another-secret-1"}
+    )
+    assert rot.status_code == 403
+
+    # Both keys: create 201, patch 200, rotate 200.
+    assert _admin_create(c, bh).status_code == 201
+    assert c.patch("/ideation/embed-connections/admin-made", headers=bh, json={"is_active": True}).status_code == 200
+    rot = c.post(
+        "/ideation/embed-connections/admin-made/rotate", headers=bh, json={"signing_secret": "another-secret-1"}
+    )
+    assert rot.status_code == 200
+
+
+def test_existing_connection_still_mints_sessions(ideation_client):
+    _seed_connection(ideation_client._factory)
+    assert _session(ideation_client).status_code == 200

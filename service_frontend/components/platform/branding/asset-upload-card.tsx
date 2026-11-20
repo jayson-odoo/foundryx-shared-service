@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { ImageIcon, LoaderCircleIcon, Trash2, Upload } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { BrandingAssetKind } from '@/types/branding';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';

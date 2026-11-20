@@ -165,4 +165,11 @@ describe('structured bubbles', () => {
     render(<MessageBubble message={msg({ messageType: 'UNSUPPORTED' })} />);
     expect(screen.getByTestId('structured-unsupported')).toBeInTheDocument();
   });
+
+  it('renders the muted media-unavailable placeholder (not "Unsupported message type") for an UNSUPPORTED row that also carries mediaUnavailable', () => {
+    render(<MessageBubble message={msg({ messageType: 'UNSUPPORTED', mediaUnavailable: true })} />);
+    expect(screen.getByTestId('media-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('structured-unsupported')).not.toBeInTheDocument();
+    expect(screen.getByText('Media unavailable')).toBeInTheDocument();
+  });
 });

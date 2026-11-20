@@ -2,17 +2,22 @@
 
 Thin HTTP/Pydantic layer only - all logic lives in ``JobService`` /
 ``StorageMigrationService`` (no DB access here). ``GET /jobs`` + ``GET
-/jobs/{id}`` are readable by any authenticated tenant user (the generic Jobs
-drawer); the storage-migration controls (start / abort / retry / complete) are
-gated by ``integrations.migrate_storage``.
+/jobs/{id}`` are readable per job type by the type's read permission; the
+storage-migration controls (start / abort / retry / complete) are gated by ``integrations.migrate_storage``.
 """
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.database import get_db
-from app.dependencies import get_actor_user_id, get_current_user, require_permission
+from app.database import allow_long_lock_wait, get_db
+from app.dependencies import (
+    effective_permission_keys,
+    get_actor_user_id,
+    get_current_user,
+    require_permission,
+)
+from app.jobs.registry import readable_job_types
 from app.jobs.service import JobService
 from app.models.user import User
 from app.schemas.job import (
@@ -56,6 +61,7 @@ def test_storage_migration_bucket(
     """Non-destructive probe of a candidate new bucket (wizard Test step) -
     nothing is persisted; Start stays disabled until this passes."""
     ok, message = StorageMigrationService(db).test_bucket(
+        tenant_id=user.tenant_id,
         provider=payload.provider,
         config=payload.config,
         credentials=payload.credentials,
@@ -73,7 +79,11 @@ def list_jobs(
     status_filter: Optional[str] = Query(None, alias="status"),
 ) -> JobListResponse:
     rows, total = JobService(db).list(
-        user.tenant_id, job_type=type, status=status_filter, page=page, page_size=page_size
+        user.tenant_id, job_type=type,
+        status=status_filter,
+        page=page,
+        page_size=page_size,
+        types=readable_job_types(effective_permission_keys(user)),
     )
     return JobListResponse(items=[JobOut.model_validate(r) for r in rows], total=total)
 
@@ -84,7 +94,9 @@ def get_job(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JobOut:
-    job = JobService(db).get(user.tenant_id, job_id)
+    job = JobService(db).get(
+        user.tenant_id, job_id, types=readable_job_types(effective_permission_keys(user))
+    )
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
     return JobOut.model_validate(job)
@@ -114,4 +126,5 @@ def complete_job(
     user: User = Depends(require_permission(_MIGRATE_PERM)),
     db: Session = Depends(get_db),
 ) -> JobOut:
-    return JobOut.model_validate(StorageMigrationService(db).complete(user.tenant_id, job_id))
+    with allow_long_lock_wait(db):
+        return JobOut.model_validate(StorageMigrationService(db).complete(user.tenant_id, job_id))

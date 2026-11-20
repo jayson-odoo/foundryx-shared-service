@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AutocountEntityConfig } from '@/types/autocount';
+import type { AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
 import { parseSyncSummary } from '@/types/autocount';
 import type { ListQuery } from '@/types/resource';
 
@@ -30,6 +30,7 @@ function entity(over: Partial<AutocountEntityConfig> = {}): AutocountEntityConfi
     watermarkAt: null,
     consecutiveFailures: 0,
     lastError: null,
+    etlStatus: 'draft',
     ...over,
   };
 }
@@ -38,16 +39,23 @@ const onSync = vi.fn();
 const onEditLookback = vi.fn();
 const onRefetch = vi.fn();
 const onConfigureMapping = vi.fn();
+const onConfigureTask = vi.fn();
 
-function config(entities: AutocountEntityConfig[], companyActive = true) {
+function config(
+  entities: AutocountEntityConfig[],
+  companyActive = true,
+  sourceKind: AutocountSourceKind = 'api',
+) {
   return renderHook(() =>
     useAutocountEntitiesListConfig({
       entities,
       companyActive,
+      sourceKind,
       onSync,
       onEditLookback,
       onRefetch,
       onConfigureMapping,
+      onConfigureTask,
     }),
   ).result.current;
 }
@@ -57,6 +65,7 @@ beforeEach(() => {
   onEditLookback.mockReset();
   onRefetch.mockReset();
   onConfigureMapping.mockReset();
+  onConfigureTask.mockReset();
 });
 
 describe('entities list config', () => {
@@ -76,6 +85,8 @@ describe('entities list config', () => {
     expect(ids).toContain('watermarkAt');
     expect(ids).toContain('initialLookbackDays');
     expect(ids).toContain('health');
+    // Plan 22 S2: where the entity reads from is visible on the row.
+    expect(ids).toContain('sourceImpl');
   });
 
   it('has no detail page, so a row click never dead-ends', () => {
@@ -140,17 +151,18 @@ describe('entities actions', () => {
     expect(edit.isVisible?.([entity({ watermarkAt: '2026-07-12T00:00:00Z' })])).toBe(false);
   });
 
-  it('offers "Re-fetch history" ONLY once superseded, as a confirmed reset', () => {
+  it('offers "Re-fetch history" ONLY once superseded, as an explicit (un-confirmed) reset (fix round 1, T5, item 15 - a re-sync needs no confirm)', () => {
     const c = config([entity({ watermarkAt: '2026-07-12T00:00:00Z' })]);
     const refetch = c.actions.find((a) => a.id === 'refetch-history')!;
     expect(refetch.permission).toBe('autocount.companies.manage');
     // The mirror image of edit-lookback - visible only when the window is spent.
     expect(refetch.isVisible?.([entity({ watermarkAt: '2026-07-12T00:00:00Z' })])).toBe(true);
     expect(refetch.isVisible?.([entity({ watermarkAt: null })])).toBe(false);
-    // Explicit + confirmed, never a silent Days box.
-    expect(refetch.confirm).toBeDefined();
+    // Explicit but no confirm dialog - a re-sync widens a read window, it
+    // doesn't delete or detach anything.
+    expect(refetch.confirm).toBeUndefined();
     const row = entity({ watermarkAt: '2026-07-12T00:00:00Z' });
-    refetch.run([row], { reload: vi.fn() });
+    refetch.run?.([row], { reload: vi.fn() });
     expect(onRefetch).toHaveBeenCalledWith(row);
   });
 
@@ -162,6 +174,59 @@ describe('entities actions', () => {
     const row = entity();
     mapping.run([row], { reload: vi.fn() });
     expect(onConfigureMapping).toHaveBeenCalledWith(row);
+  });
+});
+
+describe('entity source (sprint-5/08 D13 - "Configure source" replaces the old task action + the "Change source" dialog)', () => {
+  it('offers "Configure source" on EVERY row regardless of its current impl - the Source tab is the one place to change it', () => {
+    const c = config([entity()]);
+    const task = c.actions.find((a) => a.id === 'configure-task')!;
+    expect(task.permission).toBe('autocount.companies.manage');
+    expect(task.label).toBe('Configure source');
+    expect(task.isVisible).toBeUndefined();
+    const row = entity({ sourceImpl: 'sql_db' });
+    task.run([row], { reload: vi.fn() });
+    expect(onConfigureTask).toHaveBeenCalledWith(row);
+  });
+
+  it('has no "change-source" action any more (removed with entity-source-dialog.tsx)', () => {
+    const c = config([entity()]);
+    expect(c.actions.find((a) => a.id === 'change-source')).toBeUndefined();
+  });
+});
+
+describe('DB company - API-only actions hidden (plan sprint-5/01, AC-01-18)', () => {
+  const dbRow = entity({ entityType: 'customer', sourceImpl: 'sql_db', watermarkAt: null });
+
+  it('never offers "Edit first-run window" on a DB company', () => {
+    const c = config([dbRow], true, 'db');
+    const edit = c.actions.find((a) => a.id === 'edit-lookback')!;
+    // Even before the first sync (where an API row WOULD offer the window edit).
+    expect(edit.isVisible?.([dbRow])).toBe(false);
+  });
+
+  it('keeps configure-task, sync-now, configure-mapping and refetch-history on a DB company', () => {
+    const synced = { ...dbRow, watermarkAt: '2026-08-30T00:00:00Z' };
+    const c = config([synced], true, 'db');
+    const ids = c.actions.map((a) => a.id);
+    expect(ids).toEqual(
+      expect.arrayContaining(['configure-task', 'sync-now', 'configure-mapping', 'refetch-history']),
+    );
+    expect(c.actions.find((a) => a.id === 'refetch-history')!.isVisible?.([synced])).toBe(true);
+    expect(c.actions.find((a) => a.id === 'configure-mapping')!.isVisible).toBeUndefined();
+    expect(c.actions.find((a) => a.id === 'sync-now')!.isDisabled?.([synced])).toBe(false);
+  });
+
+  it("an open (http) company also never offers Edit first-run window (sprint-5/08, AC-08-10)", () => {
+    const httpRow = entity({ entityType: 'product', sourceImpl: 'autocount_http', watermarkAt: null });
+    const c = config([httpRow], true, 'http');
+    expect(c.actions.find((a) => a.id === 'edit-lookback')!.isVisible?.([httpRow])).toBe(false);
+  });
+
+  it('an API company\'s rows are unchanged (regression pin)', () => {
+    const apiRow = entity({ watermarkAt: null });
+    const c = config([apiRow], true, 'api');
+    expect(c.actions.find((a) => a.id === 'edit-lookback')!.isVisible?.([apiRow])).toBe(true);
   });
 });
 
@@ -205,5 +270,39 @@ describe('sync summary parsing (the zero-record case)', () => {
     const odd = parseSyncSummary({ fetched: 'many', staged: null })!;
     expect(odd.fetched).toBe(0);
     expect(odd.staged).toBe(0);
+  });
+});
+
+// fix/db-company-seed-source: a DB company can carry a row stranded on the
+// vendor-API source (seeded before the seed followed the source kind). Since
+// sprint-5/08 D13, "Configure source" (always visible, every row) is the ONE
+// way out - it opens the row's task editor Source tab regardless of the
+// row's current impl, replacing the old per-row "Change source" dialog.
+describe('DB company - "Configure source" is per row, reaches a stranded API-sourced row too', () => {
+  const stranded = entity({ entityType: 'customer', sourceImpl: 'autocount_read', watermarkAt: null });
+  const dbSourced = entity({ entityType: 'supplier', sourceImpl: 'sql_db', watermarkAt: null });
+
+  it('opens the task editor from a DB company row still at autocount_read', () => {
+    const c = config([stranded, dbSourced], true, 'db');
+    const task = c.actions.find((a) => a.id === 'configure-task')!;
+    task.run([stranded], { reload: vi.fn() });
+    expect(onConfigureTask).toHaveBeenCalledWith(stranded);
+  });
+
+  it('opens the task editor from a DB company row already at sql_db too', () => {
+    const c = config([stranded, dbSourced], true, 'db');
+    const task = c.actions.find((a) => a.id === 'configure-task')!;
+    task.run([dbSourced], { reload: vi.fn() });
+    expect(onConfigureTask).toHaveBeenCalledWith(dbSourced);
+  });
+});
+
+describe('Delivery column (sprint-5/10, AC-10-17)', () => {
+  it('reads push/pull per row, defaulting to push for a legacy fixture', () => {
+    const c = config([entity({ deliveryMode: 'pull' }), entity({ entityType: 'supplier' })]);
+    const column = c.columns.find((col) => col.id === 'deliveryMode')!;
+    const accessor = column.accessorFn as (row: AutocountEntityConfig, index: number) => string;
+    expect(accessor(entity({ deliveryMode: 'pull' }), 0)).toBe('pull');
+    expect(accessor(entity({ entityType: 'supplier' }), 0)).toBe('push');
   });
 });

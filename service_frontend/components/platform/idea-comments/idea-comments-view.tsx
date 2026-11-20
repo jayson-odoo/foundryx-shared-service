@@ -1,0 +1,501 @@
+'use client';
+
+import { useState } from 'react';
+import { MessageSquare, Pencil, Reply, Trash2 } from 'lucide-react';
+import type { IdeaAttachment, IdeaComment, IdeaCommentThread } from '@/types/ideation';
+import { cn } from '@/lib/utils';
+import { useDatetime } from '@/hooks/use-datetime';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  AttachmentPicker,
+  UploadRetryNotice,
+  useAttachmentDraft,
+  useUploadRetry,
+} from '@/components/platform/attachment-picker/attachment-picker';
+import { AttachmentThumbs } from '@/components/platform/attachment-preview/attachment-thumbs';
+import { UserAvatar } from '@/components/platform/user-avatar';
+import { isCommentPostResult, type FailedUpload } from '@/lib/upload-files';
+import { formatFeedbackNumber } from '@/lib/feedback-number';
+
+export interface IdeaCommentsViewProps {
+  threads: IdeaCommentThread[];
+  count: number;
+  loading: boolean;
+  error: string | null;
+  /** Whether the viewer may post (composer + Reply). Reading is always allowed. */
+  canComment: boolean;
+  /** `files` only when the surface offers attachments (`allowAttachments`). */
+  onAdd: (body: string, parentId?: string, files?: File[]) => Promise<unknown>;
+  /** Re-upload only the files that failed, against the comment just posted. */
+  onRetryUploads?: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
+  /** Offer the attach control on the composers and show comment files. */
+  allowAttachments?: boolean;
+  fetchAttachment?: (attachment: IdeaAttachment) => Promise<Blob>;
+  /** Omit on a surface where comments cannot be edited (the public page). */
+  onEdit?: (commentId: string, body: string) => Promise<void>;
+  /** Omit on a surface where comments cannot be deleted (the public page). */
+  onRemove?: (commentId: string) => Promise<void>;
+  /** Operator / embed composer: staff comments are visible to the submitter. */
+  visibleToSubmitter?: boolean;
+}
+
+const linkButton =
+  'inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground';
+
+function CommentBody({ text }: { text: string }) {
+  // Plain text only: a React text node, whitespace preserved. Never HTML.
+  return <p className="whitespace-pre-wrap break-words text-sm">{text}</p>;
+}
+
+interface CommentRowProps {
+  comment: IdeaComment;
+  topLevel: boolean;
+  canComment: boolean;
+  editing: boolean;
+  onReply: () => void;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (body: string) => Promise<void>;
+  onAskDelete: () => void;
+  canEditHere: boolean;
+  canDeleteHere: boolean;
+  fetchAttachment?: (attachment: IdeaAttachment) => Promise<Blob>;
+}
+
+function CommentRow({
+  comment,
+  topLevel,
+  canComment,
+  editing,
+  onReply,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onAskDelete,
+  canEditHere,
+  canDeleteHere,
+  fetchAttachment,
+}: CommentRowProps) {
+  const { formatDmyDateTime: formatDateTime } = useDatetime();
+  if (comment.isDeleted) {
+    return (
+      <div className="flex items-center gap-2 py-1 text-sm italic text-muted-foreground">
+        Comment deleted
+      </div>
+    );
+  }
+
+  const author = comment.authorName ?? '';
+  return (
+    <div className="flex gap-3">
+      <UserAvatar
+        user={{ name: author, email: author, avatar: null }}
+        size={topLevel ? 'md' : 'sm'}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="text-sm font-semibold">{author}</span>
+          {comment.authorKind === 'public' && (
+            <Badge variant="secondary" appearance="light" size="sm">
+              Submitter
+            </Badge>
+          )}
+          {comment.fromIdea && (
+            <Badge variant="outline" appearance="light" size="sm">
+              from {formatFeedbackNumber(comment.fromIdea.ideaNumber) ?? 'merged feedback'}
+            </Badge>
+          )}
+          <span className="text-xs text-muted-foreground">
+            {formatDateTime(comment.createdAt)}
+          </span>
+          {comment.editedAt && (
+            <span className="text-xs text-muted-foreground">edited</span>
+          )}
+        </div>
+        {editing ? (
+          <CommentEditor
+            initial={comment.body ?? ''}
+            onCancel={onCancelEdit}
+            onSave={onSaveEdit}
+          />
+        ) : (
+          <>
+            {comment.body && <CommentBody text={comment.body} />}
+            <AttachmentThumbs
+              attachments={comment.attachments ?? []}
+              fetchContent={fetchAttachment}
+              className="mt-2"
+            />
+            <div className="mt-1 flex flex-wrap items-center gap-3">
+              {canComment && !comment.fromIdea && (
+                <button
+                  type="button"
+                  className={cn(PRESSED_CLASS, linkButton)}
+                  onClick={onReply}
+                >
+                  <Reply className="size-3.5" />
+                  Reply
+                </button>
+              )}
+              {canEditHere && (
+                <button
+                  type="button"
+                  className={cn(PRESSED_CLASS, linkButton)}
+                  onClick={onStartEdit}
+                >
+                  <Pencil className="size-3.5" />
+                  Edit
+                </button>
+              )}
+              {canDeleteHere && (
+                <button
+                  type="button"
+                  className={cn(PRESSED_CLASS, linkButton)}
+                  onClick={onAskDelete}
+                >
+                  <Trash2 className="size-3.5" />
+                  Delete
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommentEditor({
+  initial,
+  onCancel,
+  onSave,
+}: {
+  initial: string;
+  onCancel: () => void;
+  onSave: (body: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    const text = draft.trim();
+    if (!text) return;
+    setSaving(true);
+    try {
+      await onSave(text);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="mt-1.5 flex flex-col gap-2">
+      <Textarea
+        rows={3}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="flex justify-end gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onCancel}
+          disabled={saving}
+        >
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => void save()}
+          disabled={saving || !draft.trim()}
+        >
+          Save comment
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Composer({
+  placeholder,
+  submitLabel,
+  onSubmit,
+  onCancel,
+  badge,
+  testId,
+  autoFocus,
+  allowAttachments,
+  onRetryUploads,
+}: {
+  placeholder?: string;
+  submitLabel: string;
+  onSubmit: (body: string, files: File[]) => Promise<unknown>;
+  onRetryUploads?: (commentId: string, files: File[]) => Promise<FailedUpload[]>;
+  allowAttachments?: boolean;
+  onCancel?: () => void;
+  badge?: boolean;
+  testId?: string;
+  autoFocus?: boolean;
+}) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const draft = useAttachmentDraft();
+  const uploads = useUploadRetry(draft, onRetryUploads);
+  const empty = !text.trim() && draft.files.length === 0;
+
+  const submit = async () => {
+    if (empty || busy) return;
+    setBusy(true);
+    try {
+      const sent = draft.files;
+      const sentText = text.trim();
+      const result = await onSubmit(sentText, sent);
+      // A failed post (null, already reported) keeps the text and the files.
+      if (result === null) return;
+      // Only what was sent leaves the box; anything typed or added meanwhile stays.
+      setText((current) => (current.trim() === sentText ? '' : current));
+      uploads.track(result, sent);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="flex flex-col gap-2"
+      data-testid={testId}
+      {...(allowAttachments ? draft.wrapperProps : {})}
+    >
+      <Textarea
+        rows={3}
+        value={text}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        onChange={(e) => setText(e.target.value)}
+      />
+      {uploads.pending ? (
+        <UploadRetryNotice
+          failed={uploads.pending.failed}
+          busy={uploads.busy}
+          onRetry={() => void uploads.retryNow()}
+          onRemove={uploads.removeFailed}
+        />
+      ) : (
+        allowAttachments && <AttachmentPicker draft={draft} />
+      )}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {badge && (
+          <Badge variant="secondary" appearance="light" size="sm">
+            Visible to submitter
+          </Badge>
+        )}
+        {onCancel && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onCancel}
+            disabled={busy}
+          >
+            Cancel
+          </Button>
+        )}
+        {!uploads.pending && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void submit()}
+            disabled={empty || busy}
+          >
+            {submitLabel}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The shared comments section (plan 19, AC-19-21..24 and 33): a composer above the
+ * thread list, replies one level deep, edit / delete / reply controls gated by
+ * the per-comment flags. Pure presentation - the operator / embed section and the
+ * public status page each wire their own hook into it.
+ */
+export function IdeaCommentsView({
+  threads,
+  count,
+  loading,
+  error,
+  canComment,
+  onAdd,
+  onEdit,
+  onRemove,
+  visibleToSubmitter = false,
+  allowAttachments = false,
+  fetchAttachment,
+  onRetryUploads,
+}: IdeaCommentsViewProps) {
+  // Which thread has the inline composer open, and the comment id it posts under.
+  const [reply, setReply] = useState<{
+    rootId: string;
+    parentId: string;
+  } | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const rowFor = (
+    comment: IdeaComment,
+    rootId: string,
+    rootDeleted: boolean,
+    topLevel: boolean,
+  ) => (
+    <CommentRow
+      key={comment.id}
+      comment={comment}
+      topLevel={topLevel}
+      canComment={canComment}
+      editing={editingId === comment.id}
+      // Under a live top-level the reply goes to it; under a deleted one the
+      // clicked comment's own id (the backend normalises it, AC-19-40).
+      onReply={() =>
+        setReply({ rootId, parentId: rootDeleted ? comment.id : rootId })
+      }
+      onStartEdit={() => setEditingId(comment.id)}
+      onCancelEdit={() => setEditingId(null)}
+      onSaveEdit={async (body) => {
+        await onEdit?.(comment.id, body);
+        setEditingId(null);
+      }}
+      onAskDelete={() => setDeleteId(comment.id)}
+      canEditHere={Boolean(onEdit) && comment.canEdit}
+      canDeleteHere={Boolean(onRemove) && comment.canDelete}
+      fetchAttachment={fetchAttachment}
+    />
+  );
+
+  return (
+    <section className="flex flex-col gap-4 pt-4">
+      <h3 className="flex items-center gap-2 font-heading text-base font-semibold">
+        <MessageSquare className="size-4 text-muted-foreground" />
+        Comments
+        <span
+          data-testid="comments-count"
+          className="rounded-full bg-muted px-2 text-xs font-medium tabular-nums text-muted-foreground"
+        >
+          {count}
+        </span>
+      </h3>
+
+      {canComment && (
+        <Composer
+          placeholder="Write a comment"
+          submitLabel="Comment"
+          badge={visibleToSubmitter}
+          allowAttachments={allowAttachments}
+          onRetryUploads={onRetryUploads}
+          onSubmit={(body, files) => (files.length > 0 ? onAdd(body, undefined, files) : onAdd(body))}
+        />
+      )}
+
+      {loading ? (
+        <p
+          data-testid="comments-loading"
+          className="text-sm text-muted-foreground"
+        >
+          Loading comments
+        </p>
+      ) : error ? (
+        <p className="text-sm text-destructive">{error}</p>
+      ) : threads.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No comments.</p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {threads.map((thread) => (
+            <div
+              key={thread.root.id}
+              data-testid="comment-thread"
+              className="flex flex-col gap-3"
+            >
+              {rowFor(thread.root, thread.root.id, thread.root.isDeleted, true)}
+              {thread.replies.length > 0 && (
+                <div
+                  className={cn(
+                    'flex flex-col gap-3 border-s ps-4 ms-4 sm:ms-5',
+                  )}
+                >
+                  {thread.replies.map((replyRow) => (
+                    <div key={replyRow.id} data-testid="comment-reply">
+                      {rowFor(
+                        replyRow,
+                        thread.root.id,
+                        thread.root.isDeleted,
+                        false,
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {canComment && reply?.rootId === thread.root.id && (
+                <div className="ms-4 ps-4 sm:ms-5">
+                  <Composer
+                    testId="reply-composer"
+                    submitLabel="Reply"
+                    autoFocus
+                    allowAttachments={allowAttachments}
+                    onRetryUploads={onRetryUploads}
+                    onCancel={() => setReply(null)}
+                    onSubmit={async (body, files) => {
+                      const result = await (files.length > 0
+                        ? onAdd(body, reply.parentId, files)
+                        : onAdd(body, reply.parentId));
+                      // Stay open while some files still need a retry.
+                      if (!(isCommentPostResult(result) && result.failed.length > 0)) setReply(null);
+                      return result;
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <AlertDialog
+        open={deleteId !== null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this comment?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This comment will be removed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const id = deleteId;
+                setDeleteId(null);
+                if (id) void onRemove?.(id);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
+  );
+}

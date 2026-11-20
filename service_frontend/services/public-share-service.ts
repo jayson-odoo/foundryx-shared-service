@@ -7,6 +7,7 @@
  */
 import { ApiError, publicFetch } from '@/lib/api-client';
 import type { PublicShareView } from '@/types/documents';
+import { openedType } from '@/lib/file-display-type';
 
 const BASE_URL =
   process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8000';
@@ -55,7 +56,8 @@ export const publicShareService: PublicShareService = {
       { headers: pwHeaders(password) },
     );
     if (!res.ok) throw new ApiError(`Fetch failed (${res.status})`, res.status, null, null);
-    return URL.createObjectURL(await res.blob());
+    const blob = await res.blob();
+    return URL.createObjectURL(new Blob([blob], { type: openedType(blob.type) }));
   },
 
   async download(token, fileId, name, password) {

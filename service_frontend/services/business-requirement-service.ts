@@ -11,6 +11,9 @@ import type { Idea } from '@/types/ideation';
 import type { StatusGraph } from '@/types/status-engine';
 import type {
   BrTemplateVersion,
+  BuildInfo,
+  BuildKey,
+  BuildKeyMinted,
   BusinessRequirement,
   BusinessRequirementCreateInput,
   BusinessRequirementDetail,
@@ -23,6 +26,16 @@ export interface BrListFilter {
   search?: string;
   filter?: 'active' | 'archived' | 'all';
   productId?: string;
+  /** Include test Business Requirements (issue #90 W3) - off by default; the
+   * BR list exposes a "Show test requirements" toggle that flips this. */
+  includeTest?: boolean;
+}
+
+/** Whether an active Business Requirement template is configured (issue #90
+ * W2) - the "New business requirement" dialog reads this before offering
+ * Create so a user never round-trips the `br_template_unavailable` 422. */
+export interface BrTemplateStatus {
+  active: boolean;
 }
 
 export interface BusinessRequirementService {
@@ -58,6 +71,20 @@ export interface BusinessRequirementService {
   listVersions(id: string): Promise<BrTemplateVersion[]>;
   /** Delete a BR. */
   remove(id: string): Promise<void>;
+  /** Whether an active BR template is configured (issue #90 W2) - read by the
+   * create dialog before offering Create. Gated
+   * `ideation.business_requirements.read`. */
+  templateStatus(): Promise<BrTemplateStatus>;
+  /** Hand a sendable BR to the build crew (creates the GitHub issue, moves the BR
+   * to `sent_to_build`). Gated `ideation.business_requirements.send_to_build`;
+   * a not-sendable BR rejects 422 `{message, blockers[]}`. */
+  sendToBuild(id: string): Promise<BusinessRequirementDetail>;
+  /** The BR's build state + Trace (Trace tab refresh). */
+  getBuild(id: string): Promise<BuildInfo>;
+  /** Write-back keys (Keys dialog); gated `send_to_build`. */
+  listBuildKeys(): Promise<BuildKey[]>;
+  mintBuildKey(name: string): Promise<BuildKeyMinted>;
+  revokeBuildKey(id: string): Promise<void>;
 }
 
 export const businessRequirementService: BusinessRequirementService =

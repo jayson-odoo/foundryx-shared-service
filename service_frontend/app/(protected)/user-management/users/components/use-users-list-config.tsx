@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/data-grid-table';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import { ClampedText } from '@/components/platform/clamped-text';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { userService } from '@/services/user-service';
 import { rolesService } from '@/services/roles-service';
@@ -99,11 +100,13 @@ export function useUsersListConfig(): ResourceListConfig<User> {
           return (
             <div className="flex items-center gap-2.5">
               <UserAvatar user={user} size="sm" />
-              <div className="flex flex-col">
-                <span className="font-medium text-foreground leading-tight">
-                  {user.name ?? '-'}
-                </span>
-                <span className="text-xs text-muted-foreground">{user.email}</span>
+              <div className="flex flex-col min-w-0">
+                <ClampedText
+                  text={user.name ?? '-'}
+                  lines={1}
+                  className="font-medium text-foreground leading-tight"
+                />
+                <ClampedText text={user.email} lines={1} className="text-xs text-muted-foreground" />
               </div>
             </div>
           );

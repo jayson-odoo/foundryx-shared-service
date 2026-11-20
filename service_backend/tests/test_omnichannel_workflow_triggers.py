@@ -645,3 +645,136 @@ def test_end_to_end_inbound_to_reply(session_factory):
         assert "support" in (reply.body or "")
     finally:
         db.close()
+
+
+# ── plan 28 S3 - a full published workflow assigns the conversation ─────────
+def _publish_assign_workflow(db, *, channel_id, user_id) -> Workflow:
+    """Mirrors `_publish_workflow` above but with `omnichannel.assign_
+    conversation` (mode=user) as the sole action - the AC-TEM-32..35/DoD
+    end-to-end path: `omnichannel.message_received` -> assign."""
+    doc = {
+        "schemaVersion": 1,
+        "nodes": [
+            {
+                "id": "trg_1",
+                "kind": "trigger",
+                "type": "omnichannel.message_received",
+                "config": {"channelId": channel_id},
+            },
+            {
+                "id": "assign_1",
+                "kind": "action",
+                "type": "omnichannel.assign_conversation",
+                "config": {
+                    "contactId": "{{ trigger.contact.id }}",
+                    "mode": "user",
+                    "userId": user_id,
+                },
+            },
+        ],
+        "edges": [{"id": "e1", "source": "trg_1", "target": "assign_1", "sourcePort": "out"}],
+    }
+    service = WorkflowService(db)
+    wf = service.create(
+        DEFAULT_TENANT_ID, name="Test assign workflow", description="", draft=doc, actor_id=None
+    )
+    service.set_active(wf.id, DEFAULT_TENANT_ID, True)
+    service.publish(wf.id, DEFAULT_TENANT_ID, actor_id=None)
+    db.refresh(wf)
+    return wf
+
+
+def test_end_to_end_message_received_assigns_conversation(session_factory):
+    """Definition of Done: a full published `omnichannel.message_received`
+    run -> `omnichannel.assign_conversation` (mode=user) - the contact ends
+    up assigned, the `conversation_events` row attributes it to the workflow
+    (not a human), and exactly ONE `contact.updated` webhook delivery is
+    queued (the SAME `_publish_contact_updated` fan-out every other
+    assignment path uses - no second data path for a workflow-driven write)."""
+    from app.models import User, UserStatus
+    from app.security import hash_password
+    from modules.omnichannel.models import (
+        Contact,
+        ConversationEvent,
+        Workspace,
+        WebhookDelivery,
+        WebhookEndpoint,
+    )
+    from modules.omnichannel.security import encrypt_secret
+
+    contact_id = _seed_thread(session_factory, messages=[])
+    channel_id = _channel_id(session_factory)
+
+    db = session_factory()
+    try:
+        ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+        target = User(
+            tenant_id=DEFAULT_TENANT_ID,
+            email="assignee-e2e@foundryx.io",
+            password=hash_password("pw12345678"),
+            name="Assignee",
+            status=UserStatus.ACTIVE.value,
+        )
+        db.add(target)
+        db.flush()
+        target_id = target.id
+
+        db.add(
+            WebhookEndpoint(
+                tenant_id=DEFAULT_TENANT_ID,
+                workspace_id=ws.id,
+                channel_id=channel_id,
+                name="Assign E2E hook",
+                url="https://hooks.example.com/assign-e2e",
+                secret_encrypted=encrypt_secret("shh"),
+                events_json=["contact.updated"],
+                status="ACTIVE",
+            )
+        )
+
+        wf = _publish_assign_workflow(db, channel_id=channel_id, user_id=target_id)
+        db.commit()
+        wf_id = wf.id
+    finally:
+        db.close()
+
+    counters = _process(
+        session_factory,
+        channel_id,
+        _wa_payload(wamid="wamid.assign-e2e-1", from_="60123456789", text="Please assign me"),
+    )
+    assert counters["messages"] == 1
+
+    db = session_factory()
+    try:
+        runs = db.query(WorkflowRun).filter(WorkflowRun.workflow_id == wf_id).all()
+        assert len(runs) == 1
+        assert runs[0].status == RUN_SUCCESS
+        run_id = runs[0].id
+
+        contact = db.query(Contact).filter(Contact.id == contact_id).first()
+        assert contact.assigned_user_id == target_id
+
+        assigned = (
+            db.query(ConversationEvent)
+            .filter(
+                ConversationEvent.contact_id == contact_id,
+                ConversationEvent.event_type == "assigned",
+            )
+            .order_by(ConversationEvent.created_at.desc())
+            .first()
+        )
+        assert assigned is not None
+        assert assigned.actor_user_id is None
+        assert assigned.payload_json["assignedVia"] == "workflow"
+        assert assigned.payload_json["workflowId"] == wf_id
+        assert assigned.payload_json["runId"] == run_id
+
+        deliveries = (
+            db.query(WebhookDelivery)
+            .filter(WebhookDelivery.event_type == "contact.updated")
+            .all()
+        )
+        assert len(deliveries) == 1
+    finally:
+        db.close()

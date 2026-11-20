@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   CircleCheck,
+  FileStack,
   History,
   Info,
   Layers,
@@ -12,7 +13,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui/alert';
@@ -38,9 +39,14 @@ import {
   acCompanyHref,
   acMappingHref,
   acReviewHref,
+  acTaskHref,
   entityLabel,
+  sourceKindLabel,
 } from '../../components/autocount-meta';
+import { AddEntityControl } from './add-entity-control';
 import { DetailRow } from './detail-row';
+import { DocFeedsTab } from './doc-feeds-tab';
+import { DocumentPrerequisiteCard } from './document-prerequisite-card';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
 import { SinkTargetSection } from './sink-target-section';
 import { useAutocountEntitiesListConfig } from './use-entities-list-config';
@@ -61,7 +67,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const { can } = useCan();
   const { formatDateTime } = useDatetime();
   const router = useRouter();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const runsConfig = useAutocountRunsListConfig(companyId);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [runsKey, setRunsKey] = useState(0);
@@ -74,8 +80,10 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const persistedSink: AutocountSinkImpl =
     loadedCompany?.sinkImpl === 'sorento' ? 'sorento' : 'logging';
   const persistedConnectionId = loadedCompany?.sinkConnectionId ?? null;
+  const persistedCompanyCode = loadedCompany?.sorentoCompanyCode ?? '';
   const [sinkImpl, setSinkImpl] = useState<AutocountSinkImpl>('logging');
   const [sinkConnectionId, setSinkConnectionId] = useState<string | null>(null);
+  const [companyCode, setCompanyCode] = useState('');
 
   // Re-seed from the persisted values whenever THEY change (after a save/reload).
   // Keyed on the persisted fields, not the whole `detail` object, so a
@@ -84,7 +92,8 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   useEffect(() => {
     setSinkImpl(persistedSink);
     setSinkConnectionId(persistedConnectionId);
-  }, [persistedSink, persistedConnectionId]);
+    setCompanyCode(persistedCompanyCode);
+  }, [persistedSink, persistedConnectionId, persistedCompanyCode]);
 
   const onSinkChange = useCallback((impl: AutocountSinkImpl) => {
     setSinkImpl(impl);
@@ -95,18 +104,26 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
 
   const sinkDirty =
     sinkImpl !== persistedSink ||
-    (sinkImpl === 'sorento' && sinkConnectionId !== persistedConnectionId);
+    (sinkImpl === 'sorento' &&
+      (sinkConnectionId !== persistedConnectionId ||
+        companyCode.trim() !== persistedCompanyCode.trim()));
 
   const onSavePushTarget = useCallback(async (): Promise<boolean> => {
-    // Foolproof-UI: a Sorento delivery cannot be saved without a connection.
+    // Foolproof-UI: a Sorento delivery cannot be saved without a connection,
+    // nor without the company code every Sorento call is anchored on (A6).
     if (sinkImpl === 'sorento' && !sinkConnectionId) {
       toast.error('Choose a Sorento connection before saving.');
+      return false;
+    }
+    if (sinkImpl === 'sorento' && !companyCode.trim()) {
+      toast.error('Enter the Sorento company code before saving.');
       return false;
     }
     try {
       await autocountService.updateSinkTarget(companyId, {
         sinkImpl,
         sinkConnectionId: sinkImpl === 'sorento' ? sinkConnectionId : null,
+        sorentoCompanyCode: sinkImpl === 'sorento' ? companyCode.trim() : null,
       });
       toast.success('Push target updated.');
       reload();
@@ -117,12 +134,13 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       );
       return false;
     }
-  }, [companyId, sinkConnectionId, sinkImpl, reload]);
+  }, [companyCode, companyId, sinkConnectionId, sinkImpl, reload]);
 
   const onCancelPushTarget = useCallback(() => {
     setSinkImpl(persistedSink);
     setSinkConnectionId(persistedConnectionId);
-  }, [persistedSink, persistedConnectionId]);
+    setCompanyCode(persistedCompanyCode);
+  }, [persistedSink, persistedConnectionId, persistedCompanyCode]);
 
   const onSync = useCallback(
     async (entityType: string) => {
@@ -188,7 +206,30 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
 
   const onConfigureMapping = useCallback(
     (entity: AutocountEntityConfig) => {
+      // A database-sourced entity maps its preview columns inside the task
+      // editor (plan 22 S2); the API path keeps the standalone mapping page.
+      if (entity.sourceImpl === 'sql_db') {
+        router.push(acTaskHref(companyId, entity.entityType, 'mapping'));
+        return;
+      }
       router.push(acMappingHref(companyId, entity.entityType));
+    },
+    [companyId, router],
+  );
+
+  const onConfigureTask = useCallback(
+    (entity: AutocountEntityConfig) => {
+      router.push(acTaskHref(companyId, entity.entityType));
+    },
+    [companyId, router],
+  );
+
+  // Plan 22 S4 (AC-22-23): a not-yet-configured entity has no row to click on
+  // in the list - "Add entity" opens its task editor directly, where the row
+  // is born on the first query save.
+  const onAddEntity = useCallback(
+    (entityType: string) => {
+      router.push(acTaskHref(companyId, entityType));
     },
     [companyId, router],
   );
@@ -233,10 +274,12 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const entitiesConfig = useAutocountEntitiesListConfig({
     entities: detail?.entities ?? [],
     companyActive: detail?.company.isActive ?? false,
+    sourceKind: detail?.company.sourceKind ?? 'api',
     onSync,
     onEditLookback,
     onRefetch,
     onConfigureMapping,
+    onConfigureTask,
   });
 
   const config = useMemo<ResourceFormConfig<AutocountCompany> | null>(() => {
@@ -276,12 +319,19 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                 </Badge>
               </DetailRow>
               <DetailRow label="Integration">
-                <Link
-                  href={`/settings/integrations/${company.connectionId}`}
-                  className="text-primary hover:underline"
-                >
-                  Open connection
-                </Link>
+                {/* The KIND states how the company is connected (AC-01-16);
+                    the link opens the one connection either way. */}
+                <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span data-testid="company-source-kind">
+                    {sourceKindLabel(company.sourceKind)}
+                  </span>
+                  <Link
+                    href={`/settings/integrations/${company.connectionId}`}
+                    className="text-primary hover:underline"
+                  >
+                    Open connection
+                  </Link>
+                </span>
               </DetailRow>
               <DetailRow label="Connected">
                 {company.createdAt ? formatDateTime(company.createdAt) : '-'}
@@ -294,6 +344,8 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                 connectionId={sinkConnectionId}
                 onSinkChange={onSinkChange}
                 onConnectionChange={setSinkConnectionId}
+                companyCode={companyCode}
+                onCompanyCodeChange={setCompanyCode}
               />
             </div>
           ),
@@ -331,7 +383,20 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                   Syncing {entityLabel(syncing)}…
                 </div>
               )}
-              <ResourceList config={entitiesConfig} />
+              {/* A document whose masters are missing/inactive stays retryable -
+                  warned above the list, never blocked (AC-01-20). */}
+              <DocumentPrerequisiteCard
+                prerequisites={company.documentPrerequisites}
+                onAdd={canManage ? onAddEntity : undefined}
+              />
+              {canManage && (
+                <AddEntityControl
+                  entities={detail?.entities ?? []}
+                  sourceKind={company.sourceKind}
+                  onAdd={onAddEntity}
+                />
+              )}
+              <ResourceList config={entitiesConfig} hideHeader />
             </div>
           ),
         },
@@ -341,9 +406,15 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
           icon: History,
           render: () => (
             <div className="py-2">
-              <ResourceList key={runsKey} config={runsConfig} />
+              <ResourceList key={runsKey} config={runsConfig} hideHeader />
             </div>
           ),
+        },
+        {
+          id: 'feeds',
+          label: 'Document feeds',
+          icon: FileStack,
+          render: () => <DocFeedsTab companyId={companyId} />,
         },
       ],
       initialTabId: 'overview',
@@ -361,9 +432,12 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     };
   }, [
     can,
+    companyCode,
+    companyId,
     detail,
     entitiesConfig,
     formatDateTime,
+    onAddEntity,
     onCancelPushTarget,
     onSavePushTarget,
     onSinkChange,

@@ -31,7 +31,7 @@ export function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-type FormatStyle = 'date' | 'datetime' | 'time';
+type FormatStyle = 'date' | 'datetime' | 'time' | 'dmy';
 
 const STYLE_OPTIONS: Record<FormatStyle, Intl.DateTimeFormatOptions> = {
   // en-GB keeps the established display shape: 02 Jan 2024 13:45
@@ -44,6 +44,15 @@ const STYLE_OPTIONS: Record<FormatStyle, Intl.DateTimeFormatOptions> = {
     minute: '2-digit',
   },
   time: { hour: '2-digit', minute: '2-digit' },
+  // 05/11/2026, 3:04 pm - the 12-hour value is built in formatDmy, never left to the ICU hour cycle
+  dmy: {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  },
 };
 
 // Intl.DateTimeFormat construction is expensive and list cells render in the
@@ -76,7 +85,17 @@ function format(
   options?: DatetimeFormatOptions,
 ): string {
   const d = parseUtc(iso);
-  return d ? getFormatter(style, options?.timeZone).format(d) : '-';
+  if (!d) return '-';
+  const formatter = getFormatter(style, options?.timeZone);
+  return style === 'dmy' ? formatDmy(formatter, d) : formatter.format(d);
+}
+
+/** "05/11/2026, 3:04 pm" from 24-hour parts (0 -> 12 am, 12 -> 12 pm), whatever the locale data says. */
+function formatDmy(formatter: Intl.DateTimeFormat, d: Date): string {
+  const part = (type: string) => formatter.formatToParts(d).find((p) => p.type === type)?.value ?? '';
+  const hour24 = Number(part('hour')) % 24;
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${part('day')}/${part('month')}/${part('year')}, ${hour12}:${part('minute')} ${hour24 < 12 ? 'am' : 'pm'}`;
 }
 
 /** "02 Jan 2024" in the viewer's timezone. */
@@ -95,12 +114,93 @@ export function formatDateTime(
   return format('datetime', iso, options);
 }
 
+/** "05/11/2026, 3:04 pm" (dd/mm/yyyy, h:mm am/pm) in the viewer's timezone. */
+export function formatDmyDateTime(
+  iso: string | null | undefined,
+  options?: DatetimeFormatOptions,
+): string {
+  return format('dmy', iso, options);
+}
+
 /** "13:45" in the viewer's timezone. */
 export function formatTime(
   iso: string | null | undefined,
   options?: DatetimeFormatOptions,
 ): string {
   return format('time', iso, options);
+}
+
+/**
+ * Reverse direction (plan 29, AC-BRD-08): a `<input type="datetime-local">`
+ * carries a bare wall-clock string with NO timezone - `zonedTimeToUtc` treats
+ * it as a wall-clock reading IN the given IANA zone and returns the matching
+ * UTC instant (guess-then-correct via `Intl.DateTimeFormat`, no date library).
+ * `utcToZonedInputValue` is the inverse, for prefilling the same input from a
+ * stored UTC instant. Both accept a `null` zone (browser tz) like every other
+ * helper in this file. A single-pass correction is exact except exactly at a
+ * DST transition edge - the same accepted simplification the workflow
+ * scheduler already carries (see CLAUDE.md "Workflow Engine" notes).
+ */
+export function zonedTimeToUtc(wallClockLocal: string, timeZone?: string | null): Date | null {
+  const m = wallClockLocal.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  const guessUtcMs = Date.UTC(+y, +mo - 1, +d, +h, +mi, s ? +s : 0);
+  const tz = timeZone ?? browserTimeZone();
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return new Date(guessUtcMs);
+  }
+  const parts = formatter.formatToParts(new Date(guessUtcMs));
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '0';
+  // Intl's 24h "00" for midnight sometimes renders "24" - normalize.
+  const hour = get('hour') === '24' ? 0 : Number(get('hour'));
+  const asIfLocalMs = Date.UTC(
+    Number(get('year')),
+    Number(get('month')) - 1,
+    Number(get('day')),
+    hour,
+    Number(get('minute')),
+    Number(get('second')),
+  );
+  const offsetMs = guessUtcMs - asIfLocalMs;
+  return new Date(guessUtcMs + offsetMs);
+}
+
+/** ISO UTC instant -> the wall-clock string a `datetime-local` input expects,
+ *  AS SEEN in the given (or browser) timezone. */
+export function utcToZonedInputValue(iso: string | null | undefined, timeZone?: string | null): string {
+  const d = parseUtc(iso);
+  if (!d) return '';
+  const tz = timeZone ?? browserTimeZone();
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const parts = formatter.formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00';
+    const hour = get('hour') === '24' ? '00' : get('hour');
+    return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}`;
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -121,4 +221,10 @@ export function dateKey(
   } catch {
     return new Intl.DateTimeFormat('en-CA').format(d);
   }
+}
+
+/** "05/11/2026" from a calendar-day key ("2026-11-05"); a pure string rewrite, so no timezone can shift the day. */
+export function formatDmyDate(dayKey: string | null | undefined): string {
+  const m = (dayKey ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '-';
 }

@@ -8,136 +8,55 @@ yet) the adapter returns stub credentials so the flow runs end-to-end without a
 real Meta app. Tests inject a fake ``client`` to assert behaviour deterministically.
 """
 import logging
-import time
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 import httpx
 
 from app.config import settings
-from .base import CodeExchangeError, ConnectionStatus, SendError
+from .base import CodeExchangeError, ConnectionStatus, SendError, UnexpectedSendError
+# Shared Meta Graph plumbing (plan 32 / A7a, D-A7-1/D-A7-9): GraphCall/
+# GraphRecorder/_meta_error_detail/MetaGraphMixin moved OUT to meta_graph.py
+# verbatim; re-imported here so every existing import site of these names off
+# ``whatsapp_cloud`` (``services/activity.py`` imports GraphCall/GraphRecorder
+# directly from this module) keeps working with zero churn (AC-CHN-15).
+from .meta_graph import (  # noqa: F401
+    GraphCall,
+    GraphRecorder,
+    MetaGraphMixin,
+    _meta_error_detail,
+    _meta_error_obj,
+    _meta_error_text,
+    _bool_field,
+    _dict_items,
+    _json_obj,
+    _list_field,
+    _id_field,
+    _str_field,
+    is_whatsapp_rate_limited,
+    meta_error_code,
+    normalise_pricing,
+    parse_retry_after,
+    provider_error_text,
+)
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class GraphCall:
-    """Telemetry for ONE outbound Meta/Graph call - what the adapter reports to
-    an (optional) recorder so the Developers → Logs console gets an
-    ``outbound_meta`` row (sprint-4/12 Slice 2, AC-DLC-14). The adapter stays
-    free of any DB knowledge: it only describes the call; the recorder (owned by
-    the service layer) persists it, attributing tenant + reading the inbound
-    trace id off the contextvar."""
-
-    operation: str  # graph:send | graph:template_submit | graph:sync
-    status: str  # "success" | "error"
-    status_code: Optional[int]
-    latency_ms: int
-    error_code: Optional[str]
-    error_message: Optional[str]
-    external_ref: Optional[str]  # wamid on a successful send
+def _scrub_credential(text: str, token: str) -> str:
+    """Remove the channel's literal token, and its whitespace-split pieces of
+    4+ characters, from provider text before it is stored. The provider's own
+    reason stays, because the composer shows it."""
+    out = text or ""
+    if not token:
+        return out
+    for piece in [token] + [p for p in token.split() if len(p) >= 4]:
+        out = out.replace(piece, "")
+    return out
 
 
-# A recorder is a failure-isolated sink; it must never raise back into the send.
-GraphRecorder = Callable[[GraphCall], None]
-
-
-def _meta_error_detail(resp: "httpx.Response") -> str:
-    """Assemble the most specific message Meta gives. ``error.message`` alone is
-    often the generic title ("Invalid parameter"); the real reason lives in
-    ``error_user_title``/``error_user_msg`` and ``error_data.details``. Surface
-    all of them so the operator sees WHY a template was rejected."""
-    try:
-        err = (resp.json() or {}).get("error", {}) or {}
-    except ValueError:
-        return f"Meta returned {resp.status_code}."
-    parts = []
-    for key in ("error_user_title", "error_user_msg"):
-        val = (err.get(key) or "").strip()
-        if val and val not in parts:
-            parts.append(val)
-    details = ((err.get("error_data") or {}).get("details") or "").strip()
-    if details and details not in parts:
-        parts.append(details)
-    if not parts:
-        msg = (err.get("message") or "").strip()
-        parts.append(msg or f"Meta returned {resp.status_code}.")
-    return " - ".join(parts)
-
-
-class WhatsAppCloudAdapter:
+class WhatsAppCloudAdapter(MetaGraphMixin):
     channel_type = "WHATSAPP"
-
-    def __init__(
-        self,
-        client: Optional[httpx.Client] = None,
-        recorder: Optional[GraphRecorder] = None,
-    ):
-        self._client = client
-        self._recorder = recorder
-        # Last Meta HTTP status seen inside a wrapped call (one logical exchange
-        # per ``_graph_call``) so the recorder can stamp the real status code on
-        # BOTH success and error rows. Reset per call.
-        self._last_http_status: Optional[int] = None
-        self._base = f"https://graph.facebook.com/{settings.meta_graph_version}"
-
-    def _graph_call(
-        self,
-        operation: str,
-        fn: Callable[[], Any],
-        *,
-        extract_ref: Optional[Callable[[Any], Optional[str]]] = None,
-    ) -> Any:
-        """Time + record ONE Graph call (AC-DLC-14). With no recorder this is a
-        transparent pass-through (existing behaviour, tests unaffected). The
-        record is fully failure-isolated - a logging failure can NEVER break the
-        send."""
-        if self._recorder is None:
-            return fn()
-        self._last_http_status = None
-        started = time.monotonic()
-        status = "success"
-        error_code: Optional[str] = None
-        error_message: Optional[str] = None
-        external_ref: Optional[str] = None
-        try:
-            result = fn()
-            if extract_ref is not None:
-                external_ref = extract_ref(result)
-            return result
-        except SendError as exc:
-            status = "error"
-            error_code = "SendError"
-            error_message = str(exc)
-            raise
-        except Exception as exc:  # noqa: BLE001 - report + re-raise unchanged.
-            status = "error"
-            error_code = type(exc).__name__
-            error_message = str(exc)
-            raise
-        finally:
-            latency_ms = int((time.monotonic() - started) * 1000)
-            try:
-                self._recorder(
-                    GraphCall(
-                        operation=operation,
-                        status=status,
-                        status_code=self._last_http_status,
-                        latency_ms=latency_ms,
-                        error_code=error_code,
-                        error_message=error_message,
-                        external_ref=external_ref,
-                    )
-                )
-            except Exception:  # noqa: BLE001 - recording must never break the send.
-                logger.exception("outbound-meta activity record failed (%s)", operation)
-
-    @property
-    def _configured(self) -> bool:
-        return bool(settings.meta_app_id and settings.meta_app_secret)
-
-    def _http(self) -> httpx.Client:
-        return self._client or httpx.Client(timeout=10.0)
 
     def exchange_code(self, code: str, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
         if not self._configured:
@@ -162,18 +81,14 @@ class WhatsAppCloudAdapter:
             except httpx.HTTPError as exc:
                 raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
             if resp.status_code == 200:
-                return {"access_token": resp.json().get("access_token", "")}
-            try:
-                err = resp.json().get("error", {})
-                detail = err.get("message", "")
-            except ValueError:
-                err = {"raw": resp.text[:300]}
-                detail = f"Meta returned {resp.status_code}."
+                return {"access_token": _str_field(_json_obj(resp), "access_token")}
+            err = _meta_error_obj(resp) or {"raw": resp.text[:300]}
+            detail = _meta_error_text(resp) or f"Meta returned {resp.status_code}."
             # Full Meta error (code/subcode/fbtrace_id) for diagnosis.
             logger.warning(
                 "WA code exchange failed (redirect_uri=%r): %s", redirect_uri, err
             )
-            raise CodeExchangeError(detail or "Code exchange failed.")
+            raise CodeExchangeError(detail)
         finally:
             if self._client is None:
                 client.close()
@@ -201,13 +116,14 @@ class WhatsAppCloudAdapter:
                     params={"input_token": token, "access_token": app_token},
                 )
                 if dbg.status_code == 200:
-                    scopes = (dbg.json().get("data") or {}).get("granular_scopes") or []
+                    dbg_data = _json_obj(dbg).get("data")
+                    scopes = _dict_items(_list_field(dbg_data, "granular_scopes"))
                     for scope in scopes:
                         if scope.get("scope") in (
                             "whatsapp_business_management",
                             "whatsapp_business_messaging",
                         ):
-                            ids = scope.get("target_ids") or []
+                            ids = _list_field(scope, "target_ids")
                             if ids:
                                 waba_id = ids[0]
                                 break
@@ -223,7 +139,7 @@ class WhatsAppCloudAdapter:
                         params={"access_token": token},
                     )
                     if pr.status_code == 200:
-                        nums = pr.json().get("data") or []
+                        nums = _dict_items(_list_field(_json_obj(pr), "data"))
                         if nums:
                             phone_number_id = nums[0].get("id")
                             display = nums[0].get("display_phone_number")
@@ -252,6 +168,92 @@ class WhatsAppCloudAdapter:
             if self._client is None:
                 client.close()
 
+    def subscribe_app_checked(self, credentials: Dict[str, Any], waba_id: str) -> bool:
+        """Subscribe the app to a WABA and read Meta's answer (plan 42). True only
+        on a 200 carrying ``success``. Never raises."""
+        if not self._configured or credentials.get("dev"):
+            return False
+        client = self._http()
+        try:
+            resp = client.post(
+                f"{self._base}/{waba_id}/subscribed_apps",
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            if resp.status_code != 200:
+                return False
+            return _bool_field(_json_obj(resp), "success")
+        except httpx.HTTPError:
+            return False
+        finally:
+            if self._client is None:
+                client.close()
+
+    def check_token(self, credentials: Dict[str, Any], phone_number_id: str) -> str:
+        """Classify a stored token (plan 42): ``ok`` | ``dead`` | ``unknown``.
+        ``ok`` only when Meta answers 200 with the number's own id; ``dead`` only
+        for Meta ``error.code`` 190 (read from the body on any status); anything
+        else, including a 5xx, a transport failure, a rate limit or a permission
+        code, is ``unknown``. Only dev credentials skip the call."""
+        if credentials.get("dev"):
+            return "ok"
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/{phone_number_id}",
+                params={"fields": "id"},
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            if meta_error_code(resp) == "190":
+                return "dead"
+            if resp.status_code != 200:
+                return "unknown"
+            body_id = _id_field(_json_obj(resp), "id")
+            return "ok" if body_id and body_id == str(phone_number_id) else "unknown"
+        except httpx.HTTPError:
+            return "unknown"
+        finally:
+            if self._client is None:
+                client.close()
+
+    def token_details(self, token: str) -> Optional[Dict[str, Any]]:
+        """What Meta's ``debug_token`` says about a token (plan 42):
+        ``{"expires_at", "scopes", "app_id"}``, each None when absent
+        (``expires_at`` 0 means it never expires), or None when the answer cannot
+        be read. The app token rides the Authorization header; ``input_token``
+        has to stay in the query. Never raises."""
+        if not self._configured or not token:
+            return None
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/debug_token",
+                params={"input_token": token},
+                headers={"Authorization": f"Bearer {settings.meta_app_id}|{settings.meta_app_secret}"},
+            )
+            if resp.status_code != 200:
+                return None
+            data = _json_obj(resp).get("data")
+            if not isinstance(data, dict):
+                return None
+            raw = data.get("expires_at")
+            expires_at = (
+                datetime.fromtimestamp(raw, tz=timezone.utc)
+                if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0
+                else None
+            )
+            scopes = data.get("scopes")
+            app_id = data.get("app_id")
+            return {
+                "expires_at": expires_at,
+                "scopes": scopes if isinstance(scopes, list) else None,
+                "app_id": str(app_id) if app_id else None,
+            }
+        except (httpx.HTTPError, ValueError, OverflowError, OSError, AttributeError):
+            return None
+        finally:
+            if self._client is None:
+                client.close()
+
     def fetch_phone_details(self, credentials: Dict[str, Any], phone_number_id: str) -> Dict[str, Any]:
         if not self._configured or credentials.get("dev") or not phone_number_id:
             return {}
@@ -262,7 +264,7 @@ class WhatsAppCloudAdapter:
                 params={"fields": "display_phone_number,verified_name"},
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
-            return resp.json() if resp.status_code == 200 else {}
+            return _json_obj(resp) if resp.status_code == 200 else {}
         except httpx.HTTPError:
             return {}
         finally:
@@ -280,7 +282,7 @@ class WhatsAppCloudAdapter:
                 params={"fields": "id,display_phone_number,verified_name"},
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
-            return resp.json().get("data", []) if resp.status_code == 200 else []
+            return _dict_items(_list_field(_json_obj(resp), "data")) if resp.status_code == 200 else []
         except httpx.HTTPError:
             return []
         finally:
@@ -307,23 +309,28 @@ class WhatsAppCloudAdapter:
                 headers={"Authorization": f"Bearer {token}"},
             )
             if resp.status_code != 200:
-                try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
-                    detail = ""
+                throttled = is_whatsapp_rate_limited(resp)
+                detail = _meta_error_text(resp)
                 raise SendError(
-                    detail or f"Media upload failed ({resp.status_code}).",
-                    transient=resp.status_code >= 500,
+                    provider_error_text(_scrub_credential(detail, str(token or "")))
+                    or f"Media upload failed ({resp.status_code}).",
+                    transient=resp.status_code >= 500 or throttled,
+                    code=meta_error_code(resp),
+                    rate_limited=throttled,
+                    retry_after=parse_retry_after(resp) if throttled else None,
                 )
-            media_id = resp.json().get("id", "")
+            media_id = _id_field(_json_obj(resp), "id")
             if not media_id:
                 raise SendError("Media upload returned no id.")
             return media_id
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+            reach_error = type(exc).__name__
         finally:
             if self._client is None:
                 client.close()
+        # Raised outside the handler so the new error carries no chained cause or
+        # context (the transport's own text can hold request details).
+        raise SendError(f"Could not reach Meta: {reach_error}", transient=True)
 
     def send(
         self,
@@ -339,11 +346,20 @@ class WhatsAppCloudAdapter:
         contacts: Optional[list] = None,
         reaction: Optional[Dict[str, Any]] = None,
         context_message_id: Optional[str] = None,
+        structured: Optional[Dict[str, Any]] = None,  # noqa: ARG002 - plan 32/A7a, unused (byte-identical WhatsApp path)
+        messaging_type: Optional[str] = None,  # noqa: ARG002 - plan 32/A7a, unused (WhatsApp re-engages by template, not a Meta send param)
+        tag: Optional[str] = None,  # noqa: ARG002 - plan 32/A7a, unused (no message tags on this product)
     ) -> Dict[str, Any]:
         """Send a text/template/media/interactive/location/contacts message.
         Returns {"external_message_id": wamid}. Instrumented once via
         ``_graph_call`` so every send yields an ``outbound_meta`` activity row
-        (AC-DLC-14) carrying the inbound trace id + the resulting wamid."""
+        (AC-DLC-14) carrying the inbound trace id + the resulting wamid.
+
+        ``structured``/``messaging_type``/``tag`` (plan 32 / A7a) are accepted
+        for the uniform `ChannelAdapter.send` signature and deliberately
+        IGNORED here - passing them through to ``_send_impl`` unchanged (never
+        touched below) keeps this adapter's observable behaviour byte-
+        identical (AC-CHN-23)."""
         return self._graph_call(
             "graph:send",
             lambda: self._send_impl(
@@ -442,22 +458,108 @@ class WhatsAppCloudAdapter:
             )
             self._last_http_status = resp.status_code
             if resp.status_code != 200:
-                try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
-                    detail = ""
+                throttled = is_whatsapp_rate_limited(resp)
+                detail = _meta_error_text(resp)
                 raise SendError(
-                    detail or f"Meta returned {resp.status_code}.",
-                    transient=resp.status_code >= 500,
+                    provider_error_text(
+                        _scrub_credential(detail, str(credentials.get("access_token", "") or ""))
+                    )
+                    or f"Meta returned {resp.status_code}.",
+                    transient=resp.status_code >= 500 or throttled,
+                    code=meta_error_code(resp),
+                    rate_limited=throttled,
+                    retry_after=parse_retry_after(resp) if throttled else None,
                 )
-            data = resp.json()
-            wamid = (data.get("messages") or [{}])[0].get("id", "")
+            msgs = _list_field(_json_obj(resp), "messages")
+            wamid = _str_field(msgs[0], "id") if msgs else ""
             return {"external_message_id": wamid}
         except httpx.HTTPError as exc:
-            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+            reach_error = type(exc).__name__
         finally:
             if self._client is None:
                 client.close()
+        # Raised outside the handler so the new error carries no chained cause or
+        # context (the transport's own text can hold request details).
+        raise SendError(f"Could not reach Meta: {reach_error}", transient=True)
+
+    def mark_read(
+        self, credentials: Dict[str, Any], phone_number_id: str, message_id: str
+    ) -> None:
+        """Send a read receipt for one inbound message. Instrumented once as
+        ``graph:mark_read`` with the target's provider id as its reference. The
+        200 body carries no ``messages`` array, so this does not go through
+        ``_send_impl``. Dev or unconfigured: no network call. Every error text
+        raised here is token-free, because ``_graph_call`` stores it."""
+        self._graph_call(
+            "graph:mark_read",
+            lambda: self._mark_read_impl(credentials, phone_number_id, message_id),
+            ref=message_id,
+        )
+
+    def _mark_read_impl(
+        self, credentials: Dict[str, Any], phone_number_id: str, message_id: str
+    ) -> None:
+        if not self._configured or credentials.get("dev"):
+            return None
+        token = str(credentials.get("access_token", "") or "")
+
+        client = None
+        try:
+            client = self._http()
+            resp = client.post(
+                f"{self._base}/{phone_number_id}/messages",
+                json={
+                    "messaging_product": "whatsapp",
+                    "status": "read",
+                    "message_id": message_id,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=3.0),
+            )
+            self._last_http_status = resp.status_code
+            if resp.status_code != 200:
+                code = None
+                try:
+                    err = resp.json()
+                    err = err.get("error") if isinstance(err, dict) else None
+                    raw = err.get("code") if isinstance(err, dict) else None
+                    if isinstance(raw, int) and not isinstance(raw, bool):
+                        code = raw
+                except ValueError:
+                    pass
+                text = f"Meta refused the read receipt: HTTP {resp.status_code}"
+                if code is not None:
+                    text += f", code {code}"
+                throttled = is_whatsapp_rate_limited(resp)
+                raise SendError(
+                    text + ".",
+                    transient=resp.status_code >= 500,
+                    rate_limited=throttled,
+                    retry_after=parse_retry_after(resp) if throttled else None,
+                )
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            if not (isinstance(body, dict) and body.get("success") is True):
+                raise SendError("Meta did not confirm the read receipt.")
+            return None
+        except SendError:
+            raise
+        except httpx.HTTPError as exc:
+            raise SendError(
+                f"Could not reach Meta: {type(exc).__name__}", transient=True
+            ) from None
+        except Exception as exc:  # noqa: BLE001 - never let request text escape.
+            raise UnexpectedSendError(
+                f"Could not send the read receipt: {type(exc).__name__}"
+            ) from None
+        finally:
+            if client is not None and self._client is None:
+                try:
+                    client.close()
+                except Exception:  # noqa: BLE001 - a close failure must not replace the result.
+                    pass
 
     def fetch_waba_details(self, credentials: Dict[str, Any], waba_id: str) -> Dict[str, Any]:
         """Fetch the WABA's business account name. Instrumented once → a
@@ -478,7 +580,7 @@ class WhatsAppCloudAdapter:
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
             self._last_http_status = resp.status_code
-            return resp.json() if resp.status_code == 200 else {}
+            return _json_obj(resp) if resp.status_code == 200 else {}
         except httpx.HTTPError:
             return {}
         finally:
@@ -512,8 +614,8 @@ class WhatsAppCloudAdapter:
             if resp.status_code != 200:
                 return {}
             # Cloud API wraps the profile in a single-element `data` array.
-            data = resp.json().get("data") or [{}]
-            return data[0]
+            data = _list_field(_json_obj(resp), "data")
+            return data[0] if data and isinstance(data[0], dict) else {}
         except httpx.HTTPError:
             return {}
         finally:
@@ -535,10 +637,7 @@ class WhatsAppCloudAdapter:
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
             if resp.status_code != 200:
-                try:
-                    detail = resp.json().get("error", {}).get("message", "")
-                except ValueError:
-                    detail = ""
+                detail = _meta_error_text(resp)
                 raise SendError(detail or f"Meta returned {resp.status_code}.")
         except httpx.HTTPError as exc:
             raise SendError(f"Could not reach Meta: {exc}") from exc
@@ -560,7 +659,7 @@ class WhatsAppCloudAdapter:
                 },
                 headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
             )
-            return resp.json().get("data", []) if resp.status_code == 200 else []
+            return _dict_items(_list_field(_json_obj(resp), "data")) if resp.status_code == 200 else []
         except httpx.HTTPError:
             return []
         finally:
@@ -596,8 +695,11 @@ class WhatsAppCloudAdapter:
             self._last_http_status = resp.status_code
             if resp.status_code not in (200, 201):
                 raise SendError(_meta_error_detail(resp))
-            data = resp.json()
-            return {"meta_template_id": data.get("id"), "status": (data.get("status") or "PENDING").upper()}
+            data = _json_obj(resp)
+            return {
+                "meta_template_id": _id_field(data, "id") or None,
+                "status": (_str_field(data, "status") or "PENDING").upper(),
+            }
         except httpx.HTTPError as exc:
             raise SendError(f"Could not reach Meta: {exc}") from exc
         finally:
@@ -677,7 +779,7 @@ class WhatsAppCloudAdapter:
             )
             if start.status_code != 200:
                 raise SendError(f"Upload session failed ({start.status_code}).")
-            session_id = start.json().get("id", "")
+            session_id = _id_field(_json_obj(start), "id")
             # 2) upload the bytes (offset 0); Meta returns {h: <handle>}
             up = client.post(
                 f"{self._base}/{session_id}",
@@ -686,7 +788,7 @@ class WhatsAppCloudAdapter:
             )
             if up.status_code != 200:
                 raise SendError(f"Upload failed ({up.status_code}).")
-            handle = up.json().get("h", "")
+            handle = _str_field(_json_obj(up), "h")
             if not handle:
                 raise SendError("Upload returned no handle.")
             return handle
@@ -706,11 +808,14 @@ class WhatsAppCloudAdapter:
             meta = client.get(f"{self._base}/{media_id}", headers=headers)
             if meta.status_code != 200:
                 return None
-            info = meta.json()
-            blob = client.get(info.get("url", ""), headers=headers)
+            info = _json_obj(meta)
+            url = _str_field(info, "url")
+            if not url:
+                return None
+            blob = client.get(url, headers=headers)
             if blob.status_code != 200:
                 return None
-            return {"content": blob.content, "mime_type": info.get("mime_type", "application/octet-stream")}
+            return {"content": blob.content, "mime_type": _str_field(info, "mime_type", "application/octet-stream")}
         except httpx.HTTPError:
             return None
         finally:
@@ -868,6 +973,7 @@ class WhatsAppCloudAdapter:
                             "status": (s.get("status") or "").upper(),
                             "error_code": str(err.get("code")) if err.get("code") else None,
                             "error_message": err.get("title") or err.get("message"),
+                            "pricing": normalise_pricing(s.get("pricing")),
                         }
                     )
         return events
@@ -885,10 +991,7 @@ class WhatsAppCloudAdapter:
                 return ConnectionStatus(ok=True, message="Reached the number successfully.")
             # Surface Meta's reason (e.g. code 190 bad token, code 100 wrong
             # object id / missing permission) instead of just the status code.
-            try:
-                detail = resp.json().get("error", {}).get("message", "")
-            except ValueError:
-                detail = ""
+            detail = _meta_error_text(resp)
             return ConnectionStatus(
                 ok=False,
                 message=detail or f"Meta returned {resp.status_code}.",
@@ -905,9 +1008,12 @@ def get_adapter(
     client: Optional[httpx.Client] = None,
     recorder: Optional[GraphRecorder] = None,
 ):
-    """Resolve a channel adapter by type (WhatsApp only for MVP). An optional
-    ``recorder`` (owned by the service layer) turns on outbound-Meta activity
-    logging - see ``build_meta_recorder`` (sprint-4/12 Slice 2)."""
-    if channel_type == "WHATSAPP":
-        return WhatsAppCloudAdapter(client=client, recorder=recorder)
-    raise ValueError(f"Unsupported channel type: {channel_type}")
+    """Thin re-export (plan 32 / A7a, D-A7-9) - the real registry lives in
+    ``adapters/__init__.py`` (``WHATSAPP``/``FACEBOOK``/``INSTAGRAM``). Kept
+    here so the eight existing ``from ..adapters.whatsapp_cloud import
+    get_adapter`` call sites need zero churn (import sweep = BL-SS-115).
+    Imported lazily - ``adapters/__init__.py`` imports THIS module at its own
+    top level, so a module-level import here would be circular."""
+    from . import get_adapter as _get_adapter
+
+    return _get_adapter(channel_type, client=client, recorder=recorder)

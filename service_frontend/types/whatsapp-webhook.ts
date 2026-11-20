@@ -8,12 +8,14 @@
  * framework-agnostic so the service + UI share one source.
  */
 
-/** The three event kinds an endpoint may subscribe to. */
+/** The event kinds an endpoint may subscribe to. */
 export type WebhookEventType =
   | 'message.inbound'
+  | 'message.outbound'
   | 'message.status'
   | 'contact.updated'
-  | 'message.reaction';
+  | 'message.reaction'
+  | 'contact.erased';
 
 /** Endpoint lifecycle - AUTO_DISABLED = the delivery pipeline gave up after repeated failures. */
 export type WebhookStatus = 'ACTIVE' | 'DISABLED' | 'AUTO_DISABLED';
@@ -23,7 +25,7 @@ export interface WebhookEndpoint {
   id: string;
   tenantId: string;
   workspaceId: string;
-  channelId: string;
+  channelId: string | null; // null = covers every channel of the workspace
   name: string;
   url: string;
   events: WebhookEventType[];
@@ -34,6 +36,8 @@ export interface WebhookEndpoint {
   disabledReason: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
+  /** Name of the API key that registered it; null for staff, absent on create replies. */
+  registeredByKeyName?: string | null;
 }
 
 /** Create/edit payload - a subset of the endpoint's editable fields. */

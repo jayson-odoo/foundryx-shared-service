@@ -90,6 +90,17 @@ class StatusEntity:
     # ``record:<type>`` source AND a child→owner ``DerivedTrigger``. Requires
     # ``model`` (the owner is loaded to re-derive it).
     aggregatable_relations: Sequence[Any] = field(default_factory=tuple)
+    # The workflow-engine `WorkflowEntity` key `status_machine.transition`
+    # emits `entity.status_changed` events under, when it differs from this
+    # entity's OWN `entity_type` (plan 25 S2, generic - not omnichannel-
+    # specific). For every entity so far the two names coincide (`tenant`,
+    # `form_submission`, a module's unscoped entity), so this defaults to
+    # `entity_type`. A SCOPED machine whose `entity_type` names the pipeline
+    # rather than the record it moves (e.g. `omnichannel_contact_lifecycle`
+    # vs the record's `omnichannel_contact` WorkflowEntity) sets this so the
+    # CRUD event bus's trigger matching + record-facts resolution key off the
+    # RECORD's workflow entity, not the machine's own registry key.
+    workflow_entity_type: Optional[str] = None
 
     def load_record(
         self, db: Session, tenant_id: Optional[str], record_id: str

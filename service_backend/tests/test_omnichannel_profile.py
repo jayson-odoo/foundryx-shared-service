@@ -244,3 +244,123 @@ def test_profile_permission_gates(client, session_factory):
     assert client.patch(
         f"/omnichannel/channels/{cid}/profile", headers=hn, json={"about": "x"}
     ).status_code == 403
+
+
+# ── plan 42: saving a channel whose profile never synced ─────────────────────
+def _spy_adapter(monkeypatch):
+    from modules.omnichannel.services import channel_profile_service
+
+    calls: list = []
+
+    class _Spy:
+        channel_type = "WHATSAPP"
+
+        def update_business_profile(self, creds, pn_id, fields):
+            calls.append(dict(fields))
+
+    monkeypatch.setattr(
+        channel_profile_service, "get_adapter", lambda channel_type="WHATSAPP": _Spy()
+    )
+    return calls
+
+
+_EMPTY_FORM = {
+    "about": "", "address": "", "description": "", "email": "",
+    "vertical": "", "website1": "", "website2": "",
+}
+
+
+def _set_status(session_factory, cid, key):
+    from app.models import DEFAULT_TENANT_ID as tid
+    from modules.omnichannel.models import Channel
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    statuses.ensure_statuses(db, tid)
+    db.query(Channel).filter(Channel.id == cid).update(
+        {"status_id": statuses.status_id_for(db, tid, "CHANNEL", key)}
+    )
+    db.commit()
+    db.close()
+
+
+def _status_key(session_factory, cid):
+    from app.models import DEFAULT_TENANT_ID as tid
+    from modules.omnichannel.models import Channel
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    sid = db.query(Channel).filter(Channel.id == cid).one().status_id
+    key = statuses.id_to_key_map(db, tid).get(sid)
+    db.close()
+    return key
+
+
+def test_ac_42_30_empty_form_on_never_synced_channel_saves_and_sends_nothing(client, monkeypatch):
+    h = _auth(client)
+    cid = _channel(client, h)
+    calls = _spy_adapter(monkeypatch)
+    res = client.patch(f"/omnichannel/channels/{cid}/profile", headers=h, json=_EMPTY_FORM)
+    assert res.status_code == 200, res.text
+    assert calls == []
+
+
+def test_ac_42_30_about_change_with_empty_vertical_sends_only_about(client, monkeypatch):
+    h = _auth(client)
+    cid = _channel(client, h)
+    calls = _spy_adapter(monkeypatch)
+    res = client.patch(
+        f"/omnichannel/channels/{cid}/profile", headers=h, json={**_EMPTY_FORM, "about": "Hello"}
+    )
+    assert res.status_code == 200, res.text
+    assert calls == [{"about": "Hello"}]
+    assert "vertical" not in calls[0]
+
+
+def test_ac_42_30_error_channel_never_synced_saves_sends_nothing_and_stays_error(
+    client, session_factory, monkeypatch
+):
+    h = _auth(client)
+    cid = _channel(client, h)
+    _set_status(session_factory, cid, "ERROR")
+    assert _status_key(session_factory, cid) == "ERROR"
+    calls = _spy_adapter(monkeypatch)
+    res = client.patch(f"/omnichannel/channels/{cid}/profile", headers=h, json=_EMPTY_FORM)
+    assert res.status_code == 200, res.text
+    assert calls == []
+    assert _status_key(session_factory, cid) == "ERROR"
+
+
+# controls: pass today
+def test_ac_42_30_control_stored_vertical_with_empty_vertical_still_422(client, monkeypatch):
+    h = _auth(client)
+    cid = _channel(client, h)
+    client.post(f"/omnichannel/channels/{cid}/profile/sync", headers=h)  # stores EVENT_PLAN
+    calls = _spy_adapter(monkeypatch)
+    res = client.patch(f"/omnichannel/channels/{cid}/profile", headers=h, json={"vertical": ""})
+    assert res.status_code == 422
+    assert "vertical" in res.json()["detail"]["fieldErrors"]
+    assert calls == []
+
+
+def test_ac_42_30_control_value_outside_the_list_still_422(client, monkeypatch):
+    h = _auth(client)
+    cid = _channel(client, h)
+    calls = _spy_adapter(monkeypatch)
+    res = client.patch(
+        f"/omnichannel/channels/{cid}/profile", headers=h, json={**_EMPTY_FORM, "vertical": "NOPE"}
+    )
+    assert res.status_code == 422
+    assert "vertical" in res.json()["detail"]["fieldErrors"]
+    assert calls == []
+
+
+def test_ac_42_30_control_valid_vertical_on_never_synced_channel_is_sent(client, monkeypatch):
+    h = _auth(client)
+    cid = _channel(client, h)
+    calls = _spy_adapter(monkeypatch)
+    res = client.patch(
+        f"/omnichannel/channels/{cid}/profile", headers=h, json={**_EMPTY_FORM, "vertical": "RETAIL"}
+    )
+    assert res.status_code == 200, res.text
+    assert calls == [{"vertical": "RETAIL"}]

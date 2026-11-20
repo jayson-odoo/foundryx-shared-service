@@ -1,0 +1,6 @@
+{
+  "code": "PULL_NOT_ENABLED",
+  "message": "This book/entity was never enabled for pull, or is not active.",
+  "companyCode": "SRT",
+  "entity": "stock_balances"
+}

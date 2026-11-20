@@ -43,6 +43,7 @@ from typing import Any, Deque, Dict, List, Optional, Sequence
 
 import httpx
 
+from app.database import release_read_transactions
 from app.integrations.masking import mask_payload
 
 from .envelopes import (
@@ -457,6 +458,7 @@ class AutoCountClient:
     ) -> httpx.Response:
         url = f"{self.base_url}{path}"
         started = time.monotonic()
+        release_read_transactions()  # plan 34 - no app-DB read txn across the call
         try:
             response = self._client.post(url, headers=headers, json=json_body)
         except httpx.TimeoutException as exc:

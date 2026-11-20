@@ -8,7 +8,7 @@ lifecycle promote gate (S4) rides a SEPARATE ``.promote`` (AC-BI-19).
 """
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -18,14 +18,19 @@ from app.models.user import User
 from ..schemas import (
     BrLinkIdeasIn,
     BrStatusIn,
+    BrTemplateStatusOut,
     BrTemplateVersionOut,
+    BuildOut,
     BusinessRequirementCreateIn,
     BusinessRequirementDetailOut,
     BusinessRequirementOut,
     BusinessRequirementUpdateIn,
     IdeaOut,
 )
+from ..services.br_templates import br_template_is_active
+from ..services.build_handoff import BuildHandoffService
 from ..services.business_requirements import BusinessRequirementService
+from .history_actor import request_actor
 
 router = APIRouter()
 
@@ -35,6 +40,7 @@ def list_business_requirements(
     search: Optional[str] = Query(None),
     filter: str = Query("active", pattern="^(active|archived|all)$"),
     product_id: Optional[str] = Query(None, alias="productId"),
+    include_test: bool = Query(False, alias="includeTest"),
     current_user: User = Depends(
         require_permission("ideation.business_requirements.read")
     ),
@@ -42,9 +48,15 @@ def list_business_requirements(
 ) -> List[BusinessRequirementOut]:
     """All BRs for the tenant, newest first. ``search`` matches the title;
     ``filter`` selects active / archived / all; optional ``productId`` scopes to
-    a single product. Always tenant-scoped."""
+    a single product. ``includeTest`` (issue #90 W3) opts into TEST Business
+    Requirements, off by default (mirrors ``includeTest`` on ideas). Always
+    tenant-scoped."""
     return BusinessRequirementService(db).list(
-        current_user.tenant_id, search=search, filter=filter, product_id=product_id
+        current_user.tenant_id,
+        search=search,
+        filter=filter,
+        product_id=product_id,
+        include_test=include_test,
     )
 
 
@@ -96,6 +108,19 @@ def br_status_graph(
     )
 
 
+# Registered BEFORE /{br_id} so the literal path wins the match (same reason
+# as /status-graph above). Issue #90 W2: whether a BR create would succeed
+# right now - backs the "New business requirement" dialog's guard.
+@router.get("/template-status", response_model=BrTemplateStatusOut)
+def get_br_template_status(
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.read")
+    ),
+    db: Session = Depends(get_db),
+) -> BrTemplateStatusOut:
+    return BrTemplateStatusOut(active=br_template_is_active(db, current_user.tenant_id))
+
+
 @router.get("/{br_id}", response_model=BusinessRequirementDetailOut)
 def get_business_requirement(
     br_id: str,
@@ -143,6 +168,7 @@ def list_br_ideas(
 def link_br_ideas(
     br_id: str,
     body: BrLinkIdeasIn,
+    request: Request,
     current_user: User = Depends(
         require_permission("ideation.business_requirements.manage")
     ),
@@ -150,7 +176,7 @@ def link_br_ideas(
 ) -> List[IdeaOut]:
     """Link ideas to the BR (tenant-scoped + same-product, AC-BI-17)."""
     return BusinessRequirementService(db).link_ideas(
-        current_user.tenant_id, br_id, body.ideaIds
+        current_user.tenant_id, br_id, body.ideaIds, request_actor(request, current_user)
     )
 
 
@@ -158,6 +184,7 @@ def link_br_ideas(
 def unlink_br_idea(
     br_id: str,
     idea_id: str,
+    request: Request,
     current_user: User = Depends(
         require_permission("ideation.business_requirements.manage")
     ),
@@ -165,7 +192,7 @@ def unlink_br_idea(
 ) -> List[IdeaOut]:
     """Unlink one idea from the BR."""
     return BusinessRequirementService(db).unlink_idea(
-        current_user.tenant_id, br_id, idea_id
+        current_user.tenant_id, br_id, idea_id, request_actor(request, current_user)
     )
 
 
@@ -196,6 +223,34 @@ def set_br_status(
     return BusinessRequirementService(db).set_status(
         current_user.tenant_id, br_id, body.status, actor=current_user
     )
+
+
+@router.post("/{br_id}/send-to-build", response_model=BusinessRequirementDetailOut)
+def send_br_to_build(
+    br_id: str,
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.send_to_build")
+    ),
+    db: Session = Depends(get_db),
+) -> BusinessRequirementDetailOut:
+    """Hand a sendable BR to the build crew: one GitHub ``crew-intake`` issue,
+    the BR moves to ``sent_to_build``. Idempotent (a second send returns the
+    existing issue)."""
+    return BuildHandoffService(db).send(current_user.tenant_id, br_id, current_user)
+
+
+@router.get("/{br_id}/build", response_model=BuildOut)
+def get_br_build(
+    br_id: str,
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.read")
+    ),
+    db: Session = Depends(get_db),
+) -> BuildOut:
+    """The BR's build state + Trace (readiness, issue, timeline)."""
+    service = BusinessRequirementService(db)
+    br = service._br_or_404(current_user.tenant_id, br_id)
+    return BuildHandoffService(db).detail_build(current_user.tenant_id, br)
 
 
 @router.delete("/{br_id}", status_code=status.HTTP_204_NO_CONTENT)

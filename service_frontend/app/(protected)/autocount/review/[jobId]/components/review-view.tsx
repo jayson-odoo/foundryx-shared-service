@@ -3,12 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Check, Eye, LoaderCircleIcon, Trash2 } from 'lucide-react';
-import {
-  Toolbar,
-  ToolbarActions,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
+import { PageHeader } from '@/components/platform/page-header';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import {
@@ -100,24 +95,18 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
   return (
     <>
       <Container width="fluid">
-        <Toolbar>
-          <ToolbarHeading>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="ghost" size="sm" asChild>
+        <PageHeader
+          title="Review batch"
+          description={
+            <StatusBadge status={job.status as AutocountJobStatus} registry={AC_JOB_STATUS_REGISTRY} size="sm" />
+          }
+          actions={
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button variant="outline" size="sm" mode="icon" asChild>
                 <Link href={backHref} aria-label="Back">
                   <ArrowLeft className="size-4" />
                 </Link>
               </Button>
-              <ToolbarPageTitle text="Review batch" />
-              <StatusBadge
-                status={job.status as AutocountJobStatus}
-                registry={AC_JOB_STATUS_REGISTRY}
-                size="sm"
-              />
-            </div>
-          </ToolbarHeading>
-          <ToolbarActions>
-            <div className="flex flex-wrap items-center justify-end gap-2">
               {blockedReason && (
                 <span className="text-xs text-muted-foreground">{blockedReason}</span>
               )}
@@ -170,8 +159,8 @@ export function ReviewView({ jobId, from }: ReviewViewProps) {
                 Approve
               </Button>
             </div>
-          </ToolbarActions>
-        </Toolbar>
+          }
+        />
       </Container>
 
       <Container width="fluid">

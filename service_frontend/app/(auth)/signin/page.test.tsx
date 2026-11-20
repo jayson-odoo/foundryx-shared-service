@@ -13,10 +13,11 @@ vi.mock('@/services/auth-service', () => {
   return { AuthError, authService: { signin } };
 });
 
+const searchParams = vi.hoisted(() => ({ current: new URLSearchParams() }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push, replace: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
   usePathname: () => '/signin',
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => searchParams.current,
 }));
 
 describe('Signin page', () => {
@@ -116,6 +117,22 @@ describe('Signin page', () => {
     await user.click(screen.getByRole('button', { name: /sign in/i }));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith('/'));
+  });
+
+  it.each([
+    ['/portal/ideas', '/portal/ideas'],
+    ['https://evil.example/x', '/'],
+    ['//evil.example', '/'],
+  ])('callbackUrl %s returns the user to %s', async (callbackUrl, expected) => {
+    searchParams.current = new URLSearchParams({ callbackUrl });
+    signin.mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    render(<Page />);
+    await user.type(screen.getByPlaceholderText(/your email/i), 'demo@example.com');
+    await user.type(screen.getByPlaceholderText(/your password/i), 'demo1234');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith(expected));
+    searchParams.current = new URLSearchParams();
   });
 
   it('toggles password visibility', async () => {

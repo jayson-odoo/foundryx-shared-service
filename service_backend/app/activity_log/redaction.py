@@ -40,8 +40,12 @@ def redact(obj: Any, _depth: int = 0) -> Any:
         return MASK
     if isinstance(obj, dict):
         out = {}
+        # A `{"key": <name>, "value": <v>}` row (an HTTP header row, a config
+        # pair) is secret by the NAME in `key`, so its `value` is masked.
+        row_key = obj.get("key")
+        secret_row = isinstance(row_key, str) and "value" in obj and _is_secret_key(row_key)
         for k, v in obj.items():
-            if _is_secret_key(str(k)):
+            if _is_secret_key(str(k)) or (secret_row and k == "value"):
                 out[k] = MASK
             else:
                 out[k] = redact(v, _depth + 1)

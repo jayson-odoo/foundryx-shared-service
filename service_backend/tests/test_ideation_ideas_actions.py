@@ -5,7 +5,8 @@ ideation-service.ts: vote / reorderPriority / setStatus / remove):
 
 - ``POST /ideation/ideas/{id}/vote {dir}`` - per-user toggle vote (one row per
   voter; clicking the same dir cancels, the other dir switches), recomputing
-  ``upvotes`` / ``downvotes`` / ``myVote`` (partial AC-A-21 upvote idempotency).
+  ``upvotes`` / ``downvotes`` (always 0) / ``myVote`` (partial AC-A-21 upvote
+  idempotency; plan 19: upvote only, ``dir: "down"`` is a 422).
 - ``PUT  /ideation/ideas/reorder {orderedIds}`` - manual priority (index =
   priority, ascending = top).
 - ``POST /ideation/ideas/{id}/status {status}`` - server-authoritative status
@@ -167,8 +168,9 @@ def test_vote_same_dir_twice_cancels(ideation_client):
     assert row["myVote"] is None
 
 
-def test_vote_switch_direction(ideation_client):
-    """Clicking the other direction switches the vote (not additive)."""
+def test_vote_down_is_refused_and_keeps_upvote(ideation_client):
+    """AC-19-12 (plan 19, replaces the old switch-direction test): downvoting is
+    gone - ``dir: "down"`` is a 422 and the caller's existing upvote is untouched."""
     h = _auth(ideation_client)
     pid = _create_software_product(ideation_client, h)
     idea_id = _insert_idea(ideation_client._factory, pid)
@@ -177,11 +179,11 @@ def test_vote_switch_direction(ideation_client):
     res = ideation_client.post(
         f"/ideation/ideas/{idea_id}/vote", headers=h, json={"dir": "down"}
     )
-    assert res.status_code == 200, res.text
-    row = res.json()
-    assert row["upvotes"] == 0
-    assert row["downvotes"] == 1
-    assert row["myVote"] == "down"
+    assert res.status_code == 422, res.text
+    got = ideation_client.get(f"/ideation/ideas/{idea_id}", headers=h).json()
+    assert got["upvotes"] == 1
+    assert got["downvotes"] == 0
+    assert got["myVote"] == "up"
 
 
 def test_vote_idempotent_one_row_per_user_two_voters(ideation_client):

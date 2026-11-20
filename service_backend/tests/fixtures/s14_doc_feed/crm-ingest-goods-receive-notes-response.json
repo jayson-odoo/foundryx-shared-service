@@ -1,0 +1,40 @@
+{
+  "dry_run": false,
+  "summary": {
+    "total": 6, "created": 1, "updated": 3, "failed": 0, "retryable": 1, "unchanged": 1
+  },
+  "records": [
+    {
+      "source_ref": "db1:GRN:77141",
+      "outcome": "created",
+      "entity_id": "00000000-0000-0000-0000-000000000011"
+    },
+    {
+      "source_ref": "db1:GRN:77140",
+      "outcome": "updated",
+      "entity_id": "00000000-0000-0000-0000-000000000012",
+      "warnings": ["po_line_unresolved", "line_without_item"]
+    },
+    {
+      "source_ref": "db1:GRN:77220",
+      "outcome": "updated",
+      "entity_id": "00000000-0000-0000-0000-000000000013",
+      "warnings": ["purchase_order_unresolved"]
+    },
+    {
+      "source_ref": "db1:GRN:77221",
+      "outcome": "updated",
+      "entity_id": "00000000-0000-0000-0000-000000000014",
+      "warnings": ["legacy_links_released", "restored"]
+    },
+    {
+      "source_ref": "db1:GRN:77222",
+      "outcome": "unchanged"
+    },
+    {
+      "source_ref": "db1:GRN:77223",
+      "outcome": "retryable",
+      "errors": {"Details.0.Location": "unresolved warehouse"}
+    }
+  ]
+}

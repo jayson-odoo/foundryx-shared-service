@@ -41,7 +41,7 @@ export function StatusEntityDetail({
   const engine = useStatusGraph(entityType);
   // ResourceForm rides an RHF context; the engine has no plain fields - the
   // form exists for the shell chrome (breadcrumb/tabs/Edit toggle) only.
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
 
   // Canvas layout is a DRAFT owned by the form's Save/Cancel (BL-064): Tidy/drag
   // mutate it, Save persists, Cancel discards (with the shell's unsaved-changes

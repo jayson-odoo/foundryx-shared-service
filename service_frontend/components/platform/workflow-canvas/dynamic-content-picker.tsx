@@ -9,6 +9,8 @@
 import { useRef } from 'react';
 import { Braces } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import {
   Popover,
@@ -115,11 +117,11 @@ export function DynamicContentField({
               {groups.map((group) => (
                 <div key={group.sourceLabel} className="mb-1.5">
                   <div className="flex items-baseline justify-between gap-2 px-2 py-1">
-                    <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
                       {group.sourceLabel}
                     </span>
                     {group.hint && (
-                      <span className="text-[10px] font-normal lowercase text-muted-foreground/70">
+                      <span className="text-2xs font-normal lowercase text-muted-foreground/70">
                         {group.hint}
                       </span>
                     )}
@@ -130,10 +132,10 @@ export function DynamicContentField({
                       type="button"
                       data-testid={`dynamic-content-${item.key}`}
                       onClick={() => insertAtCaret(ref.current, value, item.key, onChange)}
-                      className="flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                      className={cn(PRESSED_CLASS, 'flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent')}
                     >
                       <span className="text-foreground">{item.label}</span>
-                      <span className="font-mono text-[11px] text-muted-foreground">
+                      <span className="font-mono text-2xs text-muted-foreground">
                         {`{{ ${item.key} }}`}
                       </span>
                     </button>

@@ -1,10 +1,13 @@
 """Workspace API-key management (internal, session-authed).
 
-Mint / list / revoke the public-gateway keys for a workspace. Gated by the
+Mint / list / revoke the public-gateway keys for a workspace. Revoke can also
+pause the webhook endpoints the key owns. Gated by the
 module `api_keys.read` / `api_keys.manage` permissions (and the loader's
 `require_module` gate). The full plaintext key is returned ONCE at mint.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Dict, Optional
+
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -23,7 +26,7 @@ from ..services.api_key_service import KEY_SCHEME, ApiKeyService
 router = APIRouter()
 
 
-def _to_item(row: WorkspaceApiKey) -> ApiKeyItem:
+def _to_item(row: WorkspaceApiKey, endpoint_count: int = 0) -> ApiKeyItem:
     return ApiKeyItem(
         id=row.id,
         workspaceId=row.workspace_id,
@@ -34,6 +37,7 @@ def _to_item(row: WorkspaceApiKey) -> ApiKeyItem:
         lastUsedAt=row.last_used_at,
         revokedAt=row.revoked_at,
         createdAt=row.created_at,
+        webhookEndpointCount=endpoint_count,
     )
 
 
@@ -43,8 +47,10 @@ def list_api_keys(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("api_keys.read")),
 ) -> ApiKeyListResponse:
-    rows = ApiKeyService(db).list_for_workspace(user.tenant_id, workspace_id)
-    return ApiKeyListResponse(data=[_to_item(r) for r in rows])
+    service = ApiKeyService(db)
+    rows = service.list_for_workspace(user.tenant_id, workspace_id)
+    counts = service.active_endpoint_counts(user.tenant_id, workspace_id)
+    return ApiKeyListResponse(data=[_to_item(r, counts.get(r.id, 0)) for r in rows])
 
 
 @router.post("/{workspace_id}/api-keys", response_model=ApiKeyMintResponse, status_code=201)
@@ -70,9 +76,14 @@ def revoke_api_key(
     key_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("api_keys.manage")),
+    body: Optional[Dict[str, object]] = Body(default=None),
 ) -> ApiKeyItem:
+    # Pauses the key's webhook endpoints unless the body says exactly `false`.
+    pause = (body or {}).get("pauseEndpoints") is not False
+    service = ApiKeyService(db)
     try:
-        row = ApiKeyService(db).revoke(key_id, user.tenant_id, workspace_id)
+        row = service.revoke(key_id, user.tenant_id, workspace_id, pause)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _to_item(row)
+    counts = service.active_endpoint_counts(user.tenant_id, workspace_id)
+    return _to_item(row, counts.get(row.id, 0))

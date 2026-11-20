@@ -2,7 +2,6 @@
 
 import type { UseFormReturn } from 'react-hook-form';
 import { Info, LoaderCircleIcon } from 'lucide-react';
-import { toast } from 'sonner';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,6 +19,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { FormRow } from '@/components/platform/resource-form';
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import type { UseEmailChangeResult } from '@/hooks/use-email-change';
 import type { AccountFormValues } from './use-account-form';
 
@@ -46,15 +46,7 @@ export function AccountProfileTab({
   emailChange,
 }: AccountProfileTabProps) {
   const pending = emailChange.pending;
-
-  const copyEmail = async () => {
-    try {
-      await navigator.clipboard.writeText(email);
-      toast.success('Email copied to clipboard.');
-    } catch {
-      toast.error('Could not copy.');
-    }
-  };
+  const { isCopied, error: copyError, copyToClipboard } = useCopyToClipboard();
 
   return (
     <div className="flex flex-col gap-5">
@@ -103,31 +95,41 @@ export function AccountProfileTab({
           </FormRow>
 
           <FormRow label="Email address">
-            <div className="flex items-center gap-1.5">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="cursor-pointer hover:text-primary"
-                    onClick={() => void copyEmail()}
-                  >
-                    {email || '-'}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">Click to copy</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span tabIndex={0} aria-label="How to change your email">
-                    <Info className="size-3.5 text-muted-foreground" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-xs">
-                  To change your email address, use “…” → Change email. It
-                  needs approval from your current inbox, then confirmation
-                  from the new one.
-                </TooltipContent>
-              </Tooltip>
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      mode="link"
+                      className="text-foreground no-underline hover:text-primary"
+                      onClick={() => copyToClipboard(email)}
+                    >
+                      {email || '-'}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    {isCopied ? 'Copied' : 'Click to copy'}
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span tabIndex={0} aria-label="How to change your email">
+                      <Info className="size-3.5 text-muted-foreground" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs">
+                    To change your email address, use “…” → Change email. It
+                    needs approval from your current inbox, then confirmation
+                    from the new one.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              {copyError && (
+                <span className="text-xs font-medium text-destructive">
+                  Could not copy. Select and copy manually.
+                </span>
+              )}
             </div>
           </FormRow>
 

@@ -4,16 +4,15 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Pencil, Trash2 } from 'lucide-react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { RequirePermission } from '@/components/common/require-permission';
+import type { AttachmentTypeRow } from '@/types/documents';
+import { documentService } from '@/services/document-service';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
+import {
+  DataGridTableRowSelect,
+  DataGridTableRowSelectAll,
+} from '@/components/ui/data-grid-table';
 import {
   Dialog,
   DialogContent,
@@ -23,17 +22,16 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
-import {
-  DataGridTableRowSelect,
-  DataGridTableRowSelectAll,
-} from '@/components/ui/data-grid-table';
-import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Container } from '@/components/common/container';
+import { RequirePermission } from '@/components/common/require-permission';
 import { ClampedText } from '@/components/platform/clamped-text';
-import { ResourceList, type ResourceListConfig } from '@/components/platform/resource-list';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import {
+  ResourceList,
+  type ResourceListConfig,
+} from '@/components/platform/resource-list';
 import type { ResourceAction } from '@/components/platform/resource-list';
-import { documentService } from '@/services/document-service';
-import type { AttachmentTypeRow } from '@/types/documents';
 
 const TYPES_PATH = '/documents/types';
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -68,15 +66,10 @@ export default function DocumentTypesPage() {
         tone: 'destructive',
         surfaces: { row: true, bulk: true },
         permission: 'documents.configure',
-        confirm: {
-          title: 'Delete type?',
-          description: 'Files keep their bytes; they just lose this category.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, runtime) => {
-          await Promise.all(rows.map((r) => documentService.deleteType(r.id)));
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `document_types.delete`
+        // handler commits it server-side).
+        deferred: { actionKey: 'document_types.delete', entityType: 'document_type' },
       },
     ],
     [openEditor],
@@ -106,10 +99,14 @@ export default function DocumentTypesPage() {
         id: 'name',
         accessorFn: (row) => row.name,
         meta: { headerTitle: 'Name' },
-        header: ({ column }) => <DataGridColumnHeader title="Name" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Name" column={column} />
+        ),
         cell: ({ row }) => (
           <div className="flex flex-col">
-            <span className="font-medium leading-tight text-foreground">{row.original.name}</span>
+            <span className="font-medium leading-tight text-foreground">
+              {row.original.name}
+            </span>
             <ClampedText
               text={row.original.description ?? ''}
               lines={1}
@@ -124,7 +121,9 @@ export default function DocumentTypesPage() {
         id: 'allowedExts',
         accessorFn: (row) => row.allowedExts.join(', '),
         meta: { headerTitle: 'Allowed types' },
-        header: ({ column }) => <DataGridColumnHeader title="Allowed types" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Allowed types" column={column} />
+        ),
         cell: ({ row }) =>
           row.original.allowedExts.length === 0 ? (
             <span className="text-xs text-muted-foreground">Any</span>
@@ -144,10 +143,14 @@ export default function DocumentTypesPage() {
         id: 'maxMb',
         accessorFn: (row) => row.maxMb,
         meta: { headerTitle: 'Max size' },
-        header: ({ column }) => <DataGridColumnHeader title="Max size" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Max size" column={column} />
+        ),
         cell: ({ row }) => (
           <span className="text-sm text-foreground">
-            {row.original.maxMb != null ? `${row.original.maxMb} MB` : 'Tenant default'}
+            {row.original.maxMb != null
+              ? `${row.original.maxMb} MB`
+              : 'Tenant default'}
           </span>
         ),
         size: 140,
@@ -157,8 +160,14 @@ export default function DocumentTypesPage() {
         id: 'fileCount',
         accessorFn: (row) => row.fileCount,
         meta: { headerTitle: 'Files' },
-        header: ({ column }) => <DataGridColumnHeader title="Files" column={column} />,
-        cell: ({ row }) => <span className="text-sm text-foreground">{row.original.fileCount}</span>,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Files" column={column} />
+        ),
+        cell: ({ row }) => (
+          <span className="text-sm text-foreground">
+            {row.original.fileCount}
+          </span>
+        ),
         size: 90,
         enableSorting: true,
       },
@@ -213,16 +222,6 @@ export default function DocumentTypesPage() {
   return (
     <RequirePermission permission="documents.configure">
       <Fragment>
-        <Container width="fluid">
-          <Toolbar>
-            <ToolbarHeading>
-              <ToolbarPageTitle text="Document types" />
-              <ToolbarDescription>
-                Optional categories that constrain allowed file types and sizes.
-              </ToolbarDescription>
-            </ToolbarHeading>
-          </Toolbar>
-        </Container>
         <Container width="fluid">
           <ResourceList key={reloadToken} config={config} />
         </Container>
@@ -301,12 +300,26 @@ function TypeFormDialog({
           <DialogTitle>{typeId ? 'Edit type' : 'New type'}</DialogTitle>
         </DialogHeader>
         {loading ? (
-          <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
+          <div className="grid gap-4 py-2">
+            <div className="grid gap-2">
+              <Skeleton className="h-3.5 w-16" />
+              <Skeleton className="h-9 w-full" />
+            </div>
+            <div className="grid gap-2">
+              <Skeleton className="h-3.5 w-24" />
+              <Skeleton className="h-9 w-full" />
+            </div>
+          </div>
         ) : (
           <div className="grid gap-4">
             <div className="grid gap-2">
               <Label htmlFor="type-name">Name *</Label>
-              <Input id="type-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+              <Input
+                id="type-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+              />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="type-desc">Description</Label>
@@ -342,8 +355,11 @@ function TypeFormDialog({
           <Button variant="outline" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button onClick={() => void save()} disabled={!name.trim() || busy || loading}>
-            {typeId ? 'Save' : 'Create'}
+          <Button
+            onClick={() => void save()}
+            disabled={!name.trim() || busy || loading}
+          >
+            {typeId ? 'Save type' : 'Create type'}
           </Button>
         </DialogFooter>
       </DialogContent>

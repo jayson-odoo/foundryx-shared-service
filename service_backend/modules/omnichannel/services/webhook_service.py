@@ -1,30 +1,53 @@
 """Consumer webhook endpoints - CRUD + signing-secret issuance (Slice 4, AC-01-22).
 
-A consumer registers one or more callback URLs per CHANNEL (number). We POST a
-signed event to each on inbound messages / delivery receipts / contact updates.
+A consumer registers one or more callback URLs per CHANNEL (number), or one
+that covers every channel of its workspace (``channel_id`` NULL). We POST a signed event to each on inbound messages / delivery receipts / contact updates.
 The signing secret is Fernet-encrypted at rest (reversible - we sign every
 delivery with it) and revealed to the consumer ONLY on create + rotate.
 
 Security invariants:
 - Every query is tenant-scoped; the channel must belong to the caller's tenant.
+  An all-channels endpoint is bounded by its tenant AND workspace only.
 - Callback URLs must be HTTPS and must not target private/loopback hosts (SSRF).
+
+SSRF guard (plan sprint-4/31 S5, D-A5-11/F5): the actual check moved VERBATIM
+to ``app/services/url_guard.py`` so the core ``http.request`` workflow action
+can share it without core importing a module - this file only DELEGATES and
+re-wraps the core error as this module's own ``WebhookError`` so every
+existing caller/test keeps working unchanged. ``socket``/``ipaddress`` stay
+imported here (not just re-exported) because they are the SAME stdlib module
+objects ``url_guard`` uses - a test monkeypatching ``webhook_service.socket``
+patches the one shared module, so the guard sees it wherever it runs.
 """
-import ipaddress
+import ipaddress  # noqa: F401 - kept for `ws.ipaddress`-shaped test access + parity
 import secrets
-import socket
+import socket  # noqa: F401 - `assert_deliverable`'s DNS guard is monkeypatched via this name
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
-from urllib.parse import urlparse
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
-from ..models import Channel, WebhookDelivery, WebhookEndpoint
+from app.database import release_read_transactions
+from app.services.url_guard import UrlGuardError
+from app.services.url_guard import assert_deliverable as _core_assert_deliverable
+from app.services.url_guard import validate_public_https_url as _core_validate_url
+
+from ..models import Channel, WebhookDelivery, WebhookEndpoint, Workspace, WorkspaceApiKey
 from ..security import encrypt_secret
 
 SECRET_SCHEME = "whsec_"
 
 # The event types a consumer can subscribe to (mirrors the forwarder + FE).
-EVENT_TYPES = ("message.inbound", "message.status", "contact.updated", "message.reaction")
+EVENT_TYPES = (
+    "message.inbound",
+    "message.outbound",
+    "message.status",
+    "contact.updated",
+    "message.reaction",
+    "contact.erased",
+)
 
 # Auto-disable after this many consecutive dead-lettered deliveries.
 AUTO_DISABLE_THRESHOLD = 10
@@ -33,95 +56,59 @@ AUTO_DISABLE_THRESHOLD = 10
 # to ALL of them, so an unbounded count is self-inflicted worker amplification
 # - and, on the key-authed public surface, an outbound-request amplifier.
 MAX_ENDPOINTS_PER_CHANNEL = 10
+# Same bound for the all-channels endpoints of one workspace (channel_id NULL).
+MAX_ENDPOINTS_PER_WORKSPACE = 10
 
 
 class WebhookError(Exception):
     """Validation failure (bad URL, unknown event, channel not found)."""
 
 
+class WebhookNoActiveChannel(WebhookError):
+    """The workspace has no active channel to register an all-channels endpoint on."""
+
+
 class WebhookNotFound(Exception):
     pass
+
+
+class WebhookKeyRevoked(Exception):
+    """The API key making a write was revoked before the write committed."""
+
+
+class WebhookPausedByStaff(Exception):
+    """A key tried to change an endpoint that staff paused."""
+
+
+# The two stored reasons for a manual pause. A key's write is refused on a row
+# holding the staff reason; the key reason lets another key resume the row.
+STAFF_DISABLED_REASON = "Disabled by user."
+KEY_DISABLED_REASON = "Disabled with an API key."
 
 
 def _new_secret() -> str:
     return SECRET_SCHEME + secrets.token_urlsafe(32)
 
 
-def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
-
-
 def validate_callback_url(url: str, *, strict_dns: bool = False) -> str:
-    """HTTPS-only + block SSRF targets. Rejects private/loopback/link-local/
-    reserved IPs whether given as a literal, a numeric/hex-encoded IP, OR a
-    hostname that RESOLVES to one (e.g. an A record pointing at 169.254.169.254).
-    ``strict_dns`` also rejects a host we cannot resolve. REGISTRATION stays
-    lenient on purpose - a transient DNS failure must not reject a legitimate
-    callback, and making registration depend on live resolution breaks offline
-    CI. The authoritative guard is `assert_deliverable`, which runs with
-    ``strict_dns=True`` before EVERY delivery attempt, so an unresolvable or
-    internally-resolving host is simply never POSTed to."""
-    url = (url or "").strip()
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise WebhookError("Callback URL must use https://.")
-    host = parsed.hostname
-    if not host:
-        raise WebhookError("Callback URL is missing a host.")
-    lowered = host.lower()
-    if lowered == "localhost" or lowered.endswith(".localhost") or lowered.endswith(".local"):
-        raise WebhookError("Callback URL cannot target localhost.")
-
-    # IP literal (dotted, numeric like 2130706433, or hex like 0x7f000001 - the
-    # latter two fail ip_address, so resolve them below).
+    """Delegates to the shared core guard (``app/services/url_guard.py``),
+    re-raising its ``UrlGuardError`` as this module's own ``WebhookError`` -
+    ``subject="Callback URL"`` keeps every pre-extraction 422 message
+    byte-identical (review S5; pinned by ``tests/test_omnichannel_consumer_
+    webhooks.py``)."""
     try:
-        ip = ipaddress.ip_address(host)
-        if _is_blocked_ip(ip):
-            raise WebhookError("Callback URL cannot target a private or reserved IP.")
-        return url
-    except ValueError:
-        pass
-
-    # Hostname (incl. numeric/hex forms): resolve + block if ANY address is
-    # internal.
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError):
-        if strict_dns:
-            raise WebhookError("Could not resolve the callback host.")
-        return url
-    for info in infos:
-        addr = info[4][0]
-        try:
-            if _is_blocked_ip(ipaddress.ip_address(addr)):
-                raise WebhookError("Callback URL resolves to a private or reserved IP.")
-        except ValueError:
-            continue
-    return url
+        return _core_validate_url(url, strict_dns=strict_dns, subject="Callback URL")
+    except UrlGuardError as exc:
+        raise WebhookError(str(exc)) from exc
 
 
 def assert_deliverable(url: str) -> None:
-    """Re-check the target IMMEDIATELY before POSTing to it.
-
-    Registration-time validation is not sufficient alone: DNS can be re-pointed
-    afterwards (rebinding), and the callback URL is now settable by any
-    workspace-API-key holder - so a fail-open registration would otherwise let
-    an external caller aim the delivery worker at a link-local or RFC1918
-    address (a blind SSRF pivot into the deployment's network). Raises
-    `WebhookError`; the caller records a failed attempt and never sends.
-
-    NOT strict on resolution failure. Blocking an UNRESOLVABLE host buys no
-    security - there is nothing to connect to, and httpx fails on its own - but
-    it does turn every transient DNS blip into a refused delivery. What matters
-    is that a host resolving to an internal address is never POSTed to."""
-    validate_callback_url(url, strict_dns=False)
+    """Re-check the target IMMEDIATELY before POSTing to it (delegates to the
+    shared core guard - see its docstring for the full rationale)."""
+    try:
+        _core_assert_deliverable(url, subject="Callback URL")
+    except UrlGuardError as exc:
+        raise WebhookError(str(exc)) from exc
 
 
 def webhook_endpoint_item(row: "WebhookEndpoint"):
@@ -188,6 +175,26 @@ class WebhookService:
             raise WebhookNotFound("Webhook endpoint not found.")
         return row
 
+    def _hold_live_key(self, tenant_id: str, workspace_id: str, key_id: str) -> None:
+        """Re-read the writing key's row under a FOR NO KEY UPDATE lock, so a revoke (which
+        takes the exclusive lock) either finishes first, and this write is
+        refused, or waits for this write to commit and then pauses its row.
+        Lock order wherever both are taken: the key row, then the workspace row."""
+        key = (
+            self.db.query(WorkspaceApiKey)
+            .filter(
+                WorkspaceApiKey.id == key_id,
+                WorkspaceApiKey.tenant_id == tenant_id,
+                WorkspaceApiKey.workspace_id == workspace_id,
+            )
+            .with_for_update(key_share=True)
+            .populate_existing()
+            .first()
+        )
+        if key is None or key.revoked_at is not None:
+            self.db.rollback()
+            raise WebhookKeyRevoked("API key is revoked.")
+
     # ── CRUD ─────────────────────────────────────────────────────────────────
     def create(
         self,
@@ -202,6 +209,15 @@ class WebhookService:
         """Register an endpoint. Returns (row, plaintext_secret) - the secret is
         shown ONCE for the consumer to configure signature verification."""
         channel = self._channel(tenant_id, channel_id)
+        # Validate first: the URL check can touch the network, which must not run
+        # while the row lock below is held.
+        release_read_transactions()  # the URL check resolves a host: hold no transaction
+        clean_url = validate_callback_url(url, strict_dns=strict_dns)
+        clean_events = _validate_events(events)
+        # Serialise registrations on this channel so the count below stays true.
+        self.db.query(Channel).filter(
+            Channel.id == channel.id, Channel.tenant_id == tenant_id
+        ).with_for_update(key_share=True).first()  # FOR NO KEY UPDATE: do not wait on child-row inserts
         existing = (
             self.db.query(WebhookEndpoint)
             .filter(
@@ -211,17 +227,89 @@ class WebhookService:
             .count()
         )
         if existing >= MAX_ENDPOINTS_PER_CHANNEL:
+            self.db.rollback()
             raise WebhookError(
                 f"This channel already has the maximum of {MAX_ENDPOINTS_PER_CHANNEL} "
                 "webhook endpoints. Delete one before adding another."
             )
+        return self._insert(
+            tenant_id, channel.workspace_id, channel.id, name, clean_url, clean_events, created_by
+        )
+
+    def require_active_channel(self, tenant_id: str, workspace_id: str) -> None:
+        """Public registration needs one active channel (``is_active`` and not
+        trashed), so the endpoint shows on that channel's tab when it is registered."""
+        found = (
+            self.db.query(Channel.id)
+            .filter(
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id == workspace_id,
+                Channel.is_active.is_(True),
+                Channel.is_trashed.is_(False),
+            )
+            .first()
+        )
+        if found is None:
+            raise WebhookNoActiveChannel("No active channel is connected to this workspace.")
+
+    def create_for_workspace(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        name: str,
+        url: str,
+        events: List[str],
+        created_by: Optional[str],
+        strict_dns: bool = False,
+        key_id: Optional[str] = None,
+    ) -> Tuple[WebhookEndpoint, str]:
+        """Register an endpoint that covers every channel of the workspace
+        (``channel_id`` NULL). Returns (row, plaintext_secret). With ``key_id``
+        the write is refused (``WebhookKeyRevoked``) if that key is revoked."""
+        release_read_transactions()  # the URL check resolves a host: hold no transaction
         clean_url = validate_callback_url(url, strict_dns=strict_dns)
         clean_events = _validate_events(events)
+        if key_id is not None:
+            self._hold_live_key(tenant_id, workspace_id, key_id)
+        # Serialise registrations in this workspace so the count below stays true.
+        self.db.query(Workspace).filter(
+            Workspace.id == workspace_id, Workspace.tenant_id == tenant_id
+        ).with_for_update(key_share=True).first()  # FOR NO KEY UPDATE: do not wait on child-row inserts
+        existing = (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.tenant_id == tenant_id,
+                WebhookEndpoint.workspace_id == workspace_id,
+                WebhookEndpoint.channel_id.is_(None),
+            )
+            .count()
+        )
+        if existing >= MAX_ENDPOINTS_PER_WORKSPACE:
+            self.db.rollback()
+            raise WebhookError(
+                f"This workspace already has the maximum of {MAX_ENDPOINTS_PER_WORKSPACE} "
+                "all-channels webhook endpoints. Delete one before adding another."
+            )
+        return self._insert(
+            tenant_id, workspace_id, None, name, clean_url, clean_events, created_by
+        )
+
+    def _insert(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        channel_id: Optional[str],
+        name: str,
+        clean_url: str,
+        clean_events: List[str],
+        created_by: Optional[str],
+    ) -> Tuple[WebhookEndpoint, str]:
+        """Insert and commit (releases the registration lock)."""
         secret = _new_secret()
         row = WebhookEndpoint(
             tenant_id=tenant_id,
-            workspace_id=channel.workspace_id,
-            channel_id=channel.id,
+            workspace_id=workspace_id,
+            channel_id=channel_id,
             name=(name or "").strip() or "Webhook",
             url=clean_url,
             secret_encrypted=encrypt_secret(secret),
@@ -264,13 +352,53 @@ class WebhookService:
             .all()
         )
 
-    def list_for_channel(self, tenant_id: str, channel_id: str) -> List[WebhookEndpoint]:
-        self._channel(tenant_id, channel_id)
+    def require_workspace(self, tenant_id: str, workspace_id: str) -> None:
+        """Raises ``WebhookNotFound`` unless the workspace is the tenant's own."""
+        found = (
+            self.db.query(Workspace.id)
+            .filter(Workspace.id == workspace_id, Workspace.tenant_id == tenant_id)
+            .first()
+        )
+        if found is None:
+            raise WebhookNotFound("Workspace not found.")
+
+    def pause_for_key(self, tenant_id: str, workspace_id: str, key_id: str) -> int:
+        """Pause the ACTIVE endpoints one API key owns (``created_by`` is
+        exactly ``apikey:<key_id>``). Does not commit: the caller commits it
+        together with the key's own change. Returns the number paused."""
         return (
             self.db.query(WebhookEndpoint)
             .filter(
                 WebhookEndpoint.tenant_id == tenant_id,
-                WebhookEndpoint.channel_id == channel_id,
+                WebhookEndpoint.workspace_id == workspace_id,
+                WebhookEndpoint.created_by == f"apikey:{key_id}",
+                WebhookEndpoint.status == "ACTIVE",
+            )
+            .update(
+                {
+                    WebhookEndpoint.status: "DISABLED",
+                    WebhookEndpoint.disabled_at: datetime.now(timezone.utc),
+                    WebhookEndpoint.disabled_reason: "The API key that registered it was revoked.",
+                },
+                synchronize_session=False,
+            )
+        )
+
+    def list_for_channel(self, tenant_id: str, channel_id: str) -> List[WebhookEndpoint]:
+        """The channel's own endpoints plus the all-channels endpoints of the
+        channel's tenant and workspace."""
+        channel = self._channel(tenant_id, channel_id)
+        return (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.tenant_id == tenant_id,
+                or_(
+                    WebhookEndpoint.channel_id == channel.id,
+                    and_(
+                        WebhookEndpoint.channel_id.is_(None),
+                        WebhookEndpoint.workspace_id == channel.workspace_id,
+                    ),
+                ),
             )
             .order_by(WebhookEndpoint.created_at.desc())
             .all()
@@ -278,6 +406,47 @@ class WebhookService:
 
     def get(self, tenant_id: str, endpoint_id: str) -> WebhookEndpoint:
         return self._get(tenant_id, endpoint_id)
+
+    def _refuse_if_staff_paused(self, row: WebhookEndpoint, key_id: Optional[str]) -> None:
+        if (
+            key_id is not None
+            and row.status == "DISABLED"
+            and row.disabled_reason == STAFF_DISABLED_REASON
+        ):
+            self.db.rollback()
+            raise WebhookPausedByStaff("This endpoint was paused by staff.")
+
+    def _lock_endpoint(self, tenant_id: str, endpoint_id: str) -> WebhookEndpoint:
+        """Fresh read of the endpoint row under a FOR NO KEY UPDATE lock."""
+        row = (
+            self.db.query(WebhookEndpoint)
+            .filter(
+                WebhookEndpoint.id == endpoint_id,
+                WebhookEndpoint.tenant_id == tenant_id,
+            )
+            .with_for_update(key_share=True)
+            .populate_existing()
+            .first()
+        )
+        if row is None:
+            self.db.rollback()
+            raise WebhookNotFound("Webhook endpoint not found.")
+        return row
+
+    def _hold_key_write(
+        self, row: WebhookEndpoint, key_id: Optional[str], refuse: bool = True
+    ) -> WebhookEndpoint:
+        """Lock the key row (refused if revoked), then the endpoint row, since
+        staff may have paused or deleted it during a slow check. Lock order:
+        key row, workspace row if taken, endpoint row. Call before changing
+        the row; with ``refuse=False`` a staff pause is left for the caller."""
+        if key_id is None:
+            return row
+        self._hold_live_key(row.tenant_id, row.workspace_id, key_id)
+        fresh = self._lock_endpoint(row.tenant_id, row.id)
+        if refuse:
+            self._refuse_if_staff_paused(fresh, key_id)
+        return fresh
 
     def update(
         self,
@@ -287,45 +456,110 @@ class WebhookService:
         url: Optional[str] = None,
         events: Optional[List[str]] = None,
         strict_dns: bool = False,
+        key_id: Optional[str] = None,
     ) -> WebhookEndpoint:
+        """``key_id`` (an API key making the change) makes that key the row's
+        owner when a value really changes, and refuses the write
+        (``WebhookKeyRevoked``) if it is revoked."""
         row = self._get(tenant_id, endpoint_id)
+        self._refuse_if_staff_paused(row, key_id)
+        release_read_transactions()  # the URL check resolves a host: hold no transaction
+        clean_url = validate_callback_url(url, strict_dns=strict_dns) if url is not None else None
+        clean_events = _validate_events(events) if events is not None else None
+        row = self._hold_key_write(row, key_id)
+        changed = False
         if name is not None:
-            row.name = name.strip() or row.name
-        if url is not None:
-            row.url = validate_callback_url(url, strict_dns=strict_dns)
-        if events is not None:
-            row.events_json = _validate_events(events)
+            new_name = name.strip() or row.name
+            if new_name != row.name:
+                row.name, changed = new_name, True
+        if clean_url is not None and clean_url != row.url:
+            row.url, changed = clean_url, True
+        if clean_events is not None and clean_events != row.events_json:
+            row.events_json, changed = clean_events, True
+        if changed:
+            self._own_by_key(row, key_id)
         self.db.commit()
         self.db.refresh(row)
         return row
 
-    def rotate_secret(self, tenant_id: str, endpoint_id: str) -> Tuple[WebhookEndpoint, str]:
+    def _own_by_key(self, row: WebhookEndpoint, key_id: Optional[str]) -> None:
+        if key_id is not None:
+            row.created_by = f"apikey:{key_id}"
+            # The last write owns the row: force it even when the value read
+            # earlier is the same.
+            flag_modified(row, "created_by")
+
+    def rotate_secret(
+        self, tenant_id: str, endpoint_id: str, key_id: Optional[str] = None
+    ) -> Tuple[WebhookEndpoint, str]:
         row = self._get(tenant_id, endpoint_id)
+        self._refuse_if_staff_paused(row, key_id)
+        self._hold_key_write(row, key_id)
         secret = _new_secret()
         row.secret_encrypted = encrypt_secret(secret)
+        self._own_by_key(row, key_id)
         self.db.commit()
         self.db.refresh(row)
         return row, secret
 
-    def set_status(self, tenant_id: str, endpoint_id: str, active: bool) -> WebhookEndpoint:
+    def set_status(
+        self, tenant_id: str, endpoint_id: str, active: bool, key_id: Optional[str] = None
+    ) -> WebhookEndpoint:
         """Manual enable/disable. Re-enabling clears the auto-disable state +
-        resets the consecutive-failure counter."""
+        resets the consecutive-failure counter. On enable, ``key_id`` refuses
+        the write if the key is revoked or staff paused the row, and makes that
+        key the owner when the row was not already ACTIVE. On disable it only
+        records the key's own pause reason."""
         row = self._get(tenant_id, endpoint_id)
+        if key_id is None:
+            row = self._lock_endpoint(tenant_id, endpoint_id)  # staff: the last write wins on a fresh row
         if active:
+            self._refuse_if_staff_paused(row, key_id)
+            row = self._hold_key_write(row, key_id)
+            if key_id is not None and row.status == "ACTIVE":
+                self.db.commit()  # nothing to change; release the locks
+                self.db.refresh(row)
+                return row
+            self._own_by_key(row, key_id)
             row.status = "ACTIVE"
             row.consecutive_failures = 0
             row.disabled_at = None
             row.disabled_reason = None
         else:
+            row = self._hold_key_write(row, key_id, refuse=False)
+            if key_id is not None and row.disabled_reason == STAFF_DISABLED_REASON:
+                self.db.commit()
+                self.db.refresh(row)
+                return row  # a key never rewrites staff's pause
             row.status = "DISABLED"
             row.disabled_at = datetime.now(timezone.utc)
-            row.disabled_reason = "Disabled by user."
+            row.disabled_reason = (
+                KEY_DISABLED_REASON if key_id is not None else STAFF_DISABLED_REASON
+            )
         self.db.commit()
         self.db.refresh(row)
         return row
 
-    def delete(self, tenant_id: str, endpoint_id: str) -> None:
+    def delete(self, tenant_id: str, endpoint_id: str, key_id: Optional[str] = None) -> None:
+        """A key's delete is refused on a row staff paused; it does not check
+        whether the key itself is revoked."""
         row = self._get(tenant_id, endpoint_id)
+        if key_id is not None:
+            locked = (
+                self.db.query(WebhookEndpoint)
+                .filter(
+                    WebhookEndpoint.id == row.id,
+                    WebhookEndpoint.tenant_id == tenant_id,
+                )
+                .with_for_update(key_share=True)
+                .populate_existing()
+                .first()
+            )
+            if locked is None:
+                self.db.rollback()
+                raise WebhookNotFound("Webhook endpoint not found.")
+            self._refuse_if_staff_paused(locked, key_id)
+            row = locked
         self.db.query(WebhookDelivery).filter(
             WebhookDelivery.endpoint_id == row.id,
             WebhookDelivery.tenant_id == tenant_id,

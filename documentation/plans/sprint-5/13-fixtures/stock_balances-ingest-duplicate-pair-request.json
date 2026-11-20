@@ -1,0 +1,21 @@
+{
+  "companyCode": "SRT",
+  "records": [
+    {
+      "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+      "item_code": "1/2\" ULTRA CIRCULAR",
+      "item_description": "15MM X 500MM ULTRAGAL PIPE 1/2\"",
+      "location_code": "BRW-BB",
+      "uom_code": "PC",
+      "qty": 600
+    },
+    {
+      "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+      "item_code": "1/2\" ULTRA CIRCULAR",
+      "item_description": "15MM X 500MM ULTRAGAL PIPE 1/2\"",
+      "location_code": "BRW-BB",
+      "uom_code": "PC",
+      "qty": 672
+    }
+  ]
+}

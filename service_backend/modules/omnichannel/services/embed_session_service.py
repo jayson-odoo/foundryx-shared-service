@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.models.connection import Connection
 from app.repositories.module_repository import ModuleRepository
 from app.secrets import decrypt_secret
-from app.security import create_access_token
+from app.scoped_tokens import mint_scoped_token
 
 from ..models import EmbedJti, Workspace
 from .external_agent_service import ExternalAgentService
@@ -144,7 +144,6 @@ class EmbedSessionService:
         # Tenant is now attributable - every subsequent failure lands on the
         # connection's tenant console (AC-DLC-20).
         ctx["tenant_id"] = conn.tenant_id
-
         embed_secret = self._embed_secret(conn)
 
         # 3) Verify signature + audience + expiry. A rotated embedSecret makes an
@@ -160,6 +159,12 @@ class EmbedSessionService:
             raise EmbedError(401, "expired", "Assertion has expired.")
         except (JWTClaimsError, JWTError):
             raise EmbedError(401, "invalid_assertion", "Assertion verification failed.")
+
+        # A tenant that may not sign in (suspended or archived) gets no new session; checked once the assertion is verified and before it is consumed.
+        from app.dependencies import tenant_signin_allowed
+
+        if not tenant_signin_allowed(self.db, conn.tenant_id):
+            raise EmbedError(403, "tenant_suspended", "This tenant is suspended.")
 
         # 4) iat skew - reject a token minted "in the future" (jose validates exp
         #    but not a future iat).
@@ -225,10 +230,10 @@ class EmbedSessionService:
 
         # 9) Mint the access token (no cookie). It carries everything §4 needs to
         #    authorize without a DB round-trip on scope/caps.
-        access_token = create_access_token(
+        access_token = mint_scoped_token(
+            "embed",
             {
                 "sub": agent.id,
-                "typ": "embed",
                 "tenant_id": conn.tenant_id,
                 "connection_id": conn.id,
                 "workspaceId": workspace.id,
@@ -236,7 +241,7 @@ class EmbedSessionService:
                 "scope": scope,
                 "caps": caps,
             },
-            expires_minutes=ACCESS_TOKEN_TTL_MINUTES,
+            ttl_minutes=ACCESS_TOKEN_TTL_MINUTES,
         )
 
         return {

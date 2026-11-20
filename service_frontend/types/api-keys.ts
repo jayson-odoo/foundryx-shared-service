@@ -23,6 +23,8 @@ export interface ApiKeyItem {
   lastUsedAt: string | null; // ISO
   revokedAt: string | null; // ISO
   createdAt: string; // ISO
+  /** ACTIVE webhook endpoints this key registered. */
+  webhookEndpointCount: number;
 }
 
 /**

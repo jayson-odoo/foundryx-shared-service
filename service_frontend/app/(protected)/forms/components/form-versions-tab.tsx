@@ -3,6 +3,7 @@
 /** Versions tab (plan sprint-3/01 D9) - paginated version history (own
  * endpoint; never embedded in the form GET - history grows unbounded). */
 import { useCallback, useEffect, useState } from 'react';
+import { LoaderCircleIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useDatetime } from '@/hooks/use-datetime';
@@ -81,7 +82,7 @@ export function FormVersionsTab({ formId, currentVersionId }: FormVersionsTabPro
           onClick={() => load(page + 1)}
           data-testid="versions-load-more"
         >
-          {loading ? 'Loading…' : `Load more (${total - rows.length})`}
+          {loading ? <LoaderCircleIcon className="size-4 animate-spin" /> : `Load more (${total - rows.length})`}
         </Button>
       )}
     </div>

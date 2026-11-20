@@ -75,5 +75,5 @@ Before an app can be packaged as a `.zip` and uploaded to the EMS App Store, it 
 
 1. **Static Analysis (Linter):** A custom linter scans the module's code. If it finds raw SQL queries in the `/routers` folder, or global CSS files, it immediately fails the build.
 2. **AI Code Review:** The **Reviewer Agent** reads the module's code specifically looking for architectural violations (like trying to alter a core database table).
-3. **Automated E2E Testing:** Playwright runs inside a sandbox environment to ensure installing the module doesn't break the core EMS login or project creation flow.
+3. **Automated E2E Testing:** a recorded `agent-browser` run inside a sandbox environment ensures installing the module doesn't break the core EMS login or project creation flow.
 4. **App Store Approval:** Only after passing these automated checks is the module given a cryptographic "Certified" signature, allowing the EMS App Store to accept and activate it safely.

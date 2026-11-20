@@ -65,7 +65,7 @@ export default function Item11() {
             </div>
           </div>
 
-          <Button variant="ghost" mode="icon">
+          <Button variant="ghost" mode="icon" aria-label="Download Landing-page.docx">
             <svg
               width="14"
               height="14"
@@ -116,7 +116,7 @@ export default function Item11() {
             </div>
           </div>
 
-          <Button variant="ghost" mode="icon">
+          <Button variant="ghost" mode="icon" aria-label="Download New-icon.svg">
             <svg
               width="14"
               height="14"

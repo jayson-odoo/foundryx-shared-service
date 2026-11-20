@@ -12,15 +12,16 @@ import { useEffect, useState } from 'react';
  * URI in the Meta app.
  */
 export default function WaCallbackPage() {
-  const [message, setMessage] = useState('Completing your WhatsApp connection…');
+  const [message, setMessage] = useState('Completing your sign-in…');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get('code');
     const error = params.get('error_description') || params.get('error');
+    const state = params.get('state');
     const payload = code
-      ? { type: 'FX_WA_OAUTH', code }
-      : { type: 'FX_WA_OAUTH', error: error || 'Signup cancelled.' };
+      ? { type: 'FX_WA_OAUTH', code, state }
+      : { type: 'FX_WA_OAUTH', error: error || 'Signup cancelled.', state };
 
     if (window.opener) {
       window.opener.postMessage(payload, window.location.origin);

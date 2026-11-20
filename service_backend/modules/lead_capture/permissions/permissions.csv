@@ -1,0 +1,4 @@
+resource,resource_label,action,action_label,description
+lead_capture,Lead Capture,view,View,"View lead sources, captured leads and deliveries"
+lead_capture,Lead Capture,manage,Manage,"Connect, edit and disconnect lead sources, field maps and delivery endpoints"
+lead_capture.keys,Lead Capture keys,manage,Manage,Create and revoke Lead Capture gateway keys

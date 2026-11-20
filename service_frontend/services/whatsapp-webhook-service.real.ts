@@ -19,6 +19,12 @@ export const realWhatsappWebhookService: WhatsappWebhookService = {
     );
     return res.data;
   },
+  async listForWorkspace(workspaceId) {
+    const res = await apiFetch<{ data: WebhookEndpoint[] }>(
+      `/omnichannel/workspaces/${workspaceId}/webhooks`,
+    );
+    return res.data;
+  },
   create(channelId, input) {
     return apiFetch<WebhookCreateResult>(`/omnichannel/channels/${channelId}/webhooks`, {
       method: 'POST',

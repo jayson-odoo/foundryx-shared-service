@@ -1,6 +1,6 @@
 name: Diagnose SSH reachability
 
-# One-shot root-cause probe: does a GitHub runner reach the deploy host on 2002?
+# One-shot root-cause probe: does a GitHub runner reach the deploy host?
 # Compares the LITERAL known IP vs the SSH_HOST secret's target, and prints the
 # runner's egress IP - WITHOUT ever echoing the secret value.
 on:
@@ -27,8 +27,6 @@ jobs:
             fi
           }
 
-          # Known-good literal target (what check-host.net proved is globally open)
-          probe 31.97.70.222 2002 "literal 31.97.70.222:2002"
           # The actual secret target the deploy uses (value never printed)
           probe "$H" "$P" "SSH_HOST-secret:SSH_PORT"
 

@@ -1,11 +1,13 @@
 resource,resource_label,action,action_label,description
-ideation.products,Ideation Products,manage,Manage,Manage software products' delivery config, adapters & bindings (Maintainer)
-ideation.ideas,Ideas,view,View,View ideas & idea detail
-ideation.ideas,Ideas,submit,Submit,Submit ideas via the conversational intake (Submitter)
-ideation.ideas,Ideas,upvote,Upvote,Upvote an existing idea (Submitter)
-ideation.triage,Idea Triage,manage,Manage,Triage board, status transitions & clustering (Triager)
-ideation.clusters,Idea Clusters,manage,Manage,Accept/reject suggested idea clusters (Triager)
+ideation.products,Feedback Products,manage,Manage,Manage software products' delivery config, adapters & bindings (Maintainer)
+ideation.ideas,Feedback,view,View,View feedback & feedback detail
+ideation.ideas,Feedback,submit,Submit,Submit feedback via the conversational intake (Submitter)
+ideation.ideas,Feedback,upvote,Upvote,Upvote existing feedback (Submitter)
+ideation.ideas,Feedback,comment,Comment,Comment on feedback (Submitter)
+ideation.triage,Feedback Triage,manage,Manage,Triage board, status transitions & clustering (Triager)
+ideation.clusters,Feedback Clusters,manage,Manage,Accept/reject suggested feedback clusters (Triager)
 ideation.bindings,Workspace Bindings,manage,Manage,Bind respond.io workspaces to products (Maintainer)
 ideation.business_requirements,Business Requirements,read,Read,View business requirements & detail
-ideation.business_requirements,Business Requirements,manage,Manage,Create/edit BRs, link ideas & run the grill (Triager)
+ideation.business_requirements,Business Requirements,manage,Manage,Create/edit BRs, link feedback & run the grill (Triager)
 ideation.business_requirements,Business Requirements,promote,Promote,Promote a draft BR to ready - the Gate-0 human action (Maintainer)
+ideation.business_requirements,Business Requirements,send_to_build,Send to build,Hand a complete BR to the build crew and manage write-back keys (Maintainer)

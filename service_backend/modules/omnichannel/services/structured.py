@@ -185,6 +185,34 @@ def build_meta_interactive(defn: Dict[str, Any], *, media_id: Optional[str] = No
     return out
 
 
+# Messenger/Instagram quick-reply limits (plan 32 / A7a, AC-CHN-28) - looser
+# than WhatsApp's native interactive buttons (max 3): Meta allows up to 13
+# quick replies with a 20-character title.
+MAX_QUICK_REPLIES = 13
+MAX_QUICK_REPLY_TITLE = 20
+
+
+def build_quick_replies(defn: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """Messenger/Instagram quick replies built from the SAME friendly
+    ``buttons`` interactive definition the composer already produces
+    (D-A7-13) - capped to 13 and title-truncated to 20 characters. Only the
+    ``buttons`` kind maps onto quick replies; ``list``/``cta_url``/
+    ``location_request`` are refused upstream by `messaging_policy.
+    assert_kind_supported` (these channel types never reach this helper with
+    another kind), so a non-``buttons`` definition here returns ``None``
+    rather than guessing."""
+    if _s(defn.get("kind")) != "buttons":
+        return None
+    out: List[Dict[str, Any]] = []
+    for b in (defn.get("buttons") or [])[:MAX_QUICK_REPLIES]:
+        title = _s(b.get("title"))[:MAX_QUICK_REPLY_TITLE]
+        bid = _s(b.get("id"))
+        if not title or not bid:
+            continue
+        out.append({"content_type": "text", "title": title, "payload": bid})
+    return out or None
+
+
 # ── Location ─────────────────────────────────────────────────────────────────
 def validate_location(defn: Dict[str, Any]) -> Dict[str, Any]:
     """Validate + normalize a location payload → {lat,lng,name,address}."""

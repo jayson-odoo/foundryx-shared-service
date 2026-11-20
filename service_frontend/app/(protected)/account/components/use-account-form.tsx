@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useSession } from 'next-auth/react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { KeyRound, Mail, User as UserIcon } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { z } from 'zod';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import { AvatarUpload } from '@/components/platform/avatar-upload';
@@ -59,6 +59,7 @@ export function useAccountForm(): UseAccountFormResult {
   const roles = useMemo(() => user?.roles ?? [], [user?.roles]);
 
   const form = useForm<AccountFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(accountFormSchema),
     defaultValues: { name: displayName ?? '' },
   });

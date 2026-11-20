@@ -6,6 +6,7 @@ import { apiFetch, apiFetchText } from '@/lib/api-client';
 import type {
   Channel,
   ChannelProfile,
+  ReplaceTokenResult,
   UpdateChannelInput,
   UpdateChannelProfileInput,
 } from '@/types/omnichannel';
@@ -51,6 +52,12 @@ export const realChannelService: ChannelService = {
   },
   testConnection(id) {
     return apiFetch<TestConnectionResult>(`/omnichannel/channels/${id}/test`, { method: 'POST' });
+  },
+  replaceChannelToken(id, accessToken) {
+    return apiFetch<ReplaceTokenResult>(`/omnichannel/channels/${id}/replace-token`, {
+      method: 'POST',
+      body: JSON.stringify({ accessToken }),
+    });
   },
   syncConfig(id) {
     return apiFetch<Channel>(`/omnichannel/channels/${id}/sync-config`, { method: 'POST' });

@@ -9,6 +9,7 @@ Gating (D15): browse/preview/download = ``documents.read``; mutations =
 upload 409 → ``{"fileName","existingFileId"}``; 413 quota; 415 type/size reject
 (plain string); 422 cycle.
 """
+import os
 import re
 from typing import List, Optional
 
@@ -74,6 +75,7 @@ from app.services.document_service import (
     DocumentService,
     JobNotReady,
     QuotaExceeded,
+    READ_CAP_BYTES,
     UploadConflict,
     UploadRejected,
 )
@@ -90,9 +92,6 @@ from app.services.share_service import (
 router = APIRouter()
 public_router = APIRouter()
 
-# Hard read cap (a generous ceiling so an oversize body is never buffered whole;
-# the per-type / tenant-default policy cap is enforced in the service).
-READ_CAP_BYTES = 200 * 1024 * 1024
 
 
 def _none_if_blank(value: Optional[str]) -> Optional[str]:
@@ -100,14 +99,15 @@ def _none_if_blank(value: Optional[str]) -> Optional[str]:
 
 
 def _content_disposition(dispo: str, filename: str) -> str:
-    """Safe Content-Disposition - the file name is tenant-controlled (rename only
-    strips whitespace), so a quote/backslash/CRLF would inject the header. Emit a
-    sanitized ASCII fallback + an RFC 5987 ``filename*`` for the real (UTF-8) name."""
+    """Well-formed Content-Disposition - the file name is tenant-controlled (rename
+    only strips whitespace), so control bytes, quotes and backslashes are dropped
+    from the ASCII fallback, and the RFC 5987 ``filename*`` is encoded from UTF-8
+    bytes with replacement so any stored name can be encoded."""
     from urllib.parse import quote
 
-    ascii_name = re.sub(r'[\r\n"\\]', "", filename.encode("ascii", "ignore").decode("ascii")).strip()
+    ascii_name = re.sub(r'[\x00-\x1f\x7f"\\]', "", filename.encode("ascii", "ignore").decode("ascii")).strip()
     ascii_name = ascii_name or "download"
-    encoded = quote(filename, safe="")
+    encoded = quote(filename.encode("utf-8", "replace"), safe="")
     return f"{dispo}; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
 
 
@@ -138,6 +138,52 @@ def _serve_blob(
     if location in ("presigned", "url"):
         return RedirectResponse(value, headers=headers)
     return FileResponse(value, media_type=mime, headers=headers)
+
+
+def stream_blob(
+    db: Session,
+    tenant_id: str,
+    storage_key: str,
+    mime: str,
+    filename: str,
+    disposition: str = "inline",
+):
+    """``_serve_blob`` (same sandbox / nosniff / private-cache headers) that
+    always answers SAME-ORIGIN: a remote (R2/S3) blob is read through the
+    storage adapter and re-served, never a 307 to a presigned bucket URL - a
+    browser ``fetch`` carrying an Authorization header is CORS-blocked on the
+    bucket (the omnichannel media route learned this first). Local disk still
+    streams from the file. Missing blob = 404; storage unreachable = 503."""
+    from app.services.storage import StorageUnavailable, UnresolvableKey, storage_for_tenant
+
+    storage = storage_for_tenant(db, tenant_id)
+    try:
+        location, value = storage.resolve(storage_key)
+    except Exception:  # noqa: BLE001 - unresolvable key (connection gone)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
+    dispo = "attachment" if disposition == "attachment" else "inline"
+    headers = {
+        "Content-Disposition": _content_disposition(dispo, filename),
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=300",
+    }
+    if location == "path":
+        if not os.path.isfile(value):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
+        return FileResponse(value, media_type=mime, headers=headers)
+    try:
+        data, stored_mime = storage.fetch(storage_key)
+    except (UnresolvableKey, FileNotFoundError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
+    except StorageUnavailable:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The file is temporarily unavailable. Please try again.",
+            headers={"Retry-After": "5"},
+        )
+    media_type = mime or stored_mime or "application/octet-stream"
+    return Response(content=data, media_type=media_type, headers=headers)
 
 
 # ---- navigation ----

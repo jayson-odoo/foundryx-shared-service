@@ -1,0 +1,28 @@
+{
+  "companyCode": "SRT",
+  "source_refs": [
+    "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+    "AED_SORENTO:ACC-SRT1024|CON",
+    "AED_SORENTO:SRT-NOTSYNCED-9001|MWH",
+    "AED_SORENTO:GHOST-ITEM|MWH",
+    "AED_SORENTO:B2154-NL|MAINTANC"
+  ],
+  "pairs": {
+    "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB": {
+      "item_code": "1/2\" ULTRA CIRCULAR",
+      "location_code": "BRW-BB"
+    },
+    "AED_SORENTO:ACC-SRT1024|CON": {
+      "item_code": "ACC-SRT1024",
+      "location_code": "CON"
+    },
+    "AED_SORENTO:SRT-NOTSYNCED-9001|MWH": {
+      "item_code": "SRT-NOTSYNCED-9001",
+      "location_code": "MWH"
+    },
+    "AED_SORENTO:B2154-NL|MAINTANC": {
+      "item_code": "B2154-NL",
+      "location_code": "MAINTANC"
+    }
+  }
+}

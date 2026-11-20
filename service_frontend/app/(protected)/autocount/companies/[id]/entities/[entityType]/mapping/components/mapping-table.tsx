@@ -1,11 +1,19 @@
 'use client';
 
 import { ArrowRight, FunctionSquare, Plus, Trash2 } from 'lucide-react';
+import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { DataGrid } from '@/components/ui/data-grid';
+import { DataGridTable } from '@/components/ui/data-grid-table';
 import { SearchSelect } from '@/components/platform/search-select';
+import { StatusBadge, type StatusRegistry } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
+import { pickerColumnOptions, statusFormulaSeed } from '@/lib/autocount-etl';
+import { isListTransform } from '@/lib/autocount-formula';
+import { cn } from '@/lib/utils';
 import type {
   AutocountMappingRow,
   AutocountSorentoField,
@@ -13,7 +21,9 @@ import type {
 import {
   AC_PRESET_OPTIONS,
   applyPreset,
+  isLockedMappingField,
   presetForRow,
+  presetOptionsForField,
 } from '../../../../../../components/autocount-meta';
 
 /** One deliverable mapping row in the editor's working state. */
@@ -24,7 +34,27 @@ export interface MappingEditableRow {
    *  runs (exact); a non-empty formula is authoritative. */
   formula: string | null;
   sorentoField: string;
+  /**
+   * B1 (final review round) - a backfill/preset can seed a fixed-field row
+   * DISABLED (its source_path doesn't match a real preview column yet,
+   * visibly greyed); this must round-trip through an ordinary save
+   * unchanged, or the editor silently RE-ENABLES it and the S1
+   * preview-column gate 422s the whole draft again.
+   *
+   * sprint-5/12 (AC-12-25) - and it is now OPERATOR-EDITABLE: the row's own
+   * "Enabled" switch is the single writer, so the two disabled CAUSES (the
+   * column is missing, or a preset withholds the row - `uom_code` per
+   * AC-10-74) are both visible and both reversible on purpose.
+   */
+  isEnabled: boolean;
 }
+
+/** AC-12-25 - a row that will not be delivered says so, whatever the cause.
+ *  One value: the badge answers "is this row off?", the separate "Column not
+ *  in query" badge answers "why might it be off?" and both can show. */
+const ENABLED_REGISTRY: StatusRegistry<'disabled'> = {
+  disabled: { label: 'Disabled', tone: 'secondary' },
+};
 
 /** The preset label a row currently reflects (read-mode display). */
 function presetLabel(row: MappingEditableRow): string {
@@ -52,6 +82,14 @@ export function unmappedRequiredFields(
     .map((f) => f.field);
 }
 
+/**
+ * Where a row's source comes from. `path` = the API path's vendor JSON: known
+ * paths offered, a free dotted path still allowed. `column` (plan 22 S2,
+ * AC-22-09) = a DB task's flat preview result columns and NOTHING else - a
+ * typed name that is not a result column would fail every run.
+ */
+export type MappingSourceMode = 'path' | 'column';
+
 export interface MappingTableProps {
   editing: boolean;
   rows: MappingEditableRow[];
@@ -59,13 +97,23 @@ export interface MappingTableProps {
   provenanceRows: AutocountMappingRow[];
   /** The ONLY Sorento targets the picker offers (AC-15-42). */
   sorentoFields: AutocountSorentoField[];
-  /** Known AutoCount source paths; a free dotted path is still allowed. */
+  /** Known AutoCount source paths (`path`) or the result columns (`column`). */
   acFields: string[];
+  sourceMode?: MappingSourceMode;
   onChangeRow: (index: number, patch: Partial<MappingEditableRow>) => void;
   onAddRow: () => void;
   onRemoveRow: (index: number) => void;
   /** Open the formula builder for a row (AC-16-11). */
   onBuildRow: (index: number) => void;
+  /** The task's canonical entity key (drives the `status` seed-formula
+   * below, S5 review SHOULD-FIX 4c) - blank on the API-path editor, where
+   * a document entity never routes (DB source only). */
+  entityType?: string;
+  /** Source-column name → reported type (from the current query preview,
+   * when one has been run this session) - the SAME vocabulary
+   * `describe_type`/`is_orderable_type` use ("boolean", "string", …).
+   * Absent/unknown types simply skip the seed - never guessed. */
+  columnTypes?: Record<string, string>;
 }
 
 /**
@@ -81,140 +129,282 @@ export function MappingTable({
   provenanceRows,
   sorentoFields,
   acFields,
+  sourceMode = 'path',
   onChangeRow,
   onAddRow,
   onRemoveRow,
   onBuildRow,
+  entityType = '',
+  columnTypes = {},
 }: MappingTableProps) {
-  const sourceOptions = acFields.map((f) => ({ label: f, value: f }));
+  const columnMode = sourceMode === 'column';
+  // A seeded row (sprint-5/02, AC-02-16/21) whose column vanished from the
+  // saved query still needs to show WHAT it currently is - fold any such
+  // stale value into the offered set (same pattern as the Query tab's
+  // key/watermark pickers) so the picker's trigger never blanks to the
+  // placeholder while a real value is stored.
+  const acFieldsSet = new Set(acFields);
+  const sourceOptions = pickerColumnOptions(
+    acFields,
+    rows.map((r) => r.sourcePath).filter(Boolean),
+  ).map((f) => ({ label: f, value: f }));
   const usedTargets = new Set(rows.map((r) => r.sorentoField).filter(Boolean));
   const allTargetsUsed = sorentoFields.every((f) => usedTargets.has(f.field));
 
+  /** Pre-fill the `status` seed formula (S5 review SHOULD-FIX 4c) the moment
+   * a row's source+target COMBINE into "a boolean column feeding `status`" -
+   * from either edit direction (source picked first, or target picked
+   * first). Never overwrites a formula the operator already set. */
+  function withStatusSeed(
+    row: MappingEditableRow,
+    patch: Partial<MappingEditableRow>,
+  ): Partial<MappingEditableRow> {
+    if (row.formula) return patch;
+    const merged = { ...row, ...patch };
+    const seed = statusFormulaSeed(entityType, merged.sorentoField, columnTypes[merged.sourcePath]);
+    return seed ? { ...patch, formula: seed } : patch;
+  }
+
+  /** A preset-seeded row (AC-02-16/21) whose source column is no longer part
+   *  of the saved query - visible, greyed, with the SAME picker so the
+   *  operator can fix it in place. A blank row (just added) is never
+   *  flagged - only a REAL stale value is. */
+  function isRowStale(row: MappingEditableRow): boolean {
+    return columnMode && row.sourcePath !== '' && !acFieldsSet.has(row.sourcePath);
+  }
+
+  /** AC-12-25 - the row reads "not delivered" when it is stale OR simply
+   *  switched off. Before this, dimming keyed on staleness alone, so a row a
+   *  preset deliberately withholds (`uom_code`, AC-10-74 - its column IS
+   *  previewed) rendered as an ordinary, fully-lit row and nothing on this
+   *  surface said it would not be sent. */
+  function isLocked(row: MappingEditableRow): boolean {
+    return isLockedMappingField(entityType, row.sorentoField);
+  }
+
+  function isRowDimmed(row: MappingEditableRow): boolean {
+    return isRowStale(row) || !row.isEnabled;
+  }
+
+  // AC-DLA-56 (T7): migrated off the raw <table> onto DataGrid + DataGridTable
+  // (sticky header + resizable/movable columns free from DataGrid's own
+  // defaults, AC-DLA-13). Columns rebuilt fresh each render (a small,
+  // frequently-edited in-memory grid - not worth memoizing against this
+  // many closed-over values); `row.index` is the row's position in `rows`,
+  // matching the original array index (no sort/filter on this grid). DataGrid
+  // has no per-row className hook, so a stale row's dimming (AC-02-16/21) is
+  // applied per-cell (`opacity-60` on every cell's content) rather than on a
+  // `<tr>` - the visible effect is the same, the whole row reads dimmed.
+  const columns: ColumnDef<MappingEditableRow>[] = [
+    {
+      id: 'source',
+      header: columnMode ? 'Source column' : 'AutoCount field',
+      cell: ({ row }) => {
+        const index = row.index;
+        const stale = isRowStale(row.original);
+        return (
+          <div className={cn('flex flex-col gap-1', isRowDimmed(row.original) && 'opacity-60')}>
+            {editing ? (
+              <SearchSelect
+                options={sourceOptions}
+                value={row.original.sourcePath}
+                onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sourcePath: value }))}
+                placeholder={
+                  columnMode
+                    ? acFields.length > 0
+                      ? 'Select a column'
+                      : 'No columns yet'
+                    : 'Select or type a path'
+                }
+                searchPlaceholder={columnMode ? 'Search columns' : 'Search or type a dotted path'}
+                allowCustom={!columnMode}
+                disabled={isLocked(row.original) || (columnMode && acFields.length === 0)}
+                ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
+              />
+            ) : (
+              <code className="text-xs">{row.original.sourcePath}</code>
+            )}
+            {/* AC-12-25 - both may show: "Disabled" is the OUTCOME (this row
+                will not be sent), "Column not in query" is one possible
+                CAUSE. A preset-withheld row shows only the first. */}
+            <div className="flex flex-wrap items-center gap-1">
+              {isLocked(row.original) && (
+                <Badge variant="secondary" appearance="light" size="sm" className="w-fit">
+                  Locked
+                </Badge>
+              )}
+              {!row.original.isEnabled && (
+                <StatusBadge status="disabled" registry={ENABLED_REGISTRY} size="sm" />
+              )}
+              {stale && (
+                <Badge variant="warning" appearance="light" size="sm" className="w-fit">
+                  Column not in query
+                </Badge>
+              )}
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      id: 'transform',
+      header: 'Transform',
+      cell: ({ row }) => {
+        const index = row.index;
+        const dimmed = isRowDimmed(row.original);
+        return editing ? (
+          <div className={cn('flex items-center gap-1', dimmed && 'opacity-60')}>
+            <div className="min-w-28 flex-1">
+              <SearchSelect
+                options={presetOptionsForField(row.original.sorentoField)}
+                disabled={isLocked(row.original)}
+                value={presetForRow(row.original.transform, row.original.formula)}
+                onChange={(key) => onChangeRow(index, applyPreset(key))}
+                ariaLabel={`Transform for row ${index + 1}`}
+              />
+            </div>
+            {/* sprint-5/06 review round nit (foolproof-UI) - a list-shaped
+                transform (`string_list`) never offers formula mode: the
+                formula language produces a scalar, so the server 422s a
+                formula row targeting a list field (AC-06-11) - the picker
+                must never offer a combination the save would reject. */}
+            {!isListTransform(row.original.transform) && !isLocked(row.original) && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                mode="icon"
+                onClick={() => onBuildRow(index)}
+                aria-label={`Build formula for row ${index + 1}`}
+                title="Edit as a formula"
+              >
+                <FunctionSquare className="size-4" />
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className={cn('flex flex-col gap-0.5', dimmed && 'opacity-60')}>
+            <span className="text-muted-foreground">{presetLabel(row.original)}</span>
+            {row.original.formula && (
+              <ClampedText
+                text={row.original.formula}
+                lines={2}
+                className="font-mono text-2xs text-muted-foreground/80"
+              />
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: 'arrow',
+      header: () => null,
+      cell: ({ row }) => (
+        <ArrowRight
+          className={cn('size-4 text-muted-foreground', isRowDimmed(row.original) && 'opacity-60')}
+        />
+      ),
+      size: 32,
+      enableResizing: false,
+      enableHiding: false,
+      meta: { utility: true },
+    },
+    {
+      id: 'target',
+      header: 'Sorento field',
+      cell: ({ row }) => {
+        const index = row.index;
+        const dimmed = isRowDimmed(row.original);
+        // Foolproof: offer this row's own target + any not used elsewhere,
+        // so a duplicate target can never be selected.
+        const targetOptions = sorentoFields
+          .filter((f) => f.field === row.original.sorentoField || !usedTargets.has(f.field))
+          .map((f) => ({
+            label: f.required ? `${sorentoFieldLabel(f.field)} *` : sorentoFieldLabel(f.field),
+            value: f.field,
+          }));
+        return (
+          <div className={cn(dimmed && 'opacity-60')}>
+            {editing ? (
+              <SearchSelect
+                options={targetOptions}
+                value={row.original.sorentoField}
+                onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sorentoField: value }))}
+                placeholder="Select a Sorento field"
+                disabled={isLocked(row.original) || sorentoFields.length === 0}
+                ariaLabel={`Sorento field for row ${index + 1}`}
+              />
+            ) : (
+              <span className="font-medium text-foreground">{sorentoFieldLabel(row.original.sorentoField)}</span>
+            )}
+          </div>
+        );
+      },
+    },
+    //     !!  AC-12-25 - THE ONLY WRITER OF `isEnabled`.  !!
+    // A MODE on this table, not a new primitive: the column exists only
+    // under Edit (read mode says the same thing with the "Disabled" badge,
+    // and a switch nobody may flip is noise). The switch patches ONLY this
+    // row's `isEnabled` - no status seed, no revive, no side effect - so a
+    // row a preset withholds (`uom_code`, AC-10-74) is turned back on
+    // deliberately, by hand, when the push-flip checklist says so.
+    ...(editing
+      ? [
+          {
+            id: 'enabled',
+            header: 'Enabled',
+            cell: ({ row }: { row: { index: number; original: MappingEditableRow } }) => (
+              <Switch
+                size="sm"
+                checked={row.original.isEnabled}
+                disabled={isLocked(row.original)}
+                onCheckedChange={(checked) => onChangeRow(row.index, { isEnabled: checked })}
+                aria-label={`Send ${sorentoFieldLabel(row.original.sorentoField)} to Sorento`}
+              />
+            ),
+            size: 84,
+            enableResizing: false,
+            enableHiding: false,
+            meta: { utility: true },
+          } satisfies ColumnDef<MappingEditableRow>,
+          {
+            id: 'remove',
+            header: () => null,
+            cell: ({ row }: { row: { index: number; original: MappingEditableRow } }) => (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                mode="icon"
+                onClick={() => onRemoveRow(row.index)}
+                disabled={isLocked(row.original)}
+                aria-label={`Remove row ${row.index + 1}`}
+                className={cn(isRowDimmed(row.original) && 'opacity-60')}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            ),
+            size: 44,
+            enableResizing: false,
+            enableHiding: false,
+            meta: { utility: true },
+          } satisfies ColumnDef<MappingEditableRow>,
+        ]
+      : []),
+  ];
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    getRowId: (_row, index) => String(index),
+    getCoreRowModel: getCoreRowModel(),
+  });
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-sm">
-          <thead>
-            <tr className="border-b text-start text-xs font-medium text-muted-foreground">
-              <th className="px-2 py-2 text-start font-medium">AutoCount field</th>
-              <th className="px-2 py-2 text-start font-medium">Transform</th>
-              <th className="w-6 px-2 py-2" aria-hidden />
-              <th className="px-2 py-2 text-start font-medium">Sorento field</th>
-              {editing && <th className="w-10 px-2 py-2" aria-hidden />}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td
-                  colSpan={editing ? 5 : 4}
-                  className="px-2 py-6 text-center text-muted-foreground"
-                >
-                  No deliverable fields mapped yet.
-                </td>
-              </tr>
-            )}
-            {rows.map((row, index) => {
-              // Foolproof: offer this row's own target + any not used elsewhere,
-              // so a duplicate target can never be selected.
-              const targetOptions = sorentoFields
-                .filter((f) => f.field === row.sorentoField || !usedTargets.has(f.field))
-                .map((f) => ({
-                  label: f.required ? `${sorentoFieldLabel(f.field)} *` : sorentoFieldLabel(f.field),
-                  value: f.field,
-                }));
-              return (
-                <tr key={index} className="border-b align-top">
-                  <td className="px-2 py-2">
-                    {editing ? (
-                      <SearchSelect
-                        options={sourceOptions}
-                        value={row.sourcePath}
-                        onChange={(value) => onChangeRow(index, { sourcePath: value })}
-                        placeholder="Select or type a path"
-                        searchPlaceholder="Search or type a dotted path"
-                        allowCustom
-                        ariaLabel={`AutoCount source for row ${index + 1}`}
-                      />
-                    ) : (
-                      <code className="text-xs">{row.sourcePath}</code>
-                    )}
-                  </td>
-                  <td className="px-2 py-2">
-                    {editing ? (
-                      <div className="flex items-center gap-1">
-                        <div className="min-w-28 flex-1">
-                          <SearchSelect
-                            options={AC_PRESET_OPTIONS}
-                            value={presetForRow(row.transform, row.formula)}
-                            onChange={(key) => onChangeRow(index, applyPreset(key))}
-                            ariaLabel={`Transform for row ${index + 1}`}
-                          />
-                        </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          mode="icon"
-                          onClick={() => onBuildRow(index)}
-                          aria-label={`Build formula for row ${index + 1}`}
-                          title="Edit as a formula"
-                        >
-                          <FunctionSquare className="size-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-muted-foreground">{presetLabel(row)}</span>
-                        {row.formula && (
-                          <ClampedText
-                            text={row.formula}
-                            lines={2}
-                            className="font-mono text-[11px] text-muted-foreground/80"
-                          />
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-2 py-3 text-muted-foreground">
-                    <ArrowRight className="size-4" />
-                  </td>
-                  <td className="px-2 py-2">
-                    {editing ? (
-                      <SearchSelect
-                        options={targetOptions}
-                        value={row.sorentoField}
-                        onChange={(value) => onChangeRow(index, { sorentoField: value })}
-                        placeholder="Select a Sorento field"
-                        disabled={sorentoFields.length === 0}
-                        ariaLabel={`Sorento field for row ${index + 1}`}
-                      />
-                    ) : (
-                      <span className="font-medium text-foreground">
-                        {sorentoFieldLabel(row.sorentoField)}
-                      </span>
-                    )}
-                  </td>
-                  {editing && (
-                    <td className="px-2 py-2 text-end">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        mode="icon"
-                        onClick={() => onRemoveRow(index)}
-                        aria-label={`Remove row ${index + 1}`}
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <DataGrid table={table} recordCount={rows.length} emptyMessage="No deliverable fields mapped yet.">
+        <DataGridTable />
+      </DataGrid>
 
       {editing && (
         <div>
