@@ -117,6 +117,15 @@ NOT_SENT = "NOT_SENT"  # plan 69: a document batch line whose chunk was never se
 ALL_LINKS_SKIPPED = "ALL_LINKS_SKIPPED"
 RESTORE_NOT_LANDED = "RESTORE_NOT_LANDED"  # plan 65 D3: the batch's restore PUT did not land (resumable)
 FOC_ON_ROW = "FOC_ON_ROW"  # plan 65 D2a: the line would take the whole of a row carrying FOC (hapi cannot move it)
+# Plan 71 (owner 20 Nov): why an unlink's ``return_to_dtl_key`` row could not take the qty back. Each is a
+# WARNING on a done unlink (the qty went the plan 66 / plan 62 way instead), never a refusal.
+RETURN_ROW_NOT_FOUND = "RETURN_ROW_NOT_FOUND"  # no such row on this PO (any more)
+RETURN_ROW_LINKED = "RETURN_ROW_LINKED"  # the row is tied to an SO row (or is the tied row itself)
+RETURN_ROW_ITEM_MISMATCH = "RETURN_ROW_ITEM_MISMATCH"  # another item code or unit
+RETURN_ROW_CLOSED = "RETURN_ROW_CLOSED"  # the row is fully received
+RETURN_ROW_ON_SPO = "RETURN_ROW_ON_SPO"  # an SPO row points at the row
+RETURN_ROW_BUSY = "RETURN_ROW_BUSY"  # an unresolved link operation covers the row (its Resume needs it as it is)
+RETURN_PARTLY_RECEIVED = "RETURN_PARTLY_RECEIVED"  # the tied row is partly received: the received part stays
 # Plan 69 D2: no size refusal a real press can reach - only a body guard far above a PO's row count.
 MAX_BATCH_LINKS = 2000
 TEMPLATE_KEY = "autocount_write_needs_attention"
@@ -239,6 +248,17 @@ def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
     if not isinstance(value, str):
         return None
     return value.strip() or None
+
+
+def _return_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[int]:
+    """Plan 71: the PO row an unlink returns its qty to (the caller's ``return_to_dtl_key``, the row the
+    qty was linked FROM). Other operations, or none given, keep today's behaviour."""
+    if defn.kind != "PO" or defn.mode != "unlink":
+        return None
+    value = params.get("return_to_dtl_key")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def _requested_locations(op: str, params: Dict[str, Any]) -> List[str]:
@@ -369,6 +389,7 @@ class OperationService:
         self._row: Optional[AcWriteOperation] = None
         self._op_deadline = 0.0
         self._pool_location: Optional[str] = None  # plan 66: the unlink's pool location (the caller's)
+        self._return_to: Optional[int] = None  # plan 71: the unlink's source row (the caller's)
         # plan 70: the caller's location for a PO link / relink / split (AutoCount's own spelling, checked)
         self._link_location: Optional[str] = None
         self._locations: Dict[str, str] = {}  # plan 70: casefold(code) -> code, every checked code of the run
@@ -448,6 +469,7 @@ class OperationService:
         self._steps, self._warnings = [], []
         self._mail_allowed = True
         self._pool_location = None  # set per run by ``_execute_unlocked`` (plan 66)
+        self._return_to = None  # set per run by ``_execute_unlocked`` (plan 71)
         self._link_location, self._locations = None, {}  # set per run by ``_check_locations`` (plan 70)
         self._row = row
         self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
@@ -720,6 +742,7 @@ class OperationService:
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
         self._pool_location = _pool_of(defn, params)
+        self._return_to = _return_of(defn, params)
         self._check_not_busy(company, spec.doc_key, defn.kind)
         doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date,
                                    beside=self._target_beside(company, defn, spec))
@@ -906,6 +929,8 @@ class OperationService:
         target: Optional[Doc] = None
         if defn.target and spec.target_doc_key is not None:
             target = self._guard_target(company, defn, spec, doc, row, link_qty)
+        if mode == "partial" and self._return_to is not None:
+            self._warn(RETURN_PARTLY_RECEIVED)  # plan 71: today's cut + add, the rest goes the pool way
         merge = self._merge_target(company, defn, doc, row) if mode == "delete" else None
         merge_qty = None
         if merge is not None:  # the free row's quantity now: a pending merge is judged against it
@@ -925,6 +950,11 @@ class OperationService:
         own price and date, only its Qty goes up."""
         if defn.kind != "PO" or defn.mode != "unlink":
             return None
+        if self._return_to is not None:
+            why = self._return_refusal(company, doc, row, self._return_to)
+            if why is None:
+                return self._return_to
+            self._warn(why)  # plan 71: the qty goes the plan 66 / plan 62 way below, the screen says why
         pool = self._pool_location
         same = ("ItemCode", "UOM") if pool else ("ItemCode", "UOM", "Location")
         values: Tuple[str, ...] = () if pool else ("UnitPrice", "DeliveryDate")
@@ -951,6 +981,39 @@ class OperationService:
             if received is not None and received > 0:  # unknown (the vendor hides it) joins the rule of _receipt
                 continue
             return int(cand["DtlKey"])
+        return None
+
+    def _warn(self, code: str) -> None:
+        if code not in self._warnings:
+            self._warnings.append(code)
+
+    def _row_receipt(self, company: AcCompany, doc: Doc, cand: Doc) -> Optional[Decimal]:
+        """A PO row's received qty from the run's receipt source (None = unknown)."""
+        if self._receipt_reader is not None:
+            return self._receipt_reader("PO", doc, cand)
+        return self.prims._row_received(company, "PO", dict(cand, DocKey=doc.get("DocKey")))
+
+    def _return_refusal(self, company: AcCompany, doc: Doc, row: Doc, key: int) -> Optional[str]:
+        """Plan 71 (owner 20 Nov: "return to whatever line it linked from"): None when the source row can take
+        the tied row's qty in ONE merge PUT (plan 62 D7's ``unlink_merge``), else the warning code saying why.
+        The source row is matched on the same PO (it is in ``doc``), item and unit ONLY: it keeps its own
+        location, price and date (that is the point: the qty goes back WHERE it came from). Open = not fully
+        received; a partly received or unknown receipt still takes the qty (only its Qty goes up)."""
+        cand = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == key), None)
+        if cand is None:
+            return RETURN_ROW_NOT_FOUND
+        if key == row.get("DtlKey") or _link_of("PO", cand) or cand.get("FromDocType") not in ("", None):
+            return RETURN_ROW_LINKED
+        if any(cand.get(k) != row.get(k) for k in ("ItemCode", "UOM")):
+            return RETURN_ROW_ITEM_MISMATCH
+        if self._spo_ref(company, key):
+            return RETURN_ROW_ON_SPO
+        if self.prims.row_needs_attention(company, int(doc.get("DocKey") or 0), cand,
+                                          exclude_id=self._row.id if self._row else None):
+            return RETURN_ROW_BUSY  # plan 65 R1: growing a row an unresolved link covers breaks its Resume
+        received = self._row_receipt(company, doc, cand)
+        if received is not None and received >= _dec(cand.get("Qty")):
+            return RETURN_ROW_CLOSED
         return None
 
     def _receipt(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Tuple[str, Optional[Decimal]]:

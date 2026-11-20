@@ -582,6 +582,11 @@ def _location_code(raw: WriteBody, name: str) -> Optional[str]:
     return value.strip() or None
 
 
+def _optional_key(raw: WriteBody, name: str) -> Optional[int]:
+    """An optional DtlKey (``returnToDtlKey`` plan 71): absent or null = none, else ``_int_field``'s rule."""
+    return None if raw.get(name) is None else _int_field(raw, name)
+
+
 def _pool_location(raw: WriteBody) -> Optional[str]:
     """Plan 66: ``poolLocation`` on ``po-links/unlink``, an exact Location code; blank = none."""
     return _location_code(raw, "poolLocation")
@@ -681,13 +686,16 @@ def unlink_po_row(
             doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
             pool_location=_pool_location(raw),  # plan 66
+            return_to_dtl_key=_optional_key(raw, "returnToDtlKey"),  # plan 71
         )
 
     # plan 66: with ``poolLocation`` the answer carries ``detail`` = the free PO row the qty went back to (the
-    # pool row merged into, or the moved row); without it the body is plan 64's, unchanged (AC-64-07)
+    # pool row merged into, or the moved row); plan 71: so does ``returnToDtlKey`` (the source row, or the pool
+    # row when it fell back); without either the body is plan 64's, unchanged (AC-64-07)
     return _write_route(request, db, raw_body, service, "write_unlink", call, operations,
                         with_detail=lambda raw: bool(isinstance(raw.get("poolLocation"), str)
-                                                     and raw["poolLocation"].strip()))
+                                                     and raw["poolLocation"].strip())
+                        or raw.get("returnToDtlKey") is not None)
 
 
 @router.post("/spo-links/unlink")

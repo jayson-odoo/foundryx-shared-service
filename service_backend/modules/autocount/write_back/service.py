@@ -451,6 +451,7 @@ class WriteBackService(WriteFrame):
         operations: Optional["OperationService"] = None,
         doc_date: Optional[date] = None,
         pool_location: Optional[str] = None,
+        return_to_dtl_key: Optional[int] = None,
     ) -> WriteActionResult:
         """With ``operations`` (the gateway): the ``unlink_row`` operation runs. Without
         it the plan 55 flow. Both send ONE replace PUT (plan 61 F4): AutoCount never
@@ -462,7 +463,8 @@ class WriteBackService(WriteFrame):
             operations, "unlink_row", tenant_id, company_id, key_id, idempotency_key,
             {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "doc_date": doc_date,
              "expected_last_modified": expected_last_modified,
-             **({"pool_location": pool_location} if pool_location else {})},  # absent = today's hash
+             **({"pool_location": pool_location} if pool_location else {}),  # absent = today's hash
+             **({"return_to_dtl_key": return_to_dtl_key} if return_to_dtl_key is not None else {})},  # plan 71
         )
 
     def spo_unlink(

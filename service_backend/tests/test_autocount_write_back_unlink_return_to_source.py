@@ -229,10 +229,13 @@ def test_a_source_row_an_spo_points_at_falls_back(h, world):
 
 
 def test_fallback_without_pool_is_todays_same_location_merge_plus_the_warning(h, world):
+    before = keys_before(h)
     res = unlink(h, world, "r-fb-nopool", 999999, pool=None)
     assert res.outcome == "done"
     assert "RETURN_ROW_NOT_FOUND" in res.warnings
-    assert res.replaced_lines == [(world.p_linked, world.p_free)]  # plan 62 D7, as today
+    added = added_rows(h, before)  # today's replace (the tied row's 5.5 price matches no free row, plan 62)
+    assert len(added) == 1 and added[0]["Location"] == "BR1"
+    assert res.replaced_lines == [(world.p_linked, added[0]["DtlKey"])]
 
 
 def test_a_partly_received_tied_row_falls_back_to_cut_and_pool(h, world):
