@@ -1,7 +1,8 @@
 # 3D module contract (PLANNER-3D-S0)
 
-Status: contract v0.2, written 20/11/2026 against `main` at `9fe0099c`. No module code exists yet.
-v0.2 applies the review of v0.1 (section 13 lists what changed for lanes that read v0.1).
+Status: contract v0.3, written 20/11/2026 against `main` at `9fe0099c`. No module code exists yet.
+v0.2 applied the review of v0.1; v0.3 takes in the C1 lane's draft shape (section 7.2). Section 13 lists
+what changed for lanes that read an earlier version.
 S1 builds the module to this document; S2, S3, S4 and the CRM slices C1, C3, C4, C5 build against it.
 A change to any wire shape here is a change to this file in the same commit (the same rule the
 omnichannel guide carries, `documentation/engineering/omnichannel-service.md`).
@@ -613,7 +614,7 @@ The browser never calls the CRM and never sees the CRM key. The page calls SS, a
 server to server:
 
 ```
-browser  -> GET /be/public/planner3d/<tenant>/catalogue/products?category=&search=&page=
+browser  -> GET /be/public/planner3d/<tenant>/catalogue/products?query=&category=&codes=&limit=&offset=
 SS       -> GET <crm base url>/api/v1/external/planner/products     header X-API-Key: <key>
 SS       -> GET <crm base url>/api/v1/external/planner/categories   header X-API-Key: <key>
 ```
@@ -624,24 +625,38 @@ SS       -> GET <crm base url>/api/v1/external/planner/categories   header X-API
   module's `sorento` provider is a different connection with a different key and is not reused: one key
   per integration, as that provider's own note requires (`modules/autocount/sorento_provider.py:16-19`).
 - Never copied: SS has no product or price table and keeps no cache of a CRM answer, in Redis or
-  anywhere else. Each page request is one CRM request. SS forwards `ETag` and `Cache-Control` from C1
-  unchanged so the customer's own browser can avoid repeat downloads. A saved design stores product
+  anywhere else. Each page request is one CRM request. If C1 later sends `ETag` or
+  `Cache-Control`, SS forwards them unchanged so the customer's own browser can avoid repeat downloads. A saved design stores product
   codes and positions only.
 - The connection is read for this tenant only (`get_by_type(tenant_id, "catalogue")`). The usual
   fall-back to the platform tenant's connection must NOT be used here: it would show one company's
   catalogue on another company's planner. No connection answers `503 catalogue_unavailable`.
 - The base URL is typed in by a tenant admin, so every call to it goes through `app/services/url_guard.py`:
   public `https` only, the address re-checked on every call, redirects not followed.
-- What SS forwards to C1: `category`, `search`, `page`, `pageSize` (at most 100) and `codes` (a comma
-  list of product codes, at most 200). **C1 needs the `codes` filter**: SS uses it at Save to check
-  that every line is a catalogue product, and the share link uses it to load a saved design's products.
+- What SS forwards to C1, under C1's own names: `query` (part of a name or code), `category` (a category
+  code), `codes` (repeatable, exact match, at most 200 per call), `limit` (1 to 200, default 100) and
+  `offset`. SS uses `codes` at Save to check that every line is a catalogue product, and the share link
+  uses it to load a saved design's products. A code missing from C1's answer is not in this tenant's
+  catalogue.
+- C1's draft shape (the C1 lane owns it; final after its open questions are answered). SS passes the
+  body through unchanged, so the planner page reads C1's snake_case names on these two routes only:
+  - products: `{"data": [...], "total", "limit", "offset"}`, each product `code`, `name`,
+    `category_code`, `category_name`, `length_mm`, `width_mm`, `height_mm`, `thumbnail_url`, `model_url`,
+    `list_price` (decimal string), `currency`. The sizes, both links and the price can be `null`;
+    `model_url` is `null` until C5 ships.
+  - categories: `{"data": [{"code", "name", "parent_code", "display_order"}]}`.
+- `thumbnail_url` and `model_url` are signed links that expire after 1 hour. SS never stores them on a
+  design and never caches them; the page asks again when it needs a fresh one.
+- C1 sends no `ETag` for now. One CRM key belongs to one CRM company, which matches one key per SS tenant.
 - The page downloads thumbnails and GLB files straight from the URLs C1 returns. C1's file host must
   allow cross-origin reads (CORS) from the planner host, or three.js cannot load the models.
-- Fields the planner needs from C1, per product: code, name, category, length, width and height in mm,
-  thumbnail URL, approved GLB URL (or none), list price (0 or none shows as no price). C1 owns the exact
-  shape; SS passes it through unchanged apart from dropping fields the page does not use.
-- A product with no approved GLB is shown as a plain box of its three dimensions.
-- CRM down, slow (over 8 seconds) or answering 401: the page gets `503 catalogue_unavailable` and shows
+- A `list_price` of `null` or 0 shows as no price. A product with no `model_url` is shown as a plain box
+  of its three sizes; a product with a size missing cannot be placed and is not offered.
+- A product can leave the catalogue after a design was saved. When a Save holds a code C1 no longer
+  returns, the Save answers `422` with `details.unavailableCodes`, and the page marks those products as
+  no longer available so the customer can remove them and save (the wording is S2's, see section 12).
+  Opening a share link never fails for this reason: the missing product is shown as unavailable.
+- CRM down, slow (over 8 seconds) or answering 401, 403 or 429: the page gets `503 catalogue_unavailable` and shows
   an error with Try again. SS has no older copy to fall back to. If the CRM is down at Save, the Save
   answers `503 catalogue_unavailable`, nothing is stored, and the page keeps the design on screen so
   the customer can press Save again.
@@ -850,9 +865,10 @@ only the named section.
 | 1 | May stub output reach a real customer while no GPU server exists? | CLOSED by crew ruling 20/11/2026: no. Render is hidden on the public planner until a worker is configured; test tenants get labelled stub output (section 6.3). | closed |
 | 2 | Exact fields the customer fills at Save and the consent sentences | name, mobile, email, contact consent (required), marketing consent (optional), from the build split. The acceptance criteria file (AC-1..10) was not readable from this lane. | S2 lane, against the approved screens |
 | 3 | Default caps | 1 running job, 20 waiting, 10 GPU hours a month per tenant | ops, once the GPU server is known |
-| 4 | Exact response shape of C1 | SS passes C1's shape through; section 7.2 lists the fields the planner needs | C1 lane |
+| 4 | Exact response shape of C1 | C1's draft is in section 7.2; final after the C1 lane's own open questions | C1 lane |
 | 5 | Paid engine vendor and its cost unit | `paidCost` is `{amount, currency}`; no vendor is named and no paid call is built in S1 | owner, after the side-by-side test |
-| 6 | `codes` filter and CORS on the file host | section 7.2 asks C1 for both | C1 lane |
+| 6 | CORS on the file host for the planner host | `codes` is agreed (7.2); CORS still to confirm | C1 lane |
+| 8 | What the customer sees for a product that left the catalogue | marked as no longer available, removable, Save blocked until removed (7.2) | owner (customer-visible), S2 lane |
 | 7 | Captcha on the public Save | none in v0.2; per-IP and per-tenant limits plus the honeypot | owner, only if the limits prove too weak |
 
 ---
@@ -869,5 +885,6 @@ For lanes that started from v0.1 (C1, C3, C6 were sent it):
 | C1 | 7.2: SS needs a `codes` filter; the file host needs CORS for the planner host; SS keeps no cache at all, so every planner page request is one C1 request (size the rate limit for that). |
 | C5 | 3.3 and 4.1: a submit always answers `queued`; a job starts within about 5 seconds. `stubOutcome` is gateway only. |
 | C4 | no change. |
+| C1 | v0.3: section 7.2 now uses C1's own parameter and field names (`query`, `category`, `codes`, `limit`, `offset`; snake_case body); 403 and 429 from C1 also become `catalogue_unavailable`; signed links are never stored. SS still keeps no cache (v0.1 said 5 minutes), so the 600 calls a minute per key is the real ceiling for a tenant's planner traffic. |
 | S1 | new 4.1 (dispatcher tick), `files` router and its signature, error envelope on the public prefix, `p3_job` as the only job record, tenant-only catalogue connection with URL guard, public budgets. |
 | S2, S4 | 3.4 and 7.3: the page captures `scene`, `depth` and `mask` per view at Save; no free camera; branding from the path; framing forbidden; Render hidden while no GPU worker is configured. |
