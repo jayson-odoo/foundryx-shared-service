@@ -160,7 +160,8 @@ def test_s5_split_and_batch_share_the_one_comparator(h, w, monkeypatch):
     assert len(seen) > after_split, "link_batch did not use the link comparator"
 
 
-@pytest.mark.parametrize("wrong", ["qty", "extra_row", "missing_row", "untouched_row", "kept_row", "link"])
+@pytest.mark.parametrize("wrong", ["qty", "extra_row", "missing_row", "untouched_row", "kept_row", "kept_row_moved",
+                                   "link"])
 def test_s5_a_real_wrong_write_is_still_a_mismatch(h, w, wrong):
     def change(doc):
         rows = doc["Details"]
@@ -174,6 +175,8 @@ def test_s5_a_real_wrong_write_is_still_a_mismatch(h, w, wrong):
             next(r for r in rows if r["DtlKey"] == w.p_other)["Qty"] = 9
         elif wrong == "kept_row":
             next(r for r in rows if r["DtlKey"] == w.p_free)["Qty"] = 4
+        elif wrong == "kept_row_moved":  # the kept row's qty is right but it moved / was repriced
+            next(r for r in rows if r["DtlKey"] == w.p_free).update(Location="HQ", UnitPrice=0.0)
         elif wrong == "link":
             rows[-1]["FromSODtlKey"] = w.so_b
 
