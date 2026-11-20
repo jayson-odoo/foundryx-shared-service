@@ -32,6 +32,10 @@ and is resumable (section 4.0a); the single part-row link keeps `done` + `LOCATI
 the pool (merged into a free pool row of the same item and unit, else the row is moved there) and the answer
 carries `detail` (section 4.2). Without it nothing changes.
 
+2026-11-20 (plan 71): `po-links/unlink` takes an optional `returnToDtlKey`; when that PO row can take it, the freed
+quantity goes back into it in ONE PUT (section 4.2 "Return to the source row"), else the unlink runs as before and
+`warnings` says why. Without it nothing changes.
+
 2026-11-17 (plan 65 part B): unlink and relink refuse `FOC_ON_ROW` for a row with a free quantity; Resume clears a
 stale `in_progress` run on the same PO first (section 4.0a). A resend under the key of any `recovered`
 operation runs fresh (the key is released), not only `OPERATION_NOT_APPLIED`.
@@ -378,6 +382,36 @@ matches `BRW-BB`. It is part of the idempotency body (a resend under the same ke
 
 ```json
 { "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12017, "poolLocation": "BRW" }
+```
+
+**Return to the source row (plan 71, optional `returnToDtlKey`).** Send `"returnToDtlKey": 12009` (integer, the
+`DtlKey` of the PO row the quantity was linked FROM, e.g. the HQ row). Absent or `null` = everything above,
+unchanged. Not a positive integer = `422 INVALID_REQUEST`, nothing sent. It is part of the idempotency body. The
+row is used when it is on the same PO, has the same item and unit of measure, is not tied to an SO row (and is not
+the row being unlinked), has no SPO row pointing at it, is not covered by an unresolved link operation, and is not
+fully received (a partly received row still takes it). Then:
+- ONE PUT: the unlinked row is deleted and the source row's quantity goes up by its quantity. The source row keeps
+  its own Location, unit price and delivery date; `poolLocation` and the same-location merge are not used.
+- `replacedLines` = `[{"oldDtlKey": <unlinked>, "newDtlKey": <returnToDtlKey>}]`; `detail` = the source row.
+  Show "Unlinked. Qty returned to <detail.Location>.".
+- When the row cannot be used, the unlink runs exactly as without the field (pool, or same location) and is still
+  `done`, with ONE of these in `warnings`:
+
+| Warning | Why the source row was not used |
+|---|---|
+| `RETURN_ROW_NOT_FOUND` | No such row on this PO |
+| `RETURN_ROW_LINKED` | The row is tied to an SO row, or is the row being unlinked |
+| `RETURN_ROW_ITEM_MISMATCH` | Another item code or unit of measure |
+| `RETURN_ROW_CLOSED` | The row is fully received |
+| `RETURN_ROW_ON_SPO` | An SPO row points at the row |
+| `RETURN_ROW_BUSY` | An unfinished link change covers the row (Resume it first) |
+| `RETURN_PARTLY_RECEIVED` | The unlinked row is partly received: the received part stays, the rest went the pool way |
+
+  `detail` is then the row that holds the quantity (pool row merged into, or the moved row). `po-links/relink`
+  ignores the field.
+
+```json
+{ "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12017, "poolLocation": "BRW", "returnToDtlKey": 12009 }
 ```
 
 ### 4.3 `POST /api/v1/autocount/spo-links/unlink`
