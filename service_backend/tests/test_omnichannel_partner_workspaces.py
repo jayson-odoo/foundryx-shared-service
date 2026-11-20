@@ -13,10 +13,10 @@ import pytest
 
 from app.models import DEFAULT_TENANT_ID
 from tests.test_omnichannel_api_gateway import _seed_channel
-from tests.test_omnichannel_partner_keys import _assigns, _auth, other_tenant, partner_headers
+from tests.test_omnichannel_partner_keys import _auth, other_tenant, partner_headers
 
 P = "/api/v1/omnichannel/partner"
-VERSIONS = Path(__file__).resolve().parents[1] / "modules" / "omnichannel" / "alembic" / "versions"
+ALEMBIC_DIR = Path(__file__).resolve().parents[1] / "modules" / "omnichannel" / "alembic"
 NOT_FOUND = {"error": {"code": "workspace_not_found", "message": "Workspace not found."}}
 
 
@@ -246,9 +246,114 @@ def test_dashboard_workspace_routes_are_unchanged(client):
     assert all("externalRef" not in w and "externalOrgId" not in w for w in listed["data"])
 
 
+# ── dashboard restore of a partner workspace ─────────────────────────────────
+W = "/omnichannel/workspaces"
+IN_USE = "workspace_external_ref_in_use"
+
+
+def _trash(client, h, *ids):
+    res = client.post(f"{W}/trash", json={"ids": list(ids)}, headers=h)
+    assert res.status_code == 204, res.text
+
+
+def _is_trashed(client, h, wid):
+    return client.get(f"{W}/{wid}", headers=h).json()["isTrashed"]
+
+
+def _replaced(client, hdr, h, ext):
+    """(old trashed workspace id, new live workspace id) for one organisation."""
+    old = put(client, hdr, ext).json()["id"]
+    _trash(client, h, old)
+    new = put(client, hdr, ext).json()["id"]
+    assert new != old
+    return old, new
+
+
+def test_restore_of_a_partner_workspace_whose_ref_is_free_succeeds(client):
+    hdr, h = partner_headers(client), _auth(client)
+    wid = put(client, hdr, "org-back").json()["id"]
+    _trash(client, h, wid)
+    res = client.post(f"{W}/restore", json={"ids": [wid]}, headers=h)
+    assert res.status_code == 204, res.text
+    assert _is_trashed(client, h, wid) is False
+    assert client.get(f"{P}/workspaces/{wid}", headers=hdr).status_code == 200
+
+
+def test_restore_is_refused_while_another_live_workspace_holds_the_ref(client):
+    hdr, h = partner_headers(client), _auth(client)
+    old, new = _replaced(client, hdr, h, "org-held")
+    res = client.post(f"{W}/restore", json={"ids": [old]}, headers=h)
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"]["code"] == IN_USE
+    assert res.json()["detail"]["workspaceId"] == old
+    assert _is_trashed(client, h, old) is True
+    assert _is_trashed(client, h, new) is False
+    listed = client.get(f"{P}/workspaces", params={"externalOrgId": "org-held"}, headers=hdr).json()
+    assert [w["id"] for w in listed["data"]] == [new]
+
+
+def test_bulk_restore_with_a_conflict_names_it_and_restores_nothing(client):
+    hdr, h = partner_headers(client), _auth(client)
+    old, new = _replaced(client, hdr, h, "org-bulk")
+    plain = client.post(W, json={"name": "Plain"}, headers=h).json()["id"]
+    _trash(client, h, plain)
+    res = client.post(f"{W}/restore", json={"ids": [plain, old]}, headers=h)
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"]["code"] == IN_USE
+    assert res.json()["detail"]["workspaceId"] == old
+    assert _is_trashed(client, h, plain) is True and _is_trashed(client, h, old) is True
+    assert _is_trashed(client, h, new) is False
+    ok = client.post(f"{W}/restore", json={"ids": [plain]}, headers=h)
+    assert ok.status_code == 204 and _is_trashed(client, h, plain) is False
+
+
+def test_bulk_restore_of_two_trashed_rows_with_the_same_ref_is_refused(client):
+    hdr, h = partner_headers(client), _auth(client)
+    first, second = _replaced(client, hdr, h, "org-twice")
+    _trash(client, h, second)
+    res = client.post(f"{W}/restore", json={"ids": [first, second]}, headers=h)
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"]["code"] == IN_USE
+    assert res.json()["detail"]["workspaceId"] in {first, second}
+    assert _is_trashed(client, h, first) is True and _is_trashed(client, h, second) is True
+
+
+def test_a_restore_that_loses_the_race_at_commit_is_a_409(client, monkeypatch):
+    from modules.omnichannel.repositories.workspace_repository import WorkspaceRepository
+
+    hdr, h = partner_headers(client), _auth(client)
+    old, new = _replaced(client, hdr, h, "org-late")
+    real = WorkspaceRepository.get_live_by_external_ref
+    calls = {"n": 0}
+
+    def stale_first_read(self, tenant_id, external_ref):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # the other workspace had not committed yet
+        return real(self, tenant_id, external_ref)
+
+    monkeypatch.setattr(WorkspaceRepository, "get_live_by_external_ref", stale_first_read)
+    res = client.post(f"{W}/restore", json={"ids": [old]}, headers=h)
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"] == {
+        "code": IN_USE,
+        "message": "Another live workspace already uses this partner organisation id.",
+        "workspaceId": old,
+    }
+    assert calls["n"] == 2
+    monkeypatch.undo()
+    assert _is_trashed(client, h, old) is True and _is_trashed(client, h, new) is False
+
+
 # ── migration chain ──────────────────────────────────────────────────────────
 def test_external_ref_migration_revises_the_omnichannel_head():
-    meta = _assigns(VERSIONS / "0031_omni_workspace_external_ref.py")
-    assert meta["revision"] == "0031_omni_workspace_external_ref"
-    assert meta["down_revision"] == "0030_omni_delivery_history_ix"
-    assert len(meta["revision"]) <= 32
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory(str(ALEMBIC_DIR))
+    heads = script.get_heads()
+    assert len(heads) == 1, heads
+    rev = script.get_revision("0031_omni_workspace_external_ref")
+    assert rev.down_revision == "0030_omni_delivery_history_ix"
+    assert len(rev.revision) <= 32
+    chain = {r.revision for r in script.walk_revisions(base="base", head=heads[0])}
+    assert rev.revision in chain
