@@ -1,17 +1,21 @@
 """Partner workspaces (S7): one workspace per partner organisation, keyed by the
 partner's own ``externalOrgId`` (``workspaces.external_ref``).
 
-Every read and write is scoped to the partner key's tenant. A workspace id from
-another tenant, an unknown id and a trashed workspace all raise the same
-``PartnerWorkspaceNotFound`` so the router answers one uniform 404.
+Every read and write is scoped to the partner key's tenant AND client app
+(migration 0032). A workspace id from another tenant or another client app, an
+unknown id and a trashed workspace all raise the same
+``PartnerWorkspaceNotFound`` so the router answers one uniform 404. NULL
+parents (written by an older running version) are resolved and persisted by
+``get_partner_tenant`` before any route runs (``ClientAppService.heal_tenant``).
 
 ``upsert`` is idempotent: the first call creates the workspace through
-``WorkspaceService`` (same seeding as the dashboard create), later calls return
-the same row. Two concurrent first calls race on the partial unique index
-``(tenant_id, external_ref) WHERE external_ref IS NOT NULL AND is_trashed =
-false``; the loser catches the IntegrityError, rolls back and re-reads.
+``WorkspaceService`` (same seeding as the dashboard create, parent set to the
+key's client app), later calls return the same row. Two concurrent first calls
+race on the partial unique index ``(client_app_id, external_ref) WHERE
+external_ref IS NOT NULL AND is_trashed = false``; the loser catches the
+IntegrityError, rolls back and re-reads.
 """
-from typing import List, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -24,6 +28,13 @@ from .public_gateway_service import PublicGatewayService
 from .workspace_service import WorkspaceService
 
 
+class PartnerScope(NamedTuple):
+    """What a partner key may reach: one client app of one tenant."""
+
+    tenant_id: str
+    client_app_id: str
+
+
 class PartnerWorkspaceNotFound(Exception):
     pass
 
@@ -34,38 +45,47 @@ class PartnerWorkspaceService:
         self.repo = WorkspaceRepository(db)
 
     # ---- reads ----
-    def require(self, tenant_id: str, workspace_id: str) -> Workspace:
-        """The tenant's live workspace, or ``PartnerWorkspaceNotFound``."""
-        ws = self.repo.get_by_id(workspace_id, tenant_id)
+    def require(self, scope: PartnerScope, workspace_id: str) -> Workspace:
+        """The client app's live workspace, or ``PartnerWorkspaceNotFound``."""
+        ws = self.repo.get_in_client_app(workspace_id, scope.tenant_id, scope.client_app_id)
         if ws is None or ws.is_trashed:
             raise PartnerWorkspaceNotFound()
         return ws
 
     def list(
-        self, tenant_id: str, external_ref: Optional[str], page: int, page_size: int
+        self, scope: PartnerScope, external_ref: Optional[str], page: int, page_size: int
     ) -> Tuple[List[Workspace], int]:
         return self.repo.paginate_live_by_external_ref(
-            tenant_id, external_ref, page=page, page_size=page_size
+            scope.tenant_id,
+            external_ref,
+            scope.client_app_id,
+            page=page,
+            page_size=page_size,
         )
 
+    def _live(self, scope: PartnerScope, external_ref: str) -> Optional[Workspace]:
+        return self.repo.get_live_by_external_ref(scope.tenant_id, external_ref, scope.client_app_id)
+
     # ---- writes ----
-    def upsert(self, tenant_id: str, external_ref: str, name: str) -> Workspace:
+    def upsert(self, scope: PartnerScope, external_ref: str, name: str) -> Workspace:
         name = name.strip()
-        existing = self.repo.get_live_by_external_ref(tenant_id, external_ref)
+        existing = self._live(scope, external_ref)
         if existing is None:
             try:
                 created = WorkspaceService(self.db).create_with_external_ref(
-                    WorkspaceCreate(name=name), tenant_id, external_ref
+                    WorkspaceCreate(name=name), scope.tenant_id, external_ref, scope.client_app_id
                 )
-                return self.require(tenant_id, created.id)
+                return self.require(scope, created.id)
             except IntegrityError:
                 # A concurrent first call created it between our read and insert.
                 self.db.rollback()
-                existing = self.repo.get_live_by_external_ref(tenant_id, external_ref)
+                existing = self._live(scope, external_ref)
                 if existing is None:
                     raise
         if existing.name != name:
-            WorkspaceService(self.db).update(existing.id, WorkspaceUpdate(name=name), tenant_id)
+            WorkspaceService(self.db).update(
+                existing.id, WorkspaceUpdate(name=name), scope.tenant_id
+            )
             self.db.refresh(existing)
         return existing
 

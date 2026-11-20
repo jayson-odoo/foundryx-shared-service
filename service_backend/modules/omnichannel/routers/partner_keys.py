@@ -3,7 +3,8 @@
 A tenant admin holding ``partner_keys.manage`` mints, lists and revokes the
 tenant's ``fxp_live_`` partner keys and edits each key's return-origin
 allow-list. Never self-serve by the partner. The full plaintext key is
-returned ONCE at mint. Tenant always from the JWT.
+returned ONCE at mint. Tenant always from the JWT. A key belongs to one client
+app of the tenant (optional ``clientAppId`` at mint, else the tenant's default).
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ from ..schemas import (
     PartnerKeyMintResponse,
     PartnerKeyUpdateRequest,
 )
+from ..services.client_app_service import ClientAppNotFound
 from ..services.partner_key_service import KEY_SCHEME, PartnerKeyNotFound, PartnerKeyService
 
 router = APIRouter()
@@ -28,7 +30,7 @@ router = APIRouter()
 PERMISSION = "partner_keys.manage"
 
 
-def _to_item(row: PartnerApiKey) -> PartnerKeyItem:
+def _to_item(row: PartnerApiKey, app_names: dict) -> PartnerKeyItem:
     return PartnerKeyItem(
         id=row.id,
         name=row.name,
@@ -39,7 +41,13 @@ def _to_item(row: PartnerApiKey) -> PartnerKeyItem:
         lastUsedAt=row.last_used_at,
         revokedAt=row.revoked_at,
         createdAt=row.created_at,
+        clientAppId=row.client_app_id,
+        clientAppName=app_names.get(row.client_app_id) if row.client_app_id else None,
     )
+
+
+def _item(db: Session, row: PartnerApiKey) -> PartnerKeyItem:
+    return _to_item(row, PartnerKeyService(db).client_app_names(row.tenant_id))
 
 
 @router.get("", response_model=PartnerKeyListResponse)
@@ -47,8 +55,10 @@ def list_partner_keys(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission(PERMISSION)),
 ) -> PartnerKeyListResponse:
-    rows = PartnerKeyService(db).list_for_tenant(user.tenant_id)
-    return PartnerKeyListResponse(data=[_to_item(r) for r in rows])
+    service = PartnerKeyService(db)
+    rows = service.list_for_tenant(user.tenant_id)
+    names = service.client_app_names(user.tenant_id)
+    return PartnerKeyListResponse(data=[_to_item(r, names) for r in rows])
 
 
 @router.post("", response_model=PartnerKeyMintResponse, status_code=201)
@@ -60,11 +70,17 @@ def mint_partner_key(
 ) -> PartnerKeyMintResponse:
     try:
         row, full_key = PartnerKeyService(db).mint(
-            user.tenant_id, payload.name, actor_id, payload.allowedReturnOrigins
+            user.tenant_id,
+            payload.name,
+            actor_id,
+            payload.allowedReturnOrigins,
+            client_app_id=payload.clientAppId,
         )
     except InvalidOrigin as exc:
         raise HTTPException(status_code=422, detail=exc.message) from exc
-    return PartnerKeyMintResponse(key=_to_item(row), fullKey=full_key)
+    except ClientAppNotFound as exc:
+        raise HTTPException(status_code=422, detail="Unknown client app.") from exc
+    return PartnerKeyMintResponse(key=_item(db, row), fullKey=full_key)
 
 
 @router.patch("/{key_id}", response_model=PartnerKeyItem)
@@ -82,7 +98,7 @@ def update_partner_key(
         raise HTTPException(status_code=422, detail=exc.message) from exc
     except PartnerKeyNotFound as exc:
         raise HTTPException(status_code=404, detail="Partner key not found.") from exc
-    return _to_item(row)
+    return _item(db, row)
 
 
 @router.post("/{key_id}/revoke", response_model=PartnerKeyItem)
@@ -95,4 +111,4 @@ def revoke_partner_key(
         row = PartnerKeyService(db).revoke(key_id, user.tenant_id)
     except PartnerKeyNotFound as exc:
         raise HTTPException(status_code=404, detail="Partner key not found.") from exc
-    return _to_item(row)
+    return _item(db, row)

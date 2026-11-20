@@ -1503,6 +1503,9 @@ class PartnerKeyItem(ApiModel):
     lastUsedAt: Optional[datetime] = None
     revokedAt: Optional[datetime] = None
     createdAt: datetime
+    # The client app the key acts for (additive, migration 0032).
+    clientAppId: Optional[str] = None
+    clientAppName: Optional[str] = None
 
 
 class PartnerKeyListResponse(ApiModel):
@@ -1512,6 +1515,9 @@ class PartnerKeyListResponse(ApiModel):
 class PartnerKeyCreateRequest(ApiModel):
     name: str = Field(min_length=1, max_length=120)
     allowedReturnOrigins: Optional[List[str]] = None
+    # Optional (additive): one of the caller's tenant's client apps; omitted =
+    # the tenant's default client app.
+    clientAppId: Optional[str] = Field(default=None, max_length=64)
 
 
 class PartnerKeyUpdateRequest(ApiModel):
@@ -1523,11 +1529,27 @@ class PartnerKeyMintResponse(ApiModel):
     fullKey: str  # shown ONCE at mint, never again
 
 
+class ClientAppItem(ApiModel):
+    id: str
+    name: str
+    slug: Optional[str] = None
+    status: str  # ACTIVE | DISABLED
+    isDefault: bool
+    workspaceCount: int  # live workspaces
+
+
+class ClientAppListResponse(ApiModel):
+    data: List[ClientAppItem]
+
+
 class PartnerMeResponse(ApiModel):
     tenantId: str
     tenantName: str
     keyId: str
     keyName: str
+    # The client app the key acts for (additive, migration 0032).
+    clientAppId: str
+    clientAppName: str
 
 
 # ── Public send API (respond.io-style; text/template in v1) ──────────────────

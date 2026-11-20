@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-20** | **Partner API: client apps** (section 6e). Every workspace and partner key now belongs to a **client app** (one consuming application inside a tenant; a tenant may hold several). Each existing workspace became (or joined) the client app named after it, and existing partner keys belong to the tenant's default client app (the one of its default workspace). A partner key can be minted for a specific client app. Partner routes are limited to the calling key's client app: `GET /partner/workspaces` lists only that client app's workspaces, a workspace of another client app answers the same `404 workspace_not_found`, and `externalOrgId` is unique per client app. `GET /partner/me` gains `clientAppId` and `clientAppName`. A disabled client app answers `403 client_app_disabled` on partner routes only. Nothing changes for workspace keys (`fxw_live_`), webhooks, the dashboard or any route in sections 3 to 6d. |
 > | **2026-11-18** | **Partner API: one workspace key per organisation** (section 6e). `POST /partner/workspaces/{workspaceId}/api-keys` mints an ordinary `fxw_live_` workspace key (shown once) that works on the existing API unchanged; list and revoke (revoke pauses the key's webhook endpoints, as a dashboard revoke does). Additive: existing keys keep exactly their power; no existing route or field changes. |
 > | **2026-11-18** | **Partner API: workspaces per organisation** (section 6e). `PUT /partner/workspaces/{externalOrgId}` creates or returns the organisation's workspace (idempotent), plus list, get and channel list. Every route is limited to the partner key's tenant with one uniform `404 workspace_not_found`. Additive: existing routes and fields are unchanged. |
 > | **2026-11-18** | **Delivery history and contact list filters** (sections 6a, 7). New `GET /webhooks/{id}/deliveries?status=&limit=&before=` returns the delivery history of one of your own endpoints, newest first (no event body, no secret); another workspace's endpoint answers the same `404 not_found` as an unknown id. `GET /contacts` takes two optional filters: `updatedSince` (contacts changed or messaged after an ISO 8601 instant) and `channelId` (contacts with an identity on that channel; a channel outside your workspace answers `404 channel_not_found`, as on `GET /templates`). Additive: a request without the new parameters gets exactly today's response, and no existing response gains a field. |
@@ -907,13 +908,15 @@ An invalid body answers `422 invalid_request` with the problems keyed by field, 
 
 ## 6e. Partner API (provisioning organisations)
 
-**Who it is for:** a client application that serves many organisations of its own (for example a CRM where each customer company needs its own WhatsApp numbers) and wants to set them up without asking Foundryx staff for every one. The client application has its **own tenant**; each of its organisations becomes one workspace in that tenant.
+**Who it is for:** a client application that serves many organisations of its own (for example a CRM where each customer company needs its own WhatsApp numbers) and wants to set them up without asking Foundryx staff for every one. Each of its organisations becomes one workspace under the client application's **client app** (below), in its own tenant or in a tenant it shares with other client applications.
+
+**Client apps.** Inside a tenant, each consuming application is recorded as a **client app**, and every workspace and partner key belongs to one client app (client app → workspaces → channels). A tenant may hold several client apps; your partner key belongs to exactly one of them, and everything it reaches is limited to that client app. Workspaces you create through the partner route join your key's client app.
 
 **Nothing changes for existing integrations.** Partner routes live under `/api/v1/omnichannel/partner/*` and accept only a partner key. Workspace keys (`fxw_live_`) and every route in sections 3 to 6d behave exactly as before.
 
 ### How a partner key is issued
 
-A partner key (`fxp_live_...`) is minted from the Foundryx dashboard by an admin of your tenant who holds the **Partner API Keys: Manage** permission. It is never self-serve from the API. The full key is shown **once** at mint time; store it like a password. The admin can list keys, revoke one, and set each key's **allowed return origins** (exact `https://host[:port]` origins, used by the hosted connect flow that comes later; `http://` only for `localhost`).
+A partner key (`fxp_live_...`) is minted from the Foundryx dashboard by an admin of your tenant who holds the **Partner API Keys: Manage** permission. It is never self-serve from the API. The full key is shown **once** at mint time; store it like a password. When the tenant holds several client apps, the admin picks the one the key acts for (otherwise the key belongs to the tenant's default client app); ask for the key of your own client app. The admin can list keys, revoke one, and set each key's **allowed return origins** (exact `https://host[:port]` origins, used by the hosted connect flow that comes later; `http://` only for `localhost`).
 
 ```
 Authorization: Bearer fxp_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -922,6 +925,7 @@ Authorization: Bearer fxp_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 * The key **encodes your tenant** and nothing else. You never send a tenant id.
 * Missing, malformed, unknown or revoked key, or a workspace key, answers `401 invalid_api_key`. A partner key on a workspace-key route also answers `401 invalid_api_key`.
 * Tenant suspended or archived, or the omnichannel service off for the tenant: `403 service_not_enabled`.
+* The key's client app disabled by Foundryx staff: `403 client_app_disabled` ("This client app is disabled.") on every partner route. Workspace keys of that tenant keep working, and webhooks keep being delivered.
 * The per-key limits of section 3a apply to each partner key on its own (10 in progress, 600 per minute, `429 rate_limited` with `Retry-After`).
 * Errors use the `/api/v1` envelope of section 3.
 
@@ -930,7 +934,7 @@ Authorization: Bearer fxp_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 Proves the key works and shows what it is bound to.
 
 ```json
-{ "tenantId": "8b1f...", "tenantName": "EcoHub", "keyId": "3c9e...", "keyName": "EcoHub production" }
+{ "tenantId": "8b1f...", "tenantName": "EcoHub", "keyId": "3c9e...", "keyName": "EcoHub production", "clientAppId": "a41d...", "clientAppName": "EcoHub" }
 ```
 
 ### Workspaces: one per organisation
@@ -950,11 +954,11 @@ Each of your organisations is one workspace, keyed by **your own organisation id
 }
 ```
 
-* **Idempotent.** The first call creates the workspace in your tenant; every later call with the same `externalOrgId` returns the same workspace (same `id`), also when two first calls arrive at the same time. A different `name` renames it. Call it whenever you are unsure whether the organisation exists.
+* **Idempotent.** The first call creates the workspace in your tenant, in your key's client app; every later call with the same `externalOrgId` returns the same workspace (same `id`), also when two first calls arrive at the same time. A different `name` renames it. Call it whenever you are unsure whether the organisation exists.
 * `channels` is the list of section 5a (`PublicChannelItem`), empty until a number is connected.
 * If Foundryx staff trash the workspace in the dashboard, it is no longer returned (`404`) and the next `PUT` creates a new workspace for that `externalOrgId`.
 
-**`GET /api/v1/omnichannel/partner/workspaces?externalOrgId=&page=&pageSize=`** lists your tenant's live workspaces, oldest first, as `{ "data": [workspace...], "total", "page", "pageSize" }` (`page` from 0, `pageSize` 1 to 100, default 25). Workspaces created in the dashboard are listed too, with `externalOrgId: null`.
+**`GET /api/v1/omnichannel/partner/workspaces?externalOrgId=&page=&pageSize=`** lists your client app's live workspaces, oldest first, as `{ "data": [workspace...], "total", "page", "pageSize" }` (`page` from 0, `pageSize` 1 to 100, default 25). Workspaces of another client app in the same tenant are not listed. A workspace of your client app that was not created through the partner route (for example the existing workspace your client app is named after) is listed too, with `externalOrgId: null`.
 
 **`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}`** returns one workspace. **`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}/channels`** returns `{ "data": [PublicChannelItem...] }`, the same list as section 5a.
 
@@ -973,11 +977,11 @@ Your partner key does not send messages. For each organisation, mint one ordinar
 
 `fullKey` is shown **once**; store it encrypted. The key also appears in the dashboard's key list for that workspace.
 
-**`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys`** lists the workspace's keys (`{ "data": [key...] }`, never the full key). **`POST /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys/{keyId}/revoke`** revokes one and answers the key with `status: "REVOKED"`; repeating it changes nothing. As with a dashboard revoke, the webhook endpoints the key owns are paused (section 7); resume them with another live key. An unknown key id, or one of another workspace, answers `404 api_key_not_found`; a workspace outside your tenant answers `404 workspace_not_found`.
+**`GET /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys`** lists the workspace's keys (`{ "data": [key...] }`, never the full key). **`POST /api/v1/omnichannel/partner/workspaces/{workspaceId}/api-keys/{keyId}/revoke`** revokes one and answers the key with `status: "REVOKED"`; repeating it changes nothing. As with a dashboard revoke, the webhook endpoints the key owns are paused (section 7); resume them with another live key. An unknown key id, or one of another workspace, answers `404 api_key_not_found`; a workspace outside your client app answers `404 workspace_not_found`.
 
 ### Isolation
 
-Every partner route reads and writes only your own tenant. A workspace id that belongs to another tenant, does not exist, or is trashed answers the same `404 workspace_not_found` ("Workspace not found."), so nothing tells you whether it exists elsewhere. The same `externalOrgId` in another tenant is a different organisation.
+Every partner route reads and writes only your own client app in your own tenant. A workspace id that belongs to another tenant or to another client app, does not exist, or is trashed answers the same `404 workspace_not_found` ("Workspace not found."), so nothing tells you whether it exists elsewhere. The same `externalOrgId` in another client app (of your tenant or any other) is a different organisation.
 
 ---
 

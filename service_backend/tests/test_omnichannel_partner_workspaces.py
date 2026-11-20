@@ -85,11 +85,11 @@ def test_a_concurrent_first_put_reads_back_the_winner(client, session_factory, m
     real = WorkspaceRepository.get_live_by_external_ref
     calls = {"n": 0}
 
-    def stale_first_read(self, tenant_id, external_ref):
+    def stale_first_read(self, *args):
         calls["n"] += 1
         if calls["n"] == 1:
             return None  # the other request had not committed yet
-        return real(self, tenant_id, external_ref)
+        return real(self, *args)
 
     monkeypatch.setattr(WorkspaceRepository, "get_live_by_external_ref", stale_first_read)
     loser = put(client, hdr, "org-race")
@@ -107,20 +107,24 @@ def test_a_concurrent_first_put_reads_back_the_winner(client, session_factory, m
 def test_the_unique_index_rejects_a_second_live_row_but_allows_after_trash(session_factory):
     from sqlalchemy.exc import IntegrityError
 
-    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.models import ClientApp, Workspace
 
     db = session_factory()
-    db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, name="a", external_ref="dup"))
+    app_a = ClientApp(tenant_id=DEFAULT_TENANT_ID, name="App A")
+    app_b = ClientApp(tenant_id=DEFAULT_TENANT_ID, name="App B")
+    db.add_all([app_a, app_b])
     db.commit()
-    db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, name="b", external_ref="dup"))
+    db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, client_app_id=app_a.id, name="a", external_ref="dup"))
+    db.commit()
+    db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, client_app_id=app_a.id, name="b", external_ref="dup"))
     with pytest.raises(IntegrityError):
         db.commit()
     db.rollback()
     db.query(Workspace).filter(Workspace.external_ref == "dup").update({"is_trashed": True})
-    db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, name="c", external_ref="dup"))
+    db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, client_app_id=app_a.id, name="c", external_ref="dup"))
     db.commit()  # a trashed row no longer holds the ref
-    db.add(Workspace(tenant_id="another-tenant", name="d", external_ref="dup"))
-    db.commit()  # the same ref in another tenant is a different organisation
+    db.add(Workspace(tenant_id=DEFAULT_TENANT_ID, client_app_id=app_b.id, name="d", external_ref="dup"))
+    db.commit()  # the same ref in another client app of the tenant is a different organisation
     db.close()
 
 
@@ -329,11 +333,11 @@ def test_a_restore_that_loses_the_race_at_commit_is_a_409(client, monkeypatch):
     real = WorkspaceRepository.get_live_by_external_ref
     calls = {"n": 0}
 
-    def stale_first_read(self, tenant_id, external_ref):
+    def stale_first_read(self, tenant_id, external_ref, client_app_id):
         calls["n"] += 1
         if calls["n"] == 1:
             return None  # the other workspace had not committed yet
-        return real(self, tenant_id, external_ref)
+        return real(self, tenant_id, external_ref, client_app_id)
 
     monkeypatch.setattr(WorkspaceRepository, "get_live_by_external_ref", stale_first_read)
     res = client.post(f"{W}/restore", json={"ids": [old]}, headers=h)
