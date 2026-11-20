@@ -218,7 +218,10 @@ class OperationRepository:
         rows = self.db.query(AcWriteOperation).filter(
             AcWriteOperation.tenant_id == tenant_id,
             AcWriteOperation.company_id == company_id,
-            AcWriteOperation.status == OUTCOME_PENDING,
+            or_(AcWriteOperation.status == OUTCOME_PENDING,
+                # PO-LINK-STUCK-RECONCILE-B: a write AutoCount timed out on may still land, it counts too
+                AcWriteOperation.error_code == "VENDOR_TIMEOUT"),
+            AcWriteOperation.status.notin_(("done", "refused", "recovered", "in_progress")),
             AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
         )
         for op in rows:

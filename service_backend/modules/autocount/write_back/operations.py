@@ -704,7 +704,7 @@ class OperationService:
                 replaced: Optional[List[Tuple[int, int]]] = None,
                 document: Optional[Doc] = None, batch: Optional[Dict[str, Any]] = None,
                 detail: Optional[Doc] = None) -> OperationResult:
-        if self._timeout_origin and row.op != SPLIT_LINK:
+        if self._timeout_origin:
             status, code, message = self._timeout_verdict(row, status, code, message)
         result = OperationResult(
             row.id, status, code, message, list(self._warnings), list(replaced or []), document,
@@ -1191,6 +1191,10 @@ class OperationService:
             **self._call(row, company, snap, "add"), line=self._line_of(snap, snap["newLink"], qty - received),
         )
         self._step("add", add)
+        if add.error_code == VENDOR_TIMEOUT:  # the add may still be saving: unknown, never undone straight away
+            if add.outcome == OUTCOME_VENDOR_ERROR:
+                raise _Done(VENDOR_ERROR, VENDOR_TIMEOUT, VENDOR_TIMEOUT_MESSAGE)
+            raise _Done(NEEDS_ATTENTION, VENDOR_TIMEOUT, VENDOR_TIMEOUT_MESSAGE)
         if add.outcome == OUTCOME_PENDING:
             raise _Done(PENDING, add.error_code)
         if add.outcome != OUTCOME_DONE or add.new_dtl_key is None:
@@ -1473,6 +1477,9 @@ class OperationService:
                                              document=document)
             return self._finish(row, DONE, None, replaced=replaced, document=document,
                                 detail=_row_in(document, new_key))
+        if self._timeout_origin and not self._write_settled(row):
+            # s3: the timed-out write may still land; no undo / recovery write before the save had time to finish
+            return self._finish(row, VENDOR_ERROR, VENDOR_TIMEOUT, message=NOT_YET_CONFIRMED_MESSAGE, document=doc)
         if partial:
             if _dec(original.get("Qty")) == qty if original else True:
                 return self._finish(row, REFUSED, NOT_APPLIED, document=doc)
@@ -2419,11 +2426,7 @@ class OperationService:
                       action: Optional[AcWriteAction] = None) -> OperationResult:
         """Nothing of the split is in AutoCount. Trusted (``refused``, released by ``resume``) only once its PUT
         had time to finish saving; before that it stays as it was (unknown, the key kept)."""
-        if action is not None and action.response_status is not None and 200 <= int(
-                action.response_status if not isinstance(action.response_status, list)
-                else action.response_status[0] or 0) < 300:
-            pass  # AutoCount answered OK yet nothing reads back: no wait needed, it never landed as sent
-        elif action is not None and not self._write_settled(row):
+        if action is not None and not self._write_settled(row):  # a slow save may still show up
             code = VENDOR_TIMEOUT if self._timeout_origin else (row.error_code or LOOKUP_FAILED)
             return self._finish(row, VENDOR_ERROR if self._timeout_origin else was, code,
                                 message=NOT_YET_CONFIRMED_MESSAGE, document=doc)

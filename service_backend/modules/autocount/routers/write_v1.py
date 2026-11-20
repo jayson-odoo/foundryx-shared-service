@@ -650,8 +650,9 @@ def close_superseded_write_operation(
     ops: OperationService = Depends(get_operation_service),
 ) -> JSONResponse:
     """PO-LINK-STUCK-RECONCILE-B s2: an operator closes a parked operation as superseded (a person fixed the
-    document in AutoCount). Final ``refused`` / ``SUPERSEDED``; nothing is sent to AutoCount; the key is
-    released. A final or running operation is answered as it stands."""
+    document in AutoCount). Final ``refused`` / ``SUPERSEDED``; nothing is sent to AutoCount; the key is kept,
+    so a same-key look-up gets this answer back. Not closed while its write may still be saving. A final or
+    running operation is answered as it stands."""
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
         try:
             result = ops.close_superseded(tenant_id=key.tenant_id, company_id=company.id, operation_id=operationId)

@@ -487,3 +487,65 @@ def test_route_unknown_operation_close_is_404(client, h, gw, w):
     r = client.post(f"{PREFIX}/write-operations/nope/close-superseded", headers=gw.hdr("r-404"),
                     json={"companyCode": "SRT"})
     assert r.status_code == 404
+
+
+# ============================== review round 1 ===================================================
+
+
+
+def test_review_partial_link_add_timeout_is_unknown_never_undone_at_once(h, w):
+    """A partly received row: cut, then add the remainder. The add times out: no undo write, key kept."""
+    reader = lambda kind, doc, r: Decimal(1) if r["DtlKey"] == w.p_free else Decimal(0)  # noqa: E731
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT, after=1)  # the second PUT = the add
+    params = dict(w.params["link_row"], so_dtl_key=w.so_a)
+    res = h.run("link_row", params, key="p-1", receipt_reader=reader)
+    assert (res.outcome, res.error_code) == ("vendor_error", "VENDOR_TIMEOUT"), (res.outcome, res.error_code)
+    assert len(puts(h)) == 2  # cut + the timed-out add, no undo
+    look = h.run("link_row", params, key="p-1", receipt_reader=reader)
+    assert (look.outcome, look.error_code) == ("vendor_error", "VENDOR_TIMEOUT")
+    assert len(puts(h)) == 2  # a young look-up never writes
+    age_actions(h, res)
+    settled = h.run("link_row", params, key="p-1", receipt_reader=reader)
+    assert settled.outcome in ("recovered", "refused"), (settled.outcome, settled.error_code)
+    assert row(h, w.p_free)["Qty"] == 4  # only now, the add proven absent, the cut is undone
+
+
+def test_review_a_timed_out_split_whose_look_up_breaks_is_parked_not_stuck(h, w, monkeypatch):
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
+    res = split(h, w, key="tb-x")
+    assert res.error_code == "VENDOR_TIMEOUT"
+    age_actions(h, res)
+
+    real = ops_mod.OperationService._read_snapshot_doc
+    state = {"boom": True}
+
+    def once(self, *a, **kw):
+        if state.pop("boom", False):
+            raise RuntimeError("transient")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(ops_mod.OperationService, "_read_snapshot_doc", once)
+    look = split(h, w, key="tb-x")
+    assert (look.outcome, look.error_code) == ("needs_attention", "VENDOR_TIMEOUT"), (look.outcome, look.error_code)
+    out = resume(h, res)  # still reconcilable afterwards
+    assert (out.outcome, out.error_code) == ("refused", "OPERATION_NOT_APPLIED"), (out.outcome, out.error_code)
+
+
+def test_review_a_timed_out_link_counts_against_the_so_line(h, w):
+    from modules.autocount.write_back.repository import OperationRepository
+
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
+    res = split(h, w, key="ov-1")
+    assert res.error_code == "VENDOR_TIMEOUT"
+    held = OperationRepository(h.db).pending_link_qty(DEFAULT_TENANT_ID, h.company.id, w.so_a, None)
+    assert held == Decimal(2)
+
+
+def test_review_a_2xx_split_that_does_not_read_back_waits_before_absent(h, w):
+    res = _parked_split(h, w, key="ok-lag")
+    rows = h.vendor.find("PO", 7001)["Details"]  # the save "has not shown yet": undo it in the fake
+    new = tied(h, w)[0]
+    rows.remove(new)
+    next(r for r in rows if r["DtlKey"] == w.p_free)["Qty"] = 4
+    out = resume(h, res)
+    assert out.outcome == "pending_verification", (out.outcome, out.error_code)  # not released yet
