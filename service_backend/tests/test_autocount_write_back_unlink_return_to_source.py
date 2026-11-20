@@ -389,3 +389,47 @@ def test_resume_of_a_return_merge_whose_source_row_drifted_needs_attention(h, wo
     out = h.ops().resume(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=res.operation_id)
     assert out.outcome == "needs_attention", (out.outcome, out.error_code)
     assert out.returned_to is None
+
+
+@pytest.mark.parametrize("field,before,after", [
+    ("Description", None, ""), ("Description", "", None),
+    ("DeliveryDate", "2026-12-01T00:00:00", "2026-12-01"), ("DeliveryDate", None, "0001-01-01T00:00:00"),
+    ("UnitPrice", 1.5, "1.50"), ("UnitPrice", "5", 5.0),
+])
+def test_merge_row_drift_ignores_a_read_spelling_the_same_value_differently(field, before, after):
+    """Review: a plan 62 / 66 / 71 merge that landed must not read as drift because AutoCount spells a value
+    differently (null vs empty, date format, number type)."""
+    from modules.autocount.write_back.payloads import merge_row_drift
+
+    assert merge_row_drift("PO", {field: before, "Location": "HQ"}, {field: after, "Location": "HQ"}) == []
+
+
+@pytest.mark.parametrize("field,before,after", [
+    ("Location", "HQ", "BRW-NTC"), ("DeliveryDate", "2026-10-06T00:00:00", "0001-01-01T00:00:00"),
+    ("UnitPrice", 5, "5.5"), ("Description", "a", "b"),
+])
+def test_merge_row_drift_names_a_real_change(field, before, after):
+    from modules.autocount.write_back.payloads import merge_row_drift
+
+    assert merge_row_drift("PO", {field: before}, {field: after}) == [field]
+
+
+def test_merge_row_drift_names_a_new_link():
+    from modules.autocount.write_back.payloads import merge_row_drift
+
+    assert merge_row_drift("PO", {"FromSODtlKey": 0}, {"FromSODtlKey": 46340001}) == ["FromSODtlKey"]
+    assert merge_row_drift("PO", {"FromSODtlKey": None}, {"FromSODtlKey": 0}) == []
+
+
+def test_a_resumed_partly_received_tied_row_fallback_still_says_why(h, world):
+    from app.models import DEFAULT_TENANT_ID
+
+    def reader(kind, doc, r):
+        return Decimal(1) if r.get("DtlKey") == world.p_linked else Decimal(0)
+
+    h.vendor.apply_then_500_next("PUT", "EditPurchaseOrderbydockey")
+    res = unlink(h, world, "r-part-resume", world.p_other, receipt_reader=reader)
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    out = h.ops().resume(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=res.operation_id)
+    assert "RETURN_SOURCE_NOT_OPEN" in out.warnings, (out.outcome, out.warnings)
+    assert out.returned_to is None

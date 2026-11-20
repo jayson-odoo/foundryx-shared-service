@@ -68,3 +68,13 @@ the PO first (`_resume_merge` keys on the snapshot's `mergeInto`, which is the s
 `service_backend/tests/test_autocount_write_back_unlink_return_to_source.py` (28). Red at 159ecaaf (23 failed),
 green at 4865315e. Live db3 (AutoCount TEST book) check: not runnable from the cloud sandbox (no db3 access);
 recommended before the CRM turns it on: merge into an HQ source row at another price keeps its own price/date.
+
+## Review round 2 (contract alignment)
+- `merge_row_drift` compares a value however a read spells it (date by day, null = empty, price by value), so a
+  landed plan 62 / 66 merge never reads as drift on representation alone (tests pin both directions).
+- "Not cancelled / not closed" (contract): AutoCount carries `Cancelled` on the document only (a cancelled PO is
+  refused before any write); a row is closed when its received qty (`TransferedQty`, else the receipt source)
+  reaches its Qty, already the rule. No row-level cancel flag exists to read.
+- Without `poolLocation`, a fallback answer also carries `detail` (additive; the CRM always sends `poolLocation`).
+- Resume of a pool / same-location merge keeps its Qty-only check (no before-image is stored for those rows);
+  the strict check on Resume applies to the return path, as the contract asks.

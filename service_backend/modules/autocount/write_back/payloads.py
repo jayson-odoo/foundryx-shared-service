@@ -1076,12 +1076,30 @@ def verify_link_doc(
     return Verdict(DONE)
 
 
+_NUMERIC_ROW_KEYS = ("UnitPrice",)
+
+
+def _kept_value(field_name: str, before: Any, after: Any) -> bool:
+    """Plan 71 review: the same value however a read spells it - dates by day (``same_row_value``), empty = empty
+    (None / ""), a numeric field by value (``1.5`` == ``"1.50"``); text exactly."""
+    if field_name == "DeliveryDate":
+        return same_row_value(field_name, before, after)
+    if before in (None, "") and after in (None, ""):
+        return True
+    if field_name in _NUMERIC_ROW_KEYS:
+        nb, na = _num_of(before), _num_of(after)
+        if nb is not None and na is not None:
+            return nb == na
+    return _same(before, after)
+
+
 def merge_row_drift(kind_name: str, before_row: Mapping[str, Any], after_row: Mapping[str, Any]) -> List[str]:
     """Plan 71 (CRM SS contract read-back): the fields of the row a merge raised that moved, other than Qty,
     compared to THAT row's own before-image (never the tied row or the request). Location, DeliveryDate, price
     and the rest of ``_COMPARE_LINE``, plus the row's link (it stays untied). ``FurtherDescription`` (the note)
     is never returned by a read (``UNREADABLE_ROW_KEYS``) and a merge never sends it, so it is not compared."""
-    out = [k for k in _COMPARE_LINE if k != "Qty" and k in before_row and not _same(before_row.get(k), after_row.get(k))]
+    out = [k for k in _COMPARE_LINE
+           if k != "Qty" and k in before_row and not _kept_value(k, before_row.get(k), after_row.get(k))]
     if _link_of_row(kind_name, dict(after_row)) != _link_of_row(kind_name, dict(before_row)):
         out.append("FromSODtlKey" if kind_name == "PO" else "FromDocDtlKey")
     return out
