@@ -56,13 +56,24 @@ class PartnerKeyService:
         name: str,
         created_by: Optional[str],
         allowed_return_origins: Optional[List[str]] = None,
+        client_app_id: Optional[str] = None,
     ) -> Tuple[PartnerApiKey, str]:
         """Create a key, returning (row, full plaintext key). The plaintext is
         the only time anyone sees the full key."""
+        from .client_app_service import ClientAppService
+
         origins = normalize_origins(allowed_return_origins)
         full_key = KEY_SCHEME + secrets.token_urlsafe(32)
+        # The key acts for the given client app of this tenant (else
+        # `ClientAppNotFound`), or the tenant's default when none is given.
+        apps = ClientAppService(self.db)
+        if client_app_id:
+            client_app = apps.require(client_app_id, tenant_id)
+        else:
+            client_app = apps.default_for_tenant(tenant_id)
         row = PartnerApiKey(
             tenant_id=tenant_id,
+            client_app_id=client_app.id,
             name=(name or "").strip() or "Partner key",
             key_prefix=_prefix_of(full_key),
             key_hash=_hash_key(full_key),
@@ -76,12 +87,23 @@ class PartnerKeyService:
         return row, full_key
 
     def list_for_tenant(self, tenant_id: str) -> List[PartnerApiKey]:
+        from .client_app_service import ClientAppService
+
+        # Read fallback: a key (or workspace) an older version wrote without a
+        # parent is resolved and persisted first.
+        ClientAppService(self.db).heal_tenant(tenant_id)
+        self.db.commit()
         return (
             self.db.query(PartnerApiKey)
             .filter(PartnerApiKey.tenant_id == tenant_id)
             .order_by(PartnerApiKey.created_at.desc(), PartnerApiKey.id.asc())
             .all()
         )
+
+    def client_app_names(self, tenant_id: str) -> dict:
+        from ..repositories.client_app_repository import ClientAppRepository
+
+        return {a.id: a.name for a in ClientAppRepository(self.db).list_for_tenant(tenant_id)}
 
     def _get(self, key_id: str, tenant_id: str) -> PartnerApiKey:
         row = (

@@ -68,11 +68,69 @@ class Status(OmniBase):
     __table_args__ = (UniqueConstraint("tenant_id", "scope", "key", name="uq_status_scope_key"),)
 
 
+CLIENT_APP_STATUSES = ("ACTIVE", "DISABLED")
+
+
+class ClientApp(OmniBase):
+    """One consuming application (for example EcoHub) inside a tenant.
+
+    Groups the tenant's workspaces and partner keys: client app -> workspaces
+    -> channels. Migration 0032 made one client app per existing workspace
+    name (same-name workspaces share one); a dashboard-created workspace gets
+    its own, a partner-created one joins the calling key's. Exactly one client
+    app per tenant ``is_default`` (the one of the tenant's default workspace):
+    the parent of a partner key that has none. A workspace can be re-pointed
+    to another client app of the same tenant. No secrets live here (keys stay
+    hashed on their own tables). ``status`` DISABLED is enforced only on the
+    partner routes. ``slug`` is left NULL (reserved for a later admin API).
+    ``allowed_return_origins`` is reserved for a later release and unused.
+    """
+
+    __tablename__ = "client_apps"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, nullable=True)
+    is_default = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    status = Column(String, nullable=False, default="ACTIVE", server_default=text("'ACTIVE'"))
+    allowed_return_origins = Column(JSON(none_as_null=True), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'DISABLED')", name="ck_client_apps_status"),
+        Index("uq_client_apps_tenant_slug", "tenant_id", "slug", unique=True),
+        # One client app per normalised name (trimmed, case-insensitive) per
+        # tenant: the backfill and the create paths find-or-create by it.
+        Index("uq_client_apps_tenant_name", "tenant_id", text("lower(trim(name))"), unique=True),
+        Index(
+            "uq_client_apps_tenant_default",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+            sqlite_where=text("is_default = 1"),
+        ),
+    )
+
+
 class Workspace(OmniBase):
     __tablename__ = "workspaces"
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String,nullable=False, index=True)
+    # The client app this workspace belongs to (migration 0032). Nullable for
+    # backward compatibility: an older running version inserts without it; a
+    # NULL is resolved by the backfill rule and persisted (`client_app_service`).
+    client_app_id = Column(
+        String,
+        ForeignKey("client_apps.id", name="fk_workspaces_client_app_id"),
+        nullable=True,
+        index=True,
+    )
     name = Column(String, nullable=False)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     is_default = Column(Boolean, nullable=False, default=False)
@@ -82,9 +140,9 @@ class Workspace(OmniBase):
     # separate pointer table - one workspace, one cursor.
     round_robin_cursor = Column(String, nullable=True)
     # S7 partner path: the partner's own organisation id (`externalOrgId`).
-    # NULL for every dashboard-created workspace. Unique per tenant among live
-    # rows (partial index, migration 0031_omni_workspace_external_ref), which
-    # makes the partner PUT idempotent and race-safe.
+    # NULL for every dashboard-created workspace. Unique per client app among
+    # live rows (partial index, migration 0032; it was per tenant in 0031),
+    # which makes the partner PUT idempotent and race-safe.
     external_ref = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
@@ -93,8 +151,8 @@ class Workspace(OmniBase):
 
     __table_args__ = (
         Index(
-            "uq_workspaces_tenant_external_ref",
-            "tenant_id",
+            "uq_workspaces_client_app_external_ref",
+            "client_app_id",
             "external_ref",
             unique=True,
             postgresql_where=text("external_ref IS NOT NULL AND is_trashed = false"),
@@ -805,6 +863,14 @@ class PartnerApiKey(OmniBase):
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
+    # The client app this key acts for (migration 0032). Nullable like
+    # `workspaces.client_app_id`; NULL reads as the tenant's default client app.
+    client_app_id = Column(
+        String,
+        ForeignKey("client_apps.id", name="fk_partner_api_keys_client_app_id"),
+        nullable=True,
+        index=True,
+    )
     name = Column(String, nullable=False)
     key_prefix = Column(String, nullable=False, index=True)  # 8 chars after "fxp_live_"
     key_hash = Column(String, nullable=False)  # sha256 hex (64 chars)

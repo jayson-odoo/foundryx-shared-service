@@ -5,7 +5,9 @@ depends on ``get_partner_tenant``, which derives the tenant from the
 ``fxp_live_...`` Bearer key. Errors use the structured ``{error:{code,message}}``
 envelope. Marked ``"public": true`` in the manifest like ``api_v1`` so the
 loader skips the JWT gate; tenant and module state are re-checked inside the
-dependency. Every query is scoped to the key's tenant.
+dependency. Every query is scoped to the key's tenant and client app (the
+key's own, or the tenant's default for a key with no parent); a disabled
+client app gets ``403 client_app_disabled`` from the dependency.
 """
 from typing import Optional
 
@@ -31,6 +33,7 @@ from ..schemas import (
 from ..services.api_key_service import ApiKeyService
 from ..services.partner_key_service import PartnerKeyService
 from ..services.partner_workspace_service import (
+    PartnerScope,
     PartnerWorkspaceNotFound,
     PartnerWorkspaceService,
 )
@@ -49,6 +52,8 @@ def partner_me(
         tenantName=PartnerKeyService(db).tenant_name(partner.tenant_id),
         keyId=partner.key_id,
         keyName=partner.key_name,
+        clientAppId=partner.client_app_id,
+        clientAppName=partner.client_app_name,
     )
 
 
@@ -60,9 +65,13 @@ def _not_found() -> ApiError:
     return ApiError(404, "workspace_not_found", "Workspace not found.")
 
 
+def _scope(partner: PartnerTenant) -> PartnerScope:
+    return PartnerScope(tenant_id=partner.tenant_id, client_app_id=partner.client_app_id)
+
+
 def _require(db: Session, partner: PartnerTenant, workspace_id: str):
     try:
-        return PartnerWorkspaceService(db).require(partner.tenant_id, workspace_id)
+        return PartnerWorkspaceService(db).require(_scope(partner), workspace_id)
     except PartnerWorkspaceNotFound:
         raise _not_found()
 
@@ -75,7 +84,7 @@ def put_workspace(
     db: Session = Depends(get_db),
 ) -> PartnerWorkspaceItem:
     service = PartnerWorkspaceService(db)
-    ws = service.upsert(partner.tenant_id, external_org_id, payload.name)
+    ws = service.upsert(_scope(partner), external_org_id, payload.name)
     return service.item(ws)
 
 
@@ -90,7 +99,7 @@ def list_workspaces(
     db: Session = Depends(get_db),
 ) -> PartnerWorkspaceListResponse:
     service = PartnerWorkspaceService(db)
-    rows, total = service.list(partner.tenant_id, external_org_id, page, page_size)
+    rows, total = service.list(_scope(partner), external_org_id, page, page_size)
     return PartnerWorkspaceListResponse(
         data=service.items(rows, partner.tenant_id), total=total, page=page, pageSize=page_size
     )
