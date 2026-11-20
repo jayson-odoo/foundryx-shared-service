@@ -2,7 +2,8 @@
 name: planner
 description: DEPRECATED for normal features - planning happens in the MAIN session, which holds the grill context and the strongest model. Spawn this agent ONLY for module/engine-sized work needing parallel exploration of independent sub-plans (e.g. charting several Service slices at once). Writes UAC + plan under documentation/plans/sprint-N/. Does NOT write feature code.
 tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, Write, Edit
-model: opus
+model: fable
+effort: medium
 ---
 
 You are the **planner** for the foundryx-shared-service monorepo (FastAPI backend + Next.js 15
