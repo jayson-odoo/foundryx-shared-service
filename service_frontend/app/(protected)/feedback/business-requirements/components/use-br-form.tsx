@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from 'lucide-react';
+import { useFx } from '@/hooks/use-fx';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
@@ -58,6 +59,8 @@ export function useBrForm(
   initialEditing: boolean,
   initialTab?: string,
 ): UseBrFormResult {
+  // Foundryx UIUX switch only: done toasts. Requests are the same in both looks.
+  const fx = useFx();
   const [br, setBr] = useState<BusinessRequirementDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -116,7 +119,11 @@ export function useBrForm(
       setTitle(updated.title);
       setAnswers(updated.answers ?? {});
       setServerFieldErrors({});
-      toast.success('Business requirement saved.');
+      if (fx) {
+        toast.fxDone({ what: `${updated.title || 'Untitled requirement'} saved`, byWhom: 'you' });
+      } else {
+        toast.success('Business requirement saved.');
+      }
       return true;
     } catch (e) {
       // A 422 (type/format error on a draft save) → inline per-field highlights
@@ -132,7 +139,7 @@ export function useBrForm(
       toast.error(e instanceof Error ? e.message : 'Save failed.');
       return false;
     }
-  }, [answers, br, brId, title]);
+  }, [answers, br, brId, title, fx]);
 
   const onCancel = useCallback(() => {
     if (br) {
@@ -147,8 +154,12 @@ export function useBrForm(
     setBr(updated);
     setTitle(updated.title);
     setAnswers(updated.answers ?? {});
-    toast.success('Requirement generated from the grill.');
-  }, []);
+    if (fx) {
+      toast.fxDone({ what: `${updated.title || 'Requirement'} generated from the grill`, byWhom: 'you' });
+    } else {
+      toast.success('Requirement generated from the grill.');
+    }
+  }, [fx]);
 
   // A lifecycle/promote move refreshed the BR (status, and possibly answers).
   const onBrChanged = useCallback((updated: BusinessRequirementDetail) => {
@@ -317,6 +328,13 @@ export function useBrForm(
       onSave,
       onCancel,
       recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off). `BrFormView` swaps the
+      // red action for Send to build when the requirement can be sent.
+      fx: {
+        mainActionId: 'save',
+        fullLabel: (rows) => (rows[0]?.title ? `Save ${rows[0].title}` : ''),
+        iconFor: { delete: 'delete' },
+      },
     };
   }, [
     answers,

@@ -452,3 +452,72 @@
   pointer-events: none;
   animation: fx-need-glow 1.8s var(--fx-ease-out) forwards;
 }
+
+/* Hold to Copy (slice F3b, components/fx/copy/hold-to-copy.tsx).
+   The Tool Background behind the copy icon and "Copied": the surface at 25%
+   (setting --fx-tool-bg) with a faint 0.75px blur (--fx-tool-blur), fading
+   out to nothing towards its rim, with no border or shadow. The icon, ring
+   and word sit at 50% (--fx-tool-ink). The ring fills clockwise in the hold
+   time (--fx-h2c-time); reduced motion keeps it, as it shows how long is
+   left. */
+:root[data-fx='on'] [data-fx-tool-bg] {
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--fx-surface) var(--fx-tool-bg, 25%), transparent) 55%,
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--fx-tool-blur, 0.75px));
+  backdrop-filter: blur(var(--fx-tool-blur, 0.75px));
+  -webkit-mask-image: radial-gradient(closest-side, #000 60%, transparent);
+  mask-image: radial-gradient(closest-side, #000 60%, transparent);
+}
+
+:root[data-fx='on'] [data-fx-tool-ink] {
+  opacity: var(--fx-tool-ink, 50%);
+}
+
+@keyframes fx-h2c-ring {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+:root[data-fx='on'] [data-fx-h2c-ring] {
+  stroke-dashoffset: 1;
+  animation: fx-h2c-ring var(--fx-h2c-time, 0.75s) linear forwards;
+}
+
+/* Reduced transparency or more contrast: the Hold to Copy tip turns solid
+   (owner choice "Hold to Copy tip and RCT solid"), its words at full
+   strength. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root[data-fx='on'] [data-fx-tool-bg] {
+    background: var(--fx-surface);
+    border-radius: var(--fx-r-m);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  :root[data-fx='on'] [data-fx-tool-ink] {
+    opacity: 1;
+  }
+}
+
+/* Coming back to a list: the row you opened is tinted in --fx-link-bg until
+   the next click (lists that keep the legacy table, such as reorderable
+   ones, mark it the same way). */
+:root[data-fx='on'] [data-slot='data-grid-scroller'] [data-returned='true'],
+:root[data-fx='on'] [data-slot='data-grid-scroller'] [data-returned='true'] > td {
+  background-color: var(--fx-link-bg);
+}
+
+/* Setting "Shimmer on loading placeholders" off: loading placeholders hold
+   still (slice F3b). */
+:root[data-fx='on'][data-fx-shimmer='off'] [data-slot='skeleton'] {
+  animation: none;
+}

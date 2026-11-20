@@ -58,8 +58,40 @@ describe('Foundryx UIUX settings schema', () => {
   it('marks as built only the settings whose behaviour exists in merged slices', () => {
     expect(
       FX_SETTINGS.filter(fxSettingBuilt).map((setting) => setting.key),
-    ).toEqual(['motion', 'scroll', 'scroll-size']);
-    // F1 did not build the theme cross-fade, so its row stays hidden.
+    ).toEqual([
+      'motion',
+      'lift',
+      'lean',
+      'toast-time',
+      'shimmer',
+      'hold',
+      'hold-time',
+      'rail-wait',
+      'merge',
+      'condense',
+      'float-act',
+      'h2c',
+      'h2c-time',
+      'h2c-reach',
+      'h2c-copied',
+      'tips',
+      'touch-tips',
+      'tip-delay',
+      'tip-fade',
+      'tip-bg',
+      'views',
+      'columns',
+      'col-drag',
+      'header-search',
+      'freeze',
+      'header-sort',
+      'page-rows',
+      'scroll',
+      'scroll-size',
+    ]);
+    // F1 did not build the theme cross-fade, so its row stays hidden; the
+    // side panel has no flyout submenus, so neither is the safe zone.
     expect(fxSettingBuilt(fxSetting('theme-fade')!)).toBe(false);
+    expect(fxSettingBuilt(fxSetting('safe-zone')!)).toBe(false);
   });
 });

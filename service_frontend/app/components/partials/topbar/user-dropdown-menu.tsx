@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode } from 'react';
 import Link from 'next/link';
 import { I18N_LANGUAGES, Language } from '@/i18n/config';
 import { Globe, Moon, Settings } from 'lucide-react';
@@ -21,14 +21,18 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
 import { AdvancedSettings } from '@/components/fx/settings/advanced-panel';
-import { ThemeDialog, ThemeMenuItem } from '@/components/fx/theme/theme-button';
+import {
+  ThemeDialog,
+  ThemeMenuItem,
+  useFxThemePanelOpen,
+} from '@/components/fx/theme/theme-button';
 import { UserAvatar } from '@/components/platform/user-avatar';
 
 export function UserDropdownMenu({ trigger }: { trigger: ReactNode }) {
   const { data: session } = useSession();
   const { changeLanguage, language } = useLanguage();
   const { theme, setTheme } = useTheme();
-  const [fxThemeOpen, setFxThemeOpen] = useState(false);
+  const [fxThemeOpen, setFxThemeOpen] = useFxThemePanelOpen('dialog');
 
   const handleLanguage = (lang: Language) => {
     changeLanguage(lang.code);

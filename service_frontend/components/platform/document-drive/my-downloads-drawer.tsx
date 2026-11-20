@@ -9,10 +9,16 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import type { DownloadJob } from '@/types/documents';
+import { useFx } from '@/hooks/use-fx';
 import { useDownloads } from './downloads-manager';
 
 /** Global right-side drawer for async ZIP downloads, decoupled from the page. */
 export function MyDownloadsDrawer() {
+  // Foundryx UIUX: the one Jobs sheet shows this list as a tab instead.
+  return useFx() ? null : <MyDownloadsDrawerLegacy />;
+}
+
+function MyDownloadsDrawerLegacy() {
   const { jobs, open, setOpen, download } = useDownloads();
 
   return (
@@ -21,21 +27,34 @@ export function MyDownloadsDrawer() {
         <SheetHeader className="border-b px-4 py-3">
           <SheetTitle>My downloads</SheetTitle>
         </SheetHeader>
-        <div className="flex-1 overflow-y-auto">
-          {jobs.length === 0 ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">
-              No downloads yet. Select files or a folder and choose “Download as ZIP”.
-            </p>
-          ) : (
-            <ul className="divide-y">
-              {jobs.map((job) => (
-                <DownloadRow key={job.id} job={job} onDownload={download} />
-              ))}
-            </ul>
-          )}
-        </div>
+        <DownloadsList jobs={jobs} onDownload={download} />
       </SheetContent>
     </Sheet>
+  );
+}
+
+/** The drawer's list of ZIP downloads, shared with the Foundryx UIUX Jobs sheet. */
+export function DownloadsList({
+  jobs,
+  onDownload,
+}: {
+  jobs: DownloadJob[];
+  onDownload: (id: string) => Promise<void>;
+}) {
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {jobs.length === 0 ? (
+        <p className="p-6 text-center text-sm text-muted-foreground">
+          No downloads yet. Select files or a folder and choose “Download as ZIP”.
+        </p>
+      ) : (
+        <ul className="divide-y">
+          {jobs.map((job) => (
+            <DownloadRow key={job.id} job={job} onDownload={onDownload} />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

@@ -28,6 +28,9 @@ import { ContactDetailsTab } from './contact-details-tab';
 import { ContactFormFields } from './contact-form-fields';
 import { contactFormHref, contactFormPath, contactsListPath } from './paths';
 import { useContactEraseAction } from './use-contact-erase-action';
+import { useFx } from '@/hooks/use-fx';
+import { useFxActorName } from './contacts-fx';
+import { newContactName } from './contact-record-fx';
 import { contactCreateSchema, defaultContactCreateValues, type ContactCreateValues } from './contact-schema';
 
 type CustomFieldValue = string | number | boolean | null;
@@ -46,6 +49,9 @@ export interface UseContactFormResult {
 export function useContactForm(contactId: string | undefined, workspaceId: string): UseContactFormResult {
   const router = useRouter();
   const creating = !contactId;
+  // Foundryx UIUX switch on: the done toast names who was added and by whom.
+  const fx = useFx();
+  const actor = useFxActorName();
 
   const { fields } = useContactFields(workspaceId);
   const { tags } = useContactTags(workspaceId);
@@ -102,6 +108,9 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
   );
   const eraseAction = useContactEraseAction('form', leaveAfterErase);
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const createDirty = createForm.formState.isDirty;
   const config = useMemo<ResourceFormConfig<ContactListItem> | null>(() => {
     if (isLoading || (!creating && notFound)) return null;
 
@@ -122,7 +131,8 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
               tagIds: values.tagIds,
               customFields: customValues,
             });
-            toast.success('Contact created.');
+            if (fx) toast.fxDone({ what: `${newContactName(values)} added`, byWhom: actor });
+            else toast.success('Contact created.');
             router.push(contactFormPath(created.id));
             ok = true;
           } catch (error) {
@@ -181,7 +191,7 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
         actionRows: [],
         editable: false,
         initialEditing: true,
-        isDirty: createForm.formState.isDirty,
+        isDirty: createDirty,
         onSave,
         onCancel: () => router.push(contactsListPath),
       } satisfies ResourceFormConfig<ContactListItem>;
@@ -232,6 +242,7 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
       },
     } satisfies ResourceFormConfig<ContactListItem>;
   }, [
+    createDirty,
     isLoading,
     creating,
     notFound,
@@ -245,6 +256,8 @@ export function useContactForm(contactId: string | undefined, workspaceId: strin
     customErrors,
     router,
     eraseAction,
+    fx,
+    actor,
   ]);
 
   return { config, form: createForm, isLoading, notFound };

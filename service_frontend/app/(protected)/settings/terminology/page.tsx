@@ -9,6 +9,8 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { ResourceList } from '@/components/platform/resource-list';
 import { TermEditDialog } from './term-edit-dialog';
 import { useTerminologyListConfig } from './use-terminology-list-config';
+import { useFx } from '@/hooks/use-fx';
+import { FxTerminologyPage } from './fx-terminology-page';
 
 /**
  * Terminology settings (plan sprint-3/08, F10) - rename what entities are called
@@ -17,6 +19,10 @@ import { useTerminologyListConfig } from './use-terminology-list-config';
  * users; edit gated terminology.manage. Edit is an inline dialog (no detail page).
  */
 export default function TerminologyPage() {
+  return useFx() ? <FxTerminologyPage /> : <TerminologyPageLegacy />;
+}
+
+function TerminologyPageLegacy() {
   const [editing, setEditing] = useState<TermCatalogItem | null>(null);
   // Bumping the key remounts ResourceList → it refetches the catalog after a save.
   const [nonce, setNonce] = useState(0);

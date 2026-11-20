@@ -18,11 +18,13 @@ import { OriginsEditor } from '@/app/(protected)/omnichannel/settings/embed/orig
 import { channelService } from '@/services/channel-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
 import { useWebchatConfig } from '@/hooks/use-webchat-config';
 import type { Channel, WebchatConfig } from '@/types/omnichannel';
 import { workspaceFormPath } from '../../workspaces/components/paths';
 import { CHANNEL_STATUS_REGISTRY, CHANNEL_TYPE_LABELS } from './channel-status';
 import type { ChannelDetailValues } from './channel-schema';
+import { FxIdentityRow, FxStatusRow } from './fx-configuration-bits';
 
 export interface ConfigurationTabProps {
   form: UseFormReturn<ChannelDetailValues>;
@@ -118,6 +120,7 @@ export function ConfigurationTab({
   const canManage = can('channels.manage');
   const [syncing, setSyncing] = useState(false);
   const [testing, setTesting] = useState(false);
+  const fx = useFx();
 
   const runSync = async () => {
     if (!channel) return;
@@ -196,12 +199,16 @@ export function ConfigurationTab({
         </FormRow>
 
         <FormRow label="Status">
+          {fx ? (
+            <FxStatusRow channel={channel} />
+          ) : (
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
             <StatusBadge status={channel?.status ?? 'INACTIVE'} registry={CHANNEL_STATUS_REGISTRY} />
             {channel?.status === 'ERROR' && (
               <span className="text-xs text-muted-foreground">Access token expired or revoked</span>
             )}
           </div>
+          )}
         </FormRow>
 
         <FormRow label="Active">
@@ -269,6 +276,9 @@ export function ConfigurationTab({
 
         {channel?.channelType !== 'WEBCHAT' && (
           <FormRow label="Identity">
+            {fx ? (
+              <FxIdentityRow channel={channel} canManage={canManage} onChannelSynced={onChannelSynced} />
+            ) : (
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <span className="text-xs text-muted-foreground">{lastSynced}</span>
               {canManage && (
@@ -297,6 +307,7 @@ export function ConfigurationTab({
                 </div>
               )}
             </div>
+            )}
           </FormRow>
         )}
       </CardContent>

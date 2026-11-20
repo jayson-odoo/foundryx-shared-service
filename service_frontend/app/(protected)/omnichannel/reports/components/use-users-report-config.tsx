@@ -125,6 +125,9 @@ export function useUsersReportConfig(
       exportColumns: [],
       actions: [],
       enableStatusViews: false,
+      // Foundryx UIUX switch only (ignored while off): a list under the
+      // report, so the smaller empty-state words name what it holds.
+      fx: { noun: 'agents', compactStates: true },
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, reportKey, JSON.stringify(filters), showRank]);

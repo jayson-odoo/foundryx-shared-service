@@ -99,6 +99,9 @@ export function useAssignmentLogConfig(
       exportColumns: [],
       actions: [],
       enableStatusViews: false,
+      // Foundryx UIUX switch only (ignored while off): a list under the
+      // report, so the smaller empty-state words name what it holds.
+      fx: { noun: 'assignments', compactStates: true },
     };
     // `filters` is a fresh object every parent render (the URL-synced hook's
     // return value) - keying off its serialized shape avoids recomputing

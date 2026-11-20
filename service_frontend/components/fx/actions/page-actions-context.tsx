@@ -16,7 +16,7 @@
  *   (`useHideMainAction(true)`), so the page never shows two red actions.
  */
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { FxAnyIconName } from '@/components/fx/icons';
+import type { FxIconRef } from '@/components/fx/icons';
 
 export interface FxBlocked {
   /** The "why" under the button, e.g. "Tick at least one client." */
@@ -43,7 +43,9 @@ export interface FxMainActionSpec {
 export interface FxOtherActionSpec {
   id: string;
   label: string;
-  icon: FxAnyIconName;
+  /** A meaning (`'snooze'`, `'csv-down'`), or a drawn icon node for a
+   *  meaning the set does not hold. */
+  icon: FxIconRef;
   onClick: () => void;
   /** Greyed with its reason as the tooltip. */
   disabledReason?: string;
@@ -59,20 +61,33 @@ interface Entry<V> {
 interface Snapshot {
   main: FxMainActionSpec | null;
   others: FxOtherActionSpec[];
+  /** Other Action ids the page config keeps in the More menu
+   *  (`fx.moreActionIds`), whatever the count. */
+  moreIds: string[];
   hidden: boolean;
 }
 
+interface OthersValue {
+  actions: FxOtherActionSpec[];
+  moreIds: string[];
+}
+
+const NO_IDS: string[] = [];
+
 let mains: Entry<FxMainActionSpec>[] = [];
-let others: Entry<FxOtherActionSpec[]>[] = [];
+let others: Entry<OthersValue>[] = [];
 let hiders = 0;
 let seq = 0;
-let snapshot: Snapshot = { main: null, others: [], hidden: false };
+let snapshot: Snapshot = { main: null, others: [], moreIds: NO_IDS, hidden: false };
 const listeners = new Set<() => void>();
 
 function publish(): void {
   snapshot = {
     main: mains.length ? mains[mains.length - 1].value : null,
-    others: others.flatMap((entry) => entry.value),
+    others: others.flatMap((entry) => entry.value.actions),
+    moreIds: others.some((entry) => entry.value.moreIds.length)
+      ? others.flatMap((entry) => entry.value.moreIds)
+      : NO_IDS,
     hidden: hiders > 0,
   };
   listeners.forEach((listener) => listener());
@@ -83,7 +98,7 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-const EMPTY: Snapshot = { main: null, others: [], hidden: false };
+const EMPTY: Snapshot = { main: null, others: [], moreIds: NO_IDS, hidden: false };
 
 /** What the page header shows: the one main action, the other actions, and
  *  whether the main action is hidden behind an open dialog. */
@@ -131,13 +146,18 @@ export function useRegisterMainAction(action: FxMainActionSpec | null): void {
   );
 }
 
-/** Adds icon actions beside the red action, in order of use. */
-export function useRegisterOtherActions(actions: FxOtherActionSpec[]): void {
+/** Adds icon actions beside the red action, in order of use. `moreIds`
+ *  (the page config's `fx.moreActionIds`) always sit in the More menu; they
+ *  may name actions another caller registers. */
+export function useRegisterOtherActions(
+  actions: FxOtherActionSpec[],
+  moreIds: string[] = NO_IDS,
+): void {
   const key = useKey();
   useEffect(() => {
-    others = upsert(others, key, actions);
+    others = upsert(others, key, { actions, moreIds });
     publish();
-  }, [key, actions]);
+  }, [key, actions, moreIds]);
   useEffect(
     () => () => {
       others = others.filter((entry) => entry.key !== key);

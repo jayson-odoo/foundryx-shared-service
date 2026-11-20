@@ -21,6 +21,10 @@ export interface DeferredCountdownProps {
    *  list row or bulk action), for the playbook toast look. Ignored while
    *  off. */
   fxSurface?: 'toast';
+  /** Foundryx UIUX switch only (FX-03): names the one record a single
+   *  countdown acts on ("Deleting Barcode scanner in 10 s"). Ignored while
+   *  off and for a bulk countdown. */
+  fxName?: string;
   // No `cancelling` prop (fix round 1 item 9): `useDeferredAction.cancel()`
   // now leaves `pending` SYNCHRONOUSLY on the caller's very next render, so
   // this whole countdown unmounts on the SAME click - there is never a

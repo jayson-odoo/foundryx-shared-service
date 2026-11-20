@@ -1,6 +1,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatDuration } from '@/lib/duration';
 import type { DurationStats } from '@/types/omnichannel';
+import { useFx } from '@/hooks/use-fx';
+import { FxDurationBox } from './fx-report-parts';
+
+/** Foundryx UIUX switch only: what an empty duration card says. */
+export function fxDurationEmpty(title: string): string {
+  return /resolution/i.test(title) ? 'No conversations closed in this range.' : 'No replies in this range.';
+}
 
 /**
  * A response/resolution median + p90 stat card (plan 30, AC-RPT-42/48) -
@@ -8,7 +15,16 @@ import type { DurationStats } from '@/types/omnichannel';
  * ONE `formatDuration` helper. `sampleCount: 0` shows a plain status line,
  * never instructional copy (foolproof-UI empty state, §3.1).
  */
-export function DurationStatCard({ title, stats }: { title: string; stats: DurationStats }) {
+export function DurationStatCard(props: { title: string; stats: DurationStats }) {
+  // Foundryx UIUX switch: the median as the answer, in a quiet box; off as today.
+  return useFx() ? (
+    <FxDurationBox title={props.title} stats={props.stats} emptyMessage={fxDurationEmpty(props.title)} />
+  ) : (
+    <DurationStatCardLegacy {...props} />
+  );
+}
+
+function DurationStatCardLegacy({ title, stats }: { title: string; stats: DurationStats }) {
   if (stats.sampleCount === 0) {
     return (
       <Card>
