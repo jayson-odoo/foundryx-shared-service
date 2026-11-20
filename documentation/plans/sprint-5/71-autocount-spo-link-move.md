@@ -72,3 +72,26 @@ Needs an SPO made in AutoCount on db3 with one line tied to a PO line, plus a se
 item. Steps: read; split (take < qty); read back (old line qty - take on PO-A, new line take on PO-B);
 whole move of the new line back to PO-A; read back. Tool: `scripts/autocount_spo_move_probe.py`
 (refuses any book but db3).
+
+## Slice 2 (crew ruling 20 Nov): the SPO line follows a PO split
+
+The CRM Save runs `/spo-links/move` (the SPO line of the SO's quantity now sits on the chosen PO line), then
+Link PO (`/po-links/batch`), which SPLITS that PO line: the linked quantity lands on a NEW PO line. Until this
+slice the second call was refused `ROW_ON_SPO`. Now, with the `spo_move` switch on:
+
+- `/po-links/batch` on a PO line that SPO lines sit on is allowed when (a) the split keeps a rest, (b) at least
+  one SPO line on the PO line has the SAME quantity as a link (one SPO line per link, request order), (c) the
+  kept PO line still has room for the SPO lines that stay on it, and (d) each follower can move as a whole
+  (nothing received, not changed since the index, its SPO not busy). Otherwise `ROW_ON_SPO`, nothing sent, as
+  before. Switch off = `ROW_ON_SPO`, as before.
+- After the PO link PUT (and its restore PUT) the SAME operation sends ONE PUT per follower on its SPO: the old
+  SPO line `"D"`, one new line of the same quantity tied to the NEW PO line (the whole-move shape of
+  `/spo-links/move`, `PrimitiveService.batch_link`, steps `follow_spo<n>`: one call-log row per HTTP leg).
+- The answer gains `spoLines: [{spoDocKey, fromSpoDtlKey, spoDtlKey, fromPoDtlKey, toPoDtlKey, qty}]` (empty
+  when nothing followed).
+- A follow that did not land: `needs_attention` / `SPO_NOT_FOLLOWED`. The PO links stand and are answered; the
+  SPO line still sits on the kept PO line (never without a PO line). Resume reads the SPO first: the new line
+  there = confirmed, no PUT; the old line exactly as planned = the one PUT; anything else stays with a person.
+  The link PUT is never sent twice.
+- Not in this slice (still `ROW_ON_SPO`): a link that takes the WHOLE PO line (AutoCount would have to delete a
+  PO line an SPO line points at, unproven, F15), `/po-links/doc-batch` and the single part-row `/po-links`.

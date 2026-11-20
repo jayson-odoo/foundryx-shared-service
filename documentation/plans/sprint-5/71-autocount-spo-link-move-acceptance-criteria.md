@@ -17,3 +17,8 @@ item and unit, qty 100, nothing received, nothing else tied to it.
 | AC-71-10 | [BE][T] | Every vendor call is in the call log (masked) under the operation id. |
 | AC-71-11 | [BE][T] | The SPO -> PO index (`ac_spo_po_link`) reads the new rows after `done` (B1 shows 24 taken, A1 36). |
 | AC-71-12 | [E2E] | db3 probe: split then whole move on a real SPO, read back as AC-71-01/02 (masked evidence in the PR). |
+| AC-71-13 | [BE][T] | Slice 2: `/po-links/batch` of 40 on a PO line of 100 that an SPO line of 40 sits on -> `done`; PO PUT first, then ONE SPO PUT (old line `"D"`, new line of 40 tied to the NEW PO line); `spoLines` names it; the index follows. |
+| AC-71-14 | [BE][T] | Slice 2 refusals, nothing sent, `ROW_ON_SPO`: switch off; no SPO line of a link's quantity; the link takes the whole PO line; the kept PO line cannot hold the SPO lines that stay. |
+| AC-71-15 | [BE][T] | Slice 2: another SPO line the kept PO line can hold stays where it is. |
+| AC-71-16 | [BE][T] | Slice 2: the SPO PUT is refused or its outcome is unknown -> `needs_attention` / `SPO_NOT_FOLLOWED`, the PO links answered, the SPO line still on the kept PO line; Resume finishes it (no second link PUT, no second SPO PUT when it had landed); an SPO line changed by hand stays with a person, nothing sent. |
+| AC-71-17 | [BE][T] | Slice 2: both PUTs are action rows of the one operation; the route answers `spoLines` (empty on a refusal). |

@@ -246,6 +246,14 @@ second write does not land (AutoCount error, read-back differs, or the time budg
 single part-row link on `po-links` (split) keeps `done` with `LOCATION_NOT_MOVED` / `ROW_VALUES_NOT_KEPT`
 (section 5). Use `po-links/relocate` for a row left at the default location.
 
+Plan 71 slice 2 (behind the `spo_move` switch, off until the db3 probe): a `po-links/batch` that splits a PO row
+a shipping purchase order row sits on is no longer refused when one of those rows has the same quantity as a
+link: after the link, the same operation moves that shipping purchase order row onto the new PO row and names it
+in `spoLines: [{spoDocKey, fromSpoDtlKey, spoDtlKey, fromPoDtlKey, toPoDtlKey, qty}]` (always present, empty
+when nothing moved). If that move does not land the answer is `needs_attention` with `errorCode`
+`SPO_NOT_FOLLOWED`: the links stand, the shipping purchase order row still sits on the kept PO row, and the
+operation is resumable (section 4.0a). Every other case keeps `ROW_ON_SPO`.
+
 AutoCount's API rewrites the PO's Remark2, Remark3 and Remark4 to the value of Remark1 on every write (db3,
 16 Nov). The gateway accepts that: no warning is raised and a Remark2..4 that reads back equal to Remark1 is
 not a mismatch. Any other change to the PO is still `READBACK_MISMATCH`.
