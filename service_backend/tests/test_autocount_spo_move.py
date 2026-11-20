@@ -131,8 +131,8 @@ def test_ac_71_03_no_po_document_is_written(h, w):
 
 # ---- AC-71-04 refusals, nothing sent ------------------------------------------------------------------
 
-def _refused(h, w, code, key="idem-r", **over):
-    res = h.run(OP, w.params(**over), key=key)
+def _refused(h, w, code, key="idem-r", reader="zero", **over):
+    res = h.run(OP, w.params(**over), key=key, receipt_reader=reader)
     assert res.outcome == "refused" and res.error_code == code, (res.outcome, res.error_code, res.message)
     assert h.vendor.writes() == []
     return res
@@ -161,7 +161,7 @@ def test_ac_71_04_unknown_target_row_is_row_not_found(h, w):
 def test_ac_71_04_fully_received_target_is_target_received(h):
     switch(h)
     w = World(h, b_over={"TransferedQty": 100})
-    _refused(h, w, "TARGET_RECEIVED")
+    _refused(h, w, "TARGET_RECEIVED", reader="default")
 
 
 def test_ac_71_04_target_without_room_is_qty_above_outstanding(h):
@@ -173,7 +173,7 @@ def test_ac_71_04_target_without_room_is_qty_above_outstanding(h):
 def test_ac_71_04_fully_received_spo_line_is_row_received(h):
     switch(h)
     w = World(h, l3_over={"TransferedQty": 60})
-    _refused(h, w, "ROW_RECEIVED")
+    _refused(h, w, "ROW_RECEIVED", reader="default")
 
 
 @pytest.mark.parametrize("qty", [0, -1])
@@ -199,7 +199,7 @@ def test_ac_71_05_a_refusal_releases_the_key(h, w):
 def test_partly_received_line_moves_only_its_open_qty(h):
     switch(h)
     w = World(h, l3_over={"TransferedQty": 10})
-    res = h.run(OP, w.params(60))
+    res = h.run(OP, w.params(60), receipt_reader="default")
     assert res.outcome == "done", (res.error_code, res.message)
     assert w.row(w.l3)["Qty"] == 10 and w.row(w.l3)["FromDocDtlKey"] == w.a1
     assert res.batch["moved"]["qty"] == "50"
@@ -306,10 +306,91 @@ def test_u13_kept_line_reading_back_without_its_po_row_is_needs_attention(h, w):
     original = h.vendor._edit
 
     def edit(kind, body):  # AutoCount drops the kept line's link (never seen; must not pass as done)
-        rows = [dict(r, FromDocDtlKey=0, FromDocType="", FromDocNo="") if r.get("DtlKey") == w.l3 else r
-                for r in body.get("Details") or []]
-        return original(kind, dict(body, Details=rows))
+        out = original(kind, body)
+        kept = w.row(w.l3)
+        if kept is not None:
+            kept.update(FromDocDtlKey=0, FromDocType="", FromDocNo="")
+        return out
 
     h.vendor._edit = edit
     res = h.run(OP, w.params(24))
-    assert res.outcome != "done"
+    assert res.outcome == "needs_attention", (res.outcome, res.error_code)
+    assert h.alerts  # one alert to a person, nothing retried
+
+
+# ---- the route: POST /api/v1/autocount/spo-links/move (plan 71 contract) ------------------------------------
+
+MOVE = "/api/v1/autocount/spo-links/move"
+
+
+@pytest.fixture
+def gw(h, db):
+    from tests.test_autocount_write_back_gateway_qtso import Gw
+
+    switch(h)
+    return Gw(h, db)
+
+
+def body(w, qty=24, **over):
+    out = {"companyCode": "SRT", "spoDocKey": 7103, "spoDtlKey": w.l3, "toPoDocKey": 7102,
+           "toPoDtlKey": w.b1, "qty": qty}
+    out.update(over)
+    return out
+
+
+def test_route_split_answers_moved_and_remainder(client, gw):
+    w = World(gw.h)
+    r = client.post(MOVE, json=body(w), headers=gw.hdr())
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["outcome"] == "done" and got["operationId"] and got["docKey"] == 7103
+    assert got["moved"]["fromPoDtlKey"] == w.a1 and got["moved"]["toPoDtlKey"] == w.b1
+    assert got["moved"]["qty"] == "24"
+    assert got["remainder"] == {"spoDtlKey": w.l3, "poDtlKey": w.a1, "qty": "36"}
+    again = client.post(MOVE, json=body(w), headers=gw.hdr())  # same key: the stored answer
+    assert again.status_code == 200 and again.json()["moved"] == got["moved"]
+
+
+def test_route_whole_move_has_no_remainder(client, gw):
+    w = World(gw.h)
+    r = client.post(MOVE, json=body(w, qty=60), headers=gw.hdr())
+    assert r.status_code == 200, r.text
+    assert r.json()["remainder"] is None and r.json()["moved"]["qty"] == "60"
+
+
+def test_route_refusal_is_409_and_carries_both_fields_as_null(client, gw):
+    w = World(gw.h)
+    r = client.post(MOVE, json=body(w, toPoDocKey=7101, toPoDtlKey=w.a1), headers=gw.hdr())
+    assert r.status_code == 409, r.text
+    got = r.json()
+    assert got["outcome"] == "refused" and got["errorCode"] == "NO_CHANGE"
+    assert got["moved"] is None and got["remainder"] is None
+    assert gw.h.vendor.writes() == []
+
+
+def test_route_needs_the_idempotency_key(client, gw):
+    w = World(gw.h)
+    r = client.post(MOVE, json=body(w), headers=gw.hdr(idem=""))
+    assert r.status_code == 422 and r.json().get("code") == "IDEMPOTENCY_KEY_REQUIRED", r.text
+    assert gw.h.vendor.writes() == []
+
+
+@pytest.mark.parametrize("bad", [{"qty": "24"}, {"qty": None}, {"toPoDtlKey": "x"}])
+def test_route_bad_body_is_422(client, gw, bad):
+    w = World(gw.h)
+    r = client.post(MOVE, json=body(w, **bad), headers=gw.hdr())
+    assert r.status_code == 422, r.text
+    assert gw.h.vendor.writes() == []
+
+
+def test_route_pull_only_key_is_403(client, h, db):
+    from tests.test_autocount_write_back_gateway import _hdr, _key
+    from tests.test_autocount_write_back_gateway_qtso import Gw
+
+    switch(h)
+    Gw(h, db)
+    w = World(h)
+    _row, plain = _key(db, [h.company.id])  # default scope: pull
+    r = client.post(MOVE, json=body(w), headers={**_hdr(plain), "Idempotency-Key": "k"})
+    assert r.status_code == 403, r.text
+    assert h.vendor.writes() == []

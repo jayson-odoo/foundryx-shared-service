@@ -110,6 +110,9 @@ NOT_APPLIED = "OPERATION_NOT_APPLIED"
 SPLIT_LINK = "split_link"
 LINK_BATCH = "link_batch"  # plan 62: one PO row to N SO rows in one PUT
 LINK_DOC_BATCH = "link_doc_batch"  # plan 69: every linked row of ONE PO document, one PUT per chunk
+SPO_MOVE = "spo_move_row"  # plan 71: move / split one SPO row onto another PO row, ONE PUT on the SPO
+_COMPOSITE_OPS = (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH, SPO_MOVE)  # the operations outside ``OPS``
+TARGET_RECEIVED = "TARGET_RECEIVED"  # plan 71: the target PO row is fully received
 # Plan 69 D2: new linked rows per link PUT (a chunk); a longer document batch is split, never refused.
 MAX_LINES_PER_PUT = 40
 SOME_LINES_NOT_LINKED = "SOME_LINES_NOT_LINKED"  # plan 69: a done document batch with skipped / failed lines
@@ -168,6 +171,15 @@ def op_capable(defn: "_OpDef") -> bool:
         return False
     flag = _OP_FLAGS.get((defn.kind, defn.mode))
     return flag is None or bool(capabilities.VENDOR_CAPABILITIES.get(flag))
+
+
+def spo_move_capable() -> bool:
+    """Plan 71: the SPO move / split is ONE PUT on the SPO edit door; its own switch (``spo_move``), off
+    until a db3 probe proves it (F14: no SPO write was ever probed)."""
+    return capabilities.capable("SPO", "edit_doc") and bool(capabilities.VENDOR_CAPABILITIES.get("spo_move"))
+
+
+SPO_MOVE_MODE = "spo_move"  # the snapshot ``mode`` of a plan 71 move
 
 
 @dataclass
@@ -406,7 +418,7 @@ class OperationService:
         company = CompanyRepository(self.db).get(tenant_id, company_id)
         if company is None:
             return OperationResult(None, REFUSED, WRITE_DISABLED)
-        if op not in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH) and op not in OPS:
+        if op not in _COMPOSITE_OPS and op not in OPS:
             return OperationResult(None, REFUSED, UNKNOWN_OPERATION)
         request_hash = hashlib.sha256(
             json.dumps({"op": op, "params": params}, sort_keys=True, default=str).encode()
@@ -427,7 +439,7 @@ class OperationService:
             spec = self._spec(op, params)
         except (KeyError, TypeError, ValueError):
             return OperationResult(None, REFUSED, INVALID_PARAMS)
-        kind = OPS[op].kind if op in OPS else "PO"
+        kind = OPS[op].kind if op in OPS else ("SPO" if op == SPO_MOVE else "PO")
         window = datetime.now(timezone.utc) - timedelta(seconds=BUSY_WINDOW_SECONDS)
         if self.ops.expire_stale_in_progress(tenant_id, company.id, kind, spec.doc_key, window):
             self.db.commit()  # a crashed run no longer holds the document (AC-57-43)
@@ -466,7 +478,7 @@ class OperationService:
                 self.db.refresh(row)
         if row.status == IN_PROGRESS:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
-        if row.op not in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH) and row.op not in OPS:
+        if row.op not in _COMPOSITE_OPS and row.op not in OPS:
             return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
         if self._never_applied(row):
             return self._settle_not_applied(row)
@@ -541,6 +553,12 @@ class OperationService:
                 int(params["doc_key"]), int(params["dtl_key"]), None, None,
                 params.get("doc_date"), params.get("expected_last_modified"), None,
             )
+        if op == SPO_MOVE:
+            return _Spec(
+                int(params["spo_doc_key"]), int(params["spo_dtl_key"]),
+                int(params["po_doc_key"]), int(params["po_dtl_key"]),
+                params.get("doc_date"), params.get("expected_last_modified"), params.get("target_doc_date"),
+            )
         if op == SPLIT_LINK:
             return _Spec(
                 int(params["po_doc_key"]), int(params["po_dtl_key"]),
@@ -594,7 +612,7 @@ class OperationService:
         operation commits its snapshot BEFORE its first AutoCount write (``_execute_unlocked``,
         ``_batch_locked``, ``_split_link``). Belt and braces: no step and no write action recorded."""
         return (row.status == PENDING and not row.snapshot_json and not row.steps_json
-                and (row.op in OPS or row.op in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH))
+                and (row.op in OPS or row.op in _COMPOSITE_OPS)
                 and not self.ops.has_actions(row.tenant_id, row.id))
 
     def _settle_not_applied(self, row: AcWriteOperation) -> OperationResult:
@@ -690,6 +708,8 @@ class OperationService:
         that follows must not interleave with another caller's on the same PO or the same SO row. A lock not
         won is ``DOC_BUSY`` (never stored under the key)."""
         po_keys = [spec.doc_key] if row.doc_type == "PO" else []
+        if op == SPO_MOVE and spec.target_doc_key:  # plan 71: the target PO row's room, guard to write
+            po_keys = [spec.target_doc_key]
         so_keys = [spec.target_dtl_key] if op in (SPLIT_LINK, "link_row", "relink_row") and spec.target_dtl_key else []
         try:
             with link_locks(self.db, company.id, po_doc_keys=po_keys, so_dtl_keys=so_keys):
@@ -712,6 +732,8 @@ class OperationService:
             return self._batch_link(row, company, spec, params)
         if op == LINK_DOC_BATCH:
             return self._doc_batch_link(row, company, spec, params)
+        if op == SPO_MOVE:
+            return self._spo_move(row, company, spec, params)
         if op == SPLIT_LINK or (
             op == "link_row" and not params.get("whole_row") and self._is_part_of_row(company, base_url, spec, params)
         ):
@@ -1343,6 +1365,8 @@ class OperationService:
             return self._resume_batch(row, company, snap, doc)
         if snap.get("mode") == "doc_batch":
             return self._resume_doc_batch(row, company, snap, doc)
+        if snap.get("mode") == SPO_MOVE_MODE:
+            return self._resume_spo_move(row, company, snap, doc)
         rows = doc.get("Details") or []
         old_key = int(snap["row"]["DtlKey"])
         original = next((r for r in rows if r.get("DtlKey") == old_key), None)
@@ -2195,6 +2219,157 @@ class OperationService:
         return self._finish(row, status, result.error_code, message=result.message, document=result.document,
                             detail=result.detail)
 
+    # ── SPO move / split (plan 71): ONE PUT on the SPO ───────────────────────
+
+    def _spo_move(self, row: AcWriteOperation, company: AcCompany, spec: _Spec,
+                  params: Dict[str, Any]) -> OperationResult:
+        """Move ``take`` = min(qty, open qty) of one SPO row onto another PO row. ONE PUT on the SPO edit
+        door (``batch_link``): the row ``"D"`` when all of it moves, else kept with its rest on its own PO
+        row, plus one new row tied to the target PO row. AutoCount applies a PUT all or nothing (plan 61
+        F8), so no outcome leaves an SPO row without a PO row. No PO document is written."""
+        if not spo_move_capable():
+            raise _Done(REFUSED, VENDOR_UNSUPPORTED)
+        try:
+            wanted = Decimal(str(params["qty"]))
+        except (KeyError, ArithmeticError, ValueError):
+            raise _Done(REFUSED, INVALID_PARAMS, "qty must be a number") from None
+        if not wanted.is_finite() or wanted <= 0:
+            raise _Done(REFUSED, INVALID_PARAMS, "qty must be above zero")
+        defn = _OpDef("SPO", "PO", "relink")
+        self._check_not_busy(company, spec.doc_key, "SPO")
+        doc_date, doc = self._read(company, "SPO", spec.doc_key, spec.doc_date,
+                                   beside=self._target_beside(company, defn, spec))
+        if spec.expected_last_modified and doc.get("LastModified") != spec.expected_last_modified:
+            raise _Done(REFUSED, DOC_STALE)
+        with self.prims.staged_memo():
+            snapshot = self._spo_move_plan(company, defn, spec, doc, doc_date, wanted)
+        self._store_snapshot(row, snapshot)
+        self._check_deadline()  # the only stop point: before the one write
+        old_key = int(snapshot["row"]["DtlKey"])
+        line = self._line_of(snapshot, snapshot["newLink"], Decimal(snapshot["take"]))
+        res = self.prims.batch_link(**self._call(row, company, snapshot, "move_spo"), dtl_key=old_key, lines=[line])
+        self._step("move_spo", res)
+        if res.outcome == OUTCOME_VENDOR_ERROR:
+            if res.error_code == VENDOR_REFUSED:  # AutoCount said no: nothing landed
+                raise _Done(VENDOR_ERROR, res.error_code, res.message)
+            raise _Done(PENDING, res.error_code, res.message)  # may have landed: resume reads AutoCount
+        if res.outcome == OUTCOME_MISMATCH:  # landed but reads back wrong: a person checks, never a guess
+            return self._needs_attention(row, company, snapshot, res.error_code or INTERNAL_ERROR,
+                                         document=res.document)
+        if res.outcome != OUTCOME_DONE or res.document is None:
+            self._abort_unless_done(res)
+            raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
+        return self._spo_move_landed(row, company, snapshot, res.document, deadline=True)
+
+    def _spo_move_plan(self, company: AcCompany, defn: _OpDef, spec: _Spec, doc: Doc, doc_date: date,
+                       wanted: Decimal) -> Doc:
+        """Every refusal before any write (AC-71-04), then the snapshot the PUT and its Resume use."""
+        try:
+            line = payloads.check_row("SPO", doc, spec.dtl_key)  # kind, cancelled, row exists
+        except WriteRefusal as exc:
+            raise _Done(REFUSED, exc.code, str(exc)) from None
+        linked = _link_of("SPO", line)
+        if not linked:
+            raise _Done(REFUSED, "ROW_NOT_LINKED")
+        if linked == spec.target_dtl_key:
+            raise _Done(REFUSED, "NO_CHANGE")
+        received = self._spo_received(company, "SPO", doc, line)
+        qty = _dec(line.get("Qty"))
+        if received >= qty:
+            raise _Done(REFUSED, ROW_RECEIVED, received_message("SPO", line))
+        take = min(wanted, qty - received)
+        assert spec.target_doc_key is not None
+        _tdate, tdoc = self._read(company, "PO", spec.target_doc_key, spec.target_doc_date)
+        try:
+            payloads._check_doc(tdoc, False)  # a PO, not cancelled
+        except WriteRefusal as exc:
+            raise _Done(REFUSED, exc.code, str(exc)) from None
+        trow = next((r for r in tdoc.get("Details") or [] if r.get("DtlKey") == spec.target_dtl_key), None)
+        if trow is None:
+            raise _Done(REFUSED, "ROW_NOT_FOUND")
+        if line.get("ItemCode") != trow.get("ItemCode"):
+            raise _Done(REFUSED, "ITEM_MISMATCH")
+        if line.get("UOM") != trow.get("UOM"):
+            raise _Done(REFUSED, "UOM_MISMATCH")
+        if self._spo_received(company, "PO", tdoc, trow) >= _dec(trow.get("Qty")):
+            raise _Done(REFUSED, TARGET_RECEIVED, received_message("PO", trow))
+        used = self._spo_linked_qty(company, doc, int(spec.target_dtl_key or 0), spec.dtl_key)
+        if take > payloads.so_outstanding(trow, used):
+            raise _Done(REFUSED, "QTY_ABOVE_OUTSTANDING")
+        return _json_safe({
+            "mode": SPO_MOVE_MODE, "kind": "SPO", "docKey": spec.doc_key, "docNo": doc.get("DocNo"),
+            "docDate": doc_date.isoformat(), "lastModified": doc.get("LastModified"),
+            "knownKeys": [r.get("DtlKey") for r in doc.get("Details") or []],
+            "row": line, "received": str(received), "take": str(take), "rest": str(qty - take),
+            "newLink": {"FromDocType": "PO", "FromDocNo": tdoc.get("DocNo"), "FromDocDtlKey": spec.target_dtl_key},
+            "oldLink": self._old_link(company, defn, line), "soLink": None,
+            "location": line.get("Location"), "moveTo": line.get("Location"),
+            "companyName": company.company_name or company.name,
+        })
+
+    def _spo_received(self, company: AcCompany, kind: str, doc: Doc, row: Doc) -> Decimal:
+        """Received qty of an SPO / PO row; unknown (the vendor hides it) = 0 with the
+        ``TRANSFER_STATE_UNKNOWN`` warning (AutoCount refuses a write over a real receipt)."""
+        if self._receipt_reader is not None:
+            received = self._receipt_reader(kind, doc, row)
+        else:
+            received = self.prims._row_received(company, kind, dict(row, DocKey=doc.get("DocKey")))
+        if received is None:
+            if TRANSFER_STATE_UNKNOWN not in self._warnings:
+                self._warnings.append(TRANSFER_STATE_UNKNOWN)
+            return Decimal(0)
+        return received
+
+    def _spo_move_rows(self, snap: Doc, doc: Doc) -> Tuple[Optional[Doc], Optional[Doc]]:
+        """``(the new row, the kept row)`` of a landed move as ``doc`` reads it, or ``(None, _)`` when the
+        intended new row is not there. The kept row is None on a whole move (or when it is gone)."""
+        base, link = snap["row"], snap["newLink"]
+        known = set(snap["knownKeys"])
+        new = next((r for r in doc.get("Details") or [] if r.get("DtlKey") not in known
+                    and r.get("ItemCode") == base.get("ItemCode") and r.get("UOM") == base.get("UOM")
+                    and _dec(r.get("Qty")) == Decimal(snap["take"])
+                    and _link_of("SPO", r) == int(link.get("FromDocDtlKey") or 0)), None)
+        kept = _row_in(doc, int(base["DtlKey"]))
+        return new, kept
+
+    def _spo_move_landed(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc, *,
+                         deadline: bool) -> OperationResult:
+        """The PUT is in AutoCount: check the shape (U13: the kept row still on its old PO row, a whole
+        move left no old row), put the new row's location / price / date back (warning only), stage."""
+        new, kept = self._spo_move_rows(snap, doc)
+        old_key = int(snap["row"]["DtlKey"])
+        rest = Decimal(snap["rest"])
+        old_po = int(snap["oldLink"].get("FromDocDtlKey") or 0)
+        whole = rest == 0
+        shape_ok = new is not None and (
+            kept is None if whole else
+            (kept is not None and _dec(kept.get("Qty")) == rest and _link_of("SPO", kept) == old_po))
+        if not shape_ok:
+            return self._needs_attention(row, company, snap, "ROW_MISMATCH", document=doc)
+        assert new is not None
+        new_key = int(new["DtlKey"])
+        document = self._move(row, company, snap, new_key, doc, snap["location"], deadline=deadline)
+        self.prims._stage(company, "SPO", document, {new_key: old_key} if whole else None)
+        moved = {"spoDtlKey": new_key, "fromPoDtlKey": old_po,
+                 "toPoDtlKey": int(snap["newLink"]["FromDocDtlKey"]), "qty": _qty_text(snap["take"])}
+        remainder = None if whole else {"spoDtlKey": old_key, "poDtlKey": old_po, "qty": _qty_text(rest)}
+        return self._finish(row, DONE, None, replaced=[(old_key, new_key)] if whole else [], document=document,
+                            batch={"moved": moved, "remainder": remainder}, detail=_row_in(document, new_key))
+
+    def _resume_spo_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, doc: Doc) -> OperationResult:
+        """A pending move, read fresh: the new row there = it landed (confirm it, no second PUT); the old
+        row exactly as it was and no new row = it never landed (``recovered`` / not applied, the next press
+        runs fresh); anything else needs a person (no PUT is sent)."""
+        new, kept = self._spo_move_rows(snap, doc)
+        if new is not None:
+            return self._spo_move_landed(row, company, snap, doc, deadline=False)
+        base = snap["row"]
+        untouched = (kept is not None and _dec(kept.get("Qty")) == _dec(base.get("Qty"))
+                     and _link_of("SPO", kept) == _link_of("SPO", base))
+        if untouched:
+            return self._finish(row, RECOVERED, NOT_APPLIED, document=doc)
+        return self._needs_attention(row, company, snap, "RESUMED", document=doc)
+
     # ── gateway helpers (plan 57 S6) ─────────────────────────────────────────
 
     def write_book(self, company: AcCompany) -> Optional[str]:
@@ -2223,6 +2398,7 @@ class OperationService:
         entry(SPLIT_LINK, "PO", capabilities.capable("PO", "edit_doc") and capabilities.capable("PO", "add_line")
               and bool(capabilities.VENDOR_CAPABILITIES.get("link_new_row")))
         entry(LINK_BATCH, "PO", op_capable(OPS["link_row"]))
+        entry(SPO_MOVE, "SPO", spo_move_capable())
         for name, defn in OPS.items():
             entry(name, defn.kind, op_capable(defn))
         return items

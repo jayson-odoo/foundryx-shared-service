@@ -1058,6 +1058,8 @@ def verify_link_doc(
                 return Verdict(MISMATCH, "LINE_NOT_DELETED")
         elif now is None or _dec(now.get("Qty")) != rest:
             return Verdict(MISMATCH, "ROW_MISMATCH")
+        elif _link_of_row(kind_name, now) != _link_of_row(kind_name, old):  # plan 71: a kept row keeps its link
+            return Verdict(MISMATCH, "LINK_MISMATCH")
         total.extend(lines)
     known = {r.get("DtlKey") for r in before.get("Details") or []}
     added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]

@@ -129,7 +129,9 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
         "document": result.document,
         "requestedAt": result.requested_at, "linkedAt": result.linked_at, "finishedAt": result.finished_at,
     }
-    if result.batch is not None and "lines" in result.batch:  # link_doc_batch (plan 69 D1): one result per line
+    if result.batch is not None and "moved" in result.batch:  # spo_move_row (plan 71)
+        answer.update(moved=result.batch.get("moved"), remainder=result.batch.get("remainder"))
+    elif result.batch is not None and "lines" in result.batch:  # link_doc_batch (plan 69 D1): one result per line
         answer.update(lines=result.batch.get("lines") or [], freeLines=result.batch.get("freeLines") or [])
     elif result.batch is not None:  # link_batch (plan 62 D5): the new PO row per SO row + the free row
         answer.update(links=result.batch.get("links") or [], skipped=result.batch.get("skipped") or [],
@@ -608,6 +610,35 @@ _SPO_KEYS = (("spoDocKey", "spo_doc_key"), ("spoDtlKey", "spo_dtl_key"),
 _operation_route("/po-links/relink", "relink_row", _PO_KEYS, "write_relink", "soDocDate", with_location=True)
 _operation_route("/spo-links", "spo_link_row", _SPO_KEYS, "write_spo_link", "poDocDate")
 _operation_route("/spo-links/relink", "spo_relink_row", _SPO_KEYS, "write_spo_relink", "poDocDate")
+
+
+@router.post("/spo-links/move")
+def move_spo_row(
+    request: Request, db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+    ops: OperationService = Depends(get_operation_service),
+) -> JSONResponse:
+    """Plan 71: move ``qty`` of one SPO row onto another PO row (below the row's open qty = a split, the
+    rest stays on the old PO row). One operation, one idempotency key, ONE PUT on the SPO."""
+
+    def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        params: Dict[str, Any] = {
+            "spo_doc_key": _int_field(raw, "spoDocKey"), "spo_dtl_key": _int_field(raw, "spoDtlKey"),
+            "po_doc_key": _int_field(raw, "toPoDocKey"), "po_dtl_key": _int_field(raw, "toPoDtlKey"),
+            "qty": _qty_field(raw),
+            "doc_date": _optional_date(raw, "docDate"), "target_doc_date": _optional_date(raw, "poDocDate"),
+            "expected_last_modified": _optional_text(raw, "expectedLastModified"),
+        }
+        result = ops.run(
+            tenant_id=key.tenant_id, company_id=company.id, key_id=key.id,
+            idempotency_key=idem or "", op="spo_move_row", params=params,
+        )
+        answer = operation_answer(result, params["spo_doc_key"])
+        answer.setdefault("moved", None)  # every outcome of this route carries both fields
+        answer.setdefault("remainder", None)
+        return _respond(answer)
+
+    return _frame(request, db, raw_body, "write_spo_move", run, key_required=True, services=(ops,))
 
 
 @router.get("/write-operations/{operationId}")
