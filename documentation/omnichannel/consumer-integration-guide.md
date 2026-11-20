@@ -1012,7 +1012,7 @@ Open `url` in a popup or the same tab. The link works once and expires at `expir
 | Parameter | Value |
 |---|---|
 | `session` | the session `id` |
-| `status` | `authorized` (signed in; call `complete`), `cancelled` (the user stopped at Meta) or `failed` (the Meta sign-in could not be used) |
+| `status` | `authorized` (signed in; call `complete`), `cancelled` (the user stopped at Meta, or you cancelled the session while the sign-in was finishing; no token is kept) or `failed` (the Meta sign-in could not be used) |
 | `state` | your `clientState`, when you sent one |
 
 Treat the return as a hint only: always read the session from your backend before acting.
@@ -1030,10 +1030,11 @@ Treat the return as a hint only: always read the session from your backend befor
 * Every number of the Meta account that is not already connected anywhere on Foundryx becomes **its own channel** in the session's workspace. A number already connected (in any workspace) is skipped.
 * `COMPLETED` with `channelIds` when at least one channel was created. Otherwise `FAILED` with `errorCode`: `phone_number_in_use` (every number is already connected; no other organisation is named), `no_number_found` (the Meta account has no WhatsApp number) or `code_exchange_failed`.
 * Repeating `complete` on a `COMPLETED` session answers the same result and creates nothing.
-* A session that is not `AUTHORIZED` (still `OPEN`, or `CANCELLED`, `FAILED`, `EXPIRED`) answers `409 connect_session_not_authorized`.
+* If `complete` answers an error part way, the session stays `AUTHORIZED`: call `complete` again. Channels the first call already created are kept and are part of the `COMPLETED` result; they are not reported as `phone_number_in_use`.
+* A session that is not `AUTHORIZED` (still `OPEN`, or `CANCELLED`, `FAILED`, `EXPIRED`) answers `409 connect_session_not_authorized`. So does a `complete` sent while another `complete` of the same session is still running; read the session and retry if it is still `AUTHORIZED`.
 * Each new channel fires `channel.updated` (section 7) for endpoints that subscribed to it, and appears in `GET /partner/workspaces/{workspaceId}/channels` and in the workspace key's `GET /channels`.
 
-**`POST /api/v1/omnichannel/partner/connect-sessions/{id}/cancel`** (no body) ends an `OPEN` or `AUTHORIZED` session (`CANCELLED`) and answers the session. It is idempotent; on a session that already ended it changes nothing and answers it as it is.
+**`POST /api/v1/omnichannel/partner/connect-sessions/{id}/cancel`** (no body) ends an `OPEN` or `AUTHORIZED` session (`CANCELLED`) and answers the session. It is idempotent; on a session that already ended, or one whose `complete` is still running, it changes nothing and answers it as it is.
 
 **Scope.** Any active partner key of the same client app may read, complete or cancel a session (so a key rotation does not strand one). A session id of another tenant or another client app, or an unknown id, answers the same `404 connect_session_not_found` ("Connect session not found."). A disabled client app answers `403 client_app_disabled`, as on every partner route.
 
