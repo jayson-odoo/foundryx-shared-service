@@ -375,3 +375,17 @@ def test_no_return_to_unlink_params_are_todays():
                                                            operations=Ops(), idempotency_key="k",
                                                            return_to_dtl_key=9)
     assert seen["params"]["return_to_dtl_key"] == 9
+
+
+def test_resume_of_a_return_merge_whose_source_row_drifted_needs_attention(h, world):
+    """Contract read-back on Resume: the merge landed (500), then the source row's Location no longer equals its
+    before-image (AutoCount re-derived it): Resume never answers done."""
+    from app.models import DEFAULT_TENANT_ID
+
+    h.vendor.apply_then_500_next("PUT", "EditPurchaseOrderbydockey")
+    res = unlink(h, world, "r-resume-drift", world.p_other)
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    row(h, world.p_other)["Location"] = "BRW-NTC"
+    out = h.ops().resume(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=res.operation_id)
+    assert out.outcome == "needs_attention", (out.outcome, out.error_code)
+    assert out.returned_to is None

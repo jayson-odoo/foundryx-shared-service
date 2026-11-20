@@ -495,6 +495,8 @@ def _write_body(result: WriteActionResult, *, with_detail: bool = False) -> Dict
         )
     if with_detail:  # plan 64: po-links answers the linked PO row (``detail.Location``); additive
         body["detail"] = result.detail if result.outcome == "done" else None
+    if result.returned_to and result.outcome == "done":  # plan 71: only when merged back into the source row
+        body["returnedTo"] = result.returned_to
     return body
 
 

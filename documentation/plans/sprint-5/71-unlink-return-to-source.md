@@ -27,16 +27,17 @@ it IS the merge row (`_return_refusal`, then the existing `_merge_run`, no new P
   the owner asked for it by name; raising Qty on a partly received row is an ordinary AutoCount edit.
 The source row keeps its own Location, UnitPrice and DeliveryDate (location is NOT matched: that is the point).
 Not usable: the plan 66 pool path (or plan 62 D7 without `poolLocation`) runs exactly as before and `warnings`
-carries one code: `RETURN_ROW_NOT_FOUND`, `RETURN_ROW_LINKED`, `RETURN_ROW_ITEM_MISMATCH`, `RETURN_ROW_CLOSED`,
-`RETURN_ROW_ON_SPO`, `RETURN_ROW_BUSY`; a partly received TIED row gives `RETURN_PARTLY_RECEIVED` (today's cut +
-add, the received part stays; folding the rest into the source row is a different PUT shape, not built).
-With `returnToDtlKey` the answer carries `detail` (the row now holding the qty). Absent / null = today's request,
-idempotency hash and answer body. Relink ignores it.
+carries the CRM SS contract's ONE code `RETURN_SOURCE_NOT_OPEN` (sorento-crm#2607; the precise reason - not found,
+tied, other item/unit, SPO row, busy, fully received, or the TIED row partly received (today's cut + add) - is
+logged, not answered). Merged back: `replacedLines` [] and `returnedTo` {fromDtlKey, toDtlKey, qty, location}
+(stored, so a replay and a Resume answer it too). With `returnToDtlKey` the answer carries `detail` (the row now
+holding the qty). Absent / null = today's request, idempotency hash and answer body. Relink ignores it.
 
 ## Read-back (coordination with PO-LINK-STUCK-RECONCILE)
-The merged source row is an UNTIED row, so AutoCount does not derive its location / delivery date / note from an
-SO line (the sorento-crm#2603 READBACK_MISMATCH case is a newly TIED row). The existing exact verifier applies
-unchanged; no read-back rule is added or relaxed here. The tied-row read-back fix stays with that lane.
+Contract (exact): `verify_unlink_merge` now also compares the raised row's Location / DeliveryDate / UnitPrice /
+Discount / Description / link to ITS OWN before-image (`payloads.merge_row_drift`, every unlink merge: only Qty may
+change), and `_resume_merge` does the same against the snapshot's `returnBefore`. Drift = needs attention. This
+closes the review round 1 open risk below. The tied-row read-back fix (#2603) stays with PO-LINK-STUCK-RECONCILE.
 
 ## Retry
 Unchanged from plan 62 / 66: AutoCount refusal = nothing landed, key released; timeout / 5xx = pending, Resume reads
@@ -46,10 +47,10 @@ the PO first (`_resume_merge` keys on the snapshot's `mergeInto`, which is the s
 | # | PO lines before | Unlink L1, returnTo L2, pool BRW | After | warnings |
 |---|---|---|---|---|
 | 1 | L1 ITEM-A 4 BR1 tied; L2 ITEM-A 4 HQ free | | L1 gone; L2 ITEM-A 8 HQ, own price/date | - |
-| 2 | L1 tied; L2 tied to another SO | | L1 gone; new ITEM-A 4 BRW free | RETURN_ROW_LINKED |
-| 3 | L1 tied; L2 ITEM-B | | new ITEM-A 4 BRW free | RETURN_ROW_ITEM_MISMATCH |
-| 4 | L1 tied; L2 ITEM-A 4 HQ, 4 received | | new ITEM-A 4 BRW free | RETURN_ROW_CLOSED |
-| 5 | L1 tied, 1 received; L2 free | | L1 cut to 1; new ITEM-A 3 BRW | RETURN_PARTLY_RECEIVED |
+| 2 | L1 tied; L2 tied to another SO | | L1 gone; new ITEM-A 4 BRW free | RETURN_SOURCE_NOT_OPEN |
+| 3 | L1 tied; L2 ITEM-B | | new ITEM-A 4 BRW free | RETURN_SOURCE_NOT_OPEN |
+| 4 | L1 tied; L2 ITEM-A 4 HQ, 4 received | | new ITEM-A 4 BRW free | RETURN_SOURCE_NOT_OPEN |
+| 5 | L1 tied, 1 received; L2 free | | L1 cut to 1; new ITEM-A 3 BRW | RETURN_SOURCE_NOT_OPEN |
 
 ## Review round 1 (reviewer seat, kill test)
 - Fixed: tests now pin the busy-row rule (`RETURN_ROW_BUSY`), an unknown receipt still taking the qty, and relink

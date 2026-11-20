@@ -435,7 +435,7 @@ class WriteBackService(WriteFrame):
             None, result.outcome, result.error_code, result.message, result.document,
             operation_id=result.operation_id, warnings=result.warnings,
             replaced_lines=result.replaced_lines, doc_key=result.doc_key, doc_no=result.doc_no,
-            detail=result.detail,
+            detail=result.detail, returned_to=result.returned_to,
         )
 
     def unlink(

@@ -1076,8 +1076,20 @@ def verify_link_doc(
     return Verdict(DONE)
 
 
+def merge_row_drift(kind_name: str, before_row: Mapping[str, Any], after_row: Mapping[str, Any]) -> List[str]:
+    """Plan 71 (CRM SS contract read-back): the fields of the row a merge raised that moved, other than Qty,
+    compared to THAT row's own before-image (never the tied row or the request). Location, DeliveryDate, price
+    and the rest of ``_COMPARE_LINE``, plus the row's link (it stays untied). ``FurtherDescription`` (the note)
+    is never returned by a read (``UNREADABLE_ROW_KEYS``) and a merge never sends it, so it is not compared."""
+    out = [k for k in _COMPARE_LINE if k != "Qty" and k in before_row and not _same(before_row.get(k), after_row.get(k))]
+    if _link_of_row(kind_name, dict(after_row)) != _link_of_row(kind_name, dict(before_row)):
+        out.append("FromSODtlKey" if kind_name == "PO" else "FromDocDtlKey")
+    return out
+
+
 def verify_unlink_merge(kind_name: str, before: Doc, linked_key: int, free_key: int, after: Doc) -> Verdict:
-    """The linked row is gone, the free row holds the sum, no new row, nothing else moved."""
+    """The linked row is gone, the free row holds the sum and nothing else of it moved, no new row, nothing
+    else moved."""
     kind_of(kind_name)
     if _row_by_key(after, linked_key) is not None:
         return Verdict(MISMATCH, "LINE_NOT_DELETED")
@@ -1085,6 +1097,8 @@ def verify_unlink_merge(kind_name: str, before: Doc, linked_key: int, free_key: 
     want = _dec(_row_by_key(before, free_key).get("Qty")) + _dec(_row_by_key(before, linked_key).get("Qty"))  # type: ignore[union-attr]
     if free is None or _dec(free.get("Qty")) != want:
         return Verdict(MISMATCH, "ROW_MISMATCH")
+    if merge_row_drift(kind_name, _row_by_key(before, free_key) or {}, free):
+        return Verdict(MISMATCH, "ROW_MISMATCH")  # plan 71: only the free row's Qty may change
     known = {r.get("DtlKey") for r in before.get("Details") or []}
     if [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]:
         return Verdict(MISMATCH, "ROWS_UNEXPECTED")

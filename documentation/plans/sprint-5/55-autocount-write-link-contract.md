@@ -392,21 +392,17 @@ the row being unlinked), has no SPO row pointing at it, is not covered by an unr
 fully received (a partly received row still takes it). Then:
 - ONE PUT: the unlinked row is deleted and the source row's quantity goes up by its quantity. The source row keeps
   its own Location, unit price and delivery date; `poolLocation` and the same-location merge are not used.
-- `replacedLines` = `[{"oldDtlKey": <unlinked>, "newDtlKey": <returnToDtlKey>}]`; `detail` = the source row.
-  Show "Unlinked. Qty returned to <detail.Location>.".
-- When the row cannot be used, the unlink runs exactly as without the field (pool, or same location) and is still
-  `done`, with ONE of these in `warnings`:
-
-| Warning | Why the source row was not used |
-|---|---|
-| `RETURN_ROW_NOT_FOUND` | No such row on this PO |
-| `RETURN_ROW_LINKED` | The row is tied to an SO row, or is the row being unlinked |
-| `RETURN_ROW_ITEM_MISMATCH` | Another item code or unit of measure |
-| `RETURN_ROW_CLOSED` | The row is fully received |
-| `RETURN_ROW_ON_SPO` | An SPO row points at the row |
-| `RETURN_ROW_BUSY` | An unfinished link change covers the row (Resume it first) |
-| `RETURN_PARTLY_RECEIVED` | The unlinked row is partly received: the received part stays, the rest went the pool way |
-
+- `replacedLines` = `[]`; `detail` = the source row (its new Qty); `returnedTo` =
+  `{"fromDtlKey": <unlinked>, "toDtlKey": <returnToDtlKey>, "qty": <the unlinked qty>, "location": <detail.Location>}`.
+  Show "Unlinked. Qty returned to <returnedTo.location>.".
+- Read-back is exact: the unlinked row is gone; the source row's Qty = its Qty before + the unlinked Qty (decimal
+  exact); its Location, DeliveryDate, unit price and link (`FromSODtlKey` 0/null) equal ITS OWN values before the
+  write (never the tied row's or the request's); every other row is unchanged. Anything else is `needs_attention`
+  (nothing re-sent; retry semantics as sorento-crm#2603). The note (`FurtherDescription`) is never returned by an
+  AutoCount read and is not sent by the merge, so it is not compared.
+- When the row cannot be used (not found or not open, by the rule above; or the unlinked row itself is partly
+  received, so the received part must stay), the unlink runs exactly as without the field (pool, or same location),
+  is still `done`, carries `"warnings": ["RETURN_SOURCE_NOT_OPEN"]` and has no `returnedTo`.
   `detail` is then the row that holds the quantity (pool row merged into, or the moved row). `po-links/relink`
   ignores the field.
 
