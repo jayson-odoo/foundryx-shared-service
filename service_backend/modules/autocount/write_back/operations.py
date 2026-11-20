@@ -71,7 +71,7 @@ from modules.autocount.write_back.primitives import (
     PrimitiveService,
 )
 from modules.autocount.write_back.reader import DocReadError
-from modules.autocount.write_back.repository import OperationRepository, SpoPoLinkRepository
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, OperationRepository, SpoPoLinkRepository
 from modules.autocount.write_back.service import WriteBackService, verify_split
 
 logger = logging.getLogger("foundryx.autocount")
@@ -511,21 +511,16 @@ class OperationService:
             self._steps, self._warnings = list(row.steps_json or []), []
             self._timeout_origin = row.error_code == VENDOR_TIMEOUT
             body = self._resume_split if row.op == SPLIT_LINK else self._resume
-            result = self._guarded(row, company, lambda: body(row, company, was), restore=was)
-        if result.outcome == REFUSED and result.error_code == NOT_APPLIED and (
-                row.op == SPLIT_LINK or self._timeout_origin):
-            # s2 / s3: the read proved nothing of it is in AutoCount (and, after a timeout, the save had time to
-            # finish): the key is released now, so the next press runs fresh; nothing is re-sent from here
-            fresh = self.ops.get(tenant_id, company_id, row.id)
-            if fresh is not None and fresh.status == REFUSED:
-                self._release_key(fresh)
-        return result
+            # s2 / s3: a ``refused`` / ``NOT_APPLIED`` answer here (nothing of it in AutoCount) releases the key
+            # like every refusal (``_settle_existing``); nothing is re-sent from a Resume
+            return self._guarded(row, company, lambda: body(row, company, was), restore=was)
 
     def close_superseded(self, *, tenant_id: str, company_id: str, operation_id: str) -> OperationResult:
         """PO-LINK-STUCK-RECONCILE-B s2, an operator action: a parked operation (``pending_verification`` /
         ``needs_attention`` / a timed-out ``vendor_error``) ends a final ``refused`` / ``SUPERSEDED``. Nothing is
-        sent to AutoCount; the key is released, so the CRM releases its hold on its next look-up. A final or
-        running operation is answered as it stands, unchanged."""
+        sent to AutoCount. The key is NOT released: the CRM's next look-up (same key + body) gets this answer
+        back and releases its hold; only a new press (a new key) writes again. A final or running operation is
+        answered as it stands, unchanged."""
         row = self.ops.get(tenant_id, company_id, operation_id)
         if row is None:
             raise LookupError("operation not found")
@@ -546,7 +541,6 @@ class OperationService:
             return self._from_row(row) if row.status != IN_PROGRESS else OperationResult(
                 row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
         logger.warning("autocount operation %s closed as superseded by an operator: nothing sent", row.id)
-        self._release_key(row)
         return self._from_row(row)
 
     @staticmethod
@@ -633,6 +627,8 @@ class OperationService:
                          request_hash: str) -> Optional[OperationResult]:
         """The answer for a key that already has a row, or None when the key was released and the
         operation must run fresh (plan 62 D6)."""
+        if row.error_code == SUPERSEDED:  # closed by an operator: final, never run again under this key
+            return self._replay(row, op, request_hash)
         if self._nothing_landed(row.status, row.error_code):
             self._release_key(row)
             return None
@@ -1817,11 +1813,15 @@ class OperationService:
         before = action.before_json if action is not None else None
         if not isinstance(before, dict):
             return "RESUMED"
-        after = action.after_json if isinstance(action.after_json, dict) else doc
-        verdict = payloads.verify_link_batch("PO", before, int(snap["row"]["DtlKey"]), self._batch_lines(snap), after)
-        if verdict.outcome == payloads.DONE:
-            return None
-        return verdict.code or INTERNAL_ERROR
+        stored = action.after_json if isinstance(action.after_json, dict) else None
+        verdict = None
+        # the stored read-back first; then today's read (a timed-out save read "nothing yet", then landed)
+        for after in [a for a in (stored, doc) if a is not None]:
+            verdict = payloads.verify_link_batch("PO", before, int(snap["row"]["DtlKey"]), self._batch_lines(snap),
+                                                 after)
+            if verdict.outcome == payloads.DONE:
+                return None
+        return (verdict.code if verdict is not None else None) or INTERNAL_ERROR
 
     @staticmethod
     def _batch_shape(snap: Doc, doc: Doc) -> Optional[str]:
@@ -2421,6 +2421,9 @@ class OperationService:
             code = VENDOR_TIMEOUT if self._timeout_origin else (row.error_code or LOOKUP_FAILED)
             return self._finish(row, VENDOR_ERROR if self._timeout_origin else was, code,
                                 message=NOT_YET_CONFIRMED_MESSAGE, document=doc)
+        if action is not None and action.outcome in (OUTCOME_IN_FLIGHT, OUTCOME_PENDING):
+            # proven not applied: the write no longer holds the document (a new press is not DOC_BUSY)
+            action.outcome, action.error_code = OUTCOME_REFUSED, NOT_APPLIED
         return self._finish(row, REFUSED, NOT_APPLIED, message=NOT_LINKED_MESSAGE, document=doc)
 
     def _split_stop(self, row: AcWriteOperation, company: AcCompany, snap: Doc, code: str,

@@ -643,6 +643,27 @@ def resume_write_operation(
     return _frame(request, db, raw_body, "write_operation_resume", run, services=(ops,))
 
 
+@router.post("/write-operations/{operationId}/close-superseded")
+def close_superseded_write_operation(
+    operationId: str, request: Request, db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+    ops: OperationService = Depends(get_operation_service),
+) -> JSONResponse:
+    """PO-LINK-STUCK-RECONCILE-B s2: an operator closes a parked operation as superseded (a person fixed the
+    document in AutoCount). Final ``refused`` / ``SUPERSEDED``; nothing is sent to AutoCount; the key is
+    released. A final or running operation is answered as it stands."""
+    def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        try:
+            result = ops.close_superseded(tenant_id=key.tenant_id, company_id=company.id, operation_id=operationId)
+        except LookupError:
+            raise PullGatewayError(404, "UNKNOWN_OPERATION", "No such operation.") from None
+        status, answer = _respond(operation_answer(result, None))
+        # closed now (or already closed) = the action succeeded
+        return (200 if result.error_code == "SUPERSEDED" else status), answer
+
+    return _frame(request, db, raw_body, "write_operation_close", run, services=(ops,))
+
+
 @router.get("/write-capabilities")
 def get_write_capabilities(
     request: Request, db: Session = Depends(get_db),
