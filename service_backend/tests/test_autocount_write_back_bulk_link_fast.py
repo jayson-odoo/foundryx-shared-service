@@ -102,7 +102,9 @@ def test_ac_69_12_failed_put_and_failed_read_is_pending_never_refused(h, rig):
 
     h.vendor._route = route
     res = run(h, rig, rig.three())
-    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    # PO-LINK-STUCK-RECONCILE-B s3/s4: an AutoCount timeout that cannot be read back is parked for a person
+    # (the CRM's needs_attention = Resume), never refused
+    assert (res.outcome, res.error_code) == ("needs_attention", "VENDOR_TIMEOUT"), (res.outcome, res.error_code)
 
 
 # ============================== AC-69-02 / 05: no cap error =====================================

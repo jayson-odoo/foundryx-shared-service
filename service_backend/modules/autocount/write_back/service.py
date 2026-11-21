@@ -78,7 +78,7 @@ from modules.autocount.write_back.link_index import refresh_po_links_from_doc
 from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
-from modules.autocount.write_back.primitives import vendor_message
+from modules.autocount.write_back.primitives import VENDOR_TIMEOUT, is_vendor_timeout, vendor_class_of, vendor_message
 from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, OperationRepository, PoSoLinkRepository
 
 if TYPE_CHECKING:  # operations imports this module
@@ -255,6 +255,26 @@ def verify_readback(
         if got is None or not all(_same(row.get(f), got.get(f)) for f in _UNTOUCHED_FIELDS):
             return False
     return True
+
+
+# PO-LINK-STUCK-RECONCILE-B: one short re-read of a split that did not verify (patched to 0 by tests).
+SPLIT_REREAD_WAIT_SECONDS = 2.0
+
+
+def split_lines(body: Doc) -> List[Doc]:
+    """The new tied rows a split body asked for, in the shape ``payloads.verify_link_batch`` compares."""
+    return [{"FromDocDtlKey": int(r.get("FromDocDtlKey") or 0), "Qty": r.get("Qty"), "ItemCode": r.get("ItemCode"),
+             "UOM": r.get("UOM")} for r in body.get("Details") or [] if not r.get("DtlKey")]
+
+
+def verify_split(before: Doc, after: Doc, body: Doc, po_dtl_key: int) -> bool:
+    """PO-LINK-STUCK-RECONCILE-B s5: the split link's first write, judged by the ONE comparator the link
+    batches use (``payloads.verify_link_batch``): the cut row holds its rest (or is gone when all was taken),
+    exactly one new row per link with its SO line, item, unit and quantity, no other row and no allow-listed
+    header field moved. What AutoCount derives on such a save is not judged: the vendor totals, tax fields and
+    stamps of the header, and the new row's location, price, date and note (the second write restores them and
+    is judged on its own)."""
+    return payloads.verify_link_batch("PO", before, po_dtl_key, split_lines(body), after).outcome == payloads.DONE
 
 
 def verify_relocate(
@@ -617,6 +637,9 @@ class WriteBackService(WriteFrame):
                 dtl_key=plan.dtl_key,
                 outcome=OUTCOME_REFUSED,
                 key_id=key_id,
+                # PO-LINK-STUCK-RECONCILE-B: run by an operation (the split link), the action carries it from its
+                # first commit, so a Resume finds the write even when the worker died before it was attached
+                **({"operation_id": self._operation_id, "step": "split_link"} if self._operation_id else {}),
                 **self._trace_columns(),
             )
         )
@@ -783,9 +806,10 @@ class WriteBackService(WriteFrame):
         # a failure keeps its status and the redacted text only (AC-57-47); a success as it came
         row.response_json = _safe_body(response.stored) if response.ok else {"text": vendor_message(response.stored, base_url)}
         if not response.ok:  # carry AutoCount's own (redacted, capped) text to the answer
-            return self._finish(
-                row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR", message=row.response_json["text"]
-            )
+            text = row.response_json["text"]
+            # an AutoCount SQL timeout may commit later: unknown, the operation reads the PO before anything else
+            code = VENDOR_TIMEOUT if is_vendor_timeout(text, vendor_class_of(response.body)) else "VENDOR_ERROR"
+            return self._finish(row, OUTCOME_VENDOR_ERROR, code, message=text)
         self.db.commit()
         self._check_deadline(row)
         after = self._read_back(plan, reader, before)
@@ -799,6 +823,10 @@ class WriteBackService(WriteFrame):
             ok = verify_relocate(
                 before, after, plan.dtl_key, str(body["Details"][0].get("Location")), body
             )
+        elif is_split:
+            # PO-LINK-STUCK-RECONCILE-B s5: the split is judged by the ONE link comparator the batches use
+            ok, after = self._verify_split(plan, reader, before, body, after)
+            row.after_json = after
         else:
             ok = verify_readback(before, after, body, ignore_new_row_location=is_split)
         if not ok:
@@ -813,6 +841,24 @@ class WriteBackService(WriteFrame):
         result = self._finish(row, OUTCOME_DONE, document=after)
         self._stage(company, plan.kind[0], after)
         return result
+
+    def _verify_split(
+        self, plan: _Plan, reader: AutoCountDocReader, before: Doc, body: Doc, after: Doc
+    ) -> Tuple[bool, Doc]:
+        """``(verified, the read judged)``. A read that does not verify is read ONCE more after a short wait
+        (bounded by the action deadline) before it is called a mismatch: AutoCount may still be finishing the
+        save when the first read runs (prod 20 Nov, op split_link)."""
+        if verify_split(before, after, body, plan.dtl_key):
+            return True, after
+        if SPLIT_REREAD_WAIT_SECONDS <= 0 or self._expired():
+            return False, after
+        time.sleep(SPLIT_REREAD_WAIT_SECONDS)
+        if self._expired():
+            return False, after
+        again = self._read_back(plan, reader, before)
+        if isinstance(again, WriteActionResult):
+            return False, after
+        return verify_split(before, again, body, plan.dtl_key), again
 
     def _read_back(
         self, plan: _Plan, reader: AutoCountDocReader, before: Doc

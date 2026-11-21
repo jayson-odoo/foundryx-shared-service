@@ -122,6 +122,19 @@ class WriteActionRepository:
         after = row[0] if row else None
         return after if isinstance(after, dict) else None
 
+    def newest_of_operation(self, tenant_id: str, company_id: str, operation_id: str) -> Optional[AcWriteAction]:
+        """The newest write action of an operation (its last write: the settle clock of a timed-out PUT)."""
+        return (
+            self.db.query(AcWriteAction)
+            .filter(
+                AcWriteAction.tenant_id == tenant_id,
+                AcWriteAction.company_id == company_id,
+                AcWriteAction.operation_id == operation_id,
+            )
+            .order_by(AcWriteAction.created_at.desc(), AcWriteAction.id)
+            .first()
+        )
+
     def operation_step(self, tenant_id: str, company_id: str, operation_id: str, step: str) -> Optional[AcWriteAction]:
         """The newest action of one step of an operation (plan 65 D5: Resume re-judges the stored link PUT)."""
         return (
@@ -205,7 +218,10 @@ class OperationRepository:
         rows = self.db.query(AcWriteOperation).filter(
             AcWriteOperation.tenant_id == tenant_id,
             AcWriteOperation.company_id == company_id,
-            AcWriteOperation.status == OUTCOME_PENDING,
+            or_(AcWriteOperation.status == OUTCOME_PENDING,
+                # PO-LINK-STUCK-RECONCILE-B: a write AutoCount timed out on may still land, it counts too
+                AcWriteOperation.error_code == "VENDOR_TIMEOUT"),
+            AcWriteOperation.status.notin_(("done", "refused", "recovered", "in_progress")),
             AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link")),
         )
         for op in rows:
@@ -334,6 +350,24 @@ class OperationRepository:
                     synchronize_session=False)
         ) == 1
 
+    def close_parked(
+        self, tenant_id: str, company_id: str, operation_id: str, from_statuses: "tuple[str, ...]",
+        error_code: str, result: dict,
+    ) -> bool:
+        """PO-LINK-STUCK-RECONCILE-B s2: conditional parked -> ``refused`` (an operator closed it as superseded,
+        nothing written): True only for the one caller whose update matched a row still parked."""
+        return (
+            self.db.query(AcWriteOperation)
+            .filter(
+                AcWriteOperation.tenant_id == tenant_id,
+                AcWriteOperation.company_id == company_id,
+                AcWriteOperation.id == operation_id,
+                AcWriteOperation.status.in_(from_statuses),
+            )
+            .update({"status": "refused", "error_code": error_code, "result_json": result},
+                    synchronize_session=False)
+        ) == 1
+
     def has_actions(self, tenant_id: str, operation_id: str) -> bool:
         """Any write action recorded under the operation (a step that may have reached AutoCount)."""
         return (
@@ -400,8 +434,10 @@ class OperationRepository:
             query = query.filter(AcWriteOperation.id != exclude_id)
         return query.all()
 
-    def link_results_on_doc(self, tenant_id: str, company_id: str, doc_key: int) -> List[AcWriteOperation]:
-        """Plan 69: the batch link operations on one PO that linked something (``done`` / ``needs_attention``):
+    def link_results_on_doc(
+        self, tenant_id: str, company_id: str, doc_key: int, ops: "tuple[str, ...]" = ("link_batch", "link_doc_batch"),
+    ) -> List[AcWriteOperation]:
+        """Plan 69: the link operations of ``ops`` on one PO that linked something (``done`` / ``needs_attention``):
         their stored answers say which PO row each new linked row came from."""
         return self.db.query(AcWriteOperation).filter(
             AcWriteOperation.tenant_id == tenant_id,
@@ -409,7 +445,7 @@ class OperationRepository:
             AcWriteOperation.doc_type == "PO",
             AcWriteOperation.doc_key == doc_key,
             AcWriteOperation.status.in_(("done", "needs_attention")),
-            AcWriteOperation.op.in_(("link_batch", "link_doc_batch")),
+            AcWriteOperation.op.in_(ops),
         ).all()
 
     def claim(self, tenant_id: str, company_id: str, operation_id: str, from_statuses: "tuple[str, ...]") -> bool:
