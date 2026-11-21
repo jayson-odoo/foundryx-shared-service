@@ -81,6 +81,11 @@ class AutoCountDocReader:
         self._call_log: Optional[cl.CallLog] = None
         self._auth_headers: Dict[str, str] = {}
         self._secrets: Tuple[str, ...] = ()
+        self._extra_headers: Dict[str, str] = {}
+
+    def set_user_agent(self, user_agent: str) -> None:
+        """Send ``user_agent`` on every GET (plan 71: the ESB client's own User-Agent)."""
+        self._extra_headers = {"User-Agent": user_agent}
 
     def set_auth_headers(self, headers: Mapping[str, str]) -> None:
         """The optional API key header this client sends on every request (plan 63); never logged."""
@@ -97,7 +102,8 @@ class AutoCountDocReader:
         path = cl.vendor_path(self.base_url, urlsplit(url).path)
         try:
             request = http.build_request(
-                "GET", url, params=params, headers=self._auth_headers, timeout=self._timeout
+                "GET", url, params=params, headers={**self._extra_headers, **self._auth_headers},
+                timeout=self._timeout
             )
             path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
             response = http.send(request)
@@ -138,6 +144,29 @@ class AutoCountDocReader:
             body = response.json()
         except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError, ValueError):
             raise DocReadError(READ_FAILED) from None
+        if not isinstance(body, list):
+            raise DocReadError(READ_FAILED)
+        return [d for d in body if isinstance(d, dict)]
+
+    def fetch_records(self, path: str, params: Dict[str, str], *, not_found_404: bool = False) -> List[Document]:
+        """Plan 71: the records one GET door answers, as a list. A bare object is one record; ``[]``,
+        ``null``, ``{}`` or an empty body are none. ``not_found_404``: a 404 answer is "none" too
+        (a door that says "no such record" that way); any other failure is ``READ_FAILED``."""
+        url = self.base_url.rstrip("/") + path
+        try:
+            with self._http() as http:
+                response = self._get(http, url, params)
+            if not_found_404 and response.status_code == 404:
+                return []
+            if not response.is_success:
+                raise DocReadError(READ_FAILED)
+            body = response.json() if response.content.strip() else None
+        except (httpx.HTTPError, httpx.InvalidURL, UrlGuardError, ValueError):
+            raise DocReadError(READ_FAILED) from None
+        if body is None:
+            return []
+        if isinstance(body, dict):
+            return [body] if body else []
         if not isinstance(body, list):
             raise DocReadError(READ_FAILED)
         return [d for d in body if isinstance(d, dict)]
