@@ -1,10 +1,11 @@
 # 3D module contract (PLANNER-3D-S0)
 
-Status: contract v0.4, written 20/11/2026, updated 21/11/2026, against `main` at `9fe0099c`. No module
+Status: contract v0.5, written 20/11/2026, updated 21/11/2026, against `main` at `9fe0099c`. No module
 code exists yet. v0.2 applied the review of v0.1; v0.3 takes in the C1 lane's draft shape (section 7.2);
 v0.4 takes in the owner's ruling on the CRM key (one key for the whole Sorento CRM product) and C1's
-`company` parameter, so the planner path now names a CRM company (section 7.1). Section 13 lists what
-changed for lanes that read an earlier version.
+`company` parameter, so the planner path now names a CRM company (section 7.1); v0.5 closes open point
+11 (the company code stays in the URL and QR only). Section 13 lists what changed for lanes that read
+an earlier version.
 S1 builds the module to this document; S2, S3, S4 and the CRM slices C1, C3, C4, C5 build against it.
 A change to any wire shape here is a change to this file in the same commit (the same rule the
 omnichannel guide carries, `documentation/engineering/omnichannel-service.md`).
@@ -622,6 +623,11 @@ the tenant's logo and colours with the company's own display name and consent se
 back to the tenant's when the company leaves it empty (crew ruling, 21/11/2026). The consent sentence
 names the company that will contact the customer. The page never shows the word Foundryx (white-label rule).
 
+The company code is only ever inside the URL and the QR (crew ruling, 21/11/2026). The homeowner never
+sees it as on-screen text: no label, heading, title, message or error names the company by its code;
+the page names it by its display name, which falls back to the tenant's and so always exists. A share
+link shown as a link still carries the code inside its URL; that is the only place it appears.
+
 Frontend route: `service_frontend/app/(public)/p/[company]/planner/page.tsx`. The `(public)` group is
 invisible in the URL and no `p` segment exists today, so there is no collision.
 
@@ -936,7 +942,7 @@ only the named section.
 | 8 | What the customer sees for a product that left the catalogue | CLOSED by crew ruling (a) 20/11/2026: it stays in the room marked as no longer available, the customer removes it, and Save is blocked until then (7.2). S2 writes the wording. | closed |
 | 9 | Name and consent sentence a customer sees on a company's planner page, now that one SS tenant holds several companies | CLOSED by crew ruling (a) 21/11/2026: each company has its own display name and consent sentence (Companies screen, section 8), falling back to the tenant's when empty; logo and colours stay the tenant's; the consent sentence names the company that will contact the customer. | closed |
 | 10 | Are CRM product codes unique across companies? | not assumed: `company` is optional on `POST /models` and `model.ready` and is part of the model retention key (3.3, 3.8) | C1 and C5 lanes |
-| 11 | The customer's link and QR now show the CRM company code (`/p/<company code>/planner`) where v0.3 showed the SS tenant slug | the company code, as C1 reads the link and C4 builds it (7.1) | owner (customer-visible) |
+| 11 | The customer's link and QR now show the CRM company code (`/p/<company code>/planner`) where v0.3 showed the SS tenant slug | CLOSED by crew ruling (a) 21/11/2026: the company code, as C1 reads the link and C4 builds it, in the URL and QR only and never as on-screen text to the homeowner (7.1). The owner can change it later. | closed |
 
 ---
 
@@ -961,3 +967,4 @@ For lanes that started from an earlier version (C1, C3, C6 were sent v0.1):
 | C5 | v0.4: optional `company` on `POST /models`, echoed on the job and `model.ready`, filter `company` on `GET /jobs`; send it if product codes can repeat across companies (open point 10). |
 | S1 | v0.4: one SS tenant per consuming system; the company registry behind the planner path (lookup form unique across SS, the one query without `tenant_id`); codes registered only by a platform operator through a new `operator` router on the existing key `tenants.manage_modules`; the tenant's Companies screen edits active, name and consent only (1, 7.1, 8, 9). |
 | S2 | v0.4: the route is `app/(public)/p/[company]/planner/page.tsx`; config, branding and the catalogue resolve from the company; every bad code, suspended tenant or missing module answers the same `404`; a design opens only under its own company; the company's own name and consent sentence, falling back to the tenant's (crew ruling (a), 21/11/2026). Open point 8 is closed (crew ruling (a), 20/11/2026); the behaviour in 7.2 is unchanged. |
+| C4, S2 | v0.5 (crew ruling (a) on open point 11, 21/11/2026): the company code stays in the link and QR. It is never on-screen text to the homeowner: the planner page names the company by its display name only (7.1). |
