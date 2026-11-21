@@ -100,3 +100,26 @@ slice the second call was refused `ROW_ON_SPO`. Now, with the `spo_move` switch 
   count against the kept line's room. A follower whose SPO is busy is `DOC_BUSY`.
 - Not in this slice (still `ROW_ON_SPO`): a link that takes the WHOLE PO line (AutoCount would have to delete a
   PO line an SPO line points at, unproven, F15), `/po-links/doc-batch` and the single part-row `/po-links`.
+
+### Slice 2 review round 2 (21 Nov, second reviewer + security review; crew ruling: fix on the PR)
+
+- **B1, live book.** The sync job owns every SPO's staged copy on a live book, so the write-back staging left it
+  alone and refreshed only the PO index: the SPO index never saw a move or a follow, and the CRM Save (move, then
+  split) found no SPO line to carry and left it on the cut PO line. The SPO index now follows the verified
+  read-back too (`refresh_spo_links_from_doc`). The db3 test book cannot show this (its test-company guard
+  refuses sync-staged companies, so write-back owns the copy there): it is pinned by tests only.
+- **Resume re-checks before the SPO PUT** (`_follow_sendable`): every field the PUT sends again
+  (`FOLLOW_KEPT_FIELDS` = `payloads.LINE_KEYS` less the transfer markers) still reads as planned, so a hand edit
+  is never undone; nothing received on the line (the primitive's own transfer guard does not cover an SPO batch
+  PUT); no earlier follow PUT of it with an unknown outcome younger than `LOOKUP_SETTLE_SECONDS` (420 s); room on
+  the new PO line (other SPO lines and pending moves counted). Otherwise nothing is sent and a person looks.
+- **Pending moves** onto the PO line are counted before the index is consulted (a pending move never updates the
+  index), so the round-1 room rule also holds when the index has no row there.
+- **The SPO document is held.** Every SPO operation now takes a per-SPO-document lock (`link_locks(spo_doc_keys)`,
+  after the PO document locks, before the SO rows), the follow takes it per SPO and re-checks that no other SS
+  operation is writing it, and the edit that puts the new SPO line back is built on a fresh read
+  (`reuse_read=False`). A move or relink onto the new PO line of a batch with an SPO line still to follow is
+  `ROW_NEEDS_ATTENTION` until that batch is resumed.
+- **Narrower hold, clearer alert.** The round-1 hold now applies only while an SPO line is still to follow (a
+  batch that ended `RESTORE_NOT_LANDED` after its follow landed no longer holds the PO line); the alert names the
+  SPO lines a person checks. AC-71-18..24.

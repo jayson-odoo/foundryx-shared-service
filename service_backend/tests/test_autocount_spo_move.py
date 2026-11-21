@@ -537,12 +537,13 @@ def test_review_target_po_document_is_locked_for_every_spo_op_with_a_target(h, w
     seen = []
     real = operations.link_locks
 
-    def spy(db, company_id, po_doc_keys=(), so_dtl_keys=()):
-        seen.append(list(po_doc_keys))
-        return real(db, company_id, po_doc_keys=po_doc_keys, so_dtl_keys=so_dtl_keys)
+    def spy(db, company_id, po_doc_keys=(), so_dtl_keys=(), spo_doc_keys=()):
+        seen.append((list(po_doc_keys), list(spo_doc_keys)))
+        return real(db, company_id, po_doc_keys=po_doc_keys, so_dtl_keys=so_dtl_keys, spo_doc_keys=spo_doc_keys)
 
     monkeypatch.setattr(operations, "link_locks", spy)
     h.run(OP, w.params(24), key="l1")
     h.delete_on()
     h.run("spo_relink_row", dict(spo_doc_key=7103, spo_dtl_key=w.free, po_doc_key=7102, po_dtl_key=w.b1), key="l2")
-    assert seen[0] == [7102] and seen[1] == [7102]
+    # the target PO document, and (plan 71 slice 2 review round 2) the SPO itself, which a batch's follow writes
+    assert seen[0] == ([7102], [7103]) and seen[1] == ([7102], [7103]), seen

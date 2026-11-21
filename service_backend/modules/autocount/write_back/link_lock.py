@@ -79,16 +79,23 @@ def _so_token(company_id: str, so_dtl_key: int) -> str:
     return f"po-so-link:{company_id}:{so_dtl_key}"
 
 
+def _spo_token(company_id: str, doc_key: int) -> str:
+    return f"spo-doc:{company_id}:{doc_key}"
+
+
 @contextmanager
 def link_locks(
-    db: Session, company_id: str, *, po_doc_keys: Iterable[int] = (), so_dtl_keys: Iterable[int] = ()
+    db: Session, company_id: str, *, po_doc_keys: Iterable[int] = (), so_dtl_keys: Iterable[int] = (),
+    spo_doc_keys: Iterable[int] = (),
 ) -> Iterator[None]:
-    """The per-PO-document locks, then the per-SO-row locks (that order, each set sorted), on ONE lock
+    """The per-PO-document locks, then the per-SPO-document locks (plan 71: every write to an SPO, an SPO
+    operation's own or a batch's follow), then the per-SO-row locks (that order, each set sorted), on ONE lock
     connection. Nested inside a lock already held by this call chain (an operation running the plan 55 split
     link), the held connection is reused: an advisory lock is re-entrant per session, so a lock this chain
     already holds is taken again at once, and only the locks taken at this level are released at its end."""
     bind = db.get_bind()
     tokens = [_po_token(company_id, k) for k in sorted({int(k) for k in po_doc_keys if k})]
+    tokens += [_spo_token(company_id, k) for k in sorted({int(k) for k in spo_doc_keys if k})]
     tokens += [_so_token(company_id, k) for k in sorted({int(k) for k in so_dtl_keys if k})]
     if not tokens or bind.dialect.name != "postgresql":
         yield

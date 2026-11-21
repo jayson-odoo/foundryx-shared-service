@@ -234,8 +234,10 @@ All keys are integers (1..9223372036854775807).
   `remainder { spoDtlKey (the original row), poDtlKey, qty } | null` (both null unless `done`; a whole
   move has `remainder: null`; on a partly received row the received part is the remainder). Refusals
   (nothing sent): `ROW_NOT_LINKED`, `NO_CHANGE`, `ROW_RECEIVED`, `ITEM_MISMATCH`, `UOM_MISMATCH`,
-  `TARGET_RECEIVED`, `QTY_ABOVE_OUTSTANDING`, `ROW_NOT_FOUND`, `DOC_CANCELLED`, `QTY_INVALID`, plus the
-  common ones. Plan: `71-autocount-spo-link-move.md`.
+  `TARGET_RECEIVED`, `QTY_ABOVE_OUTSTANDING`, `ROW_NOT_FOUND`, `DOC_CANCELLED`, `QTY_INVALID`,
+  `ROW_NEEDS_ATTENTION` (the target is the new PO row of a batch link whose shipping purchase order row has
+  not followed yet, plan 71 slice 2; `spo-links/relink` too), plus the common ones. Plan:
+  `71-autocount-spo-link-move.md`.
 
 The plan 55 routes `po-links`, `po-links/unlink` and `spo-links/unlink` also take optional `docDate`
 (the PO's or SPO's date; malformed = `422 INVALID_REQUEST`); `po-links` additionally takes `soDocDate`. A

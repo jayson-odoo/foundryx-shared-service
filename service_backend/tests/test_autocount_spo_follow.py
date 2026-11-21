@@ -506,6 +506,21 @@ def test_r2_a_move_onto_the_new_po_line_of_an_unfinished_follow_waits(h, w):
     assert again.outcome == "refused" and again.error_code == "QTY_ABOVE_OUTSTANDING", (again.outcome, again.error_code)
 
 
+def test_r2_a_relink_onto_the_new_po_line_of_an_unfinished_follow_waits(h, w):
+    fail_follow(h, w, "r2-10r")
+    new_po = w.new_po_row()["DtlKey"]
+    h.seed_doc("PO", 7301, [_line("ITEM-A", 30, 5.0, "BR1")])
+    c1 = h.vendor.rows("PO", 7301)[0]["DtlKey"]
+    h.seed_doc("SPO", 7303, [_line("ITEM-A", 30, 5.0, "BR1", FromDocType="PO", FromDocNo="PO-7301",
+                                   FromDocDtlKey=c1)])
+    x1 = h.vendor.rows("SPO", 7303)[0]["DtlKey"]
+    writes = len(h.vendor.writes())
+    out = h.run("spo_relink_row", dict(spo_doc_key=7303, spo_dtl_key=x1, po_doc_key=7201, po_dtl_key=new_po),
+                key="r2-10s")
+    assert out.outcome == "refused" and out.error_code == "ROW_NEEDS_ATTENTION", (out.outcome, out.error_code)
+    assert len(h.vendor.writes()) == writes
+
+
 def test_r2_the_follow_checks_the_new_po_line_has_room(h, w):
     """An SPO line tied by hand to the new PO line while the follow waited: the follower no longer fits."""
     res = fail_follow(h, w, "r2-11")
