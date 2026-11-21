@@ -195,6 +195,12 @@ class Settings(BaseSettings):
     def autocount_write_allowed_books_list(self) -> List[str]:
         return [b.strip() for b in self.autocount_write_allowed_books.split(",") if b.strip()]
 
+    # AutoCount project registration (plan 71): the admin switch of the four
+    # /api/v1/autocount/project-registrations routes. OFF = every route refuses
+    # VENDOR_UNSUPPORTED with no AutoCount call, and the capability feed says so.
+    # Read per call (env AUTOCOUNT_PROJECT_REGISTRATION_ENABLED).
+    autocount_project_registration_enabled: bool = False
+
     # Environment
     environment: str = "development"
     debug: bool = False
