@@ -104,6 +104,16 @@ def refresh_spo_links(db: Session, tenant_id: str, company_id: str, source_ref: 
     SpoPoLinkRepository(db).replace_for_spo(tenant_id, company_id, source_ref, doc_no, links)
 
 
+def refresh_spo_links_from_doc(db: Session, tenant_id: str, company_id: str, source_ref: str,
+                               doc: Dict[str, Any]) -> None:
+    """Rewrite one SPO's index rows from a document AutoCount just read back (a verified write), for the case
+    where the staged copy belongs to another job and is left alone: every SPO of a live book (plan 71)."""
+    cancelled = doc.get("Cancelled") == "T"
+    links = [] if cancelled else spo_links_of({"_lines": doc.get("Details")})
+    doc_no = None if cancelled else str(doc.get("DocNo") or source_ref)
+    SpoPoLinkRepository(db).replace_for_spo(tenant_id, company_id, source_ref, doc_no, links)
+
+
 # ── SO-row index (lane AUTOCOUNT-STRANDED-OPS, C.d) ─────────────────────────────────────────────────
 
 SoRow = Tuple[int, Optional[str], bool]

@@ -481,6 +481,8 @@ class PrimitiveService(WriteFrame):
 
     @staticmethod
     def _capable(call: _Call) -> bool:
+        if call.kind == "SPO" and call.primitive == BATCH_LINK:  # plan 71: the SPO move's own switch
+            return capabilities.capable("SPO", EDIT) and bool(capabilities.VENDOR_CAPABILITIES.get("spo_move"))
         if call.primitive in (REPLACE_LINE, BATCH_LINK, UNLINK_MERGE):
             return all(capabilities.capable(call.kind, p) for p in _REPLACE_NEEDS)
         return capabilities.capable(call.kind, call.primitive)
