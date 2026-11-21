@@ -1,8 +1,10 @@
 # 3D module contract (PLANNER-3D-S0)
 
-Status: contract v0.3, written 20/11/2026 against `main` at `9fe0099c`. No module code exists yet.
-v0.2 applied the review of v0.1; v0.3 takes in the C1 lane's draft shape (section 7.2). Section 13 lists
-what changed for lanes that read an earlier version.
+Status: contract v0.4, written 20/11/2026, updated 21/11/2026, against `main` at `9fe0099c`. No module
+code exists yet. v0.2 applied the review of v0.1; v0.3 takes in the C1 lane's draft shape (section 7.2);
+v0.4 takes in the owner's ruling on the CRM key (one key for the whole Sorento CRM product) and C1's
+`company` parameter, so the planner path now names a CRM company (section 7.1). Section 13 lists what
+changed for lanes that read an earlier version.
 S1 builds the module to this document; S2, S3, S4 and the CRM slices C1, C3, C4, C5 build against it.
 A change to any wire shape here is a change to this file in the same commit (the same rule the
 omnichannel guide carries, `documentation/engineering/omnichannel-service.md`).
@@ -12,8 +14,10 @@ Words used here:
 - **SS**: this repository, the Foundryx Shared Service.
 - **CRM**: the consuming system (Sorento CRM first, EcoHub next). It owns the catalogue, prices, leads
   and quotations. SS never stores a product record or a price.
-- **Tenant**: one SS tenant per consuming company. A key, a webhook receiver, the caps and the usage
-  all belong to one tenant.
+- **Tenant**: one SS tenant per consuming system. The whole Sorento CRM product is one tenant, however
+  many companies it holds. A key, a webhook receiver, the caps and the usage all belong to one tenant.
+- **Company**: a company inside the consuming CRM (Sorento CRM holds several). Its code names the
+  planner page (section 7.1), goes to C1 on every catalogue call and comes back on `design.saved`.
 - **Planner code**: the opaque code the CRM issues to a salesperson or a dealer stand. SS carries it
   and never interprets it.
 
@@ -26,6 +30,8 @@ Owner rulings this contract rests on:
 - **D9**: open models on our own GPU by default; a paid API only as a switch per client, off by default.
 - Render only after Save. Catalogue products only. The AI never changes a product. Save creates a lead
   (channel `planner`) and never creates or renames a contact.
+- **CRM key (21/11/2026)**: one CRM key for the whole Sorento CRM product, held by the planner in SS.
+  SS keeps one key per SS tenant, never one per CRM company (section 7.2).
 
 Sections 1 to 9 are the contract. Section 10 is what the SS repository requires of the module.
 Section 11 is the sizing delta and the SS-side risks. Section 12 lists the points still open.
@@ -48,14 +54,20 @@ Routers in `manifest.json`:
 
 | Router | Prefix | Auth | Used by |
 |---|---|---|---|
-| `staff` | `/planner3d` | session JWT + `require_permission` | SS settings screens (keys, receiver, caps, usage, deliveries) |
+| `staff` | `/planner3d` | session JWT + `require_permission` | SS settings screens (keys, receiver, caps, usage, deliveries, companies) |
+| `operator` | `/planner3d/platform` (`"public": true`) | session JWT + `require_platform_permission("tenants.manage_modules")`, declared in the router | the platform console: register, change and remove a tenant's company codes (section 8) |
 | `gateway` | `/api/v1/planner3d` (`"public": true`) | tenant key | CRM server (C5, C3 reads) |
-| `planner_public` | `/public/planner3d` (`"public": true`) | none, tenant slug in the path | the hosted planner page (S2, S4) |
+| `planner_public` | `/public/planner3d` (`"public": true`) | none, company code in the path (section 7.1) | the hosted planner page (S2, S4) |
 | `files` | `/planner3d/files` (`"public": true`) | signed link | anyone holding a result link (section 3.1) |
 
-A `"public": true` router skips the session and module gate in the loader, so each of the three public
-routers checks "tenant may sign in and the module is ACTIVE for it" itself, as
-`modules/lead_capture/gateway_auth.py:49-53` does.
+A `"public": true` router skips the session and module gate in the loader (`app/module_loader.py:88`),
+so `gateway`, `planner_public` and `files` each check "tenant may sign in and the module is ACTIVE for
+it" themselves, as `modules/lead_capture/gateway_auth.py:49-53` does; `planner_public` also checks that
+the company is active. The `operator` router is `"public": true` because the loader's gate asks whether
+the module is ACTIVE for the CALLER's tenant, and the platform tenant never installs modules. It
+declares the platform gate itself (`app/dependencies.py:295`, the existing key in
+`app/permissions/platform_permissions.csv`, so no new permission) and acts only on a tenant named in
+its path that has the module ACTIVE.
 
 ---
 
@@ -87,9 +99,9 @@ Every gateway and public-planner error uses the structured envelope from `app/ap
 |---|---|---|
 | 400 | `invalid_request` | malformed JSON or multipart |
 | 401 | `invalid_api_key` | missing, malformed, unknown or revoked key |
-| 403 | `service_not_enabled` | tenant suspended or the module is not ACTIVE for it |
+| 403 | `service_not_enabled` | gateway only: tenant suspended or the module is not ACTIVE for it |
 | 403 | `paid_engine_off` | `engine: "paid"` asked for while the tenant's paid switch is off |
-| 404 | `not_found` | unknown id, or an id that belongs to another tenant (same answer) |
+| 404 | `not_found` | unknown id, or an id that belongs to another tenant (same answer); on the public planner also an unknown or inactive company code, a suspended tenant, a tenant without the module, and a design saved under another company (section 7.3) |
 | 409 | `design_not_saved` | a render asked for a design or revision that is not saved |
 | 409 | `idempotency_conflict` | same `Idempotency-Key`, different body |
 | 413 | `file_too_large` | upload above the cap |
@@ -98,7 +110,7 @@ Every gateway and public-planner error uses the structured envelope from `app/ap
 | 429 | `rate_limited` | request budget; carries `Retry-After` |
 | 429 | `spend_cap_reached` | the monthly cap is reached; no job is created |
 | 429 | `queue_full` | too many jobs already waiting for this tenant |
-| 503 | `catalogue_unavailable` | the CRM catalogue API did not answer (public planner only) |
+| 503 | `catalogue_unavailable` | the CRM catalogue API did not answer or refused (public planner only) |
 
 The core handler wraps validation errors only for paths under `/api/v1/`. S1 makes the
 `/public/planner3d/` routes answer with the same envelope (validate in the route and raise
@@ -184,6 +196,9 @@ Multipart, one part named `file`. Stores an input image for a later job.
 ```
 
 - `productCode` is the CRM's code, opaque to SS, 1 to 100 characters. It is echoed on the job and the event.
+- `company` is optional: the CRM company code the product belongs to, opaque to SS, echoed on the job
+  and on `model.ready`, and part of the retention key (3.8). C5 sends it whenever product codes can
+  repeat across companies (open point 10); SS never checks it against the company registry.
 - `uploadIds`: 1 to 6 photos of the one product.
 - `dimensionsMm` is required. The model is scaled so its bounding box equals these three values.
 - `engine`: `default` (the tenant's default: `gpu`, or `stub` when no worker is configured) or `paid`.
@@ -238,7 +253,7 @@ Multipart, one part named `file`. Stores an input image for a later job.
 ### 3.5 `GET /jobs/{id}` and `GET /jobs`
 
 - `GET /jobs/{id}`: the job object.
-- `GET /jobs?kind=&status=&productCode=&designId=&page=&pageSize=`: newest first, `pageSize` at most 100,
+- `GET /jobs?kind=&status=&productCode=&company=&designId=&page=&pageSize=`: newest first, `pageSize` at most 100,
   answer `{"data": [...], "total": 0, "page": 1, "pageSize": 25}`.
 - `POST /jobs/{id}/cancel`: a `queued` job is cancelled at once; a `running` job stops at its next
   checkpoint. Answer is the job object. Cancelling a finished job answers the job unchanged.
@@ -273,7 +288,7 @@ timeout must reuse its key so it is never charged twice.
 |---|---|
 | Unreferenced uploads | 24 hours |
 | Job rows and usage (`p3_job`) | 13 months |
-| Result files | 30 days after the job finished; the newest model per `productCode` and the newest render per saved design revision are kept until replaced |
+| Result files | 30 days after the job finished; the newest model per `company` and `productCode` (an absent `company` counts as its own value) and the newest render per saved design revision are kept until replaced |
 
 ---
 
@@ -289,8 +304,8 @@ One `p3_settings` row per tenant, edited by SS staff on the module's settings sc
 | `paidEngineEnabled` | `false` | D9: the paid API is a per-client switch and is OFF by default |
 | `monthlyPaidCap` | not set | money cap for the paid engine; required before `paidEngineEnabled` can be turned on |
 | `publicRendersPerDesign` | 3 | renders one saved design may start from the hosted planner |
-| `publicDailyRenders` | 20 | renders all visitors of this tenant's planner may start per UTC day |
-| `publicDailySaves` | 200 | Saves (so leads) this tenant's planner accepts per UTC day |
+| `publicDailyRenders` | 20 | renders all visitors of this tenant's planner may start per UTC day, all its companies together |
+| `publicDailySaves` | 200 | Saves (so leads) this tenant's planner accepts per UTC day, all its companies together |
 
 Rules:
 
@@ -421,9 +436,10 @@ renames a contact.
     "designId": "dsn_77aa...",
     "revision": 1,
     "tenant": "sorento",
+    "company": "CO1",
     "plannerCode": "K7QX2",
     "savedAt": "2026-11-21T02:10:00Z",
-    "shareUrl": "https://<ss planner host>/p/sorento/planner?design=dsn_77aa...&ref=K7QX2",
+    "shareUrl": "https://<ss planner host>/p/CO1/planner?design=dsn_77aa...&ref=K7QX2",
     "person": {"name": "Test Person", "mobile": "+60120000000", "email": "person@example.com"},
     "consent": {"contact": true, "marketing": false, "text": "<the consent sentence shown>", "acceptedAt": "2026-11-21T02:09:58Z"},
     "room": {"shape": "rectangle", "widthMm": 2400, "lengthMm": 1800, "heightMm": 2600},
@@ -435,13 +451,18 @@ renames a contact.
 }
 ```
 
+- `tenant` is the SS tenant slug, the same for every company of the Sorento CRM product. `company` is
+  the CRM company code from the page's path (section 7.1), spelt as registered in SS (`CO1` here is a
+  made-up code); the CRM files the lead under that company and matches the code trimmed and in any
+  letter case, as C1 does.
 - `plannerCode` is the `ref` the page was opened with, or `null`. The CRM decides the lead owner from it.
 - `shareUrl` keeps the `ref`, so a design passed on to someone else still opens under the same
   salesperson. The planner code is not a secret (it is printed in the QR).
 - `person` is exactly what the customer typed. `mobile` is normalised to E.164 when it parses, else sent as typed.
 - `lines` hold catalogue codes and quantities only. There is no price, no name and no free-text line:
   the CRM prices the lead from its own catalogue.
-- `consent.text` is the sentence the customer saw, so the CRM stores what was agreed to.
+- `consent.text` is the sentence the customer saw, so the CRM stores what was agreed to. It names the
+  company that will contact the customer (section 7.1).
 
 ### 5.6 `render.ready`
 
@@ -475,7 +496,7 @@ Sent when a model job reaches a final state.
 {
   "id": "evt_...", "type": "model.ready", "occurredAt": "2026-11-21T02:20:00Z",
   "data": {
-    "jobId": "job_...", "productCode": "ABC-123",
+    "jobId": "job_...", "productCode": "ABC-123", "company": null,
     "status": "succeeded", "engine": "gpu",
     "dimensionsMm": {"length": 600, "width": 450, "height": 850},
     "files": [{"role": "model", "name": "model.glb", "mime": "model/gltf-binary", "size": 184320, "sha256": "...", "url": "...", "expiresAt": "..."}],
@@ -581,32 +602,39 @@ Everything else is the real path: caps, queue, storage, signed links, events.
 ### 7.1 URL
 
 ```
-https://<ss planner host>/p/<tenant>/planner?ref=<planner code>
+https://<ss planner host>/p/<company>/planner?ref=<planner code>
 ```
 
 | Part | Rule |
 |---|---|
 | `<ss planner host>` | the SS frontend host (`APP_DOMAIN`). The frontend serves at the root and the backend under `/be` on the same host (`DEPLOY.md` "Topology"), so the page calls its API same-origin. |
-| `<tenant>` | the SS tenant slug: lowercase kebab, 3 to 63 characters, fixed after creation. The slug is in the path, not the subdomain, as the public forms route does. |
+| `<company>` | the CRM company code the link belongs to, as the CRM spells it (C1 note of 21/11/2026). SS stores each registered code as the CRM spells it plus a lookup form (trimmed, lower case). The lookup form is unique across SS (one unique index) and the path is matched on that form only, so the code alone finds both the tenant and the company. Only a platform operator registers, changes or removes a code (section 8); a code is fixed once registered, and a removed code stays reserved to its tenant until an operator releases it. Codes are 1 to 32 characters of letters, digits, `-` and `_`; a CRM code outside that is raised with C1, never renamed. |
 | `ref` | optional planner code, `[A-Za-z0-9_-]{1,64}`. Kept for the visit and sent in `design.saved`. SS never checks it against anything; a wrong or missing code still saves, with `plannerCode: null` when missing. |
-| `design` | optional saved design id; opens that design (the share link). |
+| `design` | optional saved design id; opens that design (the share link). A design opens only under the company it was saved under; under another company's code it is not found. |
 
-An unknown tenant, a suspended tenant and a tenant without the module all show the same not-found page
-(no tenant enumeration). The page is public, no login, and carries the tenant's branding; it never
-shows the word Foundryx (white-label rule).
+Why a company and not a tenant in the path: the whole Sorento CRM product is one SS tenant (owner ruling,
+21/11/2026), and production SS serves one domain with no tenant subdomains (`DEPLOY.md` "Topology"),
+so the one path segment names the company and SS finds the tenant from it.
 
-Frontend route: `service_frontend/app/(public)/p/[tenant]/planner/page.tsx`. The `(public)` group is
+An unknown company code, a company not active for the planner, a suspended tenant and a tenant without
+the module all show the same not-found page (no enumeration). The page is public, no login, and carries
+the tenant's logo and colours with the company's own display name and consent sentence, each falling
+back to the tenant's when the company leaves it empty (crew ruling, 21/11/2026). The consent sentence
+names the company that will contact the customer. The page never shows the word Foundryx (white-label rule).
+
+Frontend route: `service_frontend/app/(public)/p/[company]/planner/page.tsx`. The `(public)` group is
 invisible in the URL and no `p` segment exists today, so there is no collision.
 
 Two things S2 must build, because today's public pages take the tenant from the host name, not the path
 (the public forms page is `/public/forms/[slug]` and its branding comes from the host):
 
-- branding, page title and favicon for this route are resolved from the `<tenant>` path part;
+- branding, page title and favicon for this route are resolved from the `<company>` path part (the
+  company, then its tenant);
 - `/p/:path*` is added to `service_frontend/middleware.ts` with `frame-ancestors 'none'`, so the page
   that collects a name and a mobile number cannot be framed by another site.
 
-C4 builds the salesperson link and QR as exactly this URL from two values: the tenant slug (one CRM
-setting) and the user's planner code.
+C4 builds the salesperson link and QR as exactly this URL from three values: the SS planner host (one
+CRM setting), the code of the salesperson's company and the user's planner code.
 
 ### 7.2 Catalogue (the CRM API from C1)
 
@@ -614,9 +642,9 @@ The browser never calls the CRM and never sees the CRM key. The page calls SS, a
 server to server:
 
 ```
-browser  -> GET /be/public/planner3d/<tenant>/catalogue/products?query=&category=&codes=&limit=&offset=
-SS       -> GET <crm base url>/api/v1/external/planner/products     header X-API-Key: <key>
-SS       -> GET <crm base url>/api/v1/external/planner/categories   header X-API-Key: <key>
+browser  -> GET /be/public/planner3d/<company>/catalogue/products?query=&category=&codes=&limit=&offset=
+SS       -> GET <crm base url>/api/v1/external/planner/products?company=<code>&...     header X-API-Key: <key>
+SS       -> GET <crm base url>/api/v1/external/planner/categories?company=<code>       header X-API-Key: <key>
 ```
 
 - The CRM base URL and key are one SS connection per tenant (`connections` table, key Fernet-encrypted
@@ -629,25 +657,33 @@ SS       -> GET <crm base url>/api/v1/external/planner/categories   header X-API
   `Cache-Control`, SS forwards them unchanged so the customer's own browser can avoid repeat downloads. A saved design stores product
   codes and positions only.
 - The connection is read for this tenant only (`get_by_type(tenant_id, "catalogue")`). The usual
-  fall-back to the platform tenant's connection must NOT be used here: it would show one company's
-  catalogue on another company's planner. No connection answers `503 catalogue_unavailable`.
+  fall-back to the platform tenant's connection must NOT be used here: it would show one tenant's
+  catalogue on another tenant's planner. No connection answers `503 catalogue_unavailable`.
 - The base URL is typed in by a tenant admin, so every call to it goes through `app/services/url_guard.py`:
   public `https` only, the address re-checked on every call, redirects not followed.
-- What SS forwards to C1, under C1's own names: `query` (part of a name or code), `category` (a category
-  code), `codes` (repeatable, exact match, at most 200 per call), `limit` (1 to 200, default 100) and
-  `offset`. SS uses `codes` at Save to check that every line is a catalogue product, and the share link
-  uses it to load a saved design's products. A code missing from C1's answer is not in this tenant's
-  catalogue.
-- C1's draft shape (the C1 lane owns it; final after its open questions are answered). SS passes the
+- What SS sends to C1, under C1's own names: `company` (on both calls, always: the code of the page's
+  company, spelt as registered in SS, even when the key reads only one company), `query` (part of a
+  name or code), `category` (one or more category codes, comma-separated), `codes` (repeatable, exact
+  match, at most 200 per call), `limit` (1 to 200, default 100) and `offset`. SS uses `codes` at Save to
+  check that every line is a product of that company's catalogue, and the share link uses it to load a
+  saved design's products. A code missing from C1's answer is not in that company's catalogue.
+- C1's shape (the C1 lane owns it: its v0.2 notes plus the company change of 21/11/2026). SS passes the
   body through unchanged, so the planner page reads C1's snake_case names on these two routes only:
   - products: `{"data": [...], "total", "limit", "offset"}`, each product `code`, `name`,
     `category_code`, `category_name`, `length_mm`, `width_mm`, `height_mm`, `thumbnail_url`, `model_url`,
     `list_price` (decimal string), `currency`. The sizes, both links and the price can be `null`;
-    `model_url` is `null` until C5 ships.
-  - categories: `{"data": [{"code", "name", "parent_code", "display_order"}]}`.
+    `model_url` is `null` until C5 ships. C1 returns only products whose category has a product type.
+  - categories: `{"data": [{"code", "name", "parent_code", "display_order"}]}`; `name` is the readable
+    product type.
 - `thumbnail_url` and `model_url` are signed links that expire after 1 hour. SS never stores them on a
   design and never caches them; the page asks again when it needs a fresh one.
-- C1 sends no `ETag` for now. One CRM key belongs to one CRM company, which matches one key per SS tenant.
+- C1 sends no `ETag` for now.
+- One CRM key covers the whole Sorento CRM product, not one company (owner ruling, 21/11/2026). SS holds
+  it as the single `planner_catalogue` connection of that product's SS tenant: one key per SS tenant,
+  never one per CRM company. C1's rate limit on that key is therefore the ceiling for all of the
+  tenant's planner traffic, every company together. CRM-side setup (C1): the planner integration's
+  act-as user is granted every company the planner serves and holds a role that can view products; it
+  is not an admin.
 - The page downloads thumbnails and GLB files straight from the URLs C1 returns. C1's file host must
   allow cross-origin reads (CORS) from the planner host, or three.js cannot load the models.
 - A `list_price` of `null` or 0 shows as no price. A product with no `model_url` is shown as a plain box
@@ -660,14 +696,23 @@ SS       -> GET <crm base url>/api/v1/external/planner/categories   header X-API
   an error with Try again. SS has no older copy to fall back to. If the CRM is down at Save, the Save
   answers `503 catalogue_unavailable`, nothing is stored, and the page keeps the design on screen so
   the customer can press Save again.
+- C1's 403 with `detail.code` `planner_company_unresolved` (the company is unknown or inactive in the
+  CRM, the key is not granted it, or `company` is missing while the key reads several companies) is
+  mapped the same way, to `503 catalogue_unavailable`. A customer cannot fix it, so the connection's
+  Test button calls `/categories` once for each active registered company and names every company C1
+  refuses; that is where staff see it.
 
-### 7.3 Public planner routes (`/public/planner3d/{tenant}`)
+### 7.3 Public planner routes (`/public/planner3d/{company}`)
 
-No key. Own per-IP throttle scope. Tenant from the path slug.
+No key. Own per-IP throttle scope. The company code in the path gives the tenant and the company (7.1).
+An unknown or inactive company code, a suspended tenant and a tenant without the module answer the
+identical `404 not_found` on every route below, before any tenant budget is counted (the per-IP limit
+still counts them). Every design id below is checked against the tenant and the company: a design saved
+under another company answers the same `404`.
 
 | Route | Purpose |
 |---|---|
-| `GET /config` | tenant display name, branding, consent sentences, `rendersEnabled` |
+| `GET /config` | the company's display name and consent sentences (the tenant's when the company leaves them empty), the tenant's logo and colours, `rendersEnabled` |
 | `GET /catalogue/products`, `GET /catalogue/categories` | section 7.2 |
 | `POST /designs` | Save (body below). Answer `{designId, revision, editToken, shareUrl}`. Queues `design.saved`. |
 | `PUT /designs/{id}` | Save again; needs the `editToken`; `revision` goes up; queues `design.saved` |
@@ -725,6 +770,13 @@ in all three menu arrays. Built on the Resource shell and the design language
 | Keys | `planner3d.keys.manage` | issue (shown once), name, last used, revoke |
 | Receivers and deliveries | `planner3d.webhooks.manage` | receivers, events, test push, delivery history, send again |
 | Limits and usage | `planner3d.settings.manage` | section 4 settings and the month's usage |
+| Companies | `planner3d.settings.manage` | the company codes an operator registered for this tenant (7.1). Tenant staff set each company's active flag, display name and consent sentence; an empty name or sentence falls back to the tenant's, and the consent sentence names the company that will contact the customer. Codes cannot be added, changed or removed here. |
+
+One operator screen, the module's own page in the platform console menu (`MenuItem.platformOnly` plus
+the platform key `tenants.manage_modules`; the module adds no tab to the core tenant page), through the
+`operator` router (section 1): pick a tenant, then register, change or remove its company codes. The
+refusal of a code that another tenant already holds is shown there only, so a tenant never learns
+which codes other tenants hold.
 
 Each new permission needs a grant sweep for tenants that already exist (`AGENTS.md`, RBAC). The job
 handler names `planner3d.jobs.read` as its `read_permission` so the jobs also show in the core Jobs
@@ -734,7 +786,7 @@ drawer (`app/jobs/registry.py:41-43`).
 
 ## 9. Security rules that are part of the contract
 
-- Tenant isolation: every query carries `tenant_id`; an id from another tenant answers 404, and a stored
+- Tenant isolation: every query carries `tenant_id` (the one exception is the company lookup below); an id from another tenant answers 404, and a stored
   id is resolved with the tenant at use time, never with an unscoped lookup.
 - Secrets: tenant keys hashed; receiver secrets and the CRM catalogue key Fernet-encrypted; none is
   ever returned after creation or written to a log.
@@ -743,6 +795,14 @@ drawer (`app/jobs/registry.py:41-43`).
 - Receiver URLs and the catalogue base URL are tenant input: public `https` only, re-checked before
   every call, redirects not followed (sections 5.1 and 7.2).
 - The catalogue connection is resolved for the calling tenant only, never the platform fall-back.
+- A company code resolves to exactly one tenant and one company. That lookup is the one query in the
+  module that carries no `tenant_id`, because it is how the public planner finds the tenant: it reads
+  the unique lookup form only (7.1), and everything after it is scoped to the tenant it returns.
+- Catalogue calls carry the page's company only, and a design opens, saves again and renders only
+  under the company it was saved under, because its catalogue check and its lead belong to that
+  company. Share links always carry the right code, so only a hand-edited link meets this refusal.
+- Only a platform operator registers, changes or removes a company code (section 8), so one tenant's
+  admin can never take over another tenant's printed links and QR codes.
 - The public planner API takes no key and so trusts nothing from the browser: prices are never accepted
   from the page, product codes are checked against the CRM catalogue at Save, and a code the catalogue
   does not return fails the Save with `422`.
@@ -812,12 +872,12 @@ every PR (convention lint, backend and frontend build, pytest, vitest, one alemb
 
 | Slice | Build split | After reading SS | Why |
 |---|---|---|---|
-| S1 module skeleton | M-L, 3-4 days | L, 4-6 days | Reusable: key service, gateway auth and audit, signed delivery with retry, URL guard, `background_jobs`, storage, signed links (all exist in lead capture, omnichannel and core). Not counted in the split: four staff screens on the Resource shell built mock first, the catalogue connection provider, module Alembic checked on real Postgres, conftest wiring in four places, permission CSV plus grant sweep, storage-key registration, a dedicated worker queue, and a design store (`p3_design`) that S2's Save and the render rule both need. Suggest S1a backend with the stub (3-4 days, unblocks C3 and C5) and S1b staff screens (1-2 days). |
-| S2 planner UI | L, 6-8 days | L, 7-9 days | The frontend has no three.js today (`service_frontend/package.json` has `konva` and `react-konva` only), so the port adds the dependency and its bundle. The public route, the catalogue proxy and tenant branding by path slug are new. Browser checks are recorded `agent-browser` runs at 375 and 1280 px; there is no automated browser suite in this repo. The public Save routes (section 7.3) fit S2 better than S1 because their fields come from the approved screens. |
+| S1 module skeleton | M-L, 3-4 days | L, 5-7 days | Reusable: key service, gateway auth and audit, signed delivery with retry, URL guard, `background_jobs`, storage, signed links (all exist in lead capture, omnichannel and core). Not counted in the split: five staff screens on the Resource shell built mock first, the company registry with its operator route and console screen (v0.4, about one day with the Companies screen), the catalogue connection provider, module Alembic checked on real Postgres, conftest wiring in four places, permission CSV plus grant sweep, storage-key registration, a dedicated worker queue, and a design store (`p3_design`) that S2's Save and the render rule both need. Suggest S1a backend with the stub (3.5-4.5 days, unblocks C3 and C5) and S1b staff and operator screens (1.5-2.5 days). |
+| S2 planner UI | L, 6-8 days | L, 7-9 days | The frontend has no three.js today (`service_frontend/package.json` has `konva` and `react-konva` only), so the port adds the dependency and its bundle. The public route, the catalogue proxy and branding by the company code in the path are new. Browser checks are recorded `agent-browser` runs at 375 and 1280 px; there is no automated browser suite in this repo. The public Save routes (section 7.3) fit S2 better than S1 because their fields come from the approved screens. |
 | S3 GPU worker image | L, 4-6 days + test | unchanged | The worker is outside this repo's compose stack by design (the production host has one vCPU and no GPU). Precedents: `service_backend/code_runner/` (own image, URL plus token) and the meetings pilot-host workers. CI does not build a worker image today; add that or build it by hand. |
 | S4 render in the planner | M, 2 days | M, 2-3 days | The paste-back, the masks and the "products unchanged" list are SS work in the job handler (section 3.4), not only screens. If S1 ships the paste-back with the stub, S4 stays at 2 days. |
 
-SS total moves from about 17-23 to about 19-26 lane-days plus the test.
+SS total moves from about 17-23 to about 20-27 lane-days plus the test.
 
 ### 11.2 SS-side risks
 
@@ -852,6 +912,10 @@ SS total moves from about 17-23 to about 19-26 lane-days plus the test.
 10. **Embedding.** The page is served top-level. If a tenant later wants it inside an iframe on its own
     site, that needs a frame-ancestors rule in `service_frontend/middleware.ts` and a public CORS prefix
     (`register_public_cors_prefix`); neither is in this contract. v0.2 forbids framing outright (7.1).
+11. **Company codes are one namespace across SS.** The planner path holds only the company code (7.1),
+    so a later consuming system whose company code another tenant already holds cannot register it.
+    That needs a contract change (crew-ask first), never a workaround such as a renamed code the CRM
+    does not know.
 
 ---
 
@@ -863,28 +927,37 @@ only the named section.
 | # | Point | Default in this contract | Owner of the answer |
 |---|---|---|---|
 | 1 | May stub output reach a real customer while no GPU server exists? | CLOSED by crew ruling 20/11/2026: no. Render is hidden on the public planner until a worker is configured; test tenants get labelled stub output (section 6.3). | closed |
-| 2 | Exact fields the customer fills at Save and the consent sentences | name, mobile, email, contact consent (required), marketing consent (optional), from the build split. The acceptance criteria file (AC-1..10) was not readable from this lane. | S2 lane, against the approved screens |
-| 3 | Default caps | 1 running job, 20 waiting, 10 GPU hours a month per tenant | ops, once the GPU server is known |
-| 4 | Exact response shape of C1 | C1's draft is in section 7.2; final after the C1 lane's own open questions | C1 lane |
+| 2 | Exact fields the customer fills at Save and the default consent sentences | name, mobile, email, contact consent (required), marketing consent (optional), from the build split; each company can replace the consent text (point 9). The acceptance criteria file (AC-1..10) was not readable from this lane. | S2 lane, against the approved screens |
+| 3 | Default caps, and whether the public daily budgets stay shared by a tenant's companies | 1 running job, 20 waiting, 10 GPU hours a month per tenant; `publicDailySaves` and `publicDailyRenders` are shared by all of a tenant's companies, so one busy company can use up the day for the others | ops for the numbers, once the GPU server is known; owner for a budget per company (customer-visible), only if sharing proves a problem |
+| 4 | Exact response shape of C1 | C1's shape is in section 7.2 (its v0.2 notes plus the company change of 21/11/2026); the C1 lane says when it is final | C1 lane |
 | 5 | Paid engine vendor and its cost unit | `paidCost` is `{amount, currency}`; no vendor is named and no paid call is built in S1 | owner, after the side-by-side test |
 | 6 | CORS on the file host for the planner host | `codes` is agreed (7.2); CORS still to confirm | C1 lane |
-| 8 | What the customer sees for a product that left the catalogue | marked as no longer available, removable, Save blocked until removed (7.2) | owner (customer-visible), S2 lane |
 | 7 | Captcha on the public Save | none in v0.2; per-IP and per-tenant limits plus the honeypot | owner, only if the limits prove too weak |
+| 8 | What the customer sees for a product that left the catalogue | CLOSED by crew ruling (a) 20/11/2026: it stays in the room marked as no longer available, the customer removes it, and Save is blocked until then (7.2). S2 writes the wording. | closed |
+| 9 | Name and consent sentence a customer sees on a company's planner page, now that one SS tenant holds several companies | CLOSED by crew ruling (a) 21/11/2026: each company has its own display name and consent sentence (Companies screen, section 8), falling back to the tenant's when empty; logo and colours stay the tenant's; the consent sentence names the company that will contact the customer. | closed |
+| 10 | Are CRM product codes unique across companies? | not assumed: `company` is optional on `POST /models` and `model.ready` and is part of the model retention key (3.3, 3.8) | C1 and C5 lanes |
+| 11 | The customer's link and QR now show the CRM company code (`/p/<company code>/planner`) where v0.3 showed the SS tenant slug | the company code, as C1 reads the link and C4 builds it (7.1) | owner (customer-visible) |
 
 ---
 
-## 13. Changes from v0.1
+## 13. Changes from earlier versions
 
-For lanes that started from v0.1 (C1, C3, C6 were sent it):
+For lanes that started from an earlier version (C1, C3, C6 were sent v0.1):
 
 | Lane | Change |
 |---|---|
-| C3 | 5.4: create the lead on the first `design.saved` seen for a `designId`, whatever its `revision`; apply an event only when its `revision` is higher than the stored one; full rule list for late and early events. |
-| C3 | 5.3: SS sends one `v1` only. The verifier is unchanged. |
-| C3, C5 | 5.6 and 3.4: `products[]` carries `productCode` and `unchanged` only, no name. |
-| C1 | 7.2: SS needs a `codes` filter; the file host needs CORS for the planner host; SS keeps no cache at all, so every planner page request is one C1 request (size the rate limit for that). |
-| C5 | 3.3 and 4.1: a submit always answers `queued`; a job starts within about 5 seconds. `stubOutcome` is gateway only. |
-| C4 | no change. |
+| C3 | v0.2, 5.4: create the lead on the first `design.saved` seen for a `designId`, whatever its `revision`; apply an event only when its `revision` is higher than the stored one; full rule list for late and early events. |
+| C3 | v0.2, 5.3: SS sends one `v1` only. The verifier is unchanged. |
+| C3, C5 | v0.2, 5.6 and 3.4: `products[]` carries `productCode` and `unchanged` only, no name. |
+| C1 | v0.2, 7.2: SS needs a `codes` filter; the file host needs CORS for the planner host; SS keeps no cache at all, so every planner page request is one C1 request (size the rate limit for that). |
+| C5 | v0.2, 3.3 and 4.1: a submit always answers `queued`; a job starts within about 5 seconds. `stubOutcome` is gateway only. |
+| C4 | v0.2: no change. |
+| S1 | v0.2: new 4.1 (dispatcher tick), `files` router and its signature, error envelope on the public prefix, `p3_job` as the only job record, tenant-only catalogue connection with URL guard, public budgets. |
+| S2, S4 | v0.2, 3.4 and 7.3: the page captures `scene`, `depth` and `mask` per view at Save; no free camera; branding from the path; framing forbidden; Render hidden while no GPU worker is configured. |
 | C1 | v0.3: section 7.2 now uses C1's own parameter and field names (`query`, `category`, `codes`, `limit`, `offset`; snake_case body); 403 and 429 from C1 also become `catalogue_unavailable`; signed links are never stored. SS still keeps no cache (v0.1 said 5 minutes), so the 600 calls a minute per key is the real ceiling for a tenant's planner traffic. |
-| S1 | new 4.1 (dispatcher tick), `files` router and its signature, error envelope on the public prefix, `p3_job` as the only job record, tenant-only catalogue connection with URL guard, public budgets. |
-| S2, S4 | 3.4 and 7.3: the page captures `scene`, `depth` and `mask` per view at Save; no free camera; branding from the path; framing forbidden; Render hidden while no GPU worker is configured. |
+| C1 | v0.4 (owner, 21/11/2026: one CRM key for the whole Sorento CRM product): SS holds one key per SS tenant, never one per company, so C1's limit on that key covers every company's planner traffic; SS sends `company=<code>` on both calls, always; `category` may hold several codes, comma-separated; `planner_company_unresolved` becomes `503 catalogue_unavailable`, and the connection Test names each active company C1 refuses (7.2). Company codes must be 1 to 32 letters, digits, `-` or `_` (7.1); open point 10 asks whether product codes repeat across companies. |
+| C3 | v0.4: `design.saved` gains `data.company`, the CRM company code the design was saved under; file the lead under that company, matching the code trimmed and in any letter case. `data.tenant` is the same for every company. `consent.text` names the company that will contact the customer (5.5). |
+| C4 | v0.4: the link is `/p/<company code>/planner?ref=<planner code>`, C1's reading: the SS planner host (one CRM setting), the code of the salesperson's company and the planner code (7.1; open point 11). |
+| C5 | v0.4: optional `company` on `POST /models`, echoed on the job and `model.ready`, filter `company` on `GET /jobs`; send it if product codes can repeat across companies (open point 10). |
+| S1 | v0.4: one SS tenant per consuming system; the company registry behind the planner path (lookup form unique across SS, the one query without `tenant_id`); codes registered only by a platform operator through a new `operator` router on the existing key `tenants.manage_modules`; the tenant's Companies screen edits active, name and consent only (1, 7.1, 8, 9). |
+| S2 | v0.4: the route is `app/(public)/p/[company]/planner/page.tsx`; config, branding and the catalogue resolve from the company; every bad code, suspended tenant or missing module answers the same `404`; a design opens only under its own company; the company's own name and consent sentence, falling back to the tenant's (crew ruling (a), 21/11/2026). Open point 8 is closed (crew ruling (a), 20/11/2026); the behaviour in 7.2 is unchanged. |
