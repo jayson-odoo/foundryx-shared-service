@@ -521,6 +521,63 @@ def test_r2_a_relink_onto_the_new_po_line_of_an_unfinished_follow_waits(h, w):
     assert len(h.vendor.writes()) == writes
 
 
+def test_r2_only_the_new_po_line_a_follower_waits_for_is_held(h, w):
+    """A batch of 40 (its SPO line follows) + 20 (no SPO line) whose follow did not land: the 20 line's new PO line
+    has nothing coming, so another SPO line may move onto it; the 40 line's new PO line waits."""
+    h.vendor.refuse_json_next("PUT", LEAF, after=2)
+    res = h.run(OP, dict(doc_key=7201, dtl_key=w.b1, links=[
+        dict(so_doc_key=7202, so_dtl_key=w.so_a, qty=Decimal(40)),
+        dict(so_doc_key=7202, so_dtl_key=w.so_b, qty=Decimal(20))]), key="r2-17")
+    assert res.error_code == "SPO_NOT_FOLLOWED", (res.outcome, res.error_code)
+    h.seed_doc("PO", 7301, [_line("ITEM-A", 20, 5.0, "BR1")])
+    c1 = h.vendor.rows("PO", 7301)[0]["DtlKey"]
+    h.seed_doc("SPO", 7303, [_line("ITEM-A", 10, 5.0, "BR1", FromDocType="PO", FromDocNo="PO-7301",
+                                   FromDocDtlKey=c1), _line("ITEM-A", 10, 5.0, "BR1", FromDocType="PO",
+                                                            FromDocNo="PO-7301", FromDocDtlKey=c1)])
+    x1, x2 = [r["DtlKey"] for r in h.vendor.rows("SPO", 7303)]
+    waits = h.run("spo_move_row", dict(spo_doc_key=7303, spo_dtl_key=x1, po_doc_key=7201,
+                                       po_dtl_key=w.new_po_row()["DtlKey"], qty=Decimal(10)), key="r2-17a")
+    assert waits.outcome == "refused" and waits.error_code == "ROW_NEEDS_ATTENTION", (waits.outcome, waits.error_code)
+    free = h.run("spo_move_row", dict(spo_doc_key=7303, spo_dtl_key=x2, po_doc_key=7201,
+                                      po_dtl_key=w.new_po_row(w.so_b)["DtlKey"], qty=Decimal(10)), key="r2-17b")
+    assert free.outcome == "done", (free.outcome, free.error_code)
+
+
+def lock_spy(h):
+    """Every ``link_locks`` the operations take: ``(PO documents, SPO documents)``."""
+    from modules.autocount.write_back import operations
+
+    seen = []
+    real = operations.link_locks
+
+    def spy(db, company_id, *, po_doc_keys=(), so_dtl_keys=(), spo_doc_keys=()):
+        seen.append((list(po_doc_keys), list(spo_doc_keys)))
+        return real(db, company_id, po_doc_keys=po_doc_keys, so_dtl_keys=so_dtl_keys, spo_doc_keys=spo_doc_keys)
+
+    h.monkeypatch.setattr(operations, "link_locks", spy)
+    return seen
+
+
+def test_r2_the_follow_writes_the_spo_under_its_lock(h, w):
+    seen = lock_spy(h)
+    res = h.run(OP, w.params(40), key="r2-15")
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert seen[0] == ([7201], []) and ([], [7203]) in seen[1:], seen  # the batch's PO, then the follow's SPO
+
+
+def test_r2_resume_of_an_spo_operation_holds_the_spo_document(h, w):
+    h.seed_doc("PO", 7301, [_line("ITEM-A", 100, 5.0, "BR1")])
+    c1 = h.vendor.rows("PO", 7301)[0]["DtlKey"]
+    h.vendor.apply_then_500_next("PUT", LEAF)
+    mv = h.run("spo_move_row", dict(spo_doc_key=7203, spo_dtl_key=w.s1, po_doc_key=7301, po_dtl_key=c1,
+                                    qty=Decimal(40)), key="r2-16")
+    assert mv.outcome == "pending_verification", (mv.outcome, mv.error_code)
+    seen = lock_spy(h)
+    out = resume(h, mv)
+    assert out.outcome == "done", (out.outcome, out.error_code)
+    assert seen and seen[0] == ([], [7203]), seen
+
+
 def test_r2_the_follow_checks_the_new_po_line_has_room(h, w):
     """An SPO line tied by hand to the new PO line while the follow waited: the follower no longer fits."""
     res = fail_follow(h, w, "r2-11")

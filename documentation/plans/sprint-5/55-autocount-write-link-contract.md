@@ -159,8 +159,9 @@ AutoCount meanwhile is never undone), nothing received on it, no earlier write o
 (an unknown outcome is given 420 s first), no other SS write on that shipping purchase order, and room on the
 new PO row: ONE write (the old row removed, a new row of the same quantity tied to the new PO row). Anything else
 stays `needs_attention` / `SPO_NOT_FOLLOWED` and nothing is sent: a person checks the shipping purchase order
-(the alert names it). Until it is resumed, a new `po-links/batch` on the same PO row and any move or relink of
-another shipping purchase order row onto its new PO row are refused `ROW_NEEDS_ATTENTION`, nothing written.
+(the alert names it). Until it is resumed, a new `po-links/batch` on the same PO row, and any `spo-links` link,
+move or relink of another shipping purchase order row onto the new PO row a row is still to follow onto, are
+refused `ROW_NEEDS_ATTENTION`, nothing written. A new PO row nothing is to follow onto stays free.
 
 Creating a document (`POST /documents/{kind}`) follows the same table with one difference, because a failed
 create may still have saved the document. A create AutoCount refused before saving (credit limit, unknown item,
@@ -515,7 +516,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `IDEMPOTENCY_CONFLICT` | The `Idempotency-Key` was used for a different body or route and its first call did not release it | Use a new key for a new change |
 | `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
-| `ROW_NEEDS_ATTENTION` | Unlink, relink or delete line on a PO row that an unresolved link operation covers (its source row, or a new row linked to one of its SO rows); plan 71: a batch link on a PO row whose earlier batch link still has a shipping purchase order row to carry along, or a shipping purchase order row moved or relinked onto such a batch's new PO row; nothing written | Resume that operation (`POST /write-operations/{id}/resume`); hide the action on this code |
+| `ROW_NEEDS_ATTENTION` | Unlink, relink or delete line on a PO row that an unresolved link operation covers (its source row, or a new row linked to one of its SO rows); plan 71: a batch link on a PO row whose earlier batch link still has a shipping purchase order row to carry along, or another shipping purchase order row linked, moved or relinked onto the new PO row that row is still to follow onto; nothing written | Resume that operation (`POST /write-operations/{id}/resume`); hide the action on this code |
 | `FOC_ON_ROW` | A write that would remove a PO row that has a free quantity (AutoCount's API cannot write it on another row): a link taking the whole row (`po-links`: refused; `po-links/batch`: the line is skipped and named in `skipped`), and an unlink or relink of such a row (`po-links/unlink`, `po-links/relink`: refused). Nothing written | Link a smaller quantity, or handle the row in AutoCount |
 | `ALL_LINKS_SKIPPED` | `po-links/batch`: every line failed its own check, so nothing was linked; `skipped` names each line and its code | Fix the lines and resend (same key is fine) |
 

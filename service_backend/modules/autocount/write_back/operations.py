@@ -1878,31 +1878,32 @@ class OperationService:
         return (datetime.now(timezone.utc) - at).total_seconds() < LOOKUP_SETTLE_SECONDS
 
     def _unfinished_follows(self, company: AcCompany, po_doc_key: int,
-                            po_dtl_key: Optional[int] = None) -> List[AcWriteOperation]:
-        """The unresolved link batches on the PO (``po_dtl_key``: on that row) with an SPO row still to follow:
-        planned in the snapshot, not in the stored answer's ``spoLines``. A batch whose SPO rows all followed
-        (``RESTORE_NOT_LANDED`` after the follow) holds nothing (review round 2)."""
-        found: List[AcWriteOperation] = []
+                            po_dtl_key: Optional[int] = None) -> List[Tuple[AcWriteOperation, List[Doc]]]:
+        """The unresolved link batches on the PO (``po_dtl_key``: on that row) with SPO rows still to follow,
+        each with those rows: planned in the snapshot, not in the stored answer's ``spoLines``. A batch whose SPO
+        rows all followed (``RESTORE_NOT_LANDED`` after the follow) holds nothing (review round 2)."""
+        found: List[Tuple[AcWriteOperation, List[Doc]]] = []
         for op in self.ops.pending_po_row_links(company.tenant_id, company.id, po_doc_key, po_dtl_key,
                                                 exclude_id=self._row.id if self._row else None):
             snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
-            planned = {int((f.get("row") or {}).get("DtlKey") or 0) for f in snap.get("spoFollows") or []}
             batch = (op.result_json or {}).get("batch") if isinstance(op.result_json, dict) else None
             moved = {int(s.get("fromSpoDtlKey") or 0) for s in (batch or {}).get("spoLines") or []}
-            if planned - moved:
-                found.append(op)
+            waiting = [f for f in snap.get("spoFollows") or []
+                       if int((f.get("row") or {}).get("DtlKey") or 0) not in moved]
+            if waiting:
+                found.append((op, waiting))
         return found
 
     def _follow_target(self, company: AcCompany, po_doc_key: int, row: Doc) -> bool:
-        """``row`` is a new PO row of a batch with an SPO row still to follow (a row that batch's read did not
-        know, linked to one of its SO rows): that SPO row may still land on it, so no other SPO row is moved
-        there until the batch is resumed (review round 2)."""
+        """``row`` is the new PO row an SPO row still has to follow onto (a row that batch's read did not know,
+        linked to the SO row of a link whose SPO row has not followed): that SPO row may still land on it, so no
+        other SPO row is linked, moved or relinked there until the batch is resumed (review round 2)."""
         linked = int(row.get("FromSODtlKey") or 0)
         if not linked:
             return False
-        for op in self._unfinished_follows(company, po_doc_key):
+        for op, waiting in self._unfinished_follows(company, po_doc_key):
             snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
-            so_rows = {int(link.get("soDtlKey") or 0) for link in snap.get("links") or []}
+            so_rows = {int(f.get("soDtlKey") or 0) for f in waiting}
             if row.get("DtlKey") not in set(snap.get("knownKeys") or []) and linked in so_rows:
                 return True
         return False

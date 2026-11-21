@@ -118,8 +118,9 @@ slice the second call was refused `ROW_ON_SPO`. Now, with the `spo_move` switch 
 - **The SPO document is held.** Every SPO operation now takes a per-SPO-document lock (`link_locks(spo_doc_keys)`,
   after the PO document locks, before the SO rows), the follow takes it per SPO and re-checks that no other SS
   operation is writing it, and the edit that puts the new SPO line back is built on a fresh read
-  (`reuse_read=False`). A move or relink onto the new PO line of a batch with an SPO line still to follow is
-  `ROW_NEEDS_ATTENTION` until that batch is resumed.
+  (`reuse_read=False`). A link, move or relink of another SPO line onto the new PO line an SPO line is still to
+  follow onto is `ROW_NEEDS_ATTENTION` until that batch is resumed (`_follow_target`; the batch's other new PO
+  lines stay free).
 - **Narrower hold, clearer alert.** The round-1 hold now applies only while an SPO line is still to follow (a
   batch that ended `RESTORE_NOT_LANDED` after its follow landed no longer holds the PO line); the alert names the
   SPO lines a person checks. AC-71-18..24.
