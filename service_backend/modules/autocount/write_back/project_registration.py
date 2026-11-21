@@ -28,7 +28,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -478,7 +477,6 @@ class ProjectRegistrationService(WriteFrame):
         op_id = row.id
         result = RegResult(OUTCOME_PENDING, INTERNAL_ERROR, proj_no=proj_no)
         try:
-            self._deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
             result = run(company, op_id, look_up)
         except Exception:  # noqa: BLE001 - the in_progress lock must never be stranded
             logger.exception("autocount project registration failed (operation %s)", op_id)
