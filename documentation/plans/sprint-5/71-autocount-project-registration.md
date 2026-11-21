@@ -57,9 +57,11 @@ for the same-ProjNo busy check) and in the call log's `doc_no`.
 
 ## Deferred / open
 
-- AC-71-51 (live): a db3 probe of the four doors before the switch is turned on, including the three
-  AutoCount field names the live shape did not show (`DistributorName`, `CustomerName`, `Date`) and
-  whether `ProjectRegbyProjNo` answers `[]` or 404 for an unknown number (both are "not found" today).
+- AC-71-51 (live): a db3 probe of the four doors before the switch is turned on, including whether
+  `ProjectRegbyProjNo` answers `[]` or 404 for an unknown number (both are "not found" today). The field
+  names are confirmed from a db1 record (21 Nov): ProjNo, ProjectTitle, DistributorName, SalesAgent,
+  CustomerName, Date (`2025-11-20T00:00:00` form), TypeofBuilding, State, Mukim, Developer, Architect,
+  MainContractor, Status - the same keys as the `NewProjectReg` body.
   The cloud lane cannot reach db3; crew runs it.
 - The switch is a deployment setting (env), like the write book list; a per-company switch is not built
   (the CRM's own admin switch decides who sees the buttons).

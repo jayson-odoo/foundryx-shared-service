@@ -40,4 +40,4 @@ Test file: `service_backend/tests/test_autocount_project_registration.py` (the t
 | AC-71-46 | [BE][T] A bare 5xx on create is checked (read back), not assumed: absent = `pending_verification`, and the resend completes it |
 | AC-71-47 | [BE][T] A field AutoCount holds differently after an edit is a `FIELD_CHANGED` warning on `done` |
 | AC-71-50 | [DOC] `71-autocount-project-registration-contract.md` documents the routes, bodies, answer, codes and the switch |
-| AC-71-51 | [LIVE] db3 probe before the switch is turned on anywhere: create, edit, read and by-date read against db3 only (never db1 / db2), and the three field names not seen in the live shape (`DistributorName`, `CustomerName`, `Date`) confirmed |
+| AC-71-51 | [LIVE] db3 probe before the switch is turned on anywhere: create, edit, read and by-date read against db3 only (never db1 / db2), and whether `ProjectRegbyProjNo` answers `[]` or 404 for an unknown number (field names confirmed from a db1 record, 21 Nov) |

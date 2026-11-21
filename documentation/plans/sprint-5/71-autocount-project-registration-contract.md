@@ -44,16 +44,17 @@ primitive for kind `project-registrations`:
                     "architect": "", "mainContractor": "", "status": "Pending" } }
 ```
 
-The whole record every time; SS never merges fields. Field names map to AutoCount's:
+The whole record every time; SS never merges fields. Field names map to AutoCount's (keys confirmed
+from a db1 record, 21 Nov: the same keys as the `NewProjectReg` body):
 
 | caller | AutoCount |
 |---|---|
 | `projNo` | `ProjNo` |
 | `projectTitle` | `ProjectTitle` |
-| `distributorName` | `DistributorName` (to confirm on db3) |
+| `distributorName` | `DistributorName` |
 | `salesAgent` | `SalesAgent` |
-| `customerName` | `CustomerName` (to confirm on db3) |
-| `date` | `Date` (to confirm on db3), sent as `YYYY-MM-DDT00:00:00` |
+| `customerName` | `CustomerName` |
+| `date` | `Date`, sent as `YYYY-MM-DDT00:00:00` |
 | `typeOfBuilding` | `TypeofBuilding` |
 | `state` | `State` |
 | `mukim` | `Mukim` |
