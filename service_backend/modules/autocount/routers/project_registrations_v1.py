@@ -10,9 +10,11 @@ and shapes; ``ProjectRegistrationService`` decides.
 - ``GET   /project-registrations/{projNo}?companyCode=`` -> wrapper ``GET /ProjectRegbyProjNo``
 - ``GET   /project-registrations?companyCode=&date=``    -> wrapper ``GET /ProjectRegbyDate``
 
-The body speaks camelCase (``projectTitle``, ``typeofBuilding``); each name maps to AutoCount's by
-upper-casing its first letter. The answer's ``registration`` is AutoCount's record as read back, in
-AutoCount's own field names (as ``document`` on the document routes).
+Body (CRM plan Part A): ``{companyCode, registration: {projNo, projectTitle, distributorName, salesAgent,
+customerName, date, typeOfBuilding, state, mukim, developer, architect, mainContractor, status}}``, the
+whole record every time; each name maps to AutoCount's through ``project_registration.FIELDS`` (an
+allowlist: any other name is ``422 INVALID_REQUEST``). The answer's ``registration`` is AutoCount's
+record as read back, in AutoCount's own field names (as ``document`` on the document routes).
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from app.database import get_db
 
 from ..models import AcCompany, AcPullApiKey
 from ..write_back.deps import get_project_registration_service
-from ..write_back.project_registration import ProjectRegistrationService, RegResult
+from ..write_back.project_registration import DATE_FIELDS, FIELDS, ProjectRegistrationService, RegResult
 from .pull_v1 import WriteBody, _read_request_body_bytes, _safe_echo
 from .write_v1 import _bad, _frame, _status_of
 
@@ -38,12 +40,10 @@ router = APIRouter()
 
 PROJ_NO_MAX = 64
 FIELD_MAX = 4000
-FIELDS_MAX = 100
-_FIELD_NAME = re.compile(r"[a-z][A-Za-z0-9]{0,63}")
 _PROJ_NO = re.compile(r"[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?")
 _DAY = re.compile(r"(\d{4})-?(\d{2})-?(\d{2})")
-_CREATE_KEYS = frozenset({"companyCode", "projNo", "registration"})
-_EDIT_KEYS = frozenset({"companyCode", "registration"})
+_BODY_KEYS = frozenset({"companyCode", "registration"})
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _proj_no(value: Any, name: str = "projNo") -> str:
@@ -54,6 +54,21 @@ def _proj_no(value: Any, name: str = "projNo") -> str:
     if not isinstance(value, str) or len(value) > PROJ_NO_MAX or not _PROJ_NO.fullmatch(value):
         raise _bad("INVALID_REQUEST", f"{name} must be 1..{PROJ_NO_MAX} printable characters.")
     return value
+
+
+def _date_value(name: str, value: Any) -> Any:
+    """``YYYY-MM-DD`` (or AutoCount's own ``YYYY-MM-DDT00:00:00``) as AutoCount's form; blank / null
+    passes as sent."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return value
+    text = value[:10] if isinstance(value, str) else ""
+    if not _DATE.fullmatch(text) or (len(value) > 10 and value[10] != "T"):
+        raise _bad("INVALID_REQUEST", f"registration.{name} must be a date (YYYY-MM-DD).")
+    try:
+        day = date.fromisoformat(text)
+    except ValueError:
+        raise _bad("INVALID_REQUEST", f"registration.{name} must be a date (YYYY-MM-DD).") from None
+    return f"{day.isoformat()}T00:00:00"
 
 
 def _value(name: str, value: Any) -> Any:
@@ -72,26 +87,28 @@ def _value(name: str, value: Any) -> Any:
     raise _bad("INVALID_REQUEST", f"registration.{name} must be text, a number, true / false or null.")
 
 
-def _registration(raw: WriteBody, proj_no: str) -> Dict[str, Any]:
-    """``registration`` as AutoCount's record (``projectTitle`` -> ``ProjectTitle``). A ``projNo``
-    inside it must equal the ProjNo being written (it is the key, never renamed)."""
+def _registration(raw: WriteBody, proj_no: Optional[str] = None) -> "tuple[str, Dict[str, Any]]":
+    """``(projNo, AutoCount's record)`` from ``registration``. On a create ``proj_no`` is None and
+    ``registration.projNo`` is required; on an edit it is the path's and a ``registration.projNo``
+    must equal it (the key is never renamed)."""
     value = raw.get("registration")
     if value is None:
         raise _bad("FIELD_REQUIRED", "FIELD_REQUIRED: registration")
     if not isinstance(value, dict):
         raise _bad("INVALID_REQUEST", "registration must be an object.")
-    if len(value) > FIELDS_MAX:
-        raise _bad("INVALID_REQUEST", f"registration has more than {FIELDS_MAX} fields.")
     out: Dict[str, Any] = {}
     for name, item in value.items():
-        if not isinstance(name, str) or not _FIELD_NAME.fullmatch(name):
-            raise _bad("INVALID_REQUEST", f"registration.{_safe_echo(name)} is not a valid field name.")
+        vendor = FIELDS.get(name) if isinstance(name, str) else None
+        if vendor is None:
+            raise _bad("INVALID_REQUEST", f"registration.{_safe_echo(name)} is not a known field.")
         if name == "projNo":
-            if item != proj_no:
-                raise _bad("INVALID_REQUEST", "registration.projNo must equal the projNo being written.")
             continue
-        out[name[:1].upper() + name[1:]] = _value(name, item)
-    return out
+        out[vendor] = _date_value(name, item) if vendor in DATE_FIELDS else _value(name, item)
+    if proj_no is None:
+        proj_no = _proj_no(value.get("projNo"))
+    elif "projNo" in value and value.get("projNo") != proj_no:
+        raise _bad("INVALID_REQUEST", "registration.projNo must equal the projNo being written.")
+    return proj_no, out
 
 
 def _only(raw: WriteBody, allowed: frozenset) -> None:
@@ -122,9 +139,8 @@ def create_project_registration(
     svc: ProjectRegistrationService = Depends(get_project_registration_service),
 ) -> JSONResponse:
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
-        _only(raw, _CREATE_KEYS)
-        proj_no = _proj_no(raw.get("projNo"))
-        record = _registration(raw, proj_no)
+        _only(raw, _BODY_KEYS)
+        proj_no, record = _registration(raw)
         return _respond(svc.create(
             tenant_id=key.tenant_id, company_id=company.id, key_id=key.id, idempotency_key=idem or "",
             proj_no=proj_no, record=record, params=raw,
@@ -140,9 +156,8 @@ def edit_project_registration(
     svc: ProjectRegistrationService = Depends(get_project_registration_service),
 ) -> JSONResponse:
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
-        _only(raw, _EDIT_KEYS)
-        proj_no = _proj_no(projNo)
-        record = _registration(raw, proj_no)
+        _only(raw, _BODY_KEYS)
+        proj_no, record = _registration(raw, _proj_no(projNo))
         return _respond(svc.edit(
             tenant_id=key.tenant_id, company_id=company.id, key_id=key.id, idempotency_key=idem,
             proj_no=proj_no, record=record, params={"projNo": proj_no, **raw},

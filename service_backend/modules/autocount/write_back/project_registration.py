@@ -15,10 +15,12 @@ Rules (owner, 11 Nov / 21 Nov):
 - a create reads the ProjNo first; one AutoCount already holds is refused ``REGISTRATION_EXISTS`` with
   AutoCount's record (it is linked back by the caller, never written over);
 - every create / edit is read back by ProjNo and compared with what was sent (trimmed,
-  case-insensitive, newline-normalised: AutoCount upper-cases agent / state / mukim / building type);
+  case-insensitive, newline-normalised, a date by its day: AutoCount upper-cases agent / state / mukim /
+  building type); a real difference is a ``FIELD_CHANGED`` warning on ``done`` with AutoCount's value;
 - an unclear create (timeout, connection drop, unreadable read-back) answers ``pending_verification``;
   a same-key resend looks the ProjNo up BEFORE any re-send: found = checked and ``done``, absent =
-  sent again. A refusal releases the key; only a confirmed success (or a landed mismatch) locks it.
+  sent again (found with other fields = ``REGISTRATION_EXISTS``, for a person to link). A refusal
+  (AutoCount's own reason) releases the key; only a confirmed success locks it.
 """
 
 from __future__ import annotations
@@ -45,7 +47,6 @@ from modules.autocount.write_back.frame import (
     DOC_BUSY,
     INTERNAL_ERROR,
     OUTCOME_DONE,
-    OUTCOME_MISMATCH,
     OUTCOME_PENDING,
     OUTCOME_REFUSED,
     OUTCOME_VENDOR_ERROR,
@@ -73,7 +74,8 @@ BY_DATE_PATH = "/ProjectRegbyDate"
 REGISTRATION_EXISTS = "REGISTRATION_EXISTS"
 REGISTRATION_NOT_FOUND = "REGISTRATION_NOT_FOUND"
 REGISTRATION_AMBIGUOUS = "REGISTRATION_AMBIGUOUS"
-FIELD_IGNORED = "FIELD_IGNORED"
+# done, but AutoCount holds a different value for a field sent (``changedFields`` names them)
+FIELD_CHANGED = "FIELD_CHANGED"
 VENDOR_REFUSED = "VENDOR_REFUSED"
 VENDOR_ERROR = "VENDOR_ERROR"
 IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
@@ -90,9 +92,21 @@ def enabled() -> bool:
     return bool(getattr(settings, "autocount_project_registration_enabled", False))
 
 
+# The registration fields (CRM plan Part A, 21 Nov): the caller's camelCase name -> AutoCount's field
+# name. The CRM always sends the whole record; SS never merges fields itself.
+FIELDS: Dict[str, str] = {
+    "projNo": "ProjNo", "projectTitle": "ProjectTitle", "distributorName": "DistributorName",
+    "salesAgent": "SalesAgent", "customerName": "CustomerName", "date": "Date",
+    "typeOfBuilding": "TypeofBuilding", "state": "State", "mukim": "Mukim", "developer": "Developer",
+    "architect": "Architect", "mainContractor": "MainContractor", "status": "Status",
+}
+DATE_FIELDS = frozenset({"Date"})
+_CAMEL = {v: k for k, v in FIELDS.items()}
+
+
 def camel(name: str) -> str:
-    """AutoCount's field name as the caller's camelCase (``TypeofBuilding`` -> ``typeofBuilding``)."""
-    return name[:1].lower() + name[1:]
+    """AutoCount's field name as the caller's name (``TypeofBuilding`` -> ``typeOfBuilding``)."""
+    return _CAMEL.get(name) or name[:1].lower() + name[1:]
 
 
 @dataclass
@@ -108,13 +122,17 @@ class RegResult:
     registrations: Optional[List[Record]] = None
     operation_id: Optional[str] = None
     action_id: Optional[str] = None
+    changed: List[Dict[str, Any]] = field(default_factory=list)
+    found: Optional[bool] = None  # set by the read by ProjNo only
 
     def answer(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
             "operationId": self.operation_id, "actionId": self.action_id, "outcome": self.outcome,
             "errorCode": self.error_code, "message": self.message, "warnings": list(self.warnings),
-            "projNo": self.proj_no, "registration": self.registration,
+            "projNo": self.proj_no, "registration": self.registration, "changedFields": list(self.changed),
         }
+        if self.found is not None:
+            out["found"] = self.found
         if self.registrations is not None:
             out["registrations"] = self.registrations
         return out
@@ -145,7 +163,9 @@ def _norm(value: Any) -> Any:
     return value
 
 
-def _same(sent: Any, read: Any) -> bool:
+def _same(sent: Any, read: Any, *, is_date: bool = False) -> bool:
+    if is_date and isinstance(sent, str) and isinstance(read, str):
+        return sent.strip()[:10] == read.strip()[:10]
     a, b = _norm(sent), _norm(read)
     if isinstance(a, Decimal) and isinstance(b, str):
         try:
@@ -157,10 +177,10 @@ def _same(sent: Any, read: Any) -> bool:
     return a == b
 
 
-def ignored_fields(sent: Record, read: Record) -> List[str]:
-    """AutoCount field names whose read-back differs from what was sent (``Status`` excluded:
-    AutoCount sets it itself and always reads ``Pending``)."""
-    return sorted(k for k, v in sent.items() if k != "Status" and not _same(v, read.get(k)))
+def changed_fields(sent: Record, read: Record) -> List[str]:
+    """AutoCount field names whose read-back differs from what was sent (trimmed, case-insensitive,
+    newline-normalised; a date by its day)."""
+    return sorted(k for k, v in sent.items() if not _same(v, read.get(k), is_date=k in DATE_FIELDS))
 
 
 def _hash(label: str, params: Dict[str, Any]) -> str:
@@ -218,8 +238,8 @@ class ProjectRegistrationService(WriteFrame):
             except DocReadError as exc:
                 return RegResult(OUTCOME_REFUSED, exc.code, proj_no=proj_no)
             if found is None:
-                return RegResult(OUTCOME_REFUSED, REGISTRATION_NOT_FOUND, _not_found(proj_no), proj_no=proj_no)
-            return RegResult(OUTCOME_DONE, proj_no=proj_no, registration=found)
+                return RegResult(OUTCOME_DONE, proj_no=proj_no, found=False)
+            return RegResult(OUTCOME_DONE, proj_no=proj_no, registration=found, found=True)
 
         return self._plain(tenant_id, company_id, run)
 
@@ -310,15 +330,19 @@ class ProjectRegistrationService(WriteFrame):
         ))
 
     def _done(self, row: AcWriteAction, sent: Record, read: Record, proj_no: str) -> RegResult:
-        """Compare the read-back with what was sent: ``done``, or ``mismatch FIELD_IGNORED``."""
+        """Compare the read-back with what was sent: ``done``; a difference is a ``FIELD_CHANGED``
+        warning carrying AutoCount's value (``changedFields``)."""
         row.after_json = read
-        ignored = ignored_fields(sent, read)
-        if ignored:
-            names = [camel(n) for n in ignored]
-            res = self._finish(row, OUTCOME_MISMATCH, FIELD_IGNORED, message="ignored: " + ", ".join(names))
-            return RegResult(res.outcome, res.error_code, res.message, names, proj_no, read, action_id=row.id)
         self._finish(row, OUTCOME_DONE)
-        return RegResult(OUTCOME_DONE, proj_no=proj_no, registration=read, action_id=row.id)
+        changed = changed_fields(sent, read)
+        if not changed:
+            return RegResult(OUTCOME_DONE, proj_no=proj_no, registration=read, action_id=row.id)
+        names = [camel(n) for n in changed]
+        return RegResult(
+            OUTCOME_DONE, None, "AutoCount kept a different value for: " + ", ".join(names) + ".",
+            [FIELD_CHANGED], proj_no, read, action_id=row.id,
+            changed=[{"field": camel(n), "sent": sent.get(n), "autocount": read.get(n)} for n in changed],
+        )
 
     def _write(
         self, company: AcCompany, key_id: Optional[str], op_id: Optional[str], name: str, proj_no: str,
@@ -337,14 +361,16 @@ class ProjectRegistrationService(WriteFrame):
                     return _of(self._finish(row, OUTCOME_PENDING, exc.code), proj_no)
                 return _of(self._finish(row, OUTCOME_REFUSED, exc.code), proj_no)
             row.before_json = before
-            if look_up and before is not None:  # the earlier create landed: check it, never re-send
+            if look_up and before is not None:  # never re-sent: the earlier create landed, or another did
+                if changed_fields(body, before):
+                    res = self._finish(row, OUTCOME_REFUSED, REGISTRATION_EXISTS, message=_exists(proj_no))
+                    return _of(res, proj_no, registration=before)
                 return self._done(row, body, before, proj_no)
             if must_exist and before is None:
                 res = self._finish(row, OUTCOME_REFUSED, REGISTRATION_NOT_FOUND, message=_not_found(proj_no))
                 return _of(res, proj_no)
             if not must_exist and before is not None:
-                res = self._finish(row, OUTCOME_REFUSED, REGISTRATION_EXISTS,
-                                   message=f"Project {proj_no} is already registered in AutoCount.")
+                res = self._finish(row, OUTCOME_REFUSED, REGISTRATION_EXISTS, message=_exists(proj_no))
                 return _of(res, proj_no, registration=before)
             row.request_method, row.request_path, row.request_json = method, path, body
             row.outcome = OUTCOME_IN_FLIGHT
@@ -358,7 +384,7 @@ class ProjectRegistrationService(WriteFrame):
             row.response_status, row.response_json = response.status_code, _json_safe(response.stored)
             if not response.ok:
                 if is_business_refusal(response.status_code, response.body):
-                    res = self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED,
+                    res = self._finish(row, OUTCOME_REFUSED, VENDOR_REFUSED,  # nothing applied: key released
                                        message=vendor_message(response.body, base_url))
                     return _of(res, proj_no)
                 if response.status_code >= 500:  # a bare fault: it may have landed
@@ -375,19 +401,16 @@ class ProjectRegistrationService(WriteFrame):
 
     def _check_unclear(self, row: AcWriteAction, reader: Any, body: Record, proj_no: str, code: str, *,
                        sent_ok: bool = False) -> RegResult:
-        """Read the ProjNo back after a send: found = compared (``done`` / ``mismatch``); absent after
-        a 2xx = ``mismatch`` (AutoCount said yes and holds nothing); absent or unreadable after an
-        unclear send = ``pending_verification`` with ``code``."""
+        """Read the ProjNo back after a send: found = compared (``done``, differences as warnings);
+        absent or unreadable = ``pending_verification`` (with ``code`` after an unclear send; a resend
+        looks the ProjNo up before sending again)."""
         try:
             after = self._find(reader, proj_no)
         except DocReadError as exc:
             return _of(self._finish(row, OUTCOME_PENDING, exc.code if sent_ok else code), proj_no)
         if after is None:
-            if sent_ok:
-                return _of(self._finish(row, OUTCOME_MISMATCH, REGISTRATION_NOT_FOUND,
-                                        message=_not_found(proj_no)), proj_no)
-            return _of(self._finish(row, OUTCOME_PENDING, code), proj_no)
-        if not sent_ok and row.action == "edit_doc" and ignored_fields(body, after):
+            return _of(self._finish(row, OUTCOME_PENDING, REGISTRATION_NOT_FOUND if sent_ok else code), proj_no)
+        if not sent_ok and row.action == "edit_doc" and changed_fields(body, after):
             return _of(self._finish(row, OUTCOME_PENDING, code), proj_no, registration=after)
         return self._done(row, body, after, proj_no)
 
@@ -412,7 +435,7 @@ class ProjectRegistrationService(WriteFrame):
     ) -> RegResult:
         """The stored answer on a same-key replay, ``IDEMPOTENCY_CONFLICT`` for another body, else run.
         A stored refusal / vendor refusal releases the key (runs fresh); an unknown create outcome is
-        looked up by ProjNo before anything is sent again; done and mismatch stay locked."""
+        looked up by ProjNo before anything is sent again; only done stays locked."""
         if not enabled():
             return RegResult(OUTCOME_REFUSED, VENDOR_UNSUPPORTED, proj_no=proj_no)
         company = self._company(tenant_id, company_id)
@@ -431,7 +454,7 @@ class ProjectRegistrationService(WriteFrame):
                     return RegResult(OUTCOME_REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE, proj_no=proj_no)
                 self.db.commit()
                 self.db.refresh(existing)
-            if existing.status in (OUTCOME_DONE, OUTCOME_MISMATCH) and existing.result_json:
+            if existing.status == OUTCOME_DONE and existing.result_json:
                 return _stored(existing.result_json)
             # refused / vendor error / pending: release the key and run again (a pending create
             # looks its ProjNo up first, so it is never sent twice)
@@ -487,7 +510,11 @@ class ProjectRegistrationService(WriteFrame):
 
 
 def _not_found(proj_no: str) -> str:
-    return f"Project {proj_no} is not registered in AutoCount."
+    return f"AutoCount has no registration {proj_no}."
+
+
+def _exists(proj_no: str) -> str:
+    return f"AutoCount already has {proj_no}."
 
 
 def _of(res: WriteActionResult, proj_no: str, registration: Optional[Record] = None) -> RegResult:
@@ -504,5 +531,6 @@ def _stored(answer: Dict[str, Any]) -> RegResult:
         answer.get("outcome") or OUTCOME_PENDING, answer.get("errorCode"), answer.get("message") or "",
         list(answer.get("warnings") or []), answer.get("projNo"), answer.get("registration"),
         answer.get("registrations"), answer.get("operationId"), answer.get("actionId"),
+        list(answer.get("changedFields") or []), answer.get("found"),
     )
 

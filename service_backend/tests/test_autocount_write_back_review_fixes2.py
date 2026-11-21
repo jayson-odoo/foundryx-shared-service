@@ -498,7 +498,8 @@ def test_h_write_capabilities_lists_split_link_and_uses_wire_kind_names(client, 
     assert r.status_code == 200, r.text
     body = r.json()
     items = body if isinstance(body, list) else body["capabilities"]
-    wire = {"quotations", "sales-orders", "purchase-orders", "shipping-purchase-orders"}
+    wire = {"quotations", "sales-orders", "purchase-orders", "shipping-purchase-orders",
+            "project-registrations"}  # plan 71
     assert {i["kind"] for i in items} <= wire
     by = {(i["op"], i["kind"]): i for i in items}
     assert by[("split_link", "purchase-orders")] == {

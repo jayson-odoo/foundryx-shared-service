@@ -210,22 +210,26 @@ def code(r) -> Optional[str]:
     return body.get("errorCode") or body.get("code")
 
 
-def reg(**over: Any) -> Dict[str, Any]:
-    fields = {"projectTitle": "NEW HOUSE\nLOT 1", "salesAgent": "agt", "typeofBuilding": "bungalow",
-              "state": "selangor", "mukim": "mukim a", "developer": "", "architect": "",
-              "mainContractor": "", "status": "Pending"}
+def reg(proj_no: Optional[str] = PROJ, **over: Any) -> Dict[str, Any]:
+    """The whole record as the CRM sends it (Part A field list); neutral values."""
+    fields = {"projNo": proj_no, "projectTitle": "NEW HOUSE\nLOT 1", "distributorName": "DIST A",
+              "salesAgent": "agt", "customerName": "CUSTOMER A", "date": "2026-11-21",
+              "typeOfBuilding": "bungalow", "state": "selangor", "mukim": "mukim a", "developer": "",
+              "architect": "", "mainContractor": "", "status": "Pending"}
+    if proj_no is None:
+        fields.pop("projNo")
     fields.update(over)
     return fields
 
 
 def create_body(proj_no: str = PROJ, **over: Any) -> Dict[str, Any]:
-    body = {"companyCode": "SRT", "projNo": proj_no, "registration": reg()}
+    body = {"companyCode": "SRT", "registration": reg(proj_no)}
     body.update(over)
     return body
 
 
 def edit_body(**over: Any) -> Dict[str, Any]:
-    body = {"companyCode": "SRT", "registration": reg(projectTitle="RENAMED")}
+    body = {"companyCode": "SRT", "registration": reg(None, projectTitle="RENAMED")}
     body.update(over)
     return body
 
@@ -279,6 +283,7 @@ def test_ac_71_11_create_reads_first_posts_reads_back_and_answers_done(client, r
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["outcome"] == "done" and body["errorCode"] is None and body["warnings"] == []
+    assert body["changedFields"] == []
     assert body["projNo"] == PROJ and body["operationId"]
     # the registration as AutoCount holds it now (upper-cased by AutoCount: not a mismatch)
     assert body["registration"]["SalesAgent"] == "AGT" and body["registration"]["State"] == "SELANGOR"
@@ -287,6 +292,9 @@ def test_ac_71_11_create_reads_first_posts_reads_back_and_answers_done(client, r
     assert steps == [("GET", "projectregbyprojno"), ("POST", "newprojectreg"), ("GET", "projectregbyprojno")]
     sent = rig.vendor.writes()[0]["body"]
     assert sent["ProjNo"] == PROJ and sent["TypeofBuilding"] == "bungalow" and sent["MainContractor"] == ""
+    assert sent["Date"] == "2026-11-21T00:00:00" and sent["DistributorName"] == "DIST A"
+    assert set(sent) == {"ProjNo", "ProjectTitle", "DistributorName", "SalesAgent", "CustomerName", "Date",
+                         "TypeofBuilding", "State", "Mukim", "Developer", "Architect", "MainContractor", "Status"}
     assert rig.vendor.gets()[0]["query"] == {"ProjNo": PROJ}
 
 
@@ -375,28 +383,34 @@ def test_ac_71_18_unclear_create_whose_readback_failed_is_found_on_resend_withou
 def test_ac_71_19_vendor_refusal_is_shown_and_releases_the_key(client, rig):
     rig.vendor.next("POST", "NewProjectReg", "refuse", text="Sales agent is not valid.")
     r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
-    assert r.status_code == 502 and r.json()["outcome"] == "vendor_error" and code(r) == "VENDOR_REFUSED"
+    assert r.status_code == 409 and r.json()["outcome"] == "refused" and code(r) == "VENDOR_REFUSED"
     assert r.json()["message"] == "Sales agent is not valid."
     again = client.post(PREFIX, json=create_body(), headers=rig.hdr())  # fixed the cause, try again
     assert again.status_code == 200 and again.json()["outcome"] == "done", again.text
 
 
-def test_ac_71_20_a_field_autocount_did_not_keep_is_a_mismatch(client, rig):
-    rig.vendor.ignore = ["Mukim"]
+def test_ac_71_20_a_field_autocount_did_not_keep_is_a_warning_with_its_value(client, rig):
+    rig.vendor.ignore = ["Mukim", "TypeofBuilding"]
     r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
-    assert r.status_code == 502 and r.json()["outcome"] == "mismatch" and code(r) == "FIELD_IGNORED", r.text
-    assert r.json()["warnings"] == ["mukim"] and "mukim" in r.json()["message"]
-    assert r.json()["registration"]["ProjNo"] == PROJ
+    assert r.status_code == 200 and r.json()["outcome"] == "done" and r.json()["errorCode"] is None, r.text
+    assert r.json()["warnings"] == ["FIELD_CHANGED"]
+    assert r.json()["changedFields"] == [
+        {"field": "mukim", "sent": "mukim a", "autocount": ""},
+        {"field": "typeOfBuilding", "sent": "bungalow", "autocount": ""},
+    ]
+    assert "mukim" in r.json()["message"] and r.json()["registration"]["ProjNo"] == PROJ
 
 
 def test_ac_71_21_body_is_validated_before_any_call(client, rig):
     cases = [
-        (create_body(projNo=""), 422, "FIELD_REQUIRED"),
-        ({"companyCode": "SRT", "registration": reg()}, 422, "FIELD_REQUIRED"),
-        (create_body(registration={"projectTitle": {"nested": 1}}), 422, "INVALID_REQUEST"),
-        (create_body(registration={"bad-name": "x"}), 422, "INVALID_REQUEST"),
-        (create_body(registration=reg(projNo=OTHER)), 422, "INVALID_REQUEST"),
+        (create_body(registration=reg("")), 422, "FIELD_REQUIRED"),
+        (create_body(registration=reg(None)), 422, "FIELD_REQUIRED"),
+        ({"companyCode": "SRT"}, 422, "FIELD_REQUIRED"),
+        (create_body(registration=reg(projectTitle={"nested": 1})), 422, "INVALID_REQUEST"),
+        (create_body(registration=reg(typeofBuilding="x")), 422, "INVALID_REQUEST"),  # not a known field
+        (create_body(registration=reg(date="21/11/2026")), 422, "INVALID_REQUEST"),
         (create_body(registration=["x"]), 422, "INVALID_REQUEST"),
+        (create_body(projNo=PROJ), 422, "INVALID_REQUEST"),  # projNo lives inside registration
     ]
     for i, (body, status, err) in enumerate(cases):
         r = client.post(PREFIX, json=body, headers=rig.hdr(idem=f"k-{i}"))
@@ -458,16 +472,16 @@ def test_ac_71_33_edit_body_cannot_rename_the_projno(client, rig):
 def test_ac_71_40_read_by_projno(client, rig):
     rig.vendor.seed(PROJ, {"ProjectTitle": "LINE 1\nLINE 2"})
     r = client.get(f"{PREFIX}/{PROJ}?companyCode=SRT", headers=rig.hdr(idem=None))
-    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+    assert r.status_code == 200 and r.json()["outcome"] == "done" and r.json()["found"] is True, r.text
     assert r.json()["registration"]["ProjectTitle"] == "LINE 1\nLINE 2"
     assert rig.vendor.writes() == []
 
 
-def test_ac_71_41_read_of_unknown_projno(client, rig):
+def test_ac_71_41_read_of_unknown_projno_answers_found_false(client, rig):
     rig.vendor.seed(OTHER)
     r = client.get(f"{PREFIX}/{PROJ}?companyCode=SRT", headers=rig.hdr(idem=None))
-    assert r.status_code == 409 and code(r) == "REGISTRATION_NOT_FOUND"
-    assert r.json()["registration"] is None
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+    assert r.json()["found"] is False and r.json()["registration"] is None
 
 
 def test_ac_71_42_read_by_date_passes_yyyymmdd(client, rig):
@@ -493,3 +507,32 @@ def test_ac_71_44_operation_row_is_stored_for_create(client, rig, db):
     db.expire_all()
     op = db.query(AcWriteOperation).filter(AcWriteOperation.id == r.json()["operationId"]).one()
     assert op.op == "create_doc:PROJREG" and op.status == "done" and op.doc_type == "PROJREG"
+
+
+def test_ac_71_45_a_pending_create_found_with_other_fields_is_refused_exists(client, rig):
+    rig.vendor.next("POST", "NewProjectReg", "timeout")
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.status_code == 202, r.text
+    rig.vendor.seed(PROJ, {"ProjectTitle": "SOMEONE ELSE"})  # registered meanwhile, not by this call
+    again = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert again.status_code == 409 and code(again) == "REGISTRATION_EXISTS", again.text
+    assert again.json()["registration"]["ProjectTitle"] == "SOMEONE ELSE"
+    assert len(rig.vendor.writes()) == 1  # never a second create
+
+
+def test_ac_71_46_a_bare_5xx_on_create_is_checked_not_assumed(client, rig):
+    rig.vendor.next("POST", "NewProjectReg", "fail", status=503, text="")
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.status_code == 202 and r.json()["outcome"] == "pending_verification", r.text
+    again = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert again.status_code == 200 and again.json()["outcome"] == "done", again.text
+
+
+def test_ac_71_47_edit_difference_is_a_warning_not_a_failure(client, rig):
+    rig.vendor.seed(PROJ)
+    rig.vendor.ignore = ["Architect"]
+    r = client.patch(f"{PREFIX}/{PROJ}", json=edit_body(registration=reg(None, architect="ARCH A")),
+                     headers=rig.hdr())
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+    assert r.json()["warnings"] == ["FIELD_CHANGED"]
+    assert r.json()["changedFields"] == [{"field": "architect", "sent": "ARCH A", "autocount": ""}]
