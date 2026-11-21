@@ -182,6 +182,14 @@ def changed_fields(sent: Record, read: Record) -> List[str]:
     return sorted(k for k, v in sent.items() if not _same(v, read.get(k), is_date=k in DATE_FIELDS))
 
 
+def lock_key(proj_no: str) -> int:
+    """The per-ProjNo lock number on the operation and action rows (their ``doc_key``), so the
+    existing partial unique indexes (one ``in_progress`` operation, one ``in_flight`` action per
+    document) serialise two writes of the same ProjNo. Always in [2**62, 2**63): never a real DocKey."""
+    digest = hashlib.sha256(f"{KIND}:{proj_no.strip().upper()}".encode()).hexdigest()
+    return 2**62 + int(digest[:16], 16) % 2**62
+
+
 def _hash(label: str, params: Dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps({"op": label, "params": params}, sort_keys=True, default=str).encode()
@@ -198,6 +206,7 @@ class ProjectRegistrationService(WriteFrame):
     def __init__(self, db: Any, **kwargs: Any) -> None:
         super().__init__(db, **kwargs)
         self.ops = OperationRepository(db)
+        self._lock: Optional[int] = None  # ``lock_key`` of the ProjNo being written
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -323,7 +332,7 @@ class ProjectRegistrationService(WriteFrame):
 
     def _new_row(self, company: AcCompany, name: str, key_id: Optional[str], op_id: Optional[str]) -> AcWriteAction:
         return self.actions.add(AcWriteAction(
-            tenant_id=company.tenant_id, company_id=company.id, action=name, doc_type=KIND, doc_key=None,
+            tenant_id=company.tenant_id, company_id=company.id, action=name, doc_type=KIND, doc_key=self._lock,
             outcome=OUTCOME_REFUSED, key_id=key_id, operation_id=op_id, created_at=datetime.now(timezone.utc),
             **self._trace_columns(),
         ))
@@ -348,6 +357,7 @@ class ProjectRegistrationService(WriteFrame):
         method: str, path: str, body: Record, *, must_exist: bool, look_up: bool,
     ) -> RegResult:
         """One create or edit: read first, send, read back, compare."""
+        self._lock = lock_key(proj_no)
         row = self._new_row(company, name, key_id, op_id)
         self._put_sent = False
         try:
@@ -372,8 +382,15 @@ class ProjectRegistrationService(WriteFrame):
                 res = self._finish(row, OUTCOME_REFUSED, REGISTRATION_EXISTS, message=_exists(proj_no))
                 return _of(res, proj_no, registration=before)
             row.request_method, row.request_path, row.request_json = method, path, body
+            window = datetime.now(timezone.utc) - timedelta(seconds=frame.BUSY_WINDOW_SECONDS)
+            self.actions.expire_stale_in_flight(company.tenant_id, company.id, self._lock, window)
             row.outcome = OUTCOME_IN_FLIGHT
-            self.db.commit()  # in_flight + the exact body committed before the call
+            try:
+                self.db.commit()  # in_flight + the exact body committed before the call
+            except IntegrityError:  # another write of this ProjNo is in flight (one per ProjNo)
+                self.db.rollback()
+                busy = self._new_row(company, name, key_id, op_id)
+                return _of(self._finish(busy, OUTCOME_REFUSED, DOC_BUSY, message=IN_PROGRESS_MESSAGE), proj_no)
             client = self._client_for(base_url)
             self._put_sent = True
             try:
@@ -384,7 +401,7 @@ class ProjectRegistrationService(WriteFrame):
             if not response.ok:
                 if is_business_refusal(response.status_code, response.body):
                     res = self._finish(row, OUTCOME_REFUSED, VENDOR_REFUSED,  # nothing applied: key released
-                                       message=vendor_message(response.body, base_url))
+                                       message=vendor_message(response.stored, base_url))  # API key masked
                     return _of(res, proj_no)
                 if response.status_code >= 500:  # a bare fault: it may have landed
                     return self._check_unclear(row, reader, body, proj_no, VENDOR_ERROR)
@@ -460,20 +477,23 @@ class ProjectRegistrationService(WriteFrame):
             look_up = name == "create_doc" and existing.status == OUTCOME_PENDING
             self.ops.delete(existing)
             self.db.commit()
-        busy = self._busy(tenant_id, company_id, proj_no)
-        if busy:
-            return RegResult(OUTCOME_REFUSED, DOC_BUSY, IN_PROGRESS_MESSAGE, proj_no=proj_no)
+        lock = lock_key(proj_no)
+        window = datetime.now(timezone.utc) - timedelta(seconds=frame.BUSY_WINDOW_SECONDS)
+        if self.ops.expire_stale_in_progress(tenant_id, company_id, KIND, lock, window):
+            self.db.commit()  # a crashed run no longer holds the ProjNo
         row = AcWriteOperation(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id, idempotency_key=idempotency_key,
-            request_hash=request_hash, op=label, doc_type=KIND, doc_key=None, status=IN_PROGRESS,
+            request_hash=request_hash, op=label, doc_type=KIND, doc_key=lock, status=IN_PROGRESS,
             snapshot_json={"projNo": proj_no},
         )
-        try:
+        try:  # the partial unique index allows one in_progress operation per ProjNo
             self.ops.add(row)
             self.db.commit()
         except IntegrityError:
             self.db.rollback()
-            return RegResult(OUTCOME_REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE, proj_no=proj_no)
+            if self.ops.by_key(tenant_id, company_id, key_id, idempotency_key) is not None:
+                return RegResult(OUTCOME_REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE, proj_no=proj_no)
+            return RegResult(OUTCOME_REFUSED, DOC_BUSY, IN_PROGRESS_MESSAGE, proj_no=proj_no)
         op_id = row.id
         result = RegResult(OUTCOME_PENDING, INTERNAL_ERROR, proj_no=proj_no)
         try:
@@ -489,22 +509,6 @@ class ProjectRegistrationService(WriteFrame):
                 stored.result_json = _json_safe(result.answer())
             self.db.commit()
         return result
-
-    def _busy(self, tenant_id: str, company_id: str, proj_no: str) -> bool:
-        """Another key's create / edit of the same ProjNo is still running (inside the busy window)."""
-        window = datetime.now(timezone.utc) - timedelta(seconds=frame.BUSY_WINDOW_SECONDS)
-        rows = (
-            self.db.query(AcWriteOperation.snapshot_json)
-            .filter(
-                AcWriteOperation.tenant_id == tenant_id,
-                AcWriteOperation.company_id == company_id,
-                AcWriteOperation.doc_type == KIND,
-                AcWriteOperation.status == IN_PROGRESS,
-                AcWriteOperation.updated_at >= window,
-            )
-            .all()
-        )
-        return any((snap or {}).get("projNo") == proj_no for (snap,) in rows)
 
 
 def _not_found(proj_no: str) -> str:

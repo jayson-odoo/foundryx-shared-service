@@ -536,3 +536,102 @@ def test_ac_71_47_edit_difference_is_a_warning_not_a_failure(client, rig):
     assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
     assert r.json()["warnings"] == ["FIELD_CHANGED"]
     assert r.json()["changedFields"] == [{"field": "architect", "sent": "ARCH A", "autocount": ""}]
+
+
+# ── review round 1 (security): lock per ProjNo, masked refusal text, input hygiene ──
+
+def _op_row(db, h, *, key="other-key", age_seconds=0, status="in_progress"):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.write_back.project_registration import lock_key
+
+    at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    row = AcWriteOperation(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, key_id=None, idempotency_key=key,
+        request_hash="x", op="create_doc:PROJREG", doc_type="PROJREG", doc_key=lock_key(PROJ),
+        status=status, snapshot_json={"projNo": PROJ}, created_at=at, updated_at=at,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_ac_71_48_another_running_write_of_the_same_projno_is_busy(client, rig, db, h):
+    _op_row(db, h)
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.status_code == 409 and code(r) == "DOC_BUSY", r.text
+    assert rig.vendor.calls == []
+    other = client.post(PREFIX, json=create_body(OTHER), headers=rig.hdr(idem="reg-key-2"))
+    assert other.status_code == 200, other.text  # another ProjNo is not held
+
+
+def test_ac_71_49_a_crashed_run_no_longer_holds_the_projno(client, rig, db, h):
+    _op_row(db, h, age_seconds=3600)
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+
+
+def test_ac_71_52_a_keyless_edit_waits_for_an_in_flight_write_of_the_same_projno(client, rig, db, h):
+    from datetime import datetime, timezone
+
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.write_back.project_registration import lock_key
+
+    rig.vendor.seed(PROJ)
+    db.add(AcWriteAction(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, action="edit_doc",
+                         doc_type="PROJREG", doc_key=lock_key(PROJ), outcome="in_flight",
+                         created_at=datetime.now(timezone.utc)))
+    db.commit()
+    r = client.patch(f"{PREFIX}/{PROJ}", json=edit_body(), headers=rig.hdr(idem=None))
+    assert r.status_code == 409 and code(r) == "DOC_BUSY", r.text
+    assert rig.vendor.writes() == []
+
+
+def test_ac_71_53_the_lock_number_is_never_a_real_dockey():
+    from modules.autocount.write_back.project_registration import lock_key
+
+    assert 2**62 <= lock_key(PROJ) < 2**63 and lock_key(PROJ) == lock_key(" ppf26110001 ")
+    assert lock_key(PROJ) != lock_key(OTHER)
+
+
+def test_ac_71_54_autocounts_refusal_text_never_carries_the_api_key(client, rig, db, h):
+    from app.secrets import encrypt_secret
+
+    h.conn.credentials_json = encrypt_secret({"apiKey": "testkey-999"})
+    db.commit()
+    rig.vendor.next("POST", "NewProjectReg", "refuse", text="Invalid API key testkey-999 for this book")
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.status_code == 409 and code(r) == "VENDOR_REFUSED", r.text
+    assert "testkey-999" not in r.text
+    db.expire_all()
+    op = db.query(AcWriteOperation).filter(AcWriteOperation.id == r.json()["operationId"]).one()
+    assert "testkey-999" not in json.dumps(op.result_json)
+
+
+def test_ac_71_55_input_hygiene(client, rig):
+    bad = [
+        create_body(registration=reg("PPF2611'0001")),
+        create_body(registration=reg("<PPF>")),
+        create_body(registration=reg(projectTitle="A\x00B")),
+        create_body(registration=reg(state="SEL‮ANGOR")),
+    ]
+    for i, body in enumerate(bad):
+        r = client.post(PREFIX, json=body, headers=rig.hdr(idem=f"bad-{i}"))
+        assert r.status_code == 422 and code(r) == "INVALID_REQUEST", (i, r.text)
+    assert rig.vendor.calls == []
+    ok = client.post(PREFIX, json=create_body(registration=reg(projectTitle="LINE 1\r\nLINE 2\tX")),
+                     headers=rig.hdr(idem="ok-1"))
+    assert ok.status_code == 200, ok.text
+    old = client.post(PREFIX, json=create_body(registration=reg("P/2019-0001")), headers=rig.hdr(idem="ok-2"))
+    assert old.status_code == 200, old.text  # AutoCount's own older numbers still pass
+
+
+def test_ac_71_56_a_number_with_a_slash_reads_and_edits_by_path(client, rig):
+    number = "P/2019-0001"
+    rig.vendor.seed(number)
+    for path in (f"{PREFIX}/{number}", f"{PREFIX}/P%2F2019-0001"):
+        r = client.get(f"{path}?companyCode=SRT", headers=rig.hdr(idem=None))
+        assert r.status_code == 200 and r.json()["found"] is True, (path, r.text)
+    e = client.patch(f"{PREFIX}/{number}", json=edit_body(), headers=rig.hdr(idem=None))
+    assert e.status_code == 200 and e.json()["projNo"] == number, e.text

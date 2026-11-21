@@ -65,10 +65,12 @@ from a db1 record, 21 Nov: the same keys as the `NewProjectReg` body):
 
 Checks, before any AutoCount call: `registration` missing = `422 FIELD_REQUIRED` (`FIELD_REQUIRED:
 registration`); on a create, `registration.projNo` missing or blank = `422 FIELD_REQUIRED`; on an edit the
-ProjNo is the path's, and a `registration.projNo` that differs is `422 INVALID_REQUEST`. A ProjNo is 1..64
-printable ASCII characters. Any other name inside `registration`, any top-level field other than
-`companyCode` / `registration`, a value that is not text / number / true / false / null, text longer than
-4000 characters, or a `date` that is not `YYYY-MM-DD` = `422 INVALID_REQUEST`. Value rules (length, a
+ProjNo is the path's (it may hold a `/`, sent as is or as `%2F`), and a `registration.projNo` that
+differs is `422 INVALID_REQUEST`. A ProjNo is 1..64 letters, digits and `/ _ . -`, starting with a letter
+or digit. Any other name inside `registration`, any top-level field other than `companyCode` /
+`registration`, a value that is not text / number / true / false / null, text longer than 4000
+characters, text holding a control or invisible character (line breaks and tabs are kept), or a `date`
+that is not `YYYY-MM-DD` = `422 INVALID_REQUEST`. Value rules (length, a
 known agent) are AutoCount's: it refuses, SS passes its reason on (section 5).
 
 ## 4. Answer
@@ -102,10 +104,10 @@ records, possibly empty).
 | `done` | null (warning `FIELD_CHANGED` possible) | 200 | written and read back, or a read |
 | `refused` | `REGISTRATION_EXISTS` | 409 | create on a ProjNo AutoCount holds (`registration` = its record); also a pending create whose resend finds the ProjNo with other fields |
 | `refused` | `REGISTRATION_NOT_FOUND` | 409 | edit of a ProjNo AutoCount does not hold |
-| `refused` | `VENDOR_REFUSED` | 409 | AutoCount refused the write with a reason (in `message`); nothing applied |
+| `refused` | `VENDOR_REFUSED` | 409 | AutoCount refused the write with a reason (in `message`, redacted, the connection's API key masked); nothing applied |
 | `refused` | `READ_FAILED`, `REGISTRATION_AMBIGUOUS` | 409 | the first read failed, or answered more than one record for the ProjNo; nothing sent |
 | `refused` | `VENDOR_UNSUPPORTED` | 409 | the switch is off |
-| `refused` | `IDEMPOTENCY_CONFLICT`, `OPERATION_IN_PROGRESS`, `DOC_BUSY` | 409 | same key with another body; same key still running; another key's write of the same ProjNo still running |
+| `refused` | `IDEMPOTENCY_CONFLICT`, `OPERATION_IN_PROGRESS`, `DOC_BUSY` | 409 | same key with another body; same key still running; another write of the same ProjNo still running (any key, or none; a run that crashed stops holding it after 10 minutes) |
 | `refused` | `WRITE_DISABLED`, `WRITE_NOT_ALLOWED`, `WRITE_COMPANY_NOT_TEST` | 403 / 409 | no usable write connection / not the test book / the company is not a test book |
 | `pending_verification` | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `VENDOR_ERROR` (bare 5xx), `READ_FAILED`, `REGISTRATION_NOT_FOUND`, `INTERNAL_ERROR` | 202 | the write may or may not have landed and the read-back could not settle it |
 | `vendor_error` | `VENDOR_ERROR` | 502 | a bare 4xx with no reason; nothing applied |

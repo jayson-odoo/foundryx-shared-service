@@ -39,5 +39,12 @@ Test file: `service_backend/tests/test_autocount_project_registration.py` (the t
 | AC-71-45 | [BE][T] A pending create whose resend finds the ProjNo with OTHER fields is `409 REGISTRATION_EXISTS` with AutoCount's record (never a second create; a person links it) |
 | AC-71-46 | [BE][T] A bare 5xx on create is checked (read back), not assumed: absent = `pending_verification`, and the resend completes it |
 | AC-71-47 | [BE][T] A field AutoCount holds differently after an edit is a `FIELD_CHANGED` warning on `done` |
+| AC-71-48 | [BE][T] A write of a ProjNo while another write of the same ProjNo runs (another key) is `409 DOC_BUSY`, nothing sent; another ProjNo is not held |
+| AC-71-49 | [BE][T] A crashed run (in progress for longer than the busy window) no longer holds the ProjNo |
+| AC-71-52 | [BE][T] A keyless edit of a ProjNo with a write in flight is `409 DOC_BUSY`, nothing sent |
+| AC-71-53 | [BE][T] The per-ProjNo lock number is in [2^62, 2^63): never a real DocKey; the same ProjNo (trimmed, any case) gives the same lock |
+| AC-71-54 | [BE][T] AutoCount's refusal text never carries the connection's API key, in the answer or the stored operation |
+| AC-71-55 | [BE][T] A ProjNo with quotes / markup, or a field with a control or invisible character, is `422 INVALID_REQUEST` before any call; line breaks and tabs pass |
+| AC-71-56 | [BE][T] A ProjNo holding `/` reads and edits through the path routes (raw or `%2F`) |
 | AC-71-50 | [DOC] `71-autocount-project-registration-contract.md` documents the routes, bodies, answer, codes and the switch |
 | AC-71-51 | [LIVE] db3 probe before the switch is turned on anywhere: create, edit, read and by-date read against db3 only (never db1 / db2), and whether `ProjectRegbyProjNo` answers `[]` or 404 for an unknown number (field names confirmed from a db1 record, 21 Nov) |

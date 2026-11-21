@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from datetime import date
+from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -40,19 +42,21 @@ router = APIRouter()
 
 PROJ_NO_MAX = 64
 FIELD_MAX = 4000
-_PROJ_NO = re.compile(r"[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?")
+# The CRM's numbers (PPF + yymm + 4 digits) and AutoCount's own 11-character ones; nothing a wrapper
+# could read as markup or quoting reaches it.
+_PROJ_NO = re.compile(r"[A-Za-z0-9][A-Za-z0-9/_.-]{0,63}")
 _DAY = re.compile(r"(\d{4})-?(\d{2})-?(\d{2})")
 _BODY_KEYS = frozenset({"companyCode", "registration"})
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _proj_no(value: Any, name: str = "projNo") -> str:
-    """A ProjNo: 1..64 printable ASCII characters, no leading / trailing space. Absent or blank =
+    """A ProjNo: 1..64 of letters, digits and ``/ _ . -``, starting with a letter or digit. Absent or blank =
     ``FIELD_REQUIRED``; anything else malformed = ``INVALID_REQUEST``."""
     if value is None or (isinstance(value, str) and not value.strip()):
         raise _bad("FIELD_REQUIRED", f"FIELD_REQUIRED: {name}")
     if not isinstance(value, str) or len(value) > PROJ_NO_MAX or not _PROJ_NO.fullmatch(value):
-        raise _bad("INVALID_REQUEST", f"{name} must be 1..{PROJ_NO_MAX} printable characters.")
+        raise _bad("INVALID_REQUEST", f"{name} must be 1..{PROJ_NO_MAX} letters, digits or / _ . -.")
     return value
 
 
@@ -71,18 +75,23 @@ def _date_value(name: str, value: Any) -> Any:
     return f"{day.isoformat()}T00:00:00"
 
 
+_KEPT_CONTROLS = frozenset("\n\r\t")
+
+
 def _value(name: str, value: Any) -> Any:
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
         return value
-    if isinstance(value, float):
+    if isinstance(value, (float, Decimal)):  # the body parser reads decimals as Decimal
         if not math.isfinite(value):
             raise _bad("INVALID_REQUEST", f"registration.{name} must be a finite number.")
-        return value
+        return float(value)
     if isinstance(value, str):
         if len(value) > FIELD_MAX:
             raise _bad("INVALID_REQUEST", f"registration.{name} is longer than {FIELD_MAX} characters.")
+        if any(unicodedata.category(c) in ("Cc", "Cf") and c not in _KEPT_CONTROLS for c in value):
+            raise _bad("INVALID_REQUEST", f"registration.{name} has a control or invisible character.")
         return value
     raise _bad("INVALID_REQUEST", f"registration.{name} must be text, a number, true / false or null.")
 
@@ -149,7 +158,7 @@ def create_project_registration(
     return _frame(request, db, raw_body, "write_projreg_create", run, key_required=True, services=(svc,))
 
 
-@router.patch("/project-registrations/{projNo}")
+@router.patch("/project-registrations/{projNo:path}")
 def edit_project_registration(
     projNo: str, request: Request, db: Session = Depends(get_db),
     raw_body: bytes = Depends(_read_request_body_bytes),
@@ -166,7 +175,7 @@ def edit_project_registration(
     return _frame(request, db, raw_body, "write_projreg_edit", run, services=(svc,))
 
 
-@router.get("/project-registrations/{projNo}")
+@router.get("/project-registrations/{projNo:path}")
 def read_project_registration(
     projNo: str, request: Request, db: Session = Depends(get_db),
     svc: ProjectRegistrationService = Depends(get_project_registration_service),

@@ -40,9 +40,11 @@ read-back comparison), `routers/project_registrations_v1.py` (manifest router, m
 `/api/v1/autocount`, public like `write_v1`), the setting `autocount_project_registration_enabled`
 (`app/config.py`, default false, read per call), and `deps.get_project_registration_service`.
 
-No new table and no migration: the operation and action rows carry `doc_type "PROJREG"`, `doc_key NULL`
-(a NULL never trips the per-document busy index); the ProjNo sits in the operation's `snapshot_json` (used
-for the same-ProjNo busy check) and in the call log's `doc_no`.
+No new table and no migration: the operation and action rows carry `doc_type "PROJREG"` and, as
+`doc_key`, a lock number derived from the ProjNo (`lock_key`, always in [2^62, 2^63), so never a real
+DocKey). The existing partial unique indexes (one `in_progress` operation, one `in_flight` action per
+document) then serialise two writes of the same ProjNo, keyless edits included (security review round
+1). The ProjNo itself sits in the operation's `snapshot_json` and in the call log's `doc_no`.
 
 ### Flows
 
