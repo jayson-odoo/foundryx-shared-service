@@ -1739,7 +1739,8 @@ class OperationService:
         one planned."""
         if self._unfinished_follows(company, spec.doc_key, spec.dtl_key):
             raise _Done(REFUSED, ROW_NEEDS_ATTENTION)
-        index = SpoPoLinkRepository(self.db).rows_on_po_row(company.tenant_id, company.id, spec.dtl_key)
+        index = SpoPoLinkRepository(self.db).rows_on_po_row(
+            company.tenant_id, company.id, str(company.database_name), spec.dtl_key)
         pending = self.ops.pending_spo_move_qty(  # moves onto this PO row whose outcome is unknown: not indexed
             company.tenant_id, company.id, spec.dtl_key, exclude_doc_key=None)
         if not index and not pending:

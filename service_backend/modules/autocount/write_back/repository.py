@@ -666,15 +666,17 @@ class SpoPoLinkRepository:
             query = query.filter(AcSpoPoLink.spo_source_ref != except_ref)
         return Decimal(str(query.scalar() or 0))
 
-    def rows_on_po_row(self, tenant_id: str, company_id: str, po_dtl_key: int) -> List[AcSpoPoLink]:
-        """Every indexed SPO row pointing at the PO row (plan 71 slice 2: the rows a PO split may carry along),
-        in a stable order."""
+    def rows_on_po_row(self, tenant_id: str, company_id: str, book: str, po_dtl_key: int) -> List[AcSpoPoLink]:
+        """Every indexed SPO row of the company's book ``book`` (its ``<book>:`` source refs) pointing at the PO
+        row (plan 71 slice 2: the rows a PO split may carry along), in a stable order. A row indexed under another
+        book (a book switch) is never carried along: its keys mean nothing in this one (review round 2)."""
         return (
             self.db.query(AcSpoPoLink)
             .filter(
                 AcSpoPoLink.tenant_id == tenant_id,
                 AcSpoPoLink.company_id == company_id,
                 AcSpoPoLink.po_dtl_key == po_dtl_key,
+                AcSpoPoLink.spo_source_ref.startswith(f"{book}:", autoescape=True),
             )
             .order_by(AcSpoPoLink.spo_source_ref, AcSpoPoLink.spo_dtl_key)
             .all()

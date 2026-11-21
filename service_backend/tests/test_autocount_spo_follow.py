@@ -543,6 +543,19 @@ def test_r2_only_the_new_po_line_a_follower_waits_for_is_held(h, w):
     assert free.outcome == "done", (free.outcome, free.error_code)
 
 
+def test_r2_an_index_row_of_another_book_is_never_carried_along(h, w):
+    """An index row left under another book (a book switch) on the same PO row key is not this book's SPO line:
+    the follow takes the real one and never reads or writes the other book's key."""
+    from modules.autocount.models import AcSpoPoLink
+
+    h.db.add(AcSpoPoLink(tenant_id=h.company.tenant_id, company_id=h.company.id, spo_source_ref="AAA_OLD:9999",
+                         spo_doc_no="SPO-OLD", spo_dtl_key=1, po_dtl_key=w.b1, qty=Decimal(40)))
+    h.db.commit()
+    res = h.run(OP, w.params(40), key="r2-18")
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert [s["spoDocKey"] for s in res.batch["spoLines"]] == [7203]
+
+
 def lock_spy(h):
     """Every ``link_locks`` the operations take: ``(PO documents, SPO documents)``."""
     from modules.autocount.write_back import operations
