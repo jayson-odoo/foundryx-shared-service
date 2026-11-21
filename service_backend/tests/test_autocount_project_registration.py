@@ -762,3 +762,31 @@ def test_ac_71_63_strict_dates(client, rig):
 def test_ac_71_64_switch_off_wins_over_a_bad_body(client, rig_off):
     r = client.post(PREFIX, json={"companyCode": "SRT", "registration": {"nope": 1}}, headers=rig_off.hdr())
     assert r.status_code == 409 and code(r) == "VENDOR_UNSUPPORTED", r.text
+
+
+def test_ac_71_65_a_keyless_pending_edit_is_simply_sent_again(client, rig):
+    rig.vendor.seed(PROJ)
+    rig.vendor.next("PUT", "EditProjectRegbyProjNo", "timeout")
+    first = client.patch(f"{PREFIX}/{PROJ}", json=edit_body(), headers=rig.hdr(idem=None))
+    assert first.status_code == 202, first.text
+    again = client.patch(f"{PREFIX}/{PROJ}", json=edit_body(), headers=rig.hdr(idem=None))
+    assert again.status_code == 200 and again.json()["outcome"] == "done", again.text
+
+
+def test_ac_71_66_a_pending_create_that_landed_does_not_block_an_edit(client, rig):
+    rig.vendor.next("POST", "NewProjectReg", "apply_then_timeout")
+    original = rig.vendor._route
+    state = {"posted": False, "failed": False}
+
+    def route(method, leaf, call):
+        if method == "POST":
+            state["posted"] = True
+        if method == "GET" and state["posted"] and not state["failed"]:
+            state["failed"] = True
+            return httpx.Response(500, text="down")
+        return original(method, leaf, call)
+
+    rig.vendor._route = route
+    assert client.post(PREFIX, json=create_body(), headers=rig.hdr()).status_code == 202
+    e = client.patch(f"{PREFIX}/{PROJ}", json=edit_body(), headers=rig.hdr(idem="edit-1"))
+    assert e.status_code == 200 and e.json()["outcome"] == "done", e.text

@@ -125,8 +125,10 @@ AutoCount held no such ProjNo = it is that create's: `done` (differences as `FIE
 it is not known whether the earlier create was sent (its run died) = `done` with the same fields, else
 `REGISTRATION_EXISTS`. Absent = sent again. A pending edit is simply sent again (a whole-record PUT is
 safe to repeat) and judged by its read-back. While one write of a ProjNo is `pending_verification` (inside
-the 10-minute busy window), a write of the same ProjNo under another key is `409 DOC_BUSY`: never a
-second create while the first is unknown.
+the 10-minute busy window), a create of the same ProjNo under another key is `409 DOC_BUSY`: never a
+second create while the first is unknown (a pending create holds the ProjNo for creates until its
+same-key resend settles it). An edit is not held by a pending write (the record exists and a
+whole-record PUT is safe to repeat); only a write in flight at that moment holds it.
 
 ## 6. Correlation
 

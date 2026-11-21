@@ -390,7 +390,9 @@ class ProjectRegistrationService(WriteFrame):
             if not must_exist and before is not None:
                 res = self._finish(row, OUTCOME_REFUSED, REGISTRATION_EXISTS, message=_exists(proj_no))
                 return _of(res, proj_no, registration=before)
-            if self._pending_elsewhere(company):  # another write of this ProjNo has an unknown outcome
+            # a create while another write of this ProjNo has an unknown outcome could register it twice; an
+            # edit cannot (the record exists, a whole-record PUT is safe to repeat): only in_flight holds it
+            if not must_exist and self._pending_elsewhere(company):
                 return _of(self._finish(row, OUTCOME_REFUSED, DOC_BUSY, message=IN_PROGRESS_MESSAGE), proj_no)
             self._check_deadline(row)
             row.request_method, row.request_path, row.request_json = method, path, body

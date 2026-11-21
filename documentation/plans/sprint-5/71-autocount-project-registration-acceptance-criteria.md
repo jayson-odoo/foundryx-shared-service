@@ -55,5 +55,7 @@ Test file: `service_backend/tests/test_autocount_project_registration.py` (the t
 | AC-71-62 | [BE][T] No write is sent past the overall deadline (`409 DEADLINE_EXCEEDED`) |
 | AC-71-63 | [BE][T] The by-date read takes `YYYY-MM-DD` only; `registration.date` takes `YYYY-MM-DD` or `YYYY-MM-DDT00:00:00` only |
 | AC-71-64 | [BE][T] With the switch OFF a bad body still answers `409 VENDOR_UNSUPPORTED` |
+| AC-71-65 | [BE][T] A keyless edit that ended `pending_verification` is sent again on the next press and answers `done` |
+| AC-71-66 | [BE][T] A pending create that landed does not hold the ProjNo against an edit |
 | AC-71-50 | [DOC] `71-autocount-project-registration-contract.md` documents the routes, bodies, answer, codes and the switch |
 | AC-71-51 | [LIVE] db3 probe before the switch is turned on anywhere: create, edit, read and by-date read against db3 only (never db1 / db2), and whether `ProjectRegbyProjNo` answers `[]` or 404 for an unknown number (field names confirmed from a db1 record, 21 Nov) |
