@@ -36,7 +36,8 @@ Test file: `service_backend/tests/test_autocount_project_registration.py` (the t
 | AC-71-42 | [BE][T] `GET /project-registrations?companyCode=&date=YYYY-MM-DD` calls `GET /ProjectRegbyDate?Date=yyyymmdd` and answers `registrations` (the list); a malformed date is `422 INVALID_REQUEST` |
 | AC-71-43 | [BE][T] Every wrapper call carries the ESB client's own User-Agent (`Foundryx-AutoCount-ESB/<version>`), never a library default |
 | AC-71-44 | [BE][T] A create stores one `ac_write_operation` row (`op create_doc:PROJREG`, status = the outcome) |
-| AC-71-45 | [BE][T] A pending create whose resend finds the ProjNo with OTHER fields is `409 REGISTRATION_EXISTS` with AutoCount's record (never a second create; a person links it) |
+| AC-71-45 | [BE][T] A pending create that was sent while the ProjNo was absent and landed with a field AutoCount did not keep is `done` + `FIELD_CHANGED` on the same-key resend (no second POST), and then locks |
+| AC-71-45b | [BE][T] The resend of a create whose run died (not known whether it was sent) finding the ProjNo with OTHER fields is `409 REGISTRATION_EXISTS` with AutoCount's record; nothing sent |
 | AC-71-46 | [BE][T] A bare 5xx on create is checked (read back), not assumed: absent = `pending_verification`, and the resend completes it |
 | AC-71-47 | [BE][T] A field AutoCount holds differently after an edit is a `FIELD_CHANGED` warning on `done` |
 | AC-71-48 | [BE][T] A write of a ProjNo while another write of the same ProjNo runs (another key) is `409 DOC_BUSY`, nothing sent; another ProjNo is not held |
@@ -46,5 +47,13 @@ Test file: `service_backend/tests/test_autocount_project_registration.py` (the t
 | AC-71-54 | [BE][T] AutoCount's refusal text never carries the connection's API key, in the answer or the stored operation |
 | AC-71-55 | [BE][T] A ProjNo with quotes / markup, or a field with a control or invisible character, is `422 INVALID_REQUEST` before any call; line breaks and tabs pass |
 | AC-71-56 | [BE][T] A ProjNo holding `/` reads and edits through the path routes (raw or `%2F`) |
+| AC-71-57 | [BE][T] A non-2xx answer is judged by the read-back: a create that landed and then answered 500 with a reason is `done` |
+| AC-71-58 | [BE][T] An edit AutoCount refused that changed nothing is `409 VENDOR_REFUSED` with AutoCount's reason |
+| AC-71-59 | [BE][T] A lower-case ProjNo is found when AutoCount stores it upper-cased (one POST, `done`) |
+| AC-71-60 | [BE][T] While another key's create of the ProjNo is `pending_verification`, a create is `409 DOC_BUSY` and nothing is sent |
+| AC-71-61 | [BE][T] The action row survives an internal error (the answer's `actionId` exists, `INTERNAL_ERROR`) |
+| AC-71-62 | [BE][T] No write is sent past the overall deadline (`409 DEADLINE_EXCEEDED`) |
+| AC-71-63 | [BE][T] The by-date read takes `YYYY-MM-DD` only; `registration.date` takes `YYYY-MM-DD` or `YYYY-MM-DDT00:00:00` only |
+| AC-71-64 | [BE][T] With the switch OFF a bad body still answers `409 VENDOR_UNSUPPORTED` |
 | AC-71-50 | [DOC] `71-autocount-project-registration-contract.md` documents the routes, bodies, answer, codes and the switch |
 | AC-71-51 | [LIVE] db3 probe before the switch is turned on anywhere: create, edit, read and by-date read against db3 only (never db1 / db2), and whether `ProjectRegbyProjNo` answers `[]` or 404 for an unknown number (field names confirmed from a db1 record, 21 Nov) |

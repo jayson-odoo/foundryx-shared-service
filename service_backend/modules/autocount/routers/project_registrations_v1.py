@@ -34,7 +34,14 @@ from app.database import get_db
 
 from ..models import AcCompany, AcPullApiKey
 from ..write_back.deps import get_project_registration_service
-from ..write_back.project_registration import DATE_FIELDS, FIELDS, ProjectRegistrationService, RegResult
+from ..write_back.project_registration import (
+    DATE_FIELDS,
+    FIELDS,
+    VENDOR_UNSUPPORTED,
+    ProjectRegistrationService,
+    RegResult,
+    enabled,
+)
 from .pull_v1 import WriteBody, _read_request_body_bytes, _safe_echo
 from .write_v1 import _bad, _frame, _status_of
 
@@ -45,7 +52,7 @@ FIELD_MAX = 4000
 # The CRM's numbers (PPF + yymm + 4 digits) and AutoCount's own 11-character ones; nothing a wrapper
 # could read as markup or quoting reaches it.
 _PROJ_NO = re.compile(r"[A-Za-z0-9][A-Za-z0-9/_.-]{0,63}")
-_DAY = re.compile(r"(\d{4})-?(\d{2})-?(\d{2})")
+_DAY = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 _BODY_KEYS = frozenset({"companyCode", "registration"})
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -66,7 +73,7 @@ def _date_value(name: str, value: Any) -> Any:
     if value is None or (isinstance(value, str) and not value.strip()):
         return value
     text = value[:10] if isinstance(value, str) else ""
-    if not _DATE.fullmatch(text) or (len(value) > 10 and value[10] != "T"):
+    if not _DATE.fullmatch(text) or value[10:] not in ("", "T00:00:00"):
         raise _bad("INVALID_REQUEST", f"registration.{name} must be a date (YYYY-MM-DD).")
     try:
         day = date.fromisoformat(text)
@@ -141,6 +148,12 @@ def _respond(result: RegResult) -> tuple:
     return _status_of(result.outcome, result.error_code), result.answer()
 
 
+def _switched_off() -> Optional[tuple]:
+    """The admin switch, checked before the body is read: off = ``409 VENDOR_UNSUPPORTED``, whatever
+    the body holds (auth, scope, ``Idempotency-Key`` and company come first, in the frame)."""
+    return None if enabled() else _respond(RegResult("refused", VENDOR_UNSUPPORTED))
+
+
 @router.post("/project-registrations")
 def create_project_registration(
     request: Request, db: Session = Depends(get_db),
@@ -148,6 +161,9 @@ def create_project_registration(
     svc: ProjectRegistrationService = Depends(get_project_registration_service),
 ) -> JSONResponse:
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        off = _switched_off()
+        if off is not None:
+            return off
         _only(raw, _BODY_KEYS)
         proj_no, record = _registration(raw)
         return _respond(svc.create(
@@ -165,6 +181,9 @@ def edit_project_registration(
     svc: ProjectRegistrationService = Depends(get_project_registration_service),
 ) -> JSONResponse:
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        off = _switched_off()
+        if off is not None:
+            return off
         _only(raw, _BODY_KEYS)
         proj_no, record = _registration(raw, _proj_no(projNo))
         return _respond(svc.edit(
@@ -181,6 +200,9 @@ def read_project_registration(
     svc: ProjectRegistrationService = Depends(get_project_registration_service),
 ) -> JSONResponse:
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        off = _switched_off()
+        if off is not None:
+            return off
         proj_no = _proj_no(projNo)
         return _respond(svc.read(tenant_id=key.tenant_id, company_id=company.id, key_id=key.id, proj_no=proj_no))
 
@@ -193,6 +215,9 @@ def list_project_registrations_of_day(
     svc: ProjectRegistrationService = Depends(get_project_registration_service),
 ) -> JSONResponse:
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        off = _switched_off()
+        if off is not None:
+            return off
         day = _day(request)
         return _respond(svc.read_day(tenant_id=key.tenant_id, company_id=company.id, key_id=key.id, day=day))
 

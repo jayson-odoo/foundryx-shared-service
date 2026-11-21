@@ -24,7 +24,8 @@ test period, never db1 / db2), the test-company check, and the logged client and
 ## 2. The switch
 
 `AUTOCOUNT_PROJECT_REGISTRATION_ENABLED` (default `false`). Off: every route above answers
-`409 refused VENDOR_UNSUPPORTED` and calls nothing. `GET /write-capabilities` carries one entry per
+`409 refused VENDOR_UNSUPPORTED` and calls nothing. Order: the API key, scope, `Idempotency-Key` header
+(create) and `companyCode` are checked first (contract 57); then the switch, before the body is read. `GET /write-capabilities` carries one entry per
 primitive for kind `project-registrations`:
 
 ```json
@@ -102,21 +103,30 @@ records, possibly empty).
 | outcome | errorCode | HTTP | when |
 |---|---|---|---|
 | `done` | null (warning `FIELD_CHANGED` possible) | 200 | written and read back, or a read |
-| `refused` | `REGISTRATION_EXISTS` | 409 | create on a ProjNo AutoCount holds (`registration` = its record); also a pending create whose resend finds the ProjNo with other fields |
+| `refused` | `REGISTRATION_EXISTS` | 409 | create on a ProjNo AutoCount holds (`registration` = its record); also the resend of a create whose run died before it was known to be sent, finding the ProjNo with other fields |
 | `refused` | `REGISTRATION_NOT_FOUND` | 409 | edit of a ProjNo AutoCount does not hold |
-| `refused` | `VENDOR_REFUSED` | 409 | AutoCount refused the write with a reason (in `message`, redacted, the connection's API key masked); nothing applied |
+| `refused` | `VENDOR_REFUSED` | 409 | AutoCount refused the write with a reason (in `message`, redacted, the connection's API key masked) and the read-back shows nothing applied |
 | `refused` | `READ_FAILED`, `REGISTRATION_AMBIGUOUS` | 409 | the first read failed, or answered more than one record for the ProjNo; nothing sent |
 | `refused` | `VENDOR_UNSUPPORTED` | 409 | the switch is off |
 | `refused` | `IDEMPOTENCY_CONFLICT`, `OPERATION_IN_PROGRESS`, `DOC_BUSY` | 409 | same key with another body; same key still running; another write of the same ProjNo still running (any key, or none; a run that crashed stops holding it after 10 minutes) |
 | `refused` | `WRITE_DISABLED`, `WRITE_NOT_ALLOWED`, `WRITE_COMPANY_NOT_TEST` | 403 / 409 | no usable write connection / not the test book / the company is not a test book |
-| `pending_verification` | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `VENDOR_ERROR` (bare 5xx), `READ_FAILED`, `REGISTRATION_NOT_FOUND`, `INTERNAL_ERROR` | 202 | the write may or may not have landed and the read-back could not settle it |
-| `vendor_error` | `VENDOR_ERROR` | 502 | a bare 4xx with no reason; nothing applied |
+| `pending_verification` | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `VENDOR_ERROR` (bare 5xx), `READ_FAILED`, `REGISTRATION_NOT_FOUND`, `REGISTRATION_AMBIGUOUS`, `DEADLINE_EXCEEDED`, `INTERNAL_ERROR` | 202 | the write may or may not have landed and the read-back could not settle it |
+| `refused` | `DEADLINE_EXCEEDED` | 409 | the call ran past its overall budget (270 s) before the write was sent; nothing sent |
+| `vendor_error` | `VENDOR_ERROR` | 502 | a bare 4xx with no reason and nothing applied |
+
+Any answer other than 2xx is judged by reading the ProjNo back, never by the answer text: a record that
+appeared (create) or changed (edit) landed and is answered as a 2xx would be (`done`, warnings as above).
+A ProjNo matches trimmed and case-insensitively (AutoCount's own collation).
 
 Retry rule (owner, 11 Nov): a refusal and a `vendor_error` release the key (the same key runs again);
 only `done` locks it (a same-key resend returns the stored answer). A `pending_verification` create is
-never sent blind: a same-key resend first reads the ProjNo: found with the same fields = `done`; found with
-other fields = `REGISTRATION_EXISTS`; absent = sent again. A pending edit is simply sent again (a
-whole-record PUT is safe to repeat) and judged by its read-back.
+never sent blind: a same-key resend first reads the ProjNo. Found, when the earlier create was sent while
+AutoCount held no such ProjNo = it is that create's: `done` (differences as `FIELD_CHANGED`). Found, when
+it is not known whether the earlier create was sent (its run died) = `done` with the same fields, else
+`REGISTRATION_EXISTS`. Absent = sent again. A pending edit is simply sent again (a whole-record PUT is
+safe to repeat) and judged by its read-back. While one write of a ProjNo is `pending_verification` (inside
+the 10-minute busy window), a write of the same ProjNo under another key is `409 DOC_BUSY`: never a
+second create while the first is unknown.
 
 ## 6. Correlation
 

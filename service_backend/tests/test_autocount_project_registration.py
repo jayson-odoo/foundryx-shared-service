@@ -509,15 +509,42 @@ def test_ac_71_44_operation_row_is_stored_for_create(client, rig, db):
     assert op.op == "create_doc:PROJREG" and op.status == "done" and op.doc_type == "PROJREG"
 
 
-def test_ac_71_45_a_pending_create_found_with_other_fields_is_refused_exists(client, rig):
-    rig.vendor.next("POST", "NewProjectReg", "timeout")
+def test_ac_71_45_a_pending_create_that_landed_with_a_changed_field_is_done_on_resend(client, rig):
+    rig.vendor.ignore = ["DistributorName"]  # AutoCount does not keep one sent field
+    rig.vendor.next("POST", "NewProjectReg", "apply_then_timeout")
+    original = rig.vendor._route
+    state = {"posted": False, "failed": False}
+
+    def route(method, leaf, call):  # the read-back after the POST fails once
+        if method == "POST":
+            state["posted"] = True
+        if method == "GET" and state["posted"] and not state["failed"]:
+            state["failed"] = True
+            return httpx.Response(500, text="down")
+        return original(method, leaf, call)
+
+    rig.vendor._route = route
     r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
     assert r.status_code == 202, r.text
-    rig.vendor.seed(PROJ, {"ProjectTitle": "SOMEONE ELSE"})  # registered meanwhile, not by this call
     again = client.post(PREFIX, json=create_body(), headers=rig.hdr())
-    assert again.status_code == 409 and code(again) == "REGISTRATION_EXISTS", again.text
-    assert again.json()["registration"]["ProjectTitle"] == "SOMEONE ELSE"
-    assert len(rig.vendor.writes()) == 1  # never a second create
+    assert again.status_code == 200 and again.json()["outcome"] == "done", again.text
+    assert again.json()["warnings"] == ["FIELD_CHANGED"]
+    assert again.json()["changedFields"][0]["field"] == "distributorName"
+    assert len(rig.vendor.writes()) == 1
+    third = client.post(PREFIX, json=create_body(), headers=rig.hdr())  # done now locks the key
+    assert third.json() == again.json() and len(rig.vendor.writes()) == 1
+
+
+def test_ac_71_45b_a_crashed_create_found_with_other_fields_is_refused_exists(client, rig, db, h):
+    from modules.autocount.write_back.project_registration import _hash
+
+    _op_row(db, h, key="reg-key-1", age_seconds=3600, key_id=rig.key.id,  # this key's run died:
+            request_hash=_hash("create_doc:PROJREG", create_body()))      # not known if it was sent
+    rig.vendor.seed(PROJ, {"ProjectTitle": "SOMEONE ELSE"})
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.status_code == 409 and code(r) == "REGISTRATION_EXISTS", r.text
+    assert r.json()["registration"]["ProjectTitle"] == "SOMEONE ELSE"
+    assert rig.vendor.writes() == []
 
 
 def test_ac_71_46_a_bare_5xx_on_create_is_checked_not_assumed(client, rig):
@@ -540,7 +567,7 @@ def test_ac_71_47_edit_difference_is_a_warning_not_a_failure(client, rig):
 
 # ── review round 1 (security): lock per ProjNo, masked refusal text, input hygiene ──
 
-def _op_row(db, h, *, key="other-key", age_seconds=0, status="in_progress"):
+def _op_row(db, h, *, key="other-key", age_seconds=0, status="in_progress", key_id=None, request_hash="x"):
     from datetime import datetime, timedelta, timezone
 
     from app.models import DEFAULT_TENANT_ID
@@ -548,8 +575,8 @@ def _op_row(db, h, *, key="other-key", age_seconds=0, status="in_progress"):
 
     at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
     row = AcWriteOperation(
-        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, key_id=None, idempotency_key=key,
-        request_hash="x", op="create_doc:PROJREG", doc_type="PROJREG", doc_key=lock_key(PROJ),
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, key_id=key_id, idempotency_key=key,
+        request_hash=request_hash, op="create_doc:PROJREG", doc_type="PROJREG", doc_key=lock_key(PROJ),
         status=status, snapshot_json={"projNo": PROJ}, created_at=at, updated_at=at,
     )
     db.add(row)
@@ -635,3 +662,103 @@ def test_ac_71_56_a_number_with_a_slash_reads_and_edits_by_path(client, rig):
         assert r.status_code == 200 and r.json()["found"] is True, (path, r.text)
     e = client.patch(f"{PREFIX}/{number}", json=edit_body(), headers=rig.hdr(idem=None))
     assert e.status_code == 200 and e.json()["projNo"] == number, e.text
+
+
+# ── review round 1 (code): the read decides after a non-2xx; case; pending lock; audit row; deadline ──
+
+def test_ac_71_57_a_5xx_with_a_reason_after_the_create_landed_is_done(client, rig):
+    original = rig.vendor._route
+
+    def route(method, leaf, call):
+        response = original(method, leaf, call)
+        if method == "POST":  # applied, then AutoCount answers 500 with a reason
+            return httpx.Response(500, json={"Message": "An error has occurred.", "ExceptionMessage": "Timeout expired."})
+        return response
+
+    rig.vendor._route = route
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+
+
+def test_ac_71_58_an_edit_refused_that_changed_nothing_is_refused(client, rig):
+    rig.vendor.seed(PROJ)
+    rig.vendor.next("PUT", "EditProjectRegbyProjNo", "refuse", text="Project title too long.")
+    r = client.patch(f"{PREFIX}/{PROJ}", json=edit_body(), headers=rig.hdr())
+    assert r.status_code == 409 and code(r) == "VENDOR_REFUSED" and r.json()["message"] == "Project title too long."
+
+
+def test_ac_71_59_a_lower_case_projno_is_found_when_autocount_upper_cases_it(client, rig):
+    original = rig.vendor._stored
+
+    def stored(body, before):
+        rec = original(body, before)
+        rec["ProjNo"] = rec["ProjNo"].upper()
+        return rec
+
+    rig.vendor._stored = stored
+    rig.vendor.store.clear()
+    lower = "ppf26110009"
+    original_route = rig.vendor._route
+
+    def route(method, leaf, call):  # AutoCount stores the number upper-cased and matches either case
+        if method == "POST":
+            response = original_route(method, leaf, call)
+            rig.vendor.store[lower.upper()] = rig.vendor.store.pop(lower)
+            rig.vendor.dates[lower.upper()] = "20261121"
+            return response
+        if method == "GET" and leaf == "projectregbyprojno":
+            rec = rig.vendor.store.get(call["query"]["ProjNo"].upper())
+            return httpx.Response(200, json=[rec] if rec else [])
+        return original_route(method, leaf, call)
+
+    rig.vendor._route = route
+    r = client.post(PREFIX, json=create_body(lower), headers=rig.hdr())
+    assert r.status_code == 200 and r.json()["outcome"] == "done", r.text
+    assert len(rig.vendor.writes()) == 1
+
+
+def test_ac_71_60_another_keys_pending_create_holds_the_projno(client, rig):
+    rig.vendor.next("POST", "NewProjectReg", "timeout")
+    first = client.post(PREFIX, json=create_body(), headers=rig.hdr(idem="key-a"))
+    assert first.status_code == 202, first.text
+    second = client.post(PREFIX, json=create_body(), headers=rig.hdr(idem="key-b"))
+    assert second.status_code == 409 and code(second) == "DOC_BUSY", second.text
+    assert len(rig.vendor.writes()) == 1  # never a second create while the first is unknown
+
+
+def test_ac_71_61_the_audit_row_survives_an_internal_error(client, rig, db, monkeypatch):
+    from modules.autocount.write_back import project_registration as pr
+
+    def boom(*a, **kw):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(pr.ProjectRegistrationService, "_find", staticmethod(boom))
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.json()["errorCode"] == "INTERNAL_ERROR" and r.json()["actionId"]
+    db.expire_all()
+    row = db.query(AcWriteAction).filter(AcWriteAction.id == r.json()["actionId"]).one()
+    assert row.error_code == "INTERNAL_ERROR"
+
+
+def test_ac_71_62_no_write_past_the_overall_deadline(client, rig, monkeypatch):
+    from modules.autocount.write_back import frame
+
+    monkeypatch.setattr(frame, "ACTION_DEADLINE_SECONDS", -1.0)
+    r = client.post(PREFIX, json=create_body(), headers=rig.hdr())
+    assert r.status_code == 409 and code(r) == "DEADLINE_EXCEEDED", r.text
+    assert rig.vendor.writes() == []
+
+
+def test_ac_71_63_strict_dates(client, rig):
+    r = client.get(f"{PREFIX}?companyCode=SRT&date=20261121", headers=rig.hdr(idem=None))
+    assert r.status_code == 422 and code(r) == "INVALID_REQUEST"
+    r = client.post(PREFIX, json=create_body(registration=reg(date="2026-11-21Tgarbage")), headers=rig.hdr())
+    assert r.status_code == 422 and code(r) == "INVALID_REQUEST"
+    r = client.post(PREFIX, json=create_body(registration=reg(date="2026-11-21T00:00:00")), headers=rig.hdr())
+    assert r.status_code == 200, r.text
+    assert rig.vendor.calls == [] or rig.vendor.writes()[0]["body"]["Date"] == "2026-11-21T00:00:00"
+
+
+def test_ac_71_64_switch_off_wins_over_a_bad_body(client, rig_off):
+    r = client.post(PREFIX, json={"companyCode": "SRT", "registration": {"nope": 1}}, headers=rig_off.hdr())
+    assert r.status_code == 409 and code(r) == "VENDOR_UNSUPPORTED", r.text

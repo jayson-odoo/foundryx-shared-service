@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -81,6 +82,7 @@ IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
 OPERATION_IN_PROGRESS = "OPERATION_IN_PROGRESS"
 
 IN_PROGRESS = "in_progress"
+SENT_WHEN_ABSENT = "sentWhenAbsent"  # operation snapshot: its create went out while the ProjNo was absent
 IN_PROGRESS_MESSAGE = "This change is still being saved in AutoCount. Please check again in a moment."
 
 Record = Dict[str, Any]
@@ -207,6 +209,7 @@ class ProjectRegistrationService(WriteFrame):
         super().__init__(db, **kwargs)
         self.ops = OperationRepository(db)
         self._lock: Optional[int] = None  # ``lock_key`` of the ProjNo being written
+        self.sent_when_absent = False  # the create was sent while AutoCount held no such ProjNo
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -238,7 +241,7 @@ class ProjectRegistrationService(WriteFrame):
         )
 
     def read(self, *, tenant_id: str, company_id: str, key_id: Optional[str], proj_no: str) -> RegResult:
-        def run(company: AcCompany, op_id: Optional[str], look_up: bool) -> RegResult:
+        def run(company: AcCompany, op_id: Optional[str], look_up: Optional[str]) -> RegResult:
             base_url = self._open(company, key_id, proj_no)
             reader = self._reader_for(base_url)
             try:
@@ -252,7 +255,7 @@ class ProjectRegistrationService(WriteFrame):
         return self._plain(tenant_id, company_id, run)
 
     def read_day(self, *, tenant_id: str, company_id: str, key_id: Optional[str], day: date) -> RegResult:
-        def run(company: AcCompany, op_id: Optional[str], look_up: bool) -> RegResult:
+        def run(company: AcCompany, op_id: Optional[str], look_up: Optional[str]) -> RegResult:
             base_url = self._open(company, key_id, None)
             reader = self._reader_for(base_url)
             try:
@@ -269,7 +272,7 @@ class ProjectRegistrationService(WriteFrame):
         return CompanyRepository(self.db).get(tenant_id, company_id)
 
     def _plain(self, tenant_id: str, company_id: str,
-               run: Callable[[AcCompany, Optional[str], bool], RegResult]) -> RegResult:
+               run: Callable[[AcCompany, Optional[str], Optional[str]], RegResult]) -> RegResult:
         """A call without an idempotency row: switch, company, then ``run`` (refusals as answers)."""
         if not enabled():
             return RegResult(OUTCOME_REFUSED, VENDOR_UNSUPPORTED)
@@ -277,7 +280,7 @@ class ProjectRegistrationService(WriteFrame):
         if company is None:
             return RegResult(OUTCOME_REFUSED, WRITE_DISABLED)
         try:
-            return run(company, None, False)
+            return run(company, None, None)
         except _Stop as stop:
             return _from_stop(stop.result)
         finally:
@@ -322,10 +325,12 @@ class ProjectRegistrationService(WriteFrame):
 
     @staticmethod
     def _find(reader: Any, proj_no: str) -> Optional[Record]:
-        """AutoCount's record for exactly ``proj_no`` (trimmed match), None when absent; more than one
-        is ``REGISTRATION_AMBIGUOUS``, a failed read ``READ_FAILED``."""
+        """AutoCount's record for exactly ``proj_no`` (trimmed, case-insensitive like AutoCount's SQL
+        collation and ``lock_key``), None when absent; more than one is ``REGISTRATION_AMBIGUOUS``, a
+        failed read ``READ_FAILED``."""
         rows = reader.fetch_records(BY_PROJ_NO_PATH, {"ProjNo": proj_no}, not_found_404=True)
-        matches = [r for r in rows if str(r.get("ProjNo") or "").strip() == proj_no.strip()]
+        wanted = proj_no.strip().casefold()
+        matches = [r for r in rows if str(r.get("ProjNo") or "").strip().casefold() == wanted]
         if len(matches) > 1:
             raise DocReadError(REGISTRATION_AMBIGUOUS)
         return matches[0] if matches else None
@@ -354,12 +359,16 @@ class ProjectRegistrationService(WriteFrame):
 
     def _write(
         self, company: AcCompany, key_id: Optional[str], op_id: Optional[str], name: str, proj_no: str,
-        method: str, path: str, body: Record, *, must_exist: bool, look_up: bool,
+        method: str, path: str, body: Record, *, must_exist: bool, look_up: Optional[str],
     ) -> RegResult:
-        """One create or edit: read first, send, read back, compare."""
+        """One create or edit: read first, send, read back, compare. ``look_up`` (a same-key resend of a
+        pending create): ``"ours"`` = that create was sent while the ProjNo was absent, so a record found
+        now is its own; ``"unknown"`` = not known whether it was sent; None = an ordinary call."""
         self._lock = lock_key(proj_no)
-        row = self._new_row(company, name, key_id, op_id)
+        self._deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
         self._put_sent = False
+        row = self._new_row(company, name, key_id, op_id)
+        self.db.commit()  # the audit row survives any later rollback
         try:
             base_url = self._open(company, key_id, proj_no, row, op_id)
             reader = self._reader_for(base_url)
@@ -370,8 +379,8 @@ class ProjectRegistrationService(WriteFrame):
                     return _of(self._finish(row, OUTCOME_PENDING, exc.code), proj_no)
                 return _of(self._finish(row, OUTCOME_REFUSED, exc.code), proj_no)
             row.before_json = before
-            if look_up and before is not None:  # never re-sent: the earlier create landed, or another did
-                if changed_fields(body, before):
+            if look_up and before is not None:  # never re-sent
+                if look_up != "ours" and changed_fields(body, before):  # not known to be ours
                     res = self._finish(row, OUTCOME_REFUSED, REGISTRATION_EXISTS, message=_exists(proj_no))
                     return _of(res, proj_no, registration=before)
                 return self._done(row, body, before, proj_no)
@@ -381,6 +390,9 @@ class ProjectRegistrationService(WriteFrame):
             if not must_exist and before is not None:
                 res = self._finish(row, OUTCOME_REFUSED, REGISTRATION_EXISTS, message=_exists(proj_no))
                 return _of(res, proj_no, registration=before)
+            if self._pending_elsewhere(company):  # another write of this ProjNo has an unknown outcome
+                return _of(self._finish(row, OUTCOME_REFUSED, DOC_BUSY, message=IN_PROGRESS_MESSAGE), proj_no)
+            self._check_deadline(row)
             row.request_method, row.request_path, row.request_json = method, path, body
             window = datetime.now(timezone.utc) - timedelta(seconds=frame.BUSY_WINDOW_SECONDS)
             self.actions.expire_stale_in_flight(company.tenant_id, company.id, self._lock, window)
@@ -393,20 +405,15 @@ class ProjectRegistrationService(WriteFrame):
                 return _of(self._finish(busy, OUTCOME_REFUSED, DOC_BUSY, message=IN_PROGRESS_MESSAGE), proj_no)
             client = self._client_for(base_url)
             self._put_sent = True
+            self.sent_when_absent = before is None
             try:
                 response = client.post(path, body) if method == "POST" else client.put(path, body)
             except WriteTransportError as exc:  # may or may not have landed: look it up now
-                return self._check_unclear(row, reader, body, proj_no, exc.code)
+                return self._after_send(row, reader, body, before, proj_no, exc.code)
             row.response_status, row.response_json = response.status_code, _json_safe(response.stored)
             if not response.ok:
-                if is_business_refusal(response.status_code, response.body):
-                    res = self._finish(row, OUTCOME_REFUSED, VENDOR_REFUSED,  # nothing applied: key released
-                                       message=vendor_message(response.stored, base_url))  # API key masked
-                    return _of(res, proj_no)
-                if response.status_code >= 500:  # a bare fault: it may have landed
-                    return self._check_unclear(row, reader, body, proj_no, VENDOR_ERROR)
-                return _of(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR), proj_no)
-            return self._check_unclear(row, reader, body, proj_no, READ_FAILED, sent_ok=True)
+                return self._after_refusal(row, reader, body, before, proj_no, response, base_url)
+            return self._after_send(row, reader, body, before, proj_no, READ_FAILED, sent_ok=True)
         except _Stop as stop:
             return _of(stop.result, proj_no)
         except Exception:  # noqa: BLE001 - the in_flight row must never be stranded
@@ -415,13 +422,26 @@ class ProjectRegistrationService(WriteFrame):
             outcome = OUTCOME_PENDING if self._put_sent else OUTCOME_REFUSED
             return _of(self._finish(row, outcome, INTERNAL_ERROR), proj_no)
 
-    def _check_unclear(self, row: AcWriteAction, reader: Any, body: Record, proj_no: str, code: str, *,
-                       sent_ok: bool = False) -> RegResult:
-        """Read the ProjNo back after a send: found = compared (``done``, differences as warnings);
-        absent or unreadable = ``pending_verification`` (with ``code`` after an unclear send; a resend
-        looks the ProjNo up before sending again)."""
+    def _pending_elsewhere(self, company: AcCompany) -> bool:
+        """Another write of this ProjNo ended ``pending_verification`` (or a keyless one is open) inside
+        the busy window: sending now could register it twice (the same rule as a document)."""
+        since = datetime.now(timezone.utc) - timedelta(seconds=frame.BUSY_WINDOW_SECONDS)
+        return (self.ops.has_recent_pending(company.tenant_id, company.id, KIND, self._lock, since)
+                or self.actions.has_open(company.tenant_id, company.id, self._lock, since, standalone_only=True))
+
+    def _read_after(self, row: AcWriteAction, reader: Any, proj_no: str) -> Optional[Record]:
+        """The ProjNo read after a send (no read past the deadline: ``pending_verification``)."""
+        self._check_deadline(row)
+        return self._find(reader, proj_no)
+
+    def _after_send(self, row: AcWriteAction, reader: Any, body: Record, before: Optional[Record], proj_no: str,
+                    code: str, *, sent_ok: bool = False) -> RegResult:
+        """Read the ProjNo back after a 2xx or an unclear send: found (and, on an edit after an unclear
+        send, holding what was sent) = compared, ``done`` with differences as warnings; absent or
+        unreadable = ``pending_verification`` (with ``code`` after an unclear send; a resend looks the
+        ProjNo up before sending again)."""
         try:
-            after = self._find(reader, proj_no)
+            after = self._read_after(row, reader, proj_no)
         except DocReadError as exc:
             return _of(self._finish(row, OUTCOME_PENDING, exc.code if sent_ok else code), proj_no)
         if after is None:
@@ -430,8 +450,28 @@ class ProjectRegistrationService(WriteFrame):
             return _of(self._finish(row, OUTCOME_PENDING, code), proj_no, registration=after)
         return self._done(row, body, after, proj_no)
 
+    def _after_refusal(self, row: AcWriteAction, reader: Any, body: Record, before: Optional[Record], proj_no: str,
+                       response: Any, base_url: str) -> RegResult:
+        """A non-2xx answer: the read decides, never the answer text (plan 69 Q1). The record found where
+        there was none (create) or changed (edit) = it landed: compared as a 2xx. Else nothing applied:
+        AutoCount's reason = ``refused VENDOR_REFUSED`` (key released); a bare 5xx = ``pending``; a bare 4xx
+        = ``vendor_error``. An unreadable record = ``pending_verification``."""
+        business = is_business_refusal(response.status_code, response.body)
+        message = vendor_message(response.stored, base_url) if business else ""  # API key masked
+        try:
+            after = self._read_after(row, reader, proj_no)
+        except DocReadError as exc:
+            return _of(self._finish(row, OUTCOME_PENDING, exc.code, message=message), proj_no)
+        if after is not None and (before is None or after != before):
+            return self._done(row, body, after, proj_no)
+        if business:
+            return _of(self._finish(row, OUTCOME_REFUSED, VENDOR_REFUSED, message=message), proj_no)
+        if response.status_code >= 500:
+            return _of(self._finish(row, OUTCOME_PENDING, VENDOR_ERROR), proj_no)
+        return _of(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_ERROR), proj_no)
+
     def _create(self, company: AcCompany, key_id: Optional[str], op_id: Optional[str], proj_no: str,
-                record: Record, look_up: bool) -> RegResult:
+                record: Record, look_up: Optional[str]) -> RegResult:
         body = dict(record, ProjNo=proj_no)
         return self._write(company, key_id, op_id, "create_doc", proj_no, "POST", NEW_PATH, body,
                            must_exist=False, look_up=look_up)
@@ -440,14 +480,14 @@ class ProjectRegistrationService(WriteFrame):
               record: Record) -> RegResult:
         body = dict(record, ProjNo=proj_no)
         return self._write(company, key_id, op_id, "edit_doc", proj_no, "PUT", EDIT_PATH, body,
-                           must_exist=True, look_up=False)
+                           must_exist=True, look_up=None)
 
     # ── idempotency (one ac_write_operation row per key) ─────────────────────
 
     def _idempotent(
         self, *, tenant_id: str, company_id: str, key_id: Optional[str], idempotency_key: str, name: str,
         proj_no: str, params: Dict[str, Any],
-        run: Callable[[AcCompany, Optional[str], bool], RegResult],
+        run: Callable[[AcCompany, Optional[str], Optional[str]], RegResult],
     ) -> RegResult:
         """The stored answer on a same-key replay, ``IDEMPOTENCY_CONFLICT`` for another body, else run.
         A stored refusal / vendor refusal releases the key (runs fresh); an unknown create outcome is
@@ -459,7 +499,7 @@ class ProjectRegistrationService(WriteFrame):
             return RegResult(OUTCOME_REFUSED, WRITE_DISABLED, proj_no=proj_no)
         label = f"{name}:{KIND}"
         request_hash = _hash(label, params)
-        look_up = False
+        look_up: Optional[str] = None
         existing = self.ops.by_key(tenant_id, company_id, key_id, idempotency_key)
         if existing is not None:
             if existing.op != label or existing.request_hash != request_hash:
@@ -474,7 +514,8 @@ class ProjectRegistrationService(WriteFrame):
                 return _stored(existing.result_json)
             # refused / vendor error / pending: release the key and run again (a pending create
             # looks its ProjNo up first, so it is never sent twice)
-            look_up = name == "create_doc" and existing.status == OUTCOME_PENDING
+            if name == "create_doc" and existing.status == OUTCOME_PENDING:
+                look_up = "ours" if (existing.snapshot_json or {}).get(SENT_WHEN_ABSENT) else "unknown"
             self.ops.delete(existing)
             self.db.commit()
         lock = lock_key(proj_no)
@@ -507,6 +548,8 @@ class ProjectRegistrationService(WriteFrame):
             if stored is not None:
                 stored.status, stored.error_code = result.outcome, result.error_code
                 stored.result_json = _json_safe(result.answer())
+                if self.sent_when_absent or look_up == "ours":  # what a same-key resend needs to know
+                    stored.snapshot_json = dict(stored.snapshot_json or {}, **{SENT_WHEN_ABSENT: True})
             self.db.commit()
         return result
 
