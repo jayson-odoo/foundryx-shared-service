@@ -2429,6 +2429,8 @@ function docFeedItemFor(
     nextSweepAt: state.nextSweepAt,
     cursorDay: state.cursorDay,
     fullBackfillDoneAt: null,
+    backfillFloor: '2019-01-01',
+    fullBackfillFromDay: null,
     contractGate: gate,
     retryableCount: issues.filter((i) => i.kind === 'retryable').length,
     failedCount: issues.filter((i) => i.kind === 'failed').length,
@@ -2627,7 +2629,7 @@ async function mockStartDocFeedBackfill(
     throw new ApiError('A backfill is already running.', 409, null, { code: 'BACKFILL_OPEN' });
   }
   const toDay = input.toDay ?? todayKey();
-  const fromDay = input.fromDay ?? '2023-01-01';
+  const fromDay = input.fromDay ?? '2019-01-01';
   const backfill: DocFeedBackfill = {
     id: `doc-feed-backfill-${++docFeedBackfillSeq}`,
     status: 'running',

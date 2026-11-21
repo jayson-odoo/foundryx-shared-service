@@ -1350,6 +1350,11 @@ class DocFeedItemOut(ApiModel):
     lastPollOkAt: Optional[datetime] = None
     lastSweepOkAt: Optional[datetime] = None
     fullBackfillDoneAt: Optional[datetime] = None
+    # SLOW-MOVING-BACKFILL S0.3 - the backfill range floor and the earliest
+    # from-day a completed live backfill of this feed ran from: the dialog
+    # derives the same run-once rule start_backfill applies.
+    backfillFloor: Optional[date] = None
+    fullBackfillFromDay: Optional[date] = None
     contractGate: Optional[DocFeedContractGateOut] = None
     retryableCount: int = 0
     failedCount: int = 0

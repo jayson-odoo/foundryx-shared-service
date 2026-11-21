@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
 import httpx
+import pytest
 
 from modules.autocount.doc_feed.runner import run_backfill, run_poll, run_sweep
 from modules.autocount.models import AcDocFeed, AcDocFeedBackfill
@@ -139,10 +140,10 @@ def test_a_sweep_recheck_push_does_not_carry_backfill(session_factory):
         assert "backfill" not in post["body"]
 
 
-def test_a_goods_receive_notes_backfill_push_does_not_carry_backfill(session_factory):
-    """Audit #126: the CRM accepts `backfill` on delivery_orders ONLY and 422s
-    it on any other entity, so a GRN backfill must leave the key out or every
-    GRN backfill chunk fails."""
+def test_a_goods_receive_notes_backfill_push_carries_backfill_true(session_factory):
+    """SLOW-MOVING-BACKFILL S0.4 (reverses audit #126 once the CRM accepts the
+    flag on goods_receive_notes): a GRN backfill push takes the CRM quiet
+    ingest too (no embeddings, no receipt hook, no waiting-line attach)."""
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
     feed = _feed(db, co, ac_conn, feed_key="goods_receive_notes")
@@ -153,10 +154,11 @@ def test_a_goods_receive_notes_backfill_push_does_not_carry_backfill(session_fac
 
     for post in _ingest_posts(posts):
         assert post["path"] == INGEST_PREFIX + "goods_receive_notes", post["path"]
-        assert "backfill" not in post["body"]
+        assert post["body"]["backfill"] is True
+        assert "dry_run" not in post["params"]
 
 
-def test_a_dry_run_goods_receive_notes_backfill_push_does_not_carry_backfill(session_factory):
+def test_a_dry_run_goods_receive_notes_backfill_push_carries_backfill_true(session_factory):
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
     feed = _feed(db, co, ac_conn, feed_key="goods_receive_notes")
@@ -168,4 +170,18 @@ def test_a_dry_run_goods_receive_notes_backfill_push_does_not_carry_backfill(ses
     for post in _ingest_posts(posts):
         assert post["path"] == INGEST_PREFIX + "goods_receive_notes", post["path"]
         assert post["params"].get("dry_run") == "true"
+        assert post["body"]["backfill"] is True
+
+
+@pytest.mark.parametrize("runner", ["poll", "sweep"])
+def test_a_goods_receive_notes_poll_or_sweep_push_does_not_carry_backfill(session_factory, runner):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn, feed_key="goods_receive_notes")
+    posts: List[Dict[str, Any]] = []
+    fn = run_poll if runner == "poll" else run_sweep
+
+    fn(db, feed, dry_run=False, now=NOW, vendor_transport=_vendor(), sink_transport=_capturing_sink(posts))
+
+    for post in _ingest_posts(posts):
         assert "backfill" not in post["body"]

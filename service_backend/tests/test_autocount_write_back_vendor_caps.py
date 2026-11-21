@@ -33,6 +33,7 @@ from tests.test_autocount_write_back_service import (
     _load,
 )
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401,E402
+from tests.write_back_clock import use_fake_clock  # noqa: E402
 
 PO_KEY = 12008
 SO_KEY = 11988
@@ -313,11 +314,15 @@ def test_split_put1_verify_ignores_the_new_rows_forced_location(h):
 
 # ---- 3. relocate ----------------------------------------------------------------------
 
-def test_relocate_signature_takes_no_location():
+def test_relocate_signature_takes_only_an_optional_location():
+    """Plan 55 pinned "no location: always the SO row's". Plan 70 (owner 19 Nov) lets the CRM name the
+    target; it stays optional, so a call without it is plan 55's move to the SO row's location."""
     params = inspect.signature(WriteBackService.relocate).parameters
     assert list(params) == [
         "self", "tenant_id", "company_id", "po_doc_key", "po_dtl_key", "expected_last_modified", "key_id",
+        "location",
     ]
+    assert params["location"].default is None
 
 
 def _relocate(h, dtl_key: int, **over):
@@ -482,17 +487,14 @@ def test_gateway_relocate_validation_is_422(client, h, body):
 
 # ---- a deadline that trips after PUT1 was read back and verified (AC-55-62) -----------------
 
-# Budget and delay are wide on purpose: a loaded CI runner once spent the old
-# 0.2 s budget before PUT1 was sent (outcome pending_verification, not done).
-SLOW_DEADLINE_S = 2.0
-
-
-def _slow_readback_after_first_put(h, delay=SLOW_DEADLINE_S + 0.5):
-    import time
+def _slow_readback_after_first_put(h, clock, delay=0.3):
+    """The read-back of PUT1 arrives after the budget. ``clock`` is the action's
+    fake clock (``use_fake_clock``): only this read-back moves it, so a slow CI
+    runner can never trip the deadline earlier (before PUT1)."""
 
     def handler(request):
         if len(h.ac.put_calls) == 1:
-            time.sleep(delay)  # the read-back of PUT1 arrives after the budget
+            clock.now += delay
         return h.ac._on_get(request)
 
     h.ac.read_transport = httpx.MockTransport(handler)
@@ -508,8 +510,9 @@ def _expected_staged(h):
 def test_deadline_after_a_verified_link_ends_done_location_not_moved(h, monkeypatch):
     from modules.autocount.write_back import service as service_mod
 
-    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", SLOW_DEADLINE_S)
-    _slow_readback_after_first_put(h)
+    clock = use_fake_clock(monkeypatch)
+    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+    _slow_readback_after_first_put(h, clock)
     res = h.link_split()
     assert res.outcome == "done" and res.error_code == "LOCATION_NOT_MOVED"
     assert len(h.ac.put_calls) == 1  # PUT2 never sent after the deadline
@@ -526,8 +529,9 @@ def test_deadline_with_a_verified_readback_in_hand_is_not_discarded(h, monkeypat
     from modules.autocount.write_back import service as service_mod
 
     h.ac.force_hq = False  # the vendor keeps the location: nothing left to move
-    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", SLOW_DEADLINE_S)
-    _slow_readback_after_first_put(h)
+    clock = use_fake_clock(monkeypatch)
+    monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
+    _slow_readback_after_first_put(h, clock)
     res = h.link_split()
     # plan 65 D4: the note's restore is due and the deadline skips it: done, the link stands, with the code
     assert res.outcome == "done" and res.error_code == "LOCATION_NOT_MOVED"

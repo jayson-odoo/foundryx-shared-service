@@ -43,6 +43,7 @@ from .pull_v1 import (
     _finalize_quietly,
     _int_field,
     _internal_error_response,
+    _location_code,
     _json_response,
     _merge_error_context,
     _optional_text,
@@ -78,7 +79,7 @@ LINE_FIELDS = {
 }
 _FIELD_CODES = frozenset({
     "FIELD_REQUIRED", "FIELD_NOT_EDITABLE", "INVALID_PARAMS", "DOCNO_REQUIRED", "QTY_INVALID", "PRICE_INVALID",
-    payloads.DEBTOR_TERM_MISSING,
+    payloads.DEBTOR_TERM_MISSING, "LOCATION_UNKNOWN",  # plan 70
 })
 _WRITE_DISABLED_CODES = ("WRITE_DISABLED", "WRITE_NOT_ALLOWED")
 
@@ -461,11 +462,20 @@ def cancel_document(
 
 # ── operations ───────────────────────────────────────────────────────────────
 
+def _located(raw: WriteBody) -> Dict[str, Any]:
+    """Plan 70: ``{"location": code}`` when the body (or a link entry) names one, else nothing: an absent
+    location leaves the operation params, and so the idempotency hash, as they were."""
+    code = _location_code(raw, "location")
+    return {"location": code} if code else {}
+
+
 def _operation_route(
-    path: str, op: str, fields: Tuple[Tuple[str, str], ...], action: str, target_date: str
+    path: str, op: str, fields: Tuple[Tuple[str, str], ...], action: str, target_date: str,
+    *, with_location: bool = False,
 ) -> None:
     """Register ``POST path`` running operation ``op``; ``fields`` = (wire name,
-    operation param) pairs, all integer keys."""
+    operation param) pairs, all integer keys. ``with_location``: the body may name the row's
+    ``location`` (plan 70)."""
 
     def endpoint(
         request: Request, db: Session = Depends(get_db),
@@ -477,6 +487,8 @@ def _operation_route(
             params["doc_date"] = _optional_date(raw, "docDate")
             params["target_doc_date"] = _optional_date(raw, target_date)  # soDocDate / poDocDate
             params["expected_last_modified"] = _optional_text(raw, "expectedLastModified")
+            if with_location:
+                params.update(_located(raw))
             result = ops.run(
                 tenant_id=key.tenant_id, company_id=company.id, key_id=key.id,
                 idempotency_key=idem or "", op=op, params=params,
@@ -516,6 +528,7 @@ def link_po_row_batch(
                 links.append({
                     "so_doc_key": _int_field(entry, "soDocKey"), "so_dtl_key": so_dtl,
                     "qty": _qty_field(entry), "so_doc_date": _optional_date(entry, "soDocDate"),
+                    **_located(entry),  # plan 70: this link's own location
                 })
             params: Dict[str, Any] = {
                 "doc_key": _int_field(raw, "poDocKey"), "dtl_key": _int_field(raw, "poDtlKey"), "links": links,
@@ -567,6 +580,7 @@ def link_po_doc_batch(
                 links.append({
                     "po_dtl_key": pair[0], "so_doc_key": _int_field(entry, "soDocKey"), "so_dtl_key": pair[1],
                     "qty": _qty_field(entry), "so_doc_date": _optional_date(entry, "soDocDate"),
+                    **_located(entry),  # plan 70: this line's own location
                 })
             params: Dict[str, Any] = {
                 "doc_key": _int_field(raw, "poDocKey"), "links": links,
@@ -591,7 +605,7 @@ def link_po_doc_batch(
 _PO_KEYS = (("poDocKey", "doc_key"), ("poDtlKey", "dtl_key"), ("soDocKey", "so_doc_key"), ("soDtlKey", "so_dtl_key"))
 _SPO_KEYS = (("spoDocKey", "spo_doc_key"), ("spoDtlKey", "spo_dtl_key"),
              ("poDocKey", "po_doc_key"), ("poDtlKey", "po_dtl_key"))
-_operation_route("/po-links/relink", "relink_row", _PO_KEYS, "write_relink", "soDocDate")
+_operation_route("/po-links/relink", "relink_row", _PO_KEYS, "write_relink", "soDocDate", with_location=True)
 _operation_route("/spo-links", "spo_link_row", _SPO_KEYS, "write_spo_link", "poDocDate")
 _operation_route("/spo-links/relink", "spo_relink_row", _SPO_KEYS, "write_spo_relink", "poDocDate")
 

@@ -850,6 +850,9 @@ DOC_FEED_BACKFILL_RUNNING = "running"
 DOC_FEED_BACKFILL_STOPPING = "stopping"
 DOC_FEED_BACKFILL_STOPPED = "stopped"
 DOC_FEED_BACKFILL_DONE = "done"
+# a stopped backfill closed by Discard: `done` + this error code (never a
+# completed run - the run-once guard ignores it).
+BACKFILL_DISCARDED_CODE = "DISCARDED"
 DOC_FEED_BACKFILL_OPEN_STATUSES = (
     DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING, DOC_FEED_BACKFILL_STOPPED,
 )
