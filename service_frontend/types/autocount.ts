@@ -1656,7 +1656,8 @@ export interface AutocountPullApiKeyIssued {
 // Mirrors the real backend contract (plan section 3.2,
 // `modules/autocount/routers/doc_feeds.py`).
 
-export type DocFeedKey = 'delivery_orders' | 'goods_receive_notes';
+/** Plan 72 added `project_registrations` (AutoCount project registrations, by date only). */
+export type DocFeedKey = 'delivery_orders' | 'goods_receive_notes' | 'project_registrations';
 
 export type DocFeedMode = 'off' | 'dry_run' | 'push';
 
