@@ -549,3 +549,125 @@ def test_review_a_2xx_split_that_does_not_read_back_waits_before_absent(h, w):
     next(r for r in rows if r["DtlKey"] == w.p_free)["Qty"] = 4
     out = resume(h, res)
     assert out.outcome == "pending_verification", (out.outcome, out.error_code)  # not released yet
+
+
+# ============================== s11: an SO line with no delivery date ============================
+# db3 (CRM #2607 Mac pass): a change PO whose SO line has no date; the new tied row reads back 0001-01-01
+# (the source PO row is dated). No date is sent, none is asked back, the read-back matches and the job ends.
+
+EMPTY = "0001-01-01T00:00:00"
+PO_DAY = "2026-11-27T00:00:00"
+
+
+@pytest.fixture
+def nd(h):
+    h.delete_on()
+    h.vendor.locations.append(SUB)
+    world = World(h, so_over={"DeliveryDate": EMPTY})
+    for r in h.vendor.rows("PO", 7001):
+        r["DeliveryDate"] = PO_DAY  # the source PO rows are dated; the SO line is not
+    return world
+
+
+def _sent_dates(h) -> List[Any]:
+    """Every DeliveryDate a PUT asked for on a new tied row, or on a tied row's restore (a row sent with "D"
+    is the old row going away, not a date asked for)."""
+    out = []
+    for call in puts(h):
+        for r in (call.body or {}).get("Details") or []:
+            if r.get("FullTransferOption") == payloads.DELETE_ROW:
+                continue
+            if "DeliveryDate" in r and (not r.get("DtlKey") or r.get("FromSODtlKey") or r.get("FromDocType") == "SO"
+                                        or r.get("FromDocDtlKey")):
+                out.append(r["DeliveryDate"])
+    return out
+
+
+def _final(h, res) -> AcWriteOperation:
+    h.db.expire_all()
+    return h.db.get(AcWriteOperation, res.operation_id)
+
+
+def _no_date(value) -> bool:
+    return payloads.day_of(value) is None
+
+
+def test_s11_split_no_so_date_sends_none_expects_none_and_is_done(h, nd):
+    res = split(h, nd)
+    assert (res.outcome, res.error_code) == ("done", None), (res.outcome, res.error_code, res.message)
+    (link_put,) = link_puts(h)
+    new = next(r for r in link_put.body["Details"] if not r.get("DtlKey"))
+    assert _no_date(new.get("DeliveryDate")), new.get("DeliveryDate")
+    assert all(_no_date(d) for d in _sent_dates(h)), _sent_dates(h)
+    (tied_row,) = tied(h, nd)
+    assert _no_date(tied_row["DeliveryDate"])
+    assert _final(h, res).status not in ("pending_verification", "needs_attention", "in_progress")
+
+
+def test_s11_split_whole_row_no_so_date_is_done(h, nd):
+    res = split(h, nd, key="s11-all", qty=4)
+    assert (res.outcome, res.error_code) == ("done", None), (res.outcome, res.error_code, res.message)
+    assert all(_no_date(d) for d in _sent_dates(h)), _sent_dates(h)
+
+
+def test_s11_link_row_no_so_date_is_done(h, nd):
+    res = h.run("link_row", nd.params["link_row"], key="s11-row")
+    assert res.outcome == "done", (res.outcome, res.error_code, res.message)
+    assert all(_no_date(d) for d in _sent_dates(h)), _sent_dates(h)
+
+
+def test_s11_batch_no_so_date_is_done(h, nd):
+    res = h.run("link_batch", dict(doc_key=7001, dtl_key=nd.p_free, links=[
+        dict(so_doc_key=7002, so_dtl_key=nd.so_a, qty=1)]), key="s11-batch")
+    assert res.outcome == "done", (res.outcome, res.error_code, res.message)
+    assert all(_no_date(d) for d in _sent_dates(h)), _sent_dates(h)
+
+
+def test_s11_change_unlink_then_link_no_so_date_finishes(h, nd):
+    first = split(h, nd, key="s11-c1")
+    assert first.outcome == "done", (first.outcome, first.error_code)
+    gone = h.run("unlink_row", dict(doc_key=7001, dtl_key=first.detail["DtlKey"]), key="s11-c2")
+    assert gone.outcome in ("done", "recovered"), (gone.outcome, gone.error_code)
+    again = split(h, nd, key="s11-c3")
+    assert (again.outcome, again.error_code) == ("done", None), (again.outcome, again.error_code, again.message)
+    for res in (first, gone, again):
+        assert _final(h, res).status not in ("pending_verification", "needs_attention", "in_progress")
+
+
+def test_s11_readback_of_a_dateless_tied_split_row_matches(h, nd):
+    before = h.vendor.find("PO", 7001)
+    import copy
+    before = copy.deepcopy(before)
+    res = split(h, nd, key="s11-rb")
+    assert res.outcome == "done"
+    (link_put,) = link_puts(h)
+    after = h.vendor.find("PO", 7001)
+    assert service_mod.verify_split(before, after, link_put.body, nd.p_free)
+
+
+def test_s11_resume_parked_dateless_split_is_done(h, nd):
+    state = fail_po_reads_after_put(h)
+    res = split(h, nd, key="s11-park")
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    state["on"] = False
+    out = resume(h, res)
+    assert (out.outcome, out.error_code) == ("done", None), (out.outcome, out.error_code, out.message)
+    assert len(link_puts(h)) == 1
+    assert all(_no_date(d) for d in _sent_dates(h)), _sent_dates(h)
+
+
+def test_s11_relink_to_a_dateless_so_line_sends_no_date_and_is_done(h, nd):
+    so = h.vendor.find("SO", 7002)
+    for r in so["Details"]:
+        r["DeliveryDate"] = EMPTY
+    res = h.run("relink_row", nd.params["relink_row"], key="s11-relink")
+    assert res.outcome == "done", (res.outcome, res.error_code, res.message)
+    assert all(_no_date(d) for d in _sent_dates(h)), _sent_dates(h)
+
+
+def test_s11_link_row_takes_the_so_line_date_when_it_has_one(h, w):
+    res = h.run("link_row", w.params["link_row"], key="s11-dated")
+    assert res.outcome == "done", (res.outcome, res.error_code, res.message)
+    new_rows = [r for c in link_puts(h) for r in c.body["Details"] if not r.get("DtlKey")]
+    assert new_rows and all(r["DeliveryDate"][:10] == SO_DAY for r in new_rows)
+    assert tied(h, w)[-1]["DeliveryDate"][:10] == SO_DAY

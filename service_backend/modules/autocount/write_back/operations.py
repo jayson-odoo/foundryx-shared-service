@@ -1157,6 +1157,11 @@ class OperationService:
         note = (snap.get("soLink") or {}).get("note") if link is snap["newLink"] else None
         if note and link.get("FromDocType") == "SO":
             line[payloads.LINK_NOTE_KEY] = note
+        so_link = snap.get("soLink") if link is snap["newLink"] else None
+        if so_link is not None and link.get("FromDocType") == "SO":
+            # PO-LINK-STUCK-RECONCILE-B s11 (owner rule 16 Nov): the new tied row carries the SO line's date
+            # (none when the SO line has none), never the PO row's; the same rule as the split and the batches.
+            payloads.with_so_delivery_date(line, so_link.get("soDeliveryDate"))
         if qty is not None:
             line["Qty"] = float(qty)
         return line
