@@ -20,6 +20,7 @@ row ``so_a`` qty 10 dated 2027-01-01 (the SO line date), PO doc date 2026-11-04.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from decimal import Decimal
 from typing import Any, List
 
@@ -30,6 +31,10 @@ from app.main import app  # noqa: F401 - the gateway rig overrides dependencies 
 from app.models import DEFAULT_TENANT_ID
 from modules.autocount.models import AcWriteAction, AcWriteOperation
 from modules.autocount.write_back import operations as ops_mod, payloads, service as service_mod
+from modules.autocount.write_back.frame import BUSY_WINDOW_SECONDS
+from modules.autocount.write_back.primitives import PrimitiveService
+from modules.autocount.write_back.reader import DocReadError
+from modules.autocount.write_back.repository import OperationRepository
 from tests.test_autocount_write_back_gateway_qtso import PREFIX, Gw
 from tests.test_autocount_write_back_link_batch import Rig
 from tests.test_autocount_write_back_operations import OpHarness, World, db, h  # noqa: F401
@@ -399,18 +404,29 @@ def _batch(h, w, key):
         dict(so_doc_key=7002, so_dtl_key=w.so_a, qty=1)]), key=key)
 
 
-@pytest.mark.parametrize("flow", ["split", "batch"])
+def _doc_batch(h, w, key):
+    return h.run("link_doc_batch", dict(doc_key=7001, links=[
+        dict(po_dtl_key=w.p_free, so_doc_key=7002, so_dtl_key=w.so_a, qty=1)]), key=key)
+
+
+def _flow(h, w, flow, key):
+    if flow == "split":
+        return split(h, w, key=key)
+    return (_batch if flow == "batch" else _doc_batch)(h, w, key)
+
+
+@pytest.mark.parametrize("flow", ["split", "batch", "doc_batch"])
 def test_s3_timeout_and_the_write_is_there_is_done(h, w, flow):
     h.vendor.apply_then_refuse_next("PUT", EDIT, TIMEOUT_TEXT)
-    res = split(h, w, key="to-1") if flow == "split" else _batch(h, w, "to-1")
+    res = _flow(h, w, flow, "to-1")
     assert (res.outcome, res.error_code) == ("done", None), (res.outcome, res.error_code, res.message)
     assert len(link_puts(h)) == 1
 
 
-@pytest.mark.parametrize("flow", ["split", "batch"])
+@pytest.mark.parametrize("flow", ["split", "batch", "doc_batch"])
 def test_s3_timeout_and_nothing_there_is_unknown_then_refused_once_settled(h, w, flow):
     h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
-    run = (lambda key: split(h, w, key=key)) if flow == "split" else (lambda key: _batch(h, w, key))
+    run = lambda key: _flow(h, w, flow, key)  # noqa: E731
     res = run("to-2")
     assert (res.outcome, res.error_code) == ("vendor_error", "VENDOR_TIMEOUT"), (res.outcome, res.error_code)
     look = run("to-2")  # the CRM's look-up while AutoCount may still be saving: still unknown, nothing sent
@@ -425,10 +441,10 @@ def test_s3_timeout_and_nothing_there_is_unknown_then_refused_once_settled(h, w,
     assert fresh.outcome == "done" and len(link_puts(h)) == 2
 
 
-@pytest.mark.parametrize("flow", ["split", "batch"])
+@pytest.mark.parametrize("flow", ["split", "batch", "doc_batch"])
 def test_s3_timeout_that_lands_after_the_answer_is_found_by_the_look_up(h, w, flow):
     h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
-    run = (lambda key: split(h, w, key=key)) if flow == "split" else (lambda key: _batch(h, w, key))
+    run = lambda key: _flow(h, w, flow, key)  # noqa: E731
     res = run("to-3")
     assert res.error_code == "VENDOR_TIMEOUT"
     # AutoCount commits the save after hapi answered (prod 20 Nov): the link row appears
@@ -441,11 +457,11 @@ def test_s3_timeout_that_lands_after_the_answer_is_found_by_the_look_up(h, w, fl
     assert len(link_puts(h)) == 1
 
 
-@pytest.mark.parametrize("flow", ["split", "batch"])
+@pytest.mark.parametrize("flow", ["split", "batch", "doc_batch"])
 def test_s3_timeout_and_the_read_fails_needs_attention(h, w, flow):
     h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
     fail_po_reads_after_put(h)
-    res = split(h, w, key="to-4") if flow == "split" else _batch(h, w, "to-4")
+    res = _flow(h, w, flow, "to-4")
     assert (res.outcome, res.error_code) == ("needs_attention", "VENDOR_TIMEOUT"), (res.outcome, res.error_code)
     assert len(link_puts(h)) == 1
 
@@ -549,3 +565,319 @@ def test_review_a_2xx_split_that_does_not_read_back_waits_before_absent(h, w):
     next(r for r in rows if r["DtlKey"] == w.p_free)["Qty"] = 4
     out = resume(h, res)
     assert out.outcome == "pending_verification", (out.outcome, out.error_code)  # not released yet
+
+
+# ============================== review round 2 (kill-test pins "P", red tests "R") ================
+
+PO_URL = f"{PREFIX}/documents/purchase-orders/7001"
+ADD_URL = f"{PREFIX}/documents/purchase-orders/7001/lines"
+
+
+def _op(h, key) -> AcWriteOperation:
+    h.db.expire_all()
+    return (h.db.query(AcWriteOperation)
+            .filter(AcWriteOperation.idempotency_key == key, AcWriteOperation.company_id == h.company.id).one())
+
+
+def _age_op(h, op_id):
+    age_actions(h, SimpleNamespace(operation_id=op_id))
+
+
+def _close(h, op_id):
+    return h.ops().close_superseded(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=op_id)
+
+
+def _gets_between(h, first, second) -> bool:
+    calls = h.vendor.calls
+    return any(c.method == "GET" and "purchaseorder" in c.leaf for c in calls[calls.index(first):calls.index(second)])
+
+
+# ---- P1 (pin, K20): a half-applied split is never judged absent --------------------------------------
+
+def test_p1_resume_half_applied_split_new_row_absent_kept_row_cut_needs_attention(h, w):
+    res = _parked_split(h, w, key="p1")
+    (new,) = tied(h, w)
+    h.vendor.rows("PO", 7001).remove(new)  # the tied row is not there ...
+    assert row(h, w.p_free)["Qty"] == 2  # ... but the kept row is still at its cut qty
+    age_actions(h, res)
+    before = len(puts(h))
+    out = resume(h, res)
+    assert (out.outcome, out.error_code) != ("refused", "OPERATION_NOT_APPLIED")
+    assert out.outcome == "needs_attention", (out.outcome, out.error_code)
+    assert len(puts(h)) == before
+
+
+# ---- P2 (pin, K19): the tied row stands but something else moved -> a person looks -------------------
+
+@pytest.mark.parametrize("moved", ["untouched_row", "header_note"])
+def test_p2_resume_split_tied_row_stands_but_something_else_changed_needs_attention(h, w, moved):
+    h.vendor.find("PO", 7001)["Note"] = "keep me"
+    res = _parked_split(h, w, key=f"p2-{moved}")
+    if moved == "untouched_row":
+        next(r for r in h.vendor.rows("PO", 7001) if r["DtlKey"] == w.p_other)["Qty"] = 9
+    else:
+        h.vendor.find("PO", 7001)["Note"] = ""
+    age_actions(h, res)
+    before = len(puts(h))
+    out = resume(h, res)
+    assert out.outcome == "needs_attention", (out.outcome, out.error_code)
+    assert len(puts(h)) == before
+
+
+# ---- P4 (pin, K25): the document batch's new row takes the SO line date -------------------------------
+
+def test_p4_doc_batch_new_row_takes_the_so_line_date_never_the_doc_date(h, w):
+    res = _doc_batch(h, w, "p4")
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    (link_put,) = link_puts(h)
+    new = next(r for r in link_put.body["Details"] if not r.get("DtlKey"))
+    assert new["DeliveryDate"][:10] == SO_DAY != "2026-11-04"
+    assert tied(h, w)[0]["DeliveryDate"][:10] == SO_DAY
+
+
+# ---- P5 (pin, K17): a close that loses the race to a claim closes nothing ------------------------------
+
+@pytest.mark.parametrize("flip", ["in_progress", "done"])
+def test_p5_close_superseded_never_closes_a_row_no_longer_parked(h, w, monkeypatch, flip):
+    res = _parked_split(h, w, key=f"p5-{flip}")
+    age_actions(h, res)
+    real = ops_mod.OperationService._write_settled
+
+    def racing(self, row_):
+        settled = real(self, row_)  # the check passed ... then a resume claimed / finished it
+        h.db.query(AcWriteOperation).filter(AcWriteOperation.id == row_.id).update(
+            {"status": flip}, synchronize_session=False)
+        h.db.commit()
+        return settled
+
+    monkeypatch.setattr(ops_mod.OperationService, "_write_settled", racing)
+    out = _close(h, res.operation_id)
+    assert out.error_code != "SUPERSEDED"
+    stored = _op(h, f"p5-{flip}")
+    assert stored.status == flip and stored.error_code != "SUPERSEDED"
+    assert (stored.result_json or {}).get("errorCode") != "SUPERSEDED"
+    if flip == "in_progress":
+        assert out.error_code == "OPERATION_IN_PROGRESS"
+
+
+# ---- R1 (security): a parked document primitive is never closed-superseded ----------------------------
+
+def _broken_read_back(self, *a, **kw):
+    raise DocReadError("READ_FAILED")
+
+
+@pytest.mark.parametrize("prim", ["add_line", "edit_doc"])
+def test_r1_close_superseded_refuses_a_parked_document_primitive_and_a_resend_never_writes_again(
+        client, h, gw, w, monkeypatch, prim):
+    key = f"r1-{prim}"
+    send = (lambda: client.post(ADD_URL, headers=gw.hdr(key), json={
+        "companyCode": "SRT", "line": {"itemCode": "ITEM-A", "uom": "UNIT", "qty": 3, "unitPrice": 5,
+                                       "location": "BR1"}})) if prim == "add_line" else (
+        lambda: client.patch(PO_URL, headers=gw.hdr(key), json={"companyCode": "SRT", "header": {"remark1": "x"}}))
+    with monkeypatch.context() as patch:  # the PUT lands, its read-back cannot be read: parked
+        patch.setattr(PrimitiveService, "_read_back", _broken_read_back)
+        first = send()
+    assert first.json()["outcome"] == "pending_verification", first.text
+    parked = _op(h, key)
+    _age_op(h, parked.id)
+    rows_before, put_count = len(h.vendor.rows("PO", 7001)), len(puts(h))
+    assert put_count == 1
+    out = _close(h, parked.id)
+    assert (out.outcome, out.error_code) == ("refused", "OPERATION_NOT_RESUMABLE"), (out.outcome, out.error_code)
+    after = _op(h, key)
+    assert after.status == "pending_verification" and after.error_code != "SUPERSEDED"
+    assert (after.result_json or {}).get("errorCode") != "SUPERSEDED"
+    again = send()  # the same key: looked up (landed = done), never written a second time
+    assert len(puts(h)) == put_count, "a closed primitive released its key: the write was sent again"
+    assert len(h.vendor.rows("PO", 7001)) == rows_before
+    assert again.json()["outcome"] == "done", again.text
+
+
+def test_r1_route_close_superseded_of_a_primitive_is_refused_not_resumable(client, h, gw, w, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(PrimitiveService, "_read_back", _broken_read_back)
+        first = client.post(ADD_URL, headers=gw.hdr("r1-route"), json={
+            "companyCode": "SRT", "line": {"itemCode": "ITEM-A", "uom": "UNIT", "qty": 3, "unitPrice": 5,
+                                           "location": "BR1"}})
+    assert first.json()["outcome"] == "pending_verification", first.text
+    parked = _op(h, "r1-route")
+    _age_op(h, parked.id)
+    r = client.post(f"{PREFIX}/write-operations/{parked.id}/close-superseded", headers=gw.hdr("r1-route-c"),
+                    json={"companyCode": "SRT"})
+    assert r.json()["errorCode"] == "OPERATION_NOT_RESUMABLE", r.text
+    assert _op(h, "r1-route").status == "pending_verification"
+
+
+# ---- R2: closing a parked split whose tie still stands never reopens a second split -------------------
+
+def test_r2_a_new_key_split_after_close_superseded_of_a_standing_tie_is_refused_row_already_linked(h, w):
+    res = _parked_split(h, w, key="r2-1")
+    assert len(tied(h, w)) == 1  # the parked split DID land: its tie stands in AutoCount
+    age_actions(h, res, seconds=BUSY_WINDOW_SECONDS + 120)  # past the busy window too: only the tie can refuse
+    closed = _close(h, res.operation_id)
+    assert (closed.outcome, closed.error_code) == ("refused", "SUPERSEDED")
+    before = len(puts(h))
+    again = split(h, w, key="r2-2")  # a new press: same PO row, same SO line, same qty
+    assert (again.outcome, again.error_code) == ("refused", "ROW_ALREADY_LINKED"), (again.outcome, again.error_code)
+    assert len(puts(h)) == before, "a second split PUT was sent over a standing tie"
+    assert len(tied(h, w)) == 1
+
+
+# ---- R3: the timeout classifier judges AutoCount's raw text -------------------------------------------
+
+def _vendor_says(h, body, status=500):
+    original = h.vendor._route
+
+    def route(method, leaf, call):
+        if method == "PUT":
+            return httpx.Response(status, json=body)
+        return original(method, leaf, call)
+
+    h.vendor._route = route
+
+
+_GENERIC_BODY = {"Message": "An error has occurred."}
+_TIMEOUT_BODIES = {
+    "win32_top": dict(_GENERIC_BODY, ExceptionMessage="The wait operation timed out",
+                      ExceptionType="System.ComponentModel.Win32Exception"),
+    "sql_later_line": dict(_GENERIC_BODY, ExceptionMessage="Save failed.\r\n" + TIMEOUT_TEXT,
+                           ExceptionType="System.Data.SqlClient.SqlException"),
+    "sql_inner": dict(_GENERIC_BODY, ExceptionMessage="Save failed.", ExceptionType="AutoCount.Data.CriticalSqlException",
+                      InnerException=dict(_GENERIC_BODY, ExceptionMessage=TIMEOUT_TEXT,
+                                          ExceptionType="System.Data.SqlClient.SqlException")),
+    "win32_inner": dict(_GENERIC_BODY, ExceptionMessage="Save failed.",
+                        ExceptionType="System.Data.SqlClient.SqlException",
+                        InnerException=dict(_GENERIC_BODY, ExceptionMessage="The wait operation timed out",
+                                            ExceptionType="System.ComponentModel.Win32Exception")),
+}
+
+
+@pytest.mark.parametrize("flow", ["split", "batch"])
+@pytest.mark.parametrize("shape", sorted(_TIMEOUT_BODIES))
+def test_r3_an_autocount_timeout_in_any_shape_is_unknown_with_the_key_kept(h, w, shape, flow):
+    _vendor_says(h, _TIMEOUT_BODIES[shape])
+    res = _flow(h, w, flow, f"r3-{shape}")
+    assert (res.outcome, res.error_code) == ("vendor_error", "VENDOR_TIMEOUT"), (res.outcome, res.error_code)
+    assert len(link_puts(h)) == 1
+    look = _flow(h, w, flow, f"r3-{shape}")  # the key is kept: the same answer, nothing sent
+    assert (look.outcome, look.error_code) == ("vendor_error", "VENDOR_TIMEOUT")
+    assert len(link_puts(h)) == 1
+
+
+def test_r3_a_lock_wait_in_a_multi_line_sql_answer_is_still_a_refusal(h, w):
+    _vendor_says(h, dict(_GENERIC_BODY, ExceptionMessage="Save failed.\r\nLock request time out period exceeded.",
+                         ExceptionType="System.Data.SqlClient.SqlException"))
+    res = _batch(h, w, "r3-lock")
+    assert (res.outcome, res.error_code) == ("vendor_error", "VENDOR_REFUSED")
+
+
+# ---- R4: a single-document primitive that timed out is reconciled, never replayed for ever -------------
+
+def _send_prim(client, gw, prim, key):
+    if prim == "add_line":
+        return client.post(ADD_URL, headers=gw.hdr(key), json={
+            "companyCode": "SRT", "line": {"itemCode": "ITEM-A", "uom": "UNIT", "qty": 3, "unitPrice": 5,
+                                           "location": "BR1"}})
+    return client.patch(PO_URL, headers=gw.hdr(key), json={"companyCode": "SRT", "header": {"remark1": "checked"}})
+
+
+@pytest.mark.parametrize("prim", ["add_line", "edit_doc"])
+def test_r4_timeout_nothing_saved_is_unknown_before_the_settle_time(client, h, gw, w, prim):
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
+    first = _send_prim(client, gw, prim, f"r4a-{prim}").json()
+    assert (first["outcome"], first["errorCode"]) == ("vendor_error", "VENDOR_TIMEOUT"), first
+    again = _send_prim(client, gw, prim, f"r4a-{prim}").json()
+    assert (again["outcome"], again["errorCode"]) == ("vendor_error", "VENDOR_TIMEOUT"), again
+    assert len(puts(h)) == 1
+
+
+@pytest.mark.parametrize("prim", ["add_line", "edit_doc"])
+def test_r4_timeout_nothing_saved_is_released_once_the_save_had_time(client, h, gw, w, prim):
+    key = f"r4b-{prim}"
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
+    assert _send_prim(client, gw, prim, key).json()["errorCode"] == "VENDOR_TIMEOUT"
+    stuck = _op(h, key)
+    _age_op(h, stuck.id)
+    again = _send_prim(client, gw, prim, key).json()
+    assert (again["outcome"], again.get("errorCode")) != ("vendor_error", "VENDOR_TIMEOUT"), (
+        "the timed-out write is replayed for ever", again)
+    released = h.db.get(AcWriteOperation, stuck.id)
+    h.db.refresh(released)
+    assert released.idempotency_key != key and released.status in ("refused", "recovered"), (
+        released.status, released.error_code)
+    sent = puts(h)
+    if len(sent) > 1:  # a fresh run may follow, but only after a read showed nothing
+        assert _gets_between(h, sent[0], sent[1])
+
+
+@pytest.mark.parametrize("prim", ["add_line", "edit_doc"])
+def test_r4_timeout_and_the_write_landed_later_is_done_without_a_second_put(client, h, gw, w, prim):
+    key = f"r4c-{prim}"
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
+    assert _send_prim(client, gw, prim, key).json()["errorCode"] == "VENDOR_TIMEOUT"
+    h.vendor._edit("PO", puts(h)[0].body)  # AutoCount commits the save after hapi answered
+    again = _send_prim(client, gw, prim, key).json()
+    assert again["outcome"] == "done", again
+    assert len(puts(h)) == 1
+
+
+# ---- R5: who closed it, and when -----------------------------------------------------------------------
+
+def test_r5_close_superseded_records_closed_at_and_closed_by(client, h, gw, w):
+    res = _parked_split(h, w, key="r5")
+    age_actions(h, res)
+    r = client.post(f"{PREFIX}/write-operations/{res.operation_id}/close-superseded", headers=gw.hdr("r5-c"),
+                    json={"companyCode": "SRT"})
+    assert r.status_code == 200, r.text
+    stored = _op(h, "r5").result_json
+    assert stored.get("closedAt"), stored
+    assert stored.get("closedBy"), stored
+    assert str(gw.key.id) in str(stored["closedBy"]), stored["closedBy"]
+
+
+# ---- R6: a resume that lost the claim to a close answers the closed answer ------------------------------
+
+def test_r6_resume_that_loses_the_claim_to_a_close_answers_superseded_not_in_progress(h, w, monkeypatch):
+    res = _parked_split(h, w, key="r6")
+    age_actions(h, res)
+    real_claim = OperationRepository.claim
+
+    def racing(self, tenant_id, company_id, operation_id, from_statuses):
+        _close(h, operation_id)  # the operator's close lands between the resume's read and its claim
+        return real_claim(self, tenant_id, company_id, operation_id, from_statuses)
+
+    monkeypatch.setattr(OperationRepository, "claim", racing)
+    out = resume(h, res)
+    assert (out.outcome, out.error_code) == ("refused", "SUPERSEDED"), (out.outcome, out.error_code)
+    assert len(link_puts(h)) == 1
+
+
+# ---- R7: the settle clock of an operation with no owned actions -----------------------------------------
+
+def _legacy_parked(h, w, key, age_seconds):
+    stamp = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    row_ = AcWriteOperation(
+        tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, key_id=None, idempotency_key=key, request_hash="legacy",
+        op="split_link", doc_type="PO", doc_key=7001, dtl_key=w.p_free, status="pending_verification",
+        snapshot_json={"mode": "split", "links": [{"soDtlKey": w.so_a, "qty": "2"}]},  # no OWNED_ACTIONS marker
+    )
+    h.db.add(row_)
+    h.db.commit()
+    row_.created_at = row_.updated_at = stamp
+    h.db.commit()
+    return row_.id
+
+
+def test_r7_a_freshly_parked_legacy_operation_is_not_settled(h, w):
+    op_id = _legacy_parked(h, w, "r7-young", 5)
+    out = _close(h, op_id)
+    assert out.error_code != "SUPERSEDED", "closed while its write may still be saving"
+    stored = h.db.get(AcWriteOperation, op_id)
+    h.db.refresh(stored)
+    assert stored.status == "pending_verification" and stored.error_code != "SUPERSEDED"
+
+
+def test_r7_an_old_legacy_operation_is_settled_and_closes(h, w):
+    op_id = _legacy_parked(h, w, "r7-old", ops_mod.LOOKUP_SETTLE_SECONDS + 120)
+    out = _close(h, op_id)
+    assert (out.outcome, out.error_code) == ("refused", "SUPERSEDED")

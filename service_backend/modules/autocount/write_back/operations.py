@@ -477,7 +477,7 @@ class OperationService:
                 self.db.refresh(row)
         if row.status == IN_PROGRESS:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
-        if row.op not in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH) and row.op not in OPS:
+        if not self._resumable_op(row):
             return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
         if self._never_applied(row):
             return self._settle_not_applied(row)
@@ -502,7 +502,10 @@ class OperationService:
             except IntegrityError:  # another operation holds the document
                 self.db.rollback()
                 return OperationResult(row.id, REFUSED, DOC_BUSY)
-            if not claimed:  # a concurrent resume won the conditional update
+            if not claimed:  # a concurrent resume, or a close, won the conditional update
+                self.db.refresh(row)
+                if row.status != IN_PROGRESS and row.status not in parked:  # final now: its stored answer
+                    return self._from_row(row)
                 return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
             self.db.refresh(row)
             self._mail_allowed = was != NEEDS_ATTENTION  # a failed resume never mails again
@@ -515,17 +518,23 @@ class OperationService:
             # like every refusal (``_settle_existing``); nothing is re-sent from a Resume
             return self._guarded(row, company, lambda: body(row, company, was), restore=was)
 
-    def close_superseded(self, *, tenant_id: str, company_id: str, operation_id: str) -> OperationResult:
-        """PO-LINK-STUCK-RECONCILE-B s2, an operator action: a parked operation (``pending_verification`` /
+    def close_superseded(self, *, tenant_id: str, company_id: str, operation_id: str,
+                         key_id: Optional[str] = None) -> OperationResult:
+        """PO-LINK-STUCK-RECONCILE-B s2, an operator action: a parked link operation (``pending_verification`` /
         ``needs_attention`` / a timed-out ``vendor_error``) ends a final ``refused`` / ``SUPERSEDED``. Nothing is
-        sent to AutoCount. The key is NOT released: the CRM's next look-up (same key + body) gets this answer
-        back and releases its hold; only a new press (a new key) writes again. A final or running operation is
-        answered as it stands, unchanged."""
+        sent to AutoCount (not even a read). The key is NOT released: the CRM's next look-up (same key + body)
+        gets this answer back and releases its hold; only a new press (a new key) writes again. A document
+        primitive is never closed (``OPERATION_NOT_RESUMABLE``, same rule as Resume). A final or running
+        operation is answered as it stands, unchanged. The tie the write intended stays in the stored answer
+        (``supersededTie``), so the tie-history guard still refuses a second split over a tie that may stand.
+        Who closed it and when is stored (``closedBy`` / ``closedAt``)."""
         row = self.ops.get(tenant_id, company_id, operation_id)
         if row is None:
             raise LookupError("operation not found")
         if row.status == IN_PROGRESS:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
+        if not self._resumable_op(row):
+            return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)
         if row.status not in self._parked_statuses(row):
             return self._from_row(row)
         if not self._write_settled(row):
@@ -534,13 +543,18 @@ class OperationService:
             answer = self._from_row(row)
             answer.message = NOT_YET_CONFIRMED_MESSAGE
             return answer
+        read_at = row.updated_at  # the conditional close below only matches a row nobody moved since this read
         now = _iso_z(datetime.now(timezone.utc))
+        by = {k: v for k, v in (("keyId", key_id), ("actingUserId", self.prims.acting_user_id),
+                                ("actingUserName", self.prims.acting_user_name)) if v}
         stored = _json_safe({
             "outcome": REFUSED, "errorCode": SUPERSEDED, "message": SUPERSEDED_MESSAGE, "warnings": [],
             "replacedLines": [], "document": None, "batch": None, "detail": None,
             "requestedAt": _iso_z(row.created_at), "linkedAt": None, "finishedAt": now,
+            "closedAt": now, "closedBy": by, "supersededTie": self._intended_ties(row),
         })
-        closed = self.ops.close_parked(tenant_id, company_id, row.id, self._parked_statuses(row), SUPERSEDED, stored)
+        closed = self.ops.close_parked(tenant_id, company_id, row.id, self._parked_statuses(row), SUPERSEDED, stored,
+                                       updated_at=read_at)
         self.db.commit()
         self.db.refresh(row)
         if not closed:  # a resume or another close won the conditional update
@@ -548,6 +562,36 @@ class OperationService:
                 row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
         logger.warning("autocount operation %s closed as superseded by an operator: nothing sent", row.id)
         return self._from_row(row)
+
+    @staticmethod
+    def _resumable_op(row: AcWriteOperation) -> bool:
+        """Resume and close-superseded take the link operations only (never a document primitive)."""
+        return row.op in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH) or row.op in OPS
+
+    def _intended_ties(self, row: AcWriteOperation) -> Dict[str, Any]:
+        """What the closed write intended, from the stored snapshot / write action alone (no AutoCount call):
+        ``ties`` = ``[{origin PO row, soDtlKey, qty}]``, ``knownKeys`` = the PO rows that existed before the
+        write (a tied row is a new one), and the earlier ``batch`` / ``detail`` answer (the exact new rows)."""
+        snap = row.snapshot_json if isinstance(row.snapshot_json, dict) else {}
+        stored = row.result_json if isinstance(row.result_json, dict) else {}
+        ties: List[Dict[str, Any]] = []
+        known: List[Any] = list(snap.get("knownKeys") or [])
+        if row.op == LINK_DOC_BATCH:
+            for part in snap.get("parts") or []:
+                origin = int((part.get("row") or {}).get("DtlKey") or 0)
+                known += list(part.get("knownKeys") or [])
+                ties += [{"origin": origin, "soDtlKey": int(k.get("soDtlKey") or 0), "qty": str(k.get("qty"))}
+                         for k in part.get("links") or [] if isinstance(k, dict)]
+        else:
+            ties = [{"origin": int(row.dtl_key or 0), "soDtlKey": int(k.get("soDtlKey") or 0), "qty": str(k.get("qty"))}
+                    for k in snap.get("links") or [] if isinstance(k, dict)]
+            if row.op == SPLIT_LINK and not known:  # the split's write action holds the PO as it was
+                action = self.prims.actions.operation_step(row.tenant_id, row.company_id, row.id, SPLIT_LINK)
+                before = action.before_json if action is not None else None
+                known = [r.get("DtlKey") for r in (before or {}).get("Details") or []] if isinstance(before, dict) else []
+        if row.op not in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH):
+            ties = []  # a single row link / relink: its answer's document says; never a split tie
+        return {"ties": ties, "knownKeys": known, "batch": stored.get("batch"), "detail": stored.get("detail")}
 
     @staticmethod
     def _parked_statuses(row: AcWriteOperation) -> Tuple[str, ...]:
@@ -619,6 +663,8 @@ class OperationService:
         own business refusal (``VENDOR_REFUSED``). A bare vendor failure (5xx, IIS page) may have landed.
         Plan 65 B3 (owner: only a confirmed success locks): every ``recovered`` answer, whatever its code,
         left the PO as it was; the next press runs fresh (re-read and re-guarded, so it cannot write twice)."""
+        if code == SUPERSEDED:  # closed by an operator: final, never released or run again under its key
+            return False
         return (status == REFUSED or (status == VENDOR_ERROR and code == VENDOR_REFUSED)
                 or status == RECOVERED)
 
@@ -739,9 +785,14 @@ class OperationService:
     def _write_settled(self, row: AcWriteOperation) -> bool:
         """The operation's last write is older than the longest a PUT can still be saving."""
         last = self.prims.actions.newest_of_operation(row.tenant_id, row.company_id, row.id)
-        if last is None or last.created_at is None:
-            return True
-        made = last.created_at if last.created_at.tzinfo else last.created_at.replace(tzinfo=timezone.utc)
+        stamp = last.created_at if last is not None else None
+        if stamp is None:
+            if isinstance(row.snapshot_json, dict) and row.snapshot_json.get(OWNED_ACTIONS):
+                return True  # an owned operation with no action never sent a write
+            stamp = row.updated_at or row.created_at  # a legacy row cannot tell: its own clock
+            if stamp is None:
+                return True
+        made = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - made).total_seconds() >= LOOKUP_SETTLE_SECONDS
 
     def _step(self, name: str, res: PrimitiveResult) -> None:
@@ -2121,25 +2172,47 @@ class OperationService:
         out: List[Tuple[int, int, Doc]] = []
         for op in self.ops.link_results_on_doc(company.tenant_id, company.id, doc_key, ops):
             stored = op.result_json if isinstance(op.result_json, dict) else {}
-            batch = stored.get("batch")
-            made: List[Tuple[int, int, int]] = []
-            if isinstance(batch, dict):
-                for line in batch.get("lines") or []:  # a document batch: each line names its origin row
-                    if isinstance(line, dict) and line.get("result") == "linked":
-                        made.append((int(line.get("poDtlKey") or 0), int(line.get("soDtlKey") or 0),
-                                     int(line.get("newPoDtlKey") or 0)))
-                for link in batch.get("links") or []:  # a one-row batch: the origin is the operation's row
-                    if isinstance(link, dict):
-                        made.append((int(op.dtl_key or 0), int(link.get("soDtlKey") or 0),
-                                     int(link.get("poDtlKey") or 0)))
-            detail = stored.get("detail")
-            if op.op == SPLIT_LINK and isinstance(detail, dict):  # a split: the origin is the operation's row
-                made.append((int(op.dtl_key or 0), _link_of("PO", detail), int(detail.get("DtlKey") or 0)))
+            closed = op.error_code == SUPERSEDED  # an operator closed it: its intended tie answers for it
+            tie = stored.get("supersededTie") if closed and isinstance(stored.get("supersededTie"), dict) else {}
+            source = tie if closed else stored
+            made = self._made_ties(op, source.get("batch"), source.get("detail"))
+            if closed and not made:  # nothing exact was ever stored: the tie the write intended
+                known = set(tie.get("knownKeys") or [])
+                for want in tie.get("ties") or []:
+                    origin, so_row = int(want.get("origin") or 0), int(want.get("soDtlKey") or 0)
+                    if not so_row:
+                        continue
+                    if doc is None:
+                        out.append((origin, so_row, {"Qty": None}))
+                        continue
+                    found = next((r for k, r in standing.items()
+                                  if k not in known and k != origin and _link_of("PO", r) == so_row
+                                  and _dec(r.get("Qty")) == _dec(want.get("qty"))), None)
+                    if found is not None:
+                        out.append((origin, so_row, found))
+                continue
             for origin, so_row, new_key in made:
                 now = standing.get(new_key) if doc is not None else {"Qty": None}
                 if so_row and now is not None and (doc is None or _link_of("PO", now) == so_row):
                     out.append((origin, so_row, now))
         return out
+
+    @staticmethod
+    def _made_ties(op: AcWriteOperation, batch: Any, detail: Any) -> List[Tuple[int, int, int]]:
+        """``[(origin PO row, SO row, new PO row)]`` a link operation's stored answer says it made."""
+        made: List[Tuple[int, int, int]] = []
+        if isinstance(batch, dict):
+            for line in batch.get("lines") or []:  # a document batch: each line names its origin row
+                if isinstance(line, dict) and line.get("result") == "linked":
+                    made.append((int(line.get("poDtlKey") or 0), int(line.get("soDtlKey") or 0),
+                                 int(line.get("newPoDtlKey") or 0)))
+            for link in batch.get("links") or []:  # a one-row batch: the origin is the operation's row
+                if isinstance(link, dict):
+                    made.append((int(op.dtl_key or 0), int(link.get("soDtlKey") or 0),
+                                 int(link.get("poDtlKey") or 0)))
+        if op.op == SPLIT_LINK and isinstance(detail, dict):  # a split: the origin is the operation's row
+            made.append((int(op.dtl_key or 0), _link_of("PO", detail), int(detail.get("DtlKey") or 0)))
+        return made
 
     def _tie_stands(self, company: AcCompany, doc_key: int, doc: Doc, origin: int, so_dtl_key: int,
                     qty: Decimal) -> bool:
@@ -2358,6 +2431,8 @@ class OperationService:
         ``refused`` / ``NOT_APPLIED`` (released); anything else -> ``needs_attention`` with a plain message."""
         base_url, refusal = self.prims._resolve_write_base_url(company)
         if base_url is None:
+            if refusal:
+                self.prims._log_refused_connection(company, refusal[0], doc_key=row.doc_key)
             raise _Done(was, refusal[0] if refusal else WRITE_DISABLED)
         self._base_url = base_url
         self._check_test_company(company, restore=was)
@@ -2510,7 +2585,8 @@ class OperationService:
                 early = self._create_resend(existing, tenant_id, company_id, replay)
                 if early is not None:
                     return early
-            elif (existing.status == OUTCOME_REFUSED if name == "create_doc"
+            elif existing.error_code != SUPERSEDED and (
+                  existing.status == OUTCOME_REFUSED if name == "create_doc"
                   else self._nothing_landed(existing.status, existing.error_code)):
                 # plan 62 D6: run fresh. A create stored before its first attempt was recorded cannot be
                 # looked up, so only SS's own refusal releases it; a vendor failure stays locked
@@ -2589,8 +2665,9 @@ class OperationService:
                 return replay(existing)  # a live run: in progress
             self.db.commit()
             self.db.refresh(existing)
-        if existing.status != PENDING:
-            return replay(existing)
+        timed_out = existing.status == VENDOR_ERROR and existing.error_code == VENDOR_TIMEOUT
+        if existing.error_code == SUPERSEDED or (existing.status != PENDING and not timed_out):
+            return replay(existing)  # a timed-out single write is looked up like a pending one (never replayed for ever)
         owned = bool((existing.snapshot_json or {}).get(OWNED_ACTIONS))
         started = existing.created_at
         found = self.prims.actions.of_single_operation(
@@ -2641,6 +2718,9 @@ class OperationService:
         looks again), and the caller gets a plain reason, never "in progress" for ever."""
         answer = dict(existing.result_json) if existing.result_json else primitive_answer(
             PrimitiveResult(None, OUTCOME_PENDING, LOOKUP_FAILED), existing.doc_key)
+        if existing.error_code == VENDOR_TIMEOUT:  # still the unknown of a timed-out write, the key kept
+            answer.update(outcome=VENDOR_ERROR, errorCode=VENDOR_TIMEOUT, message=message)
+            return answer
         answer.update(outcome=OUTCOME_PENDING, message=message)
         if not answer.get("errorCode"):
             answer["errorCode"] = LOOKUP_FAILED
@@ -2661,6 +2741,8 @@ class OperationService:
         stored failure or pending outcome looks the document up first: found -> done (locked),
         several -> needs attention (locked), none -> released."""
         info = existing.snapshot_json or {}
+        if existing.error_code == SUPERSEDED:
+            return replay(existing)
         if existing.status == OUTCOME_REFUSED or (
             existing.status == OUTCOME_VENDOR_ERROR and info.get("vendorClass") in PRE_SAVE_REFUSALS
         ):

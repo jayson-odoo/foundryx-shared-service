@@ -218,13 +218,40 @@ def vendor_message(body: Any, base_url: str = "") -> str:
 _GENERIC = "An error has occurred."
 
 
-def is_vendor_timeout(message: str, vendor_class: Optional[str] = None) -> bool:
-    """AutoCount answered that its SQL command timed out (``CriticalSqlException`` / ``SqlException``
-    "Timeout expired", "The wait operation timed out"): the save may have landed later. Judged on AutoCount's
-    own (redacted) message, never on the HTTP status."""
-    if vendor_class and "sql" not in vendor_class.lower():  # a business exception quoting the words is no timeout
-        return False
-    return bool(_TIMEOUT_TEXT.search(message or ""))
+_TIMEOUT_CLASS_MARKS = ("sql", "win32", "timeout")
+
+
+def _chain(body: Any) -> List[Dict[str, Any]]:
+    """The vendor answer and its ``InnerException`` chain, outermost first (capped, cycle-proof)."""
+    nodes: List[Dict[str, Any]] = []
+    node = body
+    while isinstance(node, dict) and len(nodes) < 8:
+        nodes.append(node)
+        node = node.get("InnerException")
+    return nodes
+
+
+def is_vendor_timeout(raw: Any, vendor_class: Optional[str] = None) -> bool:
+    """AutoCount answered that its SQL command timed out (``Timeout expired``, ``The wait operation timed
+    out``, SqlException number -2): the save may have landed later. PO-LINK-STUCK-RECONCILE-B: judged on the
+    RAW, unredacted answer (``raw`` = the parsed vendor body, every message line of it and of its
+    ``InnerException`` chain; the redacted text is for display only), never on the HTTP status. A level whose
+    exception class names neither SQL, Win32 nor timeout (a business exception quoting the words) is no
+    timeout. A plain string is judged as one message (class from ``vendor_class``). A lock wait is not one."""
+    if not isinstance(raw, dict):
+        if vendor_class and not any(m in vendor_class.lower() for m in _TIMEOUT_CLASS_MARKS):
+            return False
+        return bool(_TIMEOUT_TEXT.search(str(raw or "")))
+    for node in _chain(raw):
+        kind = str(node.get("ExceptionType") or "").strip().lower()
+        if kind and not any(m in kind for m in _TIMEOUT_CLASS_MARKS):
+            continue
+        text = "\n".join(str(node.get(k) or "") for k in ("ExceptionMessage", "Message"))
+        if _TIMEOUT_TEXT.search(text):
+            return True
+        if "sql" in kind and str(node.get("Number")).strip() == "-2":
+            return True
+    return False
 
 
 def is_business_refusal(status: int, body: Any) -> bool:
@@ -844,7 +871,7 @@ class PrimitiveService(WriteFrame):
                 vendor_class = vendor_class_of(response.body)
                 if request.method == "PUT":  # plan 69 Q1: the read decides, never the answer text
                     looked = self._look_after_refusal(call, company, row, reader, request, before, read_date,
-                                                      extra, message, vendor_class)
+                                                      extra, message, vendor_class, response.body)
                     if looked is not None:
                         return looked
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message),
@@ -865,14 +892,14 @@ class PrimitiveService(WriteFrame):
     def _look_after_refusal(
         self, call: _Call, company: AcCompany, row: AcWriteAction, reader: Any, request: VendorRequest,
         before: Optional[Doc], read_date: Optional[date], extra: Dict[str, Any], message: str,
-        vendor_class: Optional[str],
+        vendor_class: Optional[str], raw_body: Any = None,
     ) -> Optional[PrimitiveResult]:
         """Plan 69 Q1 / D3: an edit PUT hapi answered with an AutoCount message (hapi's request is over:
         a refusal, or a command timeout that may have come after the save). ONE read decides: the document
         as it was = a real refusal (None: the caller answers ``VENDOR_REFUSED``); changed = it landed, judged
         like a 2xx answer; cannot be read = unknown (``pending_verification``, never refused)."""
         self.db.commit()  # the vendor answer is on the row before the read
-        timeout = is_vendor_timeout(message, vendor_class)
+        timeout = is_vendor_timeout(raw_body if raw_body is not None else message, vendor_class)
         try:
             after = self._read_back(call, reader, None, request, before, read_date, row)
         except DocReadError:

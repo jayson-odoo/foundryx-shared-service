@@ -655,7 +655,8 @@ def close_superseded_write_operation(
     running operation is answered as it stands."""
     def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
         try:
-            result = ops.close_superseded(tenant_id=key.tenant_id, company_id=company.id, operation_id=operationId)
+            result = ops.close_superseded(
+                tenant_id=key.tenant_id, company_id=company.id, operation_id=operationId, key_id=key.id)
         except LookupError:
             raise PullGatewayError(404, "UNKNOWN_OPERATION", "No such operation.") from None
         status, answer = _respond(operation_answer(result, None))

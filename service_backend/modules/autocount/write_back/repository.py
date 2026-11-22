@@ -5,11 +5,11 @@ Pure SQLAlchemy, every query tenant-scoped.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 
-from sqlalchemy import func, or_
+from sqlalchemy import String, and_, cast, func, or_
 from sqlalchemy.orm import Session
 
 from modules.autocount.models import (
@@ -24,6 +24,9 @@ from modules.autocount.models import (
 
 OUTCOME_IN_FLIGHT = "in_flight"
 OUTCOME_PENDING = "pending_verification"
+
+
+SUPERSEDED_COUNT_SECONDS = 3600  # how long a closed-superseded tie still counts against its SO line
 
 
 class WriteActionRepository:
@@ -239,6 +242,24 @@ class OperationRepository:
                 if snap.get("received") is not None:
                     qty -= Decimal(str(snap["received"]))
                 total += qty
+        # PO-LINK-STUCK-RECONCILE-B: a press an operator closed as superseded may still stand in AutoCount; its
+        # intended tie keeps counting until the staged copy of the PO has had time to show it (no AutoCount read)
+        since = datetime.now(timezone.utc) - timedelta(seconds=SUPERSEDED_COUNT_SECONDS)
+        closed = self.db.query(AcWriteOperation).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.status == "refused",
+            AcWriteOperation.error_code == "SUPERSEDED",
+            AcWriteOperation.op.in_(("link_batch", "split_link", "link_doc_batch")),
+            AcWriteOperation.updated_at >= since,
+        )
+        for op in closed:
+            if exclude_doc_key is not None and op.doc_key == exclude_doc_key:
+                continue
+            tie = (op.result_json or {}).get("supersededTie") if isinstance(op.result_json, dict) else None
+            for item in (tie or {}).get("ties") or []:
+                if int(item.get("soDtlKey") or 0) == so_dtl_key:
+                    total += Decimal(str(item.get("qty") or 0))
         return total
 
     def created_documents(self, tenant_id: str, company_id: str, exclude_id: str, since: datetime,
@@ -352,18 +373,26 @@ class OperationRepository:
 
     def close_parked(
         self, tenant_id: str, company_id: str, operation_id: str, from_statuses: "tuple[str, ...]",
-        error_code: str, result: dict,
+        error_code: str, result: dict, updated_at: Optional[datetime] = None,
     ) -> bool:
         """PO-LINK-STUCK-RECONCILE-B s2: conditional parked -> ``refused`` (an operator closed it as superseded,
-        nothing written): True only for the one caller whose update matched a row still parked."""
+        nothing written): True only for the one caller whose update matched a row still parked. ``updated_at``
+        = the value the caller read: a resume that claimed and finished in between moved it, so it is not overwritten."""
+        query = self.db.query(AcWriteOperation).filter(
+            AcWriteOperation.tenant_id == tenant_id,
+            AcWriteOperation.company_id == company_id,
+            AcWriteOperation.id == operation_id,
+            AcWriteOperation.status.in_(from_statuses),
+        )
+        if updated_at is not None:
+            if self.db.get_bind().dialect.name == "sqlite":
+                # SQLite keeps the server default at whole seconds and binds microseconds: compare the second
+                query = query.filter(func.substr(cast(AcWriteOperation.updated_at, String), 1, 19)
+                                     == updated_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+            else:
+                query = query.filter(AcWriteOperation.updated_at == updated_at)
         return (
-            self.db.query(AcWriteOperation)
-            .filter(
-                AcWriteOperation.tenant_id == tenant_id,
-                AcWriteOperation.company_id == company_id,
-                AcWriteOperation.id == operation_id,
-                AcWriteOperation.status.in_(from_statuses),
-            )
+            query
             .update({"status": "refused", "error_code": error_code, "result_json": result},
                     synchronize_session=False)
         ) == 1
@@ -438,13 +467,16 @@ class OperationRepository:
         self, tenant_id: str, company_id: str, doc_key: int, ops: "tuple[str, ...]" = ("link_batch", "link_doc_batch"),
     ) -> List[AcWriteOperation]:
         """Plan 69: the link operations of ``ops`` on one PO that linked something (``done`` / ``needs_attention``):
-        their stored answers say which PO row each new linked row came from."""
+        their stored answers say which PO row each new linked row came from. PO-LINK-STUCK-RECONCILE-B: an
+        operation an operator closed as superseded (``refused`` / ``SUPERSEDED``) is included too, its answer
+        carries the tie it intended (``supersededTie``), so a closed press never hides a tie that may stand."""
         return self.db.query(AcWriteOperation).filter(
             AcWriteOperation.tenant_id == tenant_id,
             AcWriteOperation.company_id == company_id,
             AcWriteOperation.doc_type == "PO",
             AcWriteOperation.doc_key == doc_key,
-            AcWriteOperation.status.in_(("done", "needs_attention")),
+            or_(AcWriteOperation.status.in_(("done", "needs_attention")),
+                and_(AcWriteOperation.status == "refused", AcWriteOperation.error_code == "SUPERSEDED")),
             AcWriteOperation.op.in_(ops),
         ).all()
 

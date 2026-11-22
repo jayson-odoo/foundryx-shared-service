@@ -808,7 +808,7 @@ class WriteBackService(WriteFrame):
         if not response.ok:  # carry AutoCount's own (redacted, capped) text to the answer
             text = row.response_json["text"]
             # an AutoCount SQL timeout may commit later: unknown, the operation reads the PO before anything else
-            code = VENDOR_TIMEOUT if is_vendor_timeout(text, vendor_class_of(response.body)) else "VENDOR_ERROR"
+            code = VENDOR_TIMEOUT if is_vendor_timeout(response.body, vendor_class_of(response.body)) else "VENDOR_ERROR"
             return self._finish(row, OUTCOME_VENDOR_ERROR, code, message=text)
         self.db.commit()
         self._check_deadline(row)
