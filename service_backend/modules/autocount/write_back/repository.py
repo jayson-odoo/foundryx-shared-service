@@ -5,7 +5,7 @@ Pure SQLAlchemy, every query tenant-scoped.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 
@@ -13,6 +13,7 @@ from sqlalchemy import String, and_, cast, func, or_
 from sqlalchemy.orm import Session
 
 from modules.autocount.models import (
+    AcCompany,
     AcEntityConfig,
     AcPoSoLink,
     AcSoRowIndex,
@@ -24,9 +25,6 @@ from modules.autocount.models import (
 
 OUTCOME_IN_FLIGHT = "in_flight"
 OUTCOME_PENDING = "pending_verification"
-
-
-SUPERSEDED_COUNT_SECONDS = 3600  # how long a closed-superseded tie still counts against its SO line
 
 
 class WriteActionRepository:
@@ -243,23 +241,33 @@ class OperationRepository:
                     qty -= Decimal(str(snap["received"]))
                 total += qty
         # PO-LINK-STUCK-RECONCILE-B: a press an operator closed as superseded may still stand in AutoCount; its
-        # intended tie keeps counting until the staged copy of the PO has had time to show it (no AutoCount read)
-        since = datetime.now(timezone.utc) - timedelta(seconds=SUPERSEDED_COUNT_SECONDS)
+        # intended tie keeps counting (no AutoCount read, no time window) until the PO's staged index shows a row
+        # linked to that SO line that the write did not know before (then the index counts it already)
         closed = self.db.query(AcWriteOperation).filter(
             AcWriteOperation.tenant_id == tenant_id,
             AcWriteOperation.company_id == company_id,
             AcWriteOperation.status == "refused",
             AcWriteOperation.error_code == "SUPERSEDED",
-            AcWriteOperation.op.in_(("link_batch", "split_link", "link_doc_batch")),
-            AcWriteOperation.updated_at >= since,
+            AcWriteOperation.op.in_(("link_row", "relink_row", "link_batch", "split_link", "link_doc_batch")),
         )
+        database = None
         for op in closed:
             if exclude_doc_key is not None and op.doc_key == exclude_doc_key:
                 continue
             tie = (op.result_json or {}).get("supersededTie") if isinstance(op.result_json, dict) else None
-            for item in (tie or {}).get("ties") or []:
-                if int(item.get("soDtlKey") or 0) == so_dtl_key:
-                    total += Decimal(str(item.get("qty") or 0))
+            items = [i for i in (tie or {}).get("ties") or [] if int(i.get("soDtlKey") or 0) == so_dtl_key]
+            if not items:
+                continue
+            if database is None:
+                database = self.db.query(AcCompany.database_name).filter(
+                    AcCompany.tenant_id == tenant_id, AcCompany.id == company_id).scalar() or ""
+            known = {int(k) for k in (tie or {}).get("knownKeys") or [] if k is not None}
+            staged = self.db.query(AcPoSoLink.po_dtl_key).filter(
+                AcPoSoLink.tenant_id == tenant_id, AcPoSoLink.company_id == company_id,
+                AcPoSoLink.po_source_ref == f"{database}:{op.doc_key}", AcPoSoLink.so_dtl_key == so_dtl_key).all()
+            if any(k is None or int(k) not in known for (k,) in staged):
+                continue  # the staged index already counts the row this tie made
+            total += sum((Decimal(str(i.get("qty") or 0)) for i in items), Decimal(0))
         return total
 
     def created_documents(self, tenant_id: str, company_id: str, exclude_id: str, since: datetime,

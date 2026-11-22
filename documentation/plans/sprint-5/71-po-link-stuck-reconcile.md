@@ -41,7 +41,8 @@ refusal by an operator).
 7. Review round 2 (security + reviewer): `close_superseded` takes link operations only (`_resumable_op`, shared with
    Resume) and is conditional on the `updated_at` read; its stored answer carries `closedAt`, `closedBy` and
    `supersededTie`, which the tie-history guard (`_ss_ties`) and `pending_link_qty` read, so a close never hides a tie
-   that stands; a SUPERSEDED row is never released or re-run (`_nothing_landed`, `_create_resend`, `_look_up_primitive`).
+   that stands (a partly linked doc batch merges its intended ties into its exact ones; the over-link sum counts a
+   closed tie, row links included, until the staged index shows the new row; no time window); a SUPERSEDED row is never released or re-run (`_nothing_landed`, `_create_resend`, `_look_up_primitive`).
    Resume that loses its claim to a close answers `SUPERSEDED`. `_write_settled` of an operation with no owned
    actions uses its `updated_at`. `is_vendor_timeout` judges the raw body chain (see contract section 5). A timed-out
    single-document primitive is looked up on a same-key resend. `_resume_split` logs a write-gate refusal.

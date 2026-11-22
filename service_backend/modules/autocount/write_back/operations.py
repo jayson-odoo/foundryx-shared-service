@@ -531,6 +531,7 @@ class OperationService:
         row = self.ops.get(tenant_id, company_id, operation_id)
         if row is None:
             raise LookupError("operation not found")
+        read_at = row.updated_at  # the conditional close below only matches a row nobody moved since this read
         if row.status == IN_PROGRESS:
             return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
         if not self._resumable_op(row):
@@ -543,7 +544,6 @@ class OperationService:
             answer = self._from_row(row)
             answer.message = NOT_YET_CONFIRMED_MESSAGE
             return answer
-        read_at = row.updated_at  # the conditional close below only matches a row nobody moved since this read
         now = _iso_z(datetime.now(timezone.utc))
         by = {k: v for k, v in (("keyId", key_id), ("actingUserId", self.prims.acting_user_id),
                                 ("actingUserName", self.prims.acting_user_name)) if v}
@@ -589,8 +589,13 @@ class OperationService:
                 action = self.prims.actions.operation_step(row.tenant_id, row.company_id, row.id, SPLIT_LINK)
                 before = action.before_json if action is not None else None
                 known = [r.get("DtlKey") for r in (before or {}).get("Details") or []] if isinstance(before, dict) else []
-        if row.op not in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH):
-            ties = []  # a single row link / relink: its answer's document says; never a split tie
+        if row.op in ("link_row", "relink_row"):  # a whole-row link: the pending branch's reading of its snapshot
+            target = int((snap.get("newLink") or {}).get("FromDocDtlKey") or 0)
+            qty = _dec((snap.get("row") or {}).get("Qty")) - (_dec(snap["received"]) if snap.get("received") is not None
+                                                                else Decimal(0))
+            ties = [{"origin": int(row.dtl_key or 0), "soDtlKey": target, "qty": str(qty)}] if target else []
+        elif row.op not in (SPLIT_LINK, LINK_BATCH, LINK_DOC_BATCH):
+            ties = []
         return {"ties": ties, "knownKeys": known, "batch": stored.get("batch"), "detail": stored.get("detail")}
 
     @staticmethod
@@ -2176,25 +2181,34 @@ class OperationService:
             tie = stored.get("supersededTie") if closed and isinstance(stored.get("supersededTie"), dict) else {}
             source = tie if closed else stored
             made = self._made_ties(op, source.get("batch"), source.get("detail"))
-            if closed and not made:  # nothing exact was ever stored: the tie the write intended
-                known = set(tie.get("knownKeys") or [])
-                for want in tie.get("ties") or []:
-                    origin, so_row = int(want.get("origin") or 0), int(want.get("soDtlKey") or 0)
-                    if not so_row:
-                        continue
-                    if doc is None:
-                        out.append((origin, so_row, {"Qty": None}))
-                        continue
-                    found = next((r for k, r in standing.items()
-                                  if k not in known and k != origin and _link_of("PO", r) == so_row
-                                  and _dec(r.get("Qty")) == _dec(want.get("qty"))), None)
-                    if found is not None:
-                        out.append((origin, so_row, found))
-                continue
+            covered: Dict[Tuple[int, int], int] = {}
             for origin, so_row, new_key in made:
                 now = standing.get(new_key) if doc is not None else {"Qty": None}
                 if so_row and now is not None and (doc is None or _link_of("PO", now) == so_row):
                     out.append((origin, so_row, now))
+                covered[(origin, so_row)] = covered.get((origin, so_row), 0) + 1
+            if not closed:
+                continue
+            # the tie the write intended, for every link the exact answer does not already cover (a partial batch:
+            # line 1 linked, line 2 timed out and was closed): the rest of each (origin, SO row) pair
+            known = set(tie.get("knownKeys") or [])
+            taken = {id(r) for _o, _s, r in out}
+            for want in tie.get("ties") or []:
+                origin, so_row = int(want.get("origin") or 0), int(want.get("soDtlKey") or 0)
+                if not so_row:
+                    continue
+                if covered.get((origin, so_row), 0) > 0:
+                    covered[(origin, so_row)] -= 1
+                    continue
+                if doc is None:
+                    out.append((origin, so_row, {"Qty": None}))
+                    continue
+                found = next((r for k, r in standing.items()
+                              if k not in known and k != origin and _link_of("PO", r) == so_row
+                              and _dec(r.get("Qty")) == _dec(want.get("qty")) and id(r) not in taken), None)
+                if found is not None:
+                    taken.add(id(found))
+                    out.append((origin, so_row, found))
         return out
 
     @staticmethod

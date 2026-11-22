@@ -37,6 +37,7 @@ from modules.autocount.write_back.reader import DocReadError
 from modules.autocount.write_back.repository import OperationRepository
 from tests.test_autocount_write_back_gateway_qtso import PREFIX, Gw
 from tests.test_autocount_write_back_link_batch import Rig
+from tests.test_autocount_plan63_gate import DB1, _logs, _point_at, _set  # noqa: F401
 from tests.test_autocount_write_back_operations import OpHarness, World, db, h  # noqa: F401
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
@@ -881,3 +882,168 @@ def test_r7_an_old_legacy_operation_is_settled_and_closes(h, w):
     op_id = _legacy_parked(h, w, "r7-old", ops_mod.LOOKUP_SETTLE_SECONDS + 120)
     out = _close(h, op_id)
     assert (out.outcome, out.error_code) == ("refused", "SUPERSEDED")
+
+
+# ============================== review round 3 ====================================================
+
+def _lines_of(out) -> List[dict]:
+    return list((out.batch or {}).get("lines") or [])
+
+
+def test_k21_resume_of_a_young_timed_out_doc_batch_chunk_waits_and_marks_nothing(h, w):
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
+    res = _doc_batch(h, w, "k21")
+    assert (res.outcome, res.error_code) == ("vendor_error", "VENDOR_TIMEOUT"), (res.outcome, res.error_code)
+    before = len(puts(h))
+    out = resume(h, res)  # the chunk reads untouched, its write is younger than the settle time
+    assert (out.outcome, out.error_code) == ("vendor_error", "VENDOR_TIMEOUT"), (out.outcome, out.error_code)
+    assert len(puts(h)) == before
+    assert not any(line.get("errorCode") == "OPERATION_NOT_APPLIED" or line.get("code") == "OPERATION_NOT_APPLIED"
+                   for line in _lines_of(out)), _lines_of(out)
+    stored = _op(h, "k21")
+    assert stored.status == "vendor_error" and not stored.idempotency_key.count("released")
+    again = _doc_batch(h, w, "k21")  # the key is still held
+    assert (again.outcome, again.error_code) == ("vendor_error", "VENDOR_TIMEOUT")
+    assert len(link_puts(h)) == 1
+
+
+def _two_line_doc_batch(h, w, key):
+    """Two PO rows, one chunk each (``max_lines_per_put`` 1): line 1 = p_free -> so_a, line 2 = p_other -> so_b."""
+    return h.run("link_doc_batch", dict(doc_key=7001, max_lines_per_put=1, links=[
+        dict(po_dtl_key=w.p_free, so_doc_key=7002, so_dtl_key=w.so_a, qty=1),
+        dict(po_dtl_key=w.p_other, so_doc_key=7002, so_dtl_key=w.so_b, qty=1)]), key=key)
+
+
+def _tied_to(h, so_dtl):
+    return [r for r in h.vendor.rows("PO", 7001) if r.get("FromSODtlKey") == so_dtl]
+
+
+def test_sec2_closing_a_partial_doc_batch_keeps_the_tie_of_its_timed_out_line(h, w):
+    """Line 1 linked, line 2 timed out and landed later; the operator closes it: a new press cannot link line 2 again."""
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT, after=2)  # chunk 1 link + its restore land, chunk 2 times out
+    res = _two_line_doc_batch(h, w, "sec2")
+    assert res.error_code == "VENDOR_TIMEOUT", (res.outcome, res.error_code)
+    h.vendor._edit("PO", link_puts(h)[1].body)  # AutoCount commits line 2 after hapi answered
+    so_b_rows = len(_tied_to(h, w.so_b))
+    assert so_b_rows >= 1
+    age_actions(h, res, seconds=BUSY_WINDOW_SECONDS + 120)
+    closed = _close(h, res.operation_id)
+    assert (closed.outcome, closed.error_code) == ("refused", "SUPERSEDED"), (closed.outcome, closed.error_code)
+    before = len(puts(h))
+    again = _two_line_doc_batch(h, w, "sec2-new")
+    assert len(puts(h)) == before, "a new press linked a line that already stands"
+    assert len(_tied_to(h, w.so_b)) == so_b_rows
+    assert again.outcome != "done", (again.outcome, again.error_code)
+
+
+# ---- S3 / S4: a closed tie counts in the over-link sum until the staged index shows it ----------------
+
+def _staged_index(h, rows):
+    """Swap the staged over-link index of PO 7001 for ``rows`` = [(po_dtl_key, so_dtl_key, qty)]."""
+    from modules.autocount.write_back.repository import PoSoLinkRepository
+
+    PoSoLinkRepository(h.db).replace_for_po(
+        DEFAULT_TENANT_ID, h.company.id, f"{h.company.database_name}:7001", rows)
+    h.db.commit()
+
+
+def _pending_qty(h, so_dtl):
+    h.db.expire_all()
+    return OperationRepository(h.db).pending_link_qty(DEFAULT_TENANT_ID, h.company.id, so_dtl, None)
+
+
+def test_s3_a_closed_split_tie_counts_until_the_staged_index_shows_its_row(h, w):
+    res = _parked_split(h, w, key="n5")
+    (new,) = tied(h, w)
+    known = {r["DtlKey"] for r in h.vendor.rows("PO", 7001)} - {new["DtlKey"]}
+    age_actions(h, res)
+    assert _close(h, res.operation_id).error_code == "SUPERSEDED"
+    _staged_index(h, [])  # nothing of it staged yet
+    assert _pending_qty(h, w.so_a) == Decimal(2)
+    _staged_index(h, [(w.p_linked, w.so_a, Decimal(3))])  # an old row (known before the write) is not this tie
+    assert _pending_qty(h, w.so_a) == Decimal(2)
+    assert w.p_linked in known
+    _staged_index(h, [(new["DtlKey"], w.so_a, Decimal(2))])  # the new row is staged: the index counts it
+    assert _pending_qty(h, w.so_a) == Decimal(0)
+
+
+def test_s3_a_closed_tie_has_no_time_window(h, w):
+    res = _parked_split(h, w, key="n5-old")
+    age_actions(h, res)
+    assert _close(h, res.operation_id).error_code == "SUPERSEDED"
+    h.db.expire_all()
+    op = h.db.query(AcWriteOperation).filter(AcWriteOperation.id == res.operation_id).one()
+    op.updated_at = datetime.now(timezone.utc) - timedelta(days=30)
+    h.db.commit()
+    _staged_index(h, [])
+    assert _pending_qty(h, w.so_a) == Decimal(2)
+
+
+def test_s4_a_closed_whole_row_link_keeps_its_qty_in_the_over_link_sum(h, w):
+    state = fail_po_reads_after_put(h)
+    params = dict(w.params["link_row"], so_dtl_key=w.so_a)
+    res = h.run("link_row", params, key="s4-row")
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    state["on"] = False
+    _staged_index(h, [])
+    held = _pending_qty(h, w.so_a)
+    assert held > 0
+    age_actions(h, res)
+    assert _close(h, res.operation_id).error_code == "SUPERSEDED"
+    assert _pending_qty(h, w.so_a) == held  # the tie did not vanish with the close
+    new_key = next(r["DtlKey"] for r in h.vendor.rows("PO", 7001)
+                   if r.get("FromSODtlKey") == w.so_a and r["DtlKey"] not in (w.p_linked, w.p_free))
+    _staged_index(h, [(new_key, w.so_a, held)])
+    assert _pending_qty(h, w.so_a) == 0
+
+
+# ---- K17b: the close's updated_at guard matters ------------------------------------------------------
+
+def test_k17b_a_close_loses_to_a_resume_that_finished_parked_again_with_a_fresh_result(h, w, monkeypatch):
+    res = _parked_split(h, w, key="k17b")
+    age_actions(h, res)
+    real = ops_mod.OperationService._write_settled
+    fresh_result = {"outcome": "needs_attention", "errorCode": "RESUMED", "message": "fresh", "warnings": []}
+
+    def racing(self, row_):
+        settled = real(self, row_)
+        h.db.query(AcWriteOperation).filter(AcWriteOperation.id == row_.id).update(
+            {"status": "needs_attention", "error_code": "RESUMED", "result_json": fresh_result,
+             "updated_at": datetime.now(timezone.utc) + timedelta(seconds=5)},  # a whole second later
+            synchronize_session=False)
+        h.db.commit()
+        return settled
+
+    monkeypatch.setattr(ops_mod.OperationService, "_write_settled", racing)
+    out = _close(h, res.operation_id)
+    assert out.error_code == "RESUMED", (out.outcome, out.error_code)
+    stored = _op(h, "k17b")
+    assert stored.status == "needs_attention" and stored.error_code == "RESUMED"
+    assert stored.result_json == fresh_result
+
+
+# ---- N3d: a non-English SqlException timeout, by number ---------------------------------------------
+
+def test_n3d_a_sql_timeout_by_number_with_a_non_english_message_is_unknown(h, w):
+    body = dict(_GENERIC_BODY, ExceptionMessage="Waktu tamat telah tamat tempoh.",
+                ExceptionType="System.Data.SqlClient.SqlException", Number=-2)
+    _vendor_says(h, body)
+    res = _batch(h, w, "n3d")
+    assert (res.outcome, res.error_code) == ("vendor_error", "VENDOR_TIMEOUT"), (res.outcome, res.error_code)
+    assert len(link_puts(h)) == 1
+
+
+# ---- N11: a Resume of a split stopped by the write gate leaves a guard_refused call-log row ----------
+
+def test_n11_resume_of_a_parked_split_stopped_by_the_gate_logs_guard_refused(h, w, monkeypatch):
+    res = _parked_split(h, w, key="n11")
+    age_actions(h, res)
+    assert [x for x in _logs(h) if x.outcome == "guard_refused"] == []
+    _set(monkeypatch, env="development", books="db1,db3")
+    _point_at(h, DB1)
+    before = len(h.vendor.calls)
+    out = resume(h, res)
+    assert out.outcome == "pending_verification", (out.outcome, out.error_code)
+    assert len(h.vendor.calls) == before
+    refused = [x for x in _logs(h) if x.outcome == "guard_refused"]
+    assert len(refused) == 1 and refused[0].error_code == "WRITE_NOT_ALLOWED", [x.error_code for x in refused]
