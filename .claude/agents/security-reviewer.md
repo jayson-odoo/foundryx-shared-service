@@ -2,7 +2,7 @@
 name: security-reviewer
 description: Security-focused review of foundryx-shared-service lane diffs that touch auth, RBAC/permission gating, tenant scoping, public/API-key gateways, webhooks, uploads/storage/media, secrets, or the SQL source. Use in Phase 3, once per lane, in parallel with reviewer and the tester's browser verification. Read-only - reports findings, does not fix.
 tools: Read, Grep, Glob, Bash
-model: fable
+model: opus
 effort: medium
 ---
 

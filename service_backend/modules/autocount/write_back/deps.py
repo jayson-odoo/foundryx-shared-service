@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from modules.autocount.write_back.operations import OperationService
 from modules.autocount.write_back.primitives import PrimitiveService
+from modules.autocount.write_back.project_registration import ProjectRegistrationService
 from modules.autocount.write_back.service import WriteBackService
 
 
@@ -21,3 +22,7 @@ def get_primitive_service(db: Session = Depends(get_db)) -> PrimitiveService:
 
 def get_operation_service(db: Session = Depends(get_db)) -> OperationService:
     return OperationService(db)
+
+
+def get_project_registration_service(db: Session = Depends(get_db)) -> ProjectRegistrationService:
+    return ProjectRegistrationService(db)

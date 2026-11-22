@@ -212,6 +212,12 @@ class Settings(BaseSettings):
     # with a pause between days), so a 20-year walk never hammers the book.
     autocount_project_registrations_day_pause_seconds: float = 1.0
 
+    # AutoCount project registration (plan 71): the admin switch of the four
+    # /api/v1/autocount/project-registrations routes. OFF = every route refuses
+    # VENDOR_UNSUPPORTED with no AutoCount call, and the capability feed says so.
+    # Read per call (env AUTOCOUNT_PROJECT_REGISTRATION_ENABLED).
+    autocount_project_registration_enabled: bool = False
+
     # Environment
     environment: str = "development"
     debug: bool = False
