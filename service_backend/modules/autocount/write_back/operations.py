@@ -1118,7 +1118,26 @@ class OperationService:
             # plan 71: the merge goes back into the source row: its key and before-image (the exact read-back)
             **({"returnTo": plan["merge"], "returnBefore": _row_in(doc, plan["merge"])}
                if self._return_to is not None and plan.get("merge") == self._return_to else {}),
+            # crew s10 (sorento-crm#2607): a fallback that writes a NEW untied row gives it the source row's date
+            **self._return_date(doc, plan),
         })
+
+    def _return_date(self, doc: Doc, plan: Dict[str, Any]) -> Doc:
+        """Crew s10: AutoCount reads a tied PO row's DeliveryDate as the empty 0001-01-01 (sorento-crm#2603), so
+        an unlink fallback whose new untied row copies the tied row lands with no date. When the qty could not
+        go back into the source row (``return_to_dtl_key``) and no free row takes it, the new row takes the
+        SOURCE row's delivery date: ``{"returnDate": ...}``, else ``{}`` (no source row on the PO, or no date)."""
+        if self._return_to is None or plan.get("merge") is not None:
+            return {}
+        day = payloads.day_of((_row_in(doc, self._return_to) or {}).get("DeliveryDate"))
+        return {"returnDate": f"{day}T00:00:00"} if day else {}
+
+    @staticmethod
+    def _new_row_base(snap: Doc) -> Doc:
+        """The tied row's before-image a NEW row of the operation copies, with the crew s10 ``returnDate``."""
+        if snap.get("returnDate"):
+            return dict(snap["row"], DeliveryDate=snap["returnDate"])
+        return snap["row"]
 
     @staticmethod
     def _so_link_values(so: Doc, so_row: Doc) -> Doc:
@@ -1143,7 +1162,8 @@ class OperationService:
     # ── steps (AC-57-30, 31, 33, 34, 35, 39) ─────────────────────────────────
 
     def _line_of(self, snap: Doc, link: Doc, qty: Optional[Decimal] = None) -> Doc:
-        line = {k: v for k, v in snap["row"].items() if k != "DtlKey"}
+        base = self._new_row_base(snap) if link is snap["newLink"] else snap["row"]  # crew s10: never the recover row
+        line = {k: v for k, v in base.items() if k != "DtlKey"}
         line.update(link)
         # plan 66: the note goes on the NEW linked row in the PUT that creates it. ``soLink`` describes the
         # new link only, so the recover row (``oldLink``, e.g. a relink's previous SO row) never takes it.
@@ -1306,7 +1326,7 @@ class OperationService:
         changes_by_key: Dict[int, Dict[str, Any]] = {}
         for move in moves:
             new_key, location, so_link = move[0], move[1], move[2]
-            source = move[3] if len(move) > 3 else snap["row"]  # plan 69: a document batch's own row per move
+            source = move[3] if len(move) > 3 else self._new_row_base(snap)  # plan 69: a document batch's own row per move
             landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
             changes = payloads.transfer_row_drift(payloads.transfer_restore(source, location, so_link), landed)
             if changes:
