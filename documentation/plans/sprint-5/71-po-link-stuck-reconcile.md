@@ -38,6 +38,16 @@ refusal by an operator).
 6. `ROW_ALREADY_LINKED`: plan 69's history rule (`_ss_ties`, shared with the doc batch's `ALREADY_LINKED`) extended to
    the split; a tie SS made from the same PO row to the same SO line with the same qty that still stands refuses.
 
+7. Review round 2 (security + reviewer): `close_superseded` takes link operations only (`_resumable_op`, shared with
+   Resume) and is conditional on the `updated_at` read; its stored answer carries `closedAt`, `closedBy` and
+   `supersededTie`, which the tie-history guard (`_ss_ties`) and `pending_link_qty` read, so a close never hides a tie
+   that stands; a SUPERSEDED row is never released or re-run (`_nothing_landed`, `_create_resend`, `_look_up_primitive`).
+   Resume that loses its claim to a close answers `SUPERSEDED`. `_write_settled` of an operation with no owned
+   actions uses its `updated_at`. `is_vendor_timeout` judges the raw body chain (see contract section 5). A timed-out
+   single-document primitive is looked up on a same-key resend. `_resume_split` logs a write-gate refusal.
+
 ## Not done here
 - AC-71-14, the db3 probe (no hapi access from the cloud sandbox): crew runs it.
-- No admin UI button for close-as-superseded; the CRM (or an operator with the CRM key) calls the route.
+- No admin UI button for close-as-superseded; the CRM (or an operator with the CRM key) calls the route (BL-SS-372).
+- AC-71-14 follow-up: how late a timed-out save can land on a large PO, to re-check `LOOKUP_SETTLE_SECONDS` (BL-SS-373).
+- A parked `pending_verification` split's tie is not seen by `ROW_ALREADY_LINKED` (only a closed one is, through `supersededTie`) (BL-SS-374).
