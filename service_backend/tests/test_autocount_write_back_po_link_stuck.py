@@ -1047,3 +1047,69 @@ def test_n11_resume_of_a_parked_split_stopped_by_the_gate_logs_guard_refused(h, 
     assert len(h.vendor.calls) == before
     refused = [x for x in _logs(h) if x.outcome == "guard_refused"]
     assert len(refused) == 1 and refused[0].error_code == "WRITE_NOT_ALLOWED", [x.error_code for x in refused]
+
+
+# ---- round 4: the SEC2 merge's per-pair subtraction and row de-dup, and qty minus received -------------
+
+def _same_so_doc_batch(h, w, key):
+    """Two PO rows to the SAME SO line, one chunk each: line 1 = p_free -> so_a, line 2 = p_other -> so_a."""
+    return h.run("link_doc_batch", dict(doc_key=7001, max_lines_per_put=1, links=[
+        dict(po_dtl_key=w.p_free, so_doc_key=7002, so_dtl_key=w.so_a, qty=1),
+        dict(po_dtl_key=w.p_other, so_doc_key=7002, so_dtl_key=w.so_a, qty=1)]), key=key)
+
+
+@pytest.mark.parametrize("late", [True, False])
+def test_r4a_closed_partial_doc_batch_to_one_so_line_pins_each_line_to_its_own_row(h, w, late):
+    """Line 1 linked, line 2 (another PO row, same SO line, same qty) timed out. Closed. ``late``: line 2 landed
+    after the answer (both lines stand) or never did (only line 1 stands)."""
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT, after=2)
+    res = _same_so_doc_batch(h, w, "r4a")
+    assert res.error_code == "VENDOR_TIMEOUT", (res.outcome, res.error_code)
+    if late:
+        h.vendor._edit("PO", link_puts(h)[1].body)
+    stands = len(_tied_to(h, w.so_a))  # p_linked + line 1 (+ line 2 when it landed late)
+    assert stands == (3 if late else 2), stands
+    age_actions(h, res, seconds=BUSY_WINDOW_SECONDS + 120)
+    assert _close(h, res.operation_id).error_code == "SUPERSEDED"
+    sent = len(link_puts(h))
+    _same_so_doc_batch(h, w, "r4a-new")
+    if late:  # both lines stand: neither is linked again
+        assert len(link_puts(h)) == sent, "a line that stands was linked again"
+        assert len(_tied_to(h, w.so_a)) == stands
+    else:  # line 1 stands (skipped), line 2 never landed: it is not hidden by line 1's row
+        assert len(link_puts(h)) == sent + 1, "line 2 was refused although it never landed"
+        assert len(_tied_to(h, w.so_a)) == stands + 1
+
+
+def test_r4b_a_closed_part_received_row_link_counts_qty_minus_received(h, w):
+    reader = lambda kind, doc, r: Decimal(1) if r["DtlKey"] == w.p_free else Decimal(0)  # noqa: E731
+    state = fail_po_reads_after_put(h)
+    params = dict(w.params["link_row"], so_dtl_key=w.so_a)
+    res = h.run("link_row", params, key="r4b", receipt_reader=reader)
+    assert res.outcome == "pending_verification", (res.outcome, res.error_code)
+    state["on"] = False
+    _staged_index(h, [])
+    held = _pending_qty(h, w.so_a)
+    assert held == Decimal(3), held  # the row qty 4 less the 1 received
+    age_actions(h, res)
+    assert _close(h, res.operation_id).error_code == "SUPERSEDED"
+    assert _pending_qty(h, w.so_a) == Decimal(3)
+
+
+def test_r4c_a_closed_never_landed_tie_is_not_pinned_to_a_row_another_operation_made(h, w):
+    """B (p_other -> so_a) timed out and never landed; A (p_free -> so_a, same qty) then linked; B is closed. A's
+    new row is not B's tie: a new press of B's link must still run."""
+    h.vendor.refuse_json_next("PUT", EDIT, TIMEOUT_TEXT)
+    lost = h.run("link_batch", dict(doc_key=7001, dtl_key=w.p_other, links=[
+        dict(so_doc_key=7002, so_dtl_key=w.so_a, qty=1)]), key="r4c-b")
+    assert lost.error_code == "VENDOR_TIMEOUT", (lost.outcome, lost.error_code)
+    age_actions(h, lost, seconds=BUSY_WINDOW_SECONDS + 120)
+    other = h.run("link_batch", dict(doc_key=7001, dtl_key=w.p_free, links=[
+        dict(so_doc_key=7002, so_dtl_key=w.so_a, qty=1)]), key="r4c-a")
+    assert other.outcome == "done", (other.outcome, other.error_code)
+    assert _close(h, lost.operation_id).error_code == "SUPERSEDED"
+    sent = len(link_puts(h))
+    again = h.run("link_batch", dict(doc_key=7001, dtl_key=w.p_other, links=[
+        dict(so_doc_key=7002, so_dtl_key=w.so_a, qty=1)]), key="r4c-c")
+    assert again.outcome == "done", (again.outcome, again.error_code, again.batch)
+    assert len(link_puts(h)) == sent + 1

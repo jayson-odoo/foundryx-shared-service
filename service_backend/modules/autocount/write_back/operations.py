@@ -2175,6 +2175,7 @@ class OperationService:
         every link SS made, standing or not (the no-read pre-check)."""
         standing = {int(r.get("DtlKey") or 0): r for r in (doc or {}).get("Details") or [] if isinstance(r, dict)}
         out: List[Tuple[int, int, Doc]] = []
+        later: List[Tuple[Dict[str, Any], Dict[Tuple[int, int], int]]] = []  # closed ops: (their tie, exact coverage)
         for op in self.ops.link_results_on_doc(company.tenant_id, company.id, doc_key, ops):
             stored = op.result_json if isinstance(op.result_json, dict) else {}
             closed = op.error_code == SUPERSEDED  # an operator closed it: its intended tie answers for it
@@ -2187,12 +2188,14 @@ class OperationService:
                 if so_row and now is not None and (doc is None or _link_of("PO", now) == so_row):
                     out.append((origin, so_row, now))
                 covered[(origin, so_row)] = covered.get((origin, so_row), 0) + 1
-            if not closed:
-                continue
-            # the tie the write intended, for every link the exact answer does not already cover (a partial batch:
-            # line 1 linked, line 2 timed out and was closed): the rest of each (origin, SO row) pair
+            if closed:
+                later.append((tie, covered))
+        # the tie a closed write intended, for every link its exact answer does not already cover (a partial batch:
+        # line 1 linked, line 2 timed out and was closed): the rest of each (origin, SO row) pair. Done after EVERY
+        # operation's exact ties, so a row another operation made is never taken for this one's (query order is free).
+        taken = {id(r) for _o, _s, r in out}
+        for tie, covered in later:
             known = set(tie.get("knownKeys") or [])
-            taken = {id(r) for _o, _s, r in out}
             for want in tie.get("ties") or []:
                 origin, so_row = int(want.get("origin") or 0), int(want.get("soDtlKey") or 0)
                 if not so_row:

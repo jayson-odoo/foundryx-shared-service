@@ -52,3 +52,4 @@ refusal by an operator).
 - No admin UI button for close-as-superseded; the CRM (or an operator with the CRM key) calls the route (BL-SS-372).
 - AC-71-14 follow-up: how late a timed-out save can land on a large PO, to re-check `LOOKUP_SETTLE_SECONDS` (BL-SS-373).
 - A parked `pending_verification` split's tie is not seen by `ROW_ALREADY_LINKED` (only a closed one is, through `supersededTie`) (BL-SS-374).
+- A closed tie that never landed keeps counting against its SO line (over-link refusals for other POs, `QTY_BELOW_TRANSFERRED` on SO edits) until someone acts; wrong refusal only, never a double write. Window-free fix and the owner sign-off it needs: BL-SS-375.
