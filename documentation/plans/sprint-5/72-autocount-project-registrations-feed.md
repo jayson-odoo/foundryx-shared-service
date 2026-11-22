@@ -1,6 +1,14 @@
 # 72 AutoCount project registrations feed (lane AUTOCOUNT-PROJECT-SYNC-SS, S0)
 
-Status: built, waiting on the CRM contract text to confirm the open points below.
+Status: built and pushed (branch `claude/autocount-project-sync-s0-qwcoic`); waiting on
+(1) a draft PR opened by crew (this session cannot create PRs on the moved repo) and
+(2) the CRM contract + UAC text (the CRM repo is not readable from this session), to key
+the S0-1..S0-14 report and settle the open points below.
+
+Verification so far: 19 new backend tests green; doc-feed / sink / contract subset 930
+passed; full backend suite 14642 passed (the 8 failed + 171 errors are network-socket
+tests that fail identically on plain main in this sandbox); frontend AutoCount vitest
+569 passed. Not yet done: agent-browser run of the Doc Feeds tab at 375px and 1280px.
 S0 of the CRM plan AUTOCOUNT-PROJECT-SYNC (sorento-crm PR #2676). The contract
 (`CONTRACT-autocount-project-sync-ss-22nov.md`, contract 2.15) and UAC (S0-1..S0-14)
 live in the CRM repo, which this session cannot read; this plan is built from the lane
