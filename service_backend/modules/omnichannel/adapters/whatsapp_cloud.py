@@ -155,6 +155,90 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
             if self._client is None:
                 client.close()
 
+    def list_onboarded_numbers(self, credentials: Dict[str, Any]) -> list:
+        """Every WhatsApp number the exchanged token was granted (partner
+        connect sessions, FSS-1): each WABA named in the token's
+        ``whatsapp_business_*`` granular scopes (de-duplicated, in order),
+        then every number on each. Returns a list of
+        ``{waba_id, phone_number_id, display_phone_number, verified_name}``;
+        empty when nothing resolves. Never raises on a Meta or transport
+        failure. ``resolve_onboarded_assets`` (first number only) is left as
+        it is for the dashboard flow.
+
+        Local simulation: dev credentials while ``META_APP_ID`` is unset
+        return ONE fake number, derived from the credentials' ``dev_seed`` so
+        each simulated connect gets its own number. With ``META_APP_ID`` set,
+        dev credentials resolve nothing."""
+        if credentials.get("dev"):
+            if settings.meta_app_id:
+                return []
+            import hashlib
+
+            seed = str(credentials.get("dev_seed") or credentials.get("access_token") or "dev")
+            digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+            digits = str(int(digest[:12], 16))[-8:].rjust(8, "0")
+            return [
+                {
+                    "waba_id": f"dev-waba-{digest[:12]}",
+                    "phone_number_id": f"dev-pn-{digest[:12]}",
+                    "display_phone_number": f"+60 1{digits[:1]}-{digits[1:4]} {digits[4:]}",
+                    "verified_name": "Dev WhatsApp number",
+                }
+            ]
+        token = credentials.get("access_token", "")
+        if not token or not self._configured:
+            return []
+        app_token = f"{settings.meta_app_id}|{settings.meta_app_secret}"
+        client = self._http()
+        try:
+            waba_ids: list = []
+            try:
+                dbg = client.get(
+                    f"{self._base}/debug_token",
+                    params={"input_token": token, "access_token": app_token},
+                )
+                if dbg.status_code == 200:
+                    scopes = _dict_items(_list_field(_json_obj(dbg).get("data"), "granular_scopes"))
+                    for scope in scopes:
+                        if scope.get("scope") in (
+                            "whatsapp_business_management",
+                            "whatsapp_business_messaging",
+                        ):
+                            for wid in _list_field(scope, "target_ids"):
+                                if wid and str(wid) not in waba_ids:
+                                    waba_ids.append(str(wid))
+            except httpx.HTTPError:
+                waba_ids = []
+
+            numbers: list = []
+            for waba_id in waba_ids:
+                try:
+                    pr = client.get(
+                        f"{self._base}/{waba_id}/phone_numbers",
+                        params={"fields": "id,display_phone_number,verified_name"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                except httpx.HTTPError:
+                    continue
+                if pr.status_code != 200:
+                    continue
+                for num in _dict_items(_list_field(_json_obj(pr), "data")):
+                    pid = num.get("id")
+                    if not pid:
+                        continue
+                    numbers.append(
+                        {
+                            "waba_id": waba_id,
+                            "phone_number_id": str(pid),
+                            "display_phone_number": num.get("display_phone_number"),
+                            "verified_name": num.get("verified_name"),
+                        }
+                    )
+            return numbers
+        finally:
+            if self._client is None:
+                client.close()
+
     def subscribe_webhook(self, credentials: Dict[str, Any], waba_id: str, callback_url: str) -> None:
         if not self._configured or credentials.get("dev"):
             return  # best-effort; no-op in dev

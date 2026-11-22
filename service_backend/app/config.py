@@ -390,6 +390,18 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_graph_version: str = "v19.0"
     meta_es_config_id: str = ""
+    # Partner connect sessions (FSS-1). All empty = the feature is off and its
+    # routes answer 503 connect_not_configured; nothing else reads them.
+    # The redirect URI registered in the Meta app for the partner flow (the
+    # existing /wa-callback page); the code exchange always sends this value,
+    # never one from a request. Required in every mode.
+    omni_partner_wa_redirect_uri: str = ""
+    # Graph version used in the Embedded Signup dialog URL the server builds
+    # (separate from meta_graph_version, which the Graph calls keep using).
+    # Required only when the Meta app is configured.
+    meta_es_dialog_version: str = ""
+    # How long a partner connect session stays usable, in minutes.
+    partner_connect_session_ttl_minutes: int = 30
     # Fernet key for encrypting channel credentials at rest. A throwaway dev
     # key is generated per-process if unset (NEVER rely on that in prod - set
     # OMNICHANNEL_FERNET_KEY so encrypted credentials survive a restart).

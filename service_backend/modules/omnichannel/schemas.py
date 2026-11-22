@@ -1737,6 +1737,48 @@ class PartnerWorkspaceListResponse(ApiModel):
     pageSize: int
 
 
+# ── Partner connect sessions (FSS-1) ─────────────────────────────────────────
+class PartnerConnectSessionCreateRequest(ApiModel):
+    channelType: Literal["WHATSAPP"] = "WHATSAPP"
+    returnUrl: str = Field(min_length=1, max_length=2048)
+    clientState: Optional[str] = Field(default=None, max_length=512)
+
+
+class PartnerConnectSessionCreated(ApiModel):
+    id: str
+    workspaceId: str
+    status: str
+    url: str
+    expiresAt: datetime
+
+
+class PartnerConnectSessionItem(ApiModel):
+    id: str
+    workspaceId: str
+    channelType: str
+    status: str  # OPEN | AUTHORIZED | COMPLETED | FAILED | CANCELLED | EXPIRED
+    channelIds: List[str]
+    errorCode: Optional[str] = None
+    createdAt: datetime
+    expiresAt: datetime
+    completedAt: Optional[datetime] = None
+
+
+class PartnerConnectSessionCompleteResponse(PartnerConnectSessionItem):
+    # The channels this session created that are still live (section 5a shape).
+    channels: List[PublicChannelItem]
+
+
+class ConnectCallbackRequest(ApiModel):
+    state: str = Field(min_length=1, max_length=256)
+    code: Optional[str] = Field(default=None, max_length=2048)
+    error: Optional[str] = Field(default=None, max_length=512)
+
+
+class ConnectCallbackResponse(ApiModel):
+    redirect: str
+
+
 class PublicMessageListResponse(VersionedPayload, ApiModel):
     """A contact's message history for the consumer API - full-fidelity
     ``MessageItem`` (every message type). ``nextBefore`` = pass back as
