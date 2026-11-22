@@ -433,3 +433,59 @@ def test_a_resumed_partly_received_tied_row_fallback_still_says_why(h, world):
     out = h.ops().resume(tenant_id=DEFAULT_TENANT_ID, company_id=h.company.id, operation_id=res.operation_id)
     assert "RETURN_SOURCE_NOT_OPEN" in out.warnings, (out.outcome, out.warnings)
     assert out.returned_to is None
+
+
+# ============================== crew s10: the fallback row keeps the source row's date ==============
+# Crew Mac pass on sorento-crm#2607 (comment 7079074161): after the change the new PO line in db3 had
+# DeliveryDate 0001-01-01 while the source line had 27/11/2026, so the CRM read-back never matched. AutoCount
+# reads a TIED row's DeliveryDate as the empty 0001-01-01 (sorento-crm#2603), so a fallback row that copies the
+# tied row's date lands empty. When the qty cannot go back into the source row, the new untied row takes the
+# SOURCE row's delivery date (the row the qty was linked from).
+
+EMPTY_DATE = "0001-01-01T00:00:00"
+SOURCE_DATE = "2026-11-27T00:00:00"
+
+
+def _tied_row_reads_empty_date(h, world):
+    row(h, world.p_linked)["DeliveryDate"] = EMPTY_DATE
+    row(h, world.p_other)["DeliveryDate"] = SOURCE_DATE
+
+
+def test_a_fallback_pool_row_takes_the_source_rows_delivery_date(h, world):
+    _tied_row_reads_empty_date(h, world)
+    row(h, world.p_other).update(FromDocType="SO", FromDocNo="SO-7002", FromDocDtlKey=world.so_b,
+                                 FromSODtlKey=world.so_b)  # source tied elsewhere: falls back
+    before = keys_before(h)
+    res = unlink(h, world, "r-date-pool", world.p_other)
+    _assert_fell_back_to_pool(h, world, before, res, "RETURN_SOURCE_NOT_OPEN")
+    assert added_rows(h, before)[0]["DeliveryDate"][:10] == SOURCE_DATE[:10]
+    assert res.detail["DeliveryDate"][:10] == SOURCE_DATE[:10]
+
+
+def test_a_fallback_past_a_fully_received_source_takes_the_source_rows_delivery_date(h, world):
+    _tied_row_reads_empty_date(h, world)
+
+    def reader(kind, doc, r):
+        return Decimal(4) if r.get("DtlKey") == world.p_other else Decimal(0)
+
+    before = keys_before(h)
+    res = unlink(h, world, "r-date-closed", world.p_other, receipt_reader=reader)
+    _assert_fell_back_to_pool(h, world, before, res, "RETURN_SOURCE_NOT_OPEN")
+    assert added_rows(h, before)[0]["DeliveryDate"][:10] == SOURCE_DATE[:10]
+
+
+def test_a_fallback_with_an_unknown_source_row_keeps_todays_date(h, world):
+    row(h, world.p_linked)["DeliveryDate"] = "2026-12-05T00:00:00"
+    before = keys_before(h)
+    res = unlink(h, world, "r-date-404", 999999)
+    _assert_fell_back_to_pool(h, world, before, res, "RETURN_SOURCE_NOT_OPEN")
+    assert added_rows(h, before)[0]["DeliveryDate"][:10] == "2026-12-05"
+
+
+def test_no_return_to_unlink_keeps_todays_date(h, world):
+    row(h, world.p_linked)["DeliveryDate"] = "2026-12-05T00:00:00"
+    row(h, world.p_other)["DeliveryDate"] = SOURCE_DATE
+    before = keys_before(h)
+    res = unlink(h, world, "r-date-none", None)
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert added_rows(h, before)[0]["DeliveryDate"][:10] == "2026-12-05"
