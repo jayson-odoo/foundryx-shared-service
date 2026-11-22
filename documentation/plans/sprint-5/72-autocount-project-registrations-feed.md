@@ -93,6 +93,34 @@ records a push (the CRM's MAX_BATCH; DO / GRN keep `autocount_sink_batch_size`).
 10. Real passes on db1 / db2 need crew + owner go; the floor 2006-01-01 is one constant
     (`constants.BACKFILL_FLOOR_BY_FEED`), to be confirmed by crew before the real pass.
 
+11. Screen (crew answer to the month-counts ask): the Doc Feeds run history row menu
+    gains "Counts by month" (only on runs that carry month counts), a centred popup with
+    a DataGrid of Month (mm/yyyy), Read, Created, Updated, Unchanged, Needs review,
+    Skipped and a Total row; the Counters column also shows needs review / skipped /
+    switched off. Existing ActionMenu + Dialog + DataGrid only.
+
+## Code review round 1 (fixed)
+
+- A plain `skipped` answer now clears a held retryable issue row (it was re-sent forever).
+- A discarded dry run no longer satisfies `DRY_RUN_FIRST`.
+- `switched_off` / `needs_review` are also read from the verdict's `warnings`, so the
+  S0-9 hold holds wherever the CRM puts the code (field to be pinned with the CRM in S1).
+- One-per-book counts only backfills still reading (running / stopping), and Resume
+  applies it too.
+- A retryable registration's message says it is re-sent on the next run.
+- Left open (to settle with the CRM / crew): `source_ref` uses the trimmed ProjNo while
+  the record keeps ProjNo as read; DO / GRN backfills do not take the per-book lock; a
+  poll already queued before a backfill starts can overlap its first day.
+
+## Verification
+
+- Backend: 27 + 19 feed tests; AutoCount / doc-feed / sink / contract suites 4834 passed.
+- Frontend: AutoCount vitest 789 passed + `doc-feed-month-counts.test.tsx` (4); eslint and
+  tsc clean on the touched files.
+- Browser (local Postgres stack, fake data, fresh `next build`): Doc Feeds tab and the
+  Counts by month popup at 1280px and 375px; page width stays 1280 / 375 (no sideways
+  page scroll), the table scrolls inside the popup on a phone.
+
 ## UAC report (S0-1..S0-14)
 
 | UAC | Result | Evidence (`service_backend/tests/`) |
@@ -120,8 +148,9 @@ gate below 2.15 and not advertised, book allowlist (run and configure), forced d
 re-check with no deletion step, dry-run month counts with no writes, resume from cursor,
 floor, dry-run-first, one backfill per book, scheduler wait, view.
 
-`service_backend/tests/test_autocount_project_registrations_feed_uac.py` (21): one test (or
-more) per UAC id, named `test_s0_<n>_...`, AutoCount and the CRM faked.
+`service_backend/tests/test_autocount_project_registrations_feed_uac.py` (27): one test (or
+more) per UAC id, named `test_s0_<n>_...`, plus `test_r1_...` for the review round;
+AutoCount and the CRM faked. Frontend: `doc-feed-month-counts.test.tsx`.
 
 ## Appendix A - CRM contract 2.15 (verbatim, sorento-crm@bb96fbfd)
 
