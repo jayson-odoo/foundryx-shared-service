@@ -18,11 +18,12 @@ from sqlalchemy.orm import Session
 from app.jobs.service import JobService
 
 from ..models import DOC_FEED_MODE_OFF, AcCompany, AcDocFeed
-from ..repositories.doc_feed_repository import DocFeedRepository
+from ..repositories.doc_feed_repository import DocFeedBackfillRepository, DocFeedRepository
 from ..scheduler import active_tenant_service_join
 from .constants import (
     ALL_FEEDS,
     DOC_FEED_RUN_JOB_TYPE,
+    PROJNO_FEEDS,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
 )
@@ -86,6 +87,12 @@ def _sweep_one_feed(db: Session, feed: AcDocFeed, *, now: datetime) -> str:
     if DocFeedRepository(db).unfinished_job(
         feed.tenant_id, DOC_FEED_RUN_JOB_TYPE, feed.id
     ) is not None:
+        return "skipped"
+    if feed.feed in PROJNO_FEEDS and DocFeedBackfillRepository(db).running_for_feed(
+        feed.tenant_id, feed.id
+    ) is not None:
+        # Plan 72 - one AutoCount call in flight per book: the poll waits for
+        # the backfill; left due, it fires on the first beat after.
         return "skipped"
 
     schedule = resolve_schedule(feed.schedule_config)

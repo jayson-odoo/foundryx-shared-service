@@ -48,7 +48,7 @@ from ..repositories.doc_feed_repository import (
     DocFeedRepository,
 )
 from ..sinks_sorento import (
-    DOC_FEED_CONTRACT_VERSION,
+    doc_feed_contract_version,
     describe_consumer_failure,
     SorentoRateLimited,
     SorentoSink,
@@ -59,8 +59,10 @@ from app.secrets import decrypt_secret
 
 from .clock import myt_date
 from .constants import (
-    BACKFILL_FROM_DEFAULT,
+    FEED_PROJECT_REGISTRATIONS,
+    PROJNO_FEEDS,
     RUN_KIND_BACKFILL,
+    backfill_floor,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
 )
@@ -70,6 +72,7 @@ from .records import (
     dedupe_latest,
     doc_date,
     doc_key,
+    doc_number,
     push_order,
     source_ref,
     vendor_modified_at,
@@ -128,6 +131,17 @@ def _job_is_dead(db, job_id: Optional[str]) -> bool:
     return JobService(db).fresh_status(job_id) == JOB_FAILED
 
 
+def book_allowed_for_feed(feed: str, book: str) -> bool:
+    """Plan 72 - the project registrations feed reads only the books in
+    ``AUTOCOUNT_PROJECT_REGISTRATIONS_FEED_BOOKS`` (read per call); every
+    other feed is unrestricted here, as before."""
+    if feed != FEED_PROJECT_REGISTRATIONS:
+        return True
+    from app.config import settings
+
+    return book in settings.autocount_project_registrations_feed_books_list
+
+
 class RunRefusal(Exception):
     """A run could not even start - ``code`` is the run row's ``errorCode``."""
 
@@ -177,6 +191,12 @@ def resolve_vendor(db, feed_row: AcDocFeed, *, vendor_transport=None) -> Resolve
         raise RunRefusal(
             "BOOK_MISMATCH",
             "The connection's book no longer matches this feed's stored book.",
+        )
+    if not book_allowed_for_feed(feed_row.feed, book):
+        # Plan 72 - checked before any AutoCount call: never read a book
+        # outside the feed's list (default the test book db3).
+        raise RunRefusal(
+            "BOOK_NOT_ALLOWED", f"This feed may not read the book '{book}'."
         )
 
     sizing = connection_sizing(conn.config_json or {})
@@ -278,7 +298,7 @@ def _resolve_sink_half(
             "malformed response).",
         )
     supported = (
-        contract.version >= DOC_FEED_CONTRACT_VERSION
+        contract.version >= doc_feed_contract_version(feed_row.feed)
         and feed_row.feed in contract.entities
     )
     if not supported:
@@ -386,11 +406,11 @@ def _apply_document_verdict(
     failed_refs: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     raw = record.raw
-    key = doc_key(raw)
+    key = doc_key(raw, feed_row.feed)
     if key is None:
         return
-    doc_no = raw.get("DocNo")
-    d_date = doc_date(raw)
+    doc_no = doc_number(raw, feed_row.feed)
+    d_date = doc_date(raw, feed_row.feed)
     modified_at = vendor_modified_at(raw)
     outcome = result.outcome or ""
     warnings = tuple(result.warnings or ())
@@ -487,7 +507,7 @@ def run_poll(
     today = myt_date(now)
     # DOC-FEED-WINDOW - the lookback (default 1 = yesterday..today) and the
     # vendor door (default byLastModified) are per-feed settings.
-    window = resolve_window(feed_row.window_config)
+    window = resolve_window(feed_row.window_config, feed_row.feed)
     lookback_from = today - timedelta(days=int(window["pollLookbackDays"]))
     if feed_row.cursor_day is None:
         start = lookback_from
@@ -519,14 +539,14 @@ def run_poll(
             resolved.vendor_client.close()
         return _finish_failed(db, run, exc.code, str(exc))
 
-    deduped = dedupe_latest(all_records)
+    deduped = dedupe_latest(all_records, feed_row.feed)
 
     # N3 (review round 1) - `resent` counts the retryable issue rows appended
     # here (D9: the stored record, not a refetch) so a run's own summary
     # says how many of this tick's pushes were a re-send, not a fresh read.
     resent_count = 0
     if not dry_run:
-        read_keys = {doc_key(r) for r in deduped if doc_key(r) is not None}
+        read_keys = {doc_key(r, feed_row.feed) for r in deduped if doc_key(r, feed_row.feed) is not None}
         for issue in DocFeedIssueRepository(db).list_retryable(
             feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book
         ):
@@ -540,7 +560,7 @@ def run_poll(
     failed_refs: List[Dict[str, Any]] = []
     to_send: List[RawVendorRecord] = []
     for record in ordered:
-        key = doc_key(record)
+        key = doc_key(record, feed_row.feed)
         if key is None:
             summary["skippedNoKey"] += 1
             continue
@@ -615,10 +635,10 @@ def _recheck_push(
     digest differs from the ledger's. Counts ``rechecked`` (documents read)
     and ``changed`` (documents pushed); every verdict is applied exactly as
     the poll applies it. Returns the sink error that stopped it, if any."""
-    summary["skippedNoKey"] += sum(1 for r in fetched if doc_key(r) is None)
-    deduped = dedupe_latest(fetched)
+    summary["skippedNoKey"] += sum(1 for r in fetched if doc_key(r, feed_row.feed) is None)
+    deduped = dedupe_latest(fetched, feed_row.feed)
     summary["rechecked"] = len(deduped)
-    keys = [doc_key(r) for r in deduped]
+    keys = [doc_key(r, feed_row.feed) for r in deduped]
     known = ledger_repo.digests_for(
         feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book, keys,
     )
@@ -631,9 +651,9 @@ def _recheck_push(
 
     def needs_push(record: Dict[str, Any]) -> bool:
         digest = content_digest(record)
-        if known.get(doc_key(record)) == digest:
+        if known.get(doc_key(record, feed_row.feed)) == digest:
             return False
-        held = issue_records.get(doc_key(record))
+        held = issue_records.get(doc_key(record, feed_row.feed))
         return not (held and content_digest(held) == digest)
 
     changed = [r for r in deduped if needs_push(r)]
@@ -685,7 +705,7 @@ def run_sweep(
     today = myt_date(now)
     # DOC-FEED-WINDOW - the DocDate window is the feed's own `recheckDays`
     # (default 45, the former fixed sweep window).
-    window_days = int(resolve_window(feed_row.window_config)["recheckDays"])
+    window_days = int(resolve_window(feed_row.window_config, feed_row.feed)["recheckDays"])
     window_from = today - timedelta(days=window_days - 1)
     seen: set = set()
     fetched: List[Dict[str, Any]] = []
@@ -695,7 +715,7 @@ def run_sweep(
         while day <= today:
             for r in resolved.vendor.day_by_doc_date(feed_row.feed, day):
                 fetched.append(r)
-                key = doc_key(r)
+                key = doc_key(r, feed_row.feed)
                 if key is not None:
                     seen.add(key)
             requests_count += 1
@@ -738,6 +758,19 @@ def run_sweep(
             db, run, "SINK_ERROR", _sink_failure_text(pushed_error, resolved.sink),
             summary=summary,
         )
+
+    if feed_row.feed in PROJNO_FEEDS:
+        # Plan 72 - AutoCount has no deletions door for project registrations
+        # and the CRM none to receive them: the re-check is the whole sweep.
+        summary["failedRefs"] = failed_refs[:20]
+        _record_vendor_activity(db, resolved.vendor_client, run)
+        if vendor_transport is None:
+            resolved.vendor_client.close()
+        if not dry_run:
+            feed_row.last_sweep_ok_at = now
+        _finish_success(db, run, summary)
+        _record_push_activity(db, feed_row, run, summary)
+        return run
 
     # ── deletions (D12, unchanged) ──
     window_rows = ledger_repo.window_rows(
@@ -868,6 +901,11 @@ def run_backfill(
 
     aggregate_summary = _new_summary()
     aggregate_summary["candidates"] = 0
+    if feed_row.feed in PROJNO_FEEDS:
+        # Plan 72 - a resumed segment keeps the month counts of the days the
+        # earlier segments finished (the cursor never re-reads them).
+        earlier = (backfill_row.summary_json or {}).get("byMonth")
+        aggregate_summary["byMonth"] = dict(earlier) if isinstance(earlier, dict) else {}
     day = backfill_row.next_day
     segment_start = backfill_row.next_day  # N2 - this segment's own first day
     requests_count = 0
@@ -906,11 +944,17 @@ def run_backfill(
             stop_reason = {"code": exc.code, "message": str(exc)}
             break
 
-        deduped = dedupe_latest(rows)
+        deduped = dedupe_latest(rows, feed_row.feed)
+        if feed_row.feed in PROJNO_FEEDS:
+            # Plan 72 - the dry-run pass reports records by month (of the day
+            # read), so the owner sees the 20-year volume before the real pass.
+            by_month = aggregate_summary.setdefault("byMonth", {})
+            month = day.strftime("%Y-%m")
+            by_month[month] = by_month.get(month, 0) + len(deduped)
         ordered = push_order(deduped)
         to_send: List[RawVendorRecord] = []
         for record in ordered:
-            key = doc_key(record)
+            key = doc_key(record, feed_row.feed)
             if key is None:
                 aggregate_summary["skippedNoKey"] += 1
                 continue
@@ -1002,7 +1046,9 @@ def run_backfill(
 
         backfill_row.next_day = day + timedelta(days=1)
         backfill_row.days_done = (backfill_row.days_done or 0) + 1
-        backfill_row.summary_json = aggregate_summary
+        # A fresh copy each day: the nested ``byMonth`` counts must never be
+        # an in-place edit SQLAlchemy cannot see.
+        backfill_row.summary_json = json.loads(json.dumps(aggregate_summary))
         db.commit()
         day = backfill_row.next_day
 
@@ -1047,7 +1093,7 @@ def run_backfill(
 
     backfill_row.status = DOC_FEED_BACKFILL_DONE
     backfill_row.finished_at = datetime.now(timezone.utc)
-    if not dry_run and backfill_row.from_day <= date.fromisoformat(BACKFILL_FROM_DEFAULT):
+    if not dry_run and backfill_row.from_day <= backfill_floor(feed_row.feed):
         feed_row.full_backfill_done_at = now
     db.commit()
     _new_run_for_backfill(

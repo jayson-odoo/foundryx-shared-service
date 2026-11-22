@@ -16,14 +16,47 @@ from typing import Any, Dict, List, Optional
 
 from ..canonical.base import CanonicalRecord
 from .clock import MYT
-from .constants import FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES
+from .constants import (
+    FEED_DELIVERY_ORDERS,
+    FEED_GOODS_RECEIVE_NOTES,
+    FEED_PROJECT_REGISTRATIONS,
+    PROJNO_FEEDS,
+)
+
+# Plan 72 - the date field of a project registration (its by-date door's day).
+PROJECT_REG_DATE_FIELD = "Date"
 
 
-def doc_key(record: Dict[str, Any]) -> Optional[int]:
+def proj_no(record: Dict[str, Any]) -> Optional[str]:
+    """Plan 72 - a registration's ``ProjNo``, trimmed; ``None`` when blank or
+    not text (such a record is never sent, counted as ``skippedNoKey``)."""
+    value = record.get("ProjNo")
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _proj_no_key(record: Dict[str, Any]) -> Optional[int]:
+    """Plan 72 - the ledger / issue key of a registration: a stable positive
+    63-bit number from its ``ProjNo`` matched as AutoCount does (trimmed,
+    case-insensitive), so the BIGINT ``doc_key`` tables hold it unchanged."""
+    number = proj_no(record)
+    if number is None:
+        return None
+    digest = hashlib.sha256(number.casefold().encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") >> 1
+
+
+def doc_key(record: Dict[str, Any], feed: Optional[str] = None) -> Optional[int]:
     """The record's ``DocKey`` as a plain ``int``, or ``None`` when it is
     missing, a bare bool, or not an integer (D19) - such a record is never
     sent (the CRM would answer ``failed`` with a raw/null ``source_ref`` no
-    record could be matched back to)."""
+    record could be matched back to). A ``ProjNo`` feed (plan 72) keys on
+    ``ProjNo`` instead; every other feed ignores ``ProjNo`` (documents carry
+    one too)."""
+    if feed in PROJNO_FEEDS:
+        return _proj_no_key(record)
     value = record.get("DocKey")
     if isinstance(value, bool):
         return None
@@ -40,7 +73,9 @@ def doc_key(record: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-def dedupe_latest(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def dedupe_latest(
+    records: List[Dict[str, Any]], feed: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """One record per DocKey - the copy with the greatest ``LastModified``
     (D8). The vendor's own fixed ISO format sorts lexically identically to
     chronological order (plan 08 D7), so this never needs to PARSE the
@@ -48,7 +83,7 @@ def dedupe_latest(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ``None`` - counted as ``skippedNoKey`` by the caller, never here)."""
     by_key: Dict[int, Dict[str, Any]] = {}
     for record in records:
-        key = doc_key(record)
+        key = doc_key(record, feed)
         if key is None:
             continue
         existing = by_key.get(key)
@@ -81,14 +116,25 @@ def source_ref(feed: str, book: str, record: Dict[str, Any]) -> str:
         return f"{book}:DO:{doc_key(record)}"
     if feed == FEED_GOODS_RECEIVE_NOTES:
         return f"{book}:GRN:{doc_key(record)}"
+    if feed == FEED_PROJECT_REGISTRATIONS:
+        return f"{book}:PROJREG:{proj_no(record)}"
     raise ValueError(f"Unknown doc feed '{feed}'.")
 
 
-def doc_date(record: Dict[str, Any]) -> Optional[date]:
+def doc_date(record: Dict[str, Any], feed: Optional[str] = None) -> Optional[date]:
     """Parses ISO date / ISO datetime / ``yyyyMMdd``. ``None`` when
     unparseable - the record is still sent (D19); the CRM fails it and no
-    ledger row appears."""
+    ledger row appears. A registration's day is its ``Date`` (plan 72)."""
+    if feed in PROJNO_FEEDS:
+        return parse_doc_day(record.get(PROJECT_REG_DATE_FIELD))
     return parse_doc_day(record.get("DocDate"))
+
+
+def doc_number(record: Dict[str, Any], feed: Optional[str] = None) -> Optional[str]:
+    """The number the ledger / issue rows show: ``DocNo``, or the registration's ``ProjNo``."""
+    if feed in PROJNO_FEEDS:
+        return proj_no(record)
+    return record.get("DocNo")
 
 
 def parse_doc_day(raw: Any) -> Optional[date]:

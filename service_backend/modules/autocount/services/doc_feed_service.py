@@ -18,10 +18,12 @@ from app.models.background_job import JOB_FAILED, JOB_TERMINAL_STATUSES
 from ..doc_feed.clock import myt_date
 from ..doc_feed.constants import (
     ALL_FEEDS,
-    BACKFILL_FROM_DEFAULT,
     DOC_FEED_BACKFILL_JOB_TYPE,
+    DATE_ONLY_FEEDS,
     DOC_FEED_RUN_JOB_TYPE,
     DOCUMENT_FEEDS,
+    FEED_PROJECT_REGISTRATIONS,
+    backfill_floor,
 )
 from ..doc_feed.jobs import run_doc_feed_backfill_job, run_doc_feed_job
 from ..doc_feed.schedule import (
@@ -32,7 +34,8 @@ from ..doc_feed.schedule import (
     sweep_changed,
     validate_doc_feed_schedule,
 )
-from ..doc_feed.window import resolve_window, validate_doc_feed_window
+from ..doc_feed.runner import book_allowed_for_feed
+from ..doc_feed.window import POLL_BASIS_DOC_DATE, resolve_window, validate_doc_feed_window
 from ..http_source.book import derive_book
 from ..models import (
     DOC_FEED_BACKFILL_RUNNING,
@@ -163,7 +166,7 @@ class DocFeedService:
             feed=feed,
             mode=row.mode if row else DOC_FEED_MODE_OFF,
             schedule=DocFeedScheduleOut(**resolve_schedule(row.schedule_config if row else None)),
-            window=DocFeedWindowOut(**resolve_window(row.window_config if row else None)),
+            window=DocFeedWindowOut(**resolve_window(row.window_config if row else None, feed)),
             connectionId=row.connection_id if row else None,
             book=row.book if row else None,
             cursorDay=row.cursor_day if row else None,
@@ -173,7 +176,7 @@ class DocFeedService:
             lastPollOkAt=row.last_poll_ok_at if row else None,
             lastSweepOkAt=row.last_sweep_ok_at if row else None,
             fullBackfillDoneAt=row.full_backfill_done_at if row else None,
-            backfillFloor=date.fromisoformat(BACKFILL_FROM_DEFAULT),
+            backfillFloor=backfill_floor(feed),
             fullBackfillFromDay=(
                 self.backfills.earliest_completed_live_from_day(tenant_id, row.id)
                 if row and row.full_backfill_done_at is not None else None
@@ -214,6 +217,9 @@ class DocFeedService:
             if window_errors:
                 field, message = next(iter(window_errors.items()))
                 raise DocFeedValidationError(field, message)
+            if feed in DATE_ONLY_FEEDS and clean_window["pollBasis"] != POLL_BASIS_DOC_DATE:
+                # Plan 72 - AutoCount answers registrations by date only.
+                raise DocFeedValidationError("pollBasis", "This feed reads by date only.")
 
         row = self.feeds.get_or_create(tenant_id, company_id, feed)
 
@@ -226,6 +232,12 @@ class DocFeedService:
                     "connectionId",
                     "That connection is not an eligible open (no-auth) AutoCount "
                     "connection with a usable book.",
+                )
+            if not book_allowed_for_feed(
+                feed, derive_book(str((candidate.config_json or {}).get("baseUrl") or ""))
+            ):
+                raise DocFeedValidationError(
+                    "connectionId", "This feed may not read that connection's book."
                 )
             resolved_conn = candidate
         elif clear_connection:
@@ -313,6 +325,15 @@ class DocFeedService:
         if self.feeds.unfinished_job(tenant_id, DOC_FEED_RUN_JOB_TYPE, row.id) is not None:
             raise DocFeedConflictError(
                 "RUN_IN_FLIGHT", "A run for this feed is already in progress."
+            )
+        if (
+            feed == FEED_PROJECT_REGISTRATIONS
+            and self.backfills.running_for_feed(tenant_id, row.id) is not None
+        ):
+            # Plan 72 - one AutoCount call in flight per book: no poll / re-check
+            # while this feed's backfill is reading.
+            raise DocFeedConflictError(
+                "BACKFILL_RUNNING", "This feed's backfill is running; try again after it."
             )
 
         job = JobService(self.db).create(
@@ -423,10 +444,19 @@ class DocFeedService:
             raise DocFeedConflictError(
                 "BACKFILL_OPEN", "A backfill is already open for this feed."
             )
+        if (
+            feed == FEED_PROJECT_REGISTRATIONS and row.book
+            and self.backfills.open_for_book(tenant_id, row.book) is not None
+        ):
+            # Plan 72 - one backfill per book at a time (one AutoCount call
+            # in flight per book).
+            raise DocFeedConflictError(
+                "BOOK_BUSY", "Another backfill is already reading this book."
+            )
 
         now = datetime.now(timezone.utc)
         today = myt_date(now)
-        default_from = date.fromisoformat(BACKFILL_FROM_DEFAULT)
+        default_from = backfill_floor(feed)
         from_day_value = from_day or default_from
         if from_day_value < default_from:
             # SS2 - an unbounded fromDay (0001-01-01) would queue ~740k
@@ -438,6 +468,18 @@ class DocFeedService:
         if from_day_value > to_day_value or to_day_value > today:
             raise DocFeedValidationError(
                 "toDay", "toDay must be on or before today, and not before fromDay."
+            )
+
+        if (
+            not dry_run and feed == FEED_PROJECT_REGISTRATIONS
+            and self.backfills.done_dry_run_covering(
+                tenant_id, row.id, from_day_value, to_day_value
+            ) is None
+        ):
+            # Plan 72 - the dry-run pass (counts by month) runs first.
+            raise DocFeedConflictError(
+                "DRY_RUN_FIRST",
+                "Run a dry run over these days first, then the real backfill.",
             )
 
         if not dry_run and from_day_value <= default_from and row.full_backfill_done_at is not None:

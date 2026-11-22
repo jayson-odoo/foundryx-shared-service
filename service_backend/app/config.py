@@ -195,6 +195,18 @@ class Settings(BaseSettings):
     def autocount_write_allowed_books_list(self) -> List[str]:
         return [b.strip() for b in self.autocount_write_allowed_books.split(",") if b.strip()]
 
+    # Plan 72 (AUTOCOUNT-PROJECT-SYNC S0): comma list of books the project
+    # registrations feed may read. Default the test book only (owner: db3,
+    # never db1 / db2 while the feed is being proven); widen per environment.
+    autocount_project_registrations_feed_books: str = "db3"
+
+    @property
+    def autocount_project_registrations_feed_books_list(self) -> List[str]:
+        return [
+            b.strip() for b in self.autocount_project_registrations_feed_books.split(",")
+            if b.strip()
+        ]
+
     # Environment
     environment: str = "development"
     debug: bool = False

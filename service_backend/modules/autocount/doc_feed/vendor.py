@@ -24,7 +24,7 @@ from ..http_source.source import (
     TRANSPORT_RETRY_BACKOFFS_SECONDS,
 )
 from .clock import yyyymmdd
-from .constants import BY_DOC_DATE_PATH, BY_LAST_MODIFIED_PATH
+from .constants import BY_DOC_DATE_PARAM, BY_DOC_DATE_PATH, BY_LAST_MODIFIED_PATH
 
 VENDOR_TRANSPORT = "VENDOR_TRANSPORT"
 VENDOR_HTTP = "VENDOR_HTTP"
@@ -56,8 +56,9 @@ class DocFeedVendor:
         return self._document_day(path, {"lastModified": yyyymmdd(day)})
 
     def day_by_doc_date(self, feed: str, day) -> List[Dict[str, Any]]:
+        # Plan 72 - ``ProjectRegbyDate`` takes ``Date``, the document doors ``DocDate``.
         path = BY_DOC_DATE_PATH[feed]
-        return self._document_day(path, {"DocDate": yyyymmdd(day)})
+        return self._document_day(path, {BY_DOC_DATE_PARAM[feed]: yyyymmdd(day)})
 
     def get_day(self, path: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Any registered day door (sprint-5/17 doc finder) - the SAME retry

@@ -85,6 +85,7 @@ from .canonical.masters import (
 from .models import (
     DOC_FEED_DELIVERY_ORDERS,
     DOC_FEED_GOODS_RECEIVE_NOTES,
+    DOC_FEED_PROJECT_REGISTRATIONS,
 )
 from .sinks import WriteResult
 
@@ -148,6 +149,9 @@ _ENTITY_PATH: Dict[str, str] = {
     # key, no path at all - it keeps routing to the logging sink).
     DOC_FEED_DELIVERY_ORDERS: DOC_FEED_DELIVERY_ORDERS,
     DOC_FEED_GOODS_RECEIVE_NOTES: DOC_FEED_GOODS_RECEIVE_NOTES,
+    # Plan 72 (contract 2.15) - `POST /external/ingest/project_registrations`;
+    # gated below like the other doc feeds.
+    DOC_FEED_PROJECT_REGISTRATIONS: DOC_FEED_PROJECT_REGISTRATIONS,
     # sprint-5/14 section 11 (D26) - branches are the regular `branch` master
     # entity now (NOT a doc-feed key): same door (`/ingest/branches`), same
     # 2.7 gate, keyed by the singular entity type like every other master.
@@ -377,6 +381,22 @@ REPLACES_LINE_REF_CONTRACT_VERSION = ContractVersion(*REPLACES_LINE_REF_MIN_CONT
 # 2.13); sent only when the CRM ADVERTISES at least this (``extra="forbid"``).
 PACKAGE_LINES_CONTRACT_VERSION = ContractVersion(*PACKAGE_LINES_MIN_CONTRACT)
 
+# Plan 72 (sorento-crm #2676, contract 2.15) - the project registrations doc
+# feed: >= 2.15 AND `project_registrations` advertised.
+PROJECT_REGISTRATIONS_CONTRACT_VERSION = ContractVersion(2, 15)
+
+# The contract each doc feed's mode gate and run-time CONTRACT_GATE need.
+DOC_FEED_CONTRACT_VERSIONS: Dict[str, float] = {
+    DOC_FEED_DELIVERY_ORDERS: DOC_FEED_CONTRACT_VERSION,
+    DOC_FEED_GOODS_RECEIVE_NOTES: DOC_FEED_CONTRACT_VERSION,
+    DOC_FEED_PROJECT_REGISTRATIONS: PROJECT_REGISTRATIONS_CONTRACT_VERSION,
+}
+
+
+def doc_feed_contract_version(feed: str) -> float:
+    return DOC_FEED_CONTRACT_VERSIONS.get(feed, DOC_FEED_CONTRACT_VERSION)
+
+
 # plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
 # is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
 # advertised contract to be at least this version AND to list this entity
@@ -393,6 +413,9 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
     # name.
     DOC_FEED_DELIVERY_ORDERS: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_DELIVERY_ORDERS),
     DOC_FEED_GOODS_RECEIVE_NOTES: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_GOODS_RECEIVE_NOTES),
+    DOC_FEED_PROJECT_REGISTRATIONS: (
+        PROJECT_REGISTRATIONS_CONTRACT_VERSION, DOC_FEED_PROJECT_REGISTRATIONS,
+    ),
     # sprint-5/14 section 11 (D26) - `branch` rides the same 2.7 door as the
     # doc feed; the consumer must advertise `branches`.
     ENTITY_BRANCH: (DOC_FEED_CONTRACT_VERSION, "branches"),
