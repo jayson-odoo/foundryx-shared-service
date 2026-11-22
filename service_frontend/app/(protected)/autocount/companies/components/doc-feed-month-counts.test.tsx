@@ -69,7 +69,7 @@ describe('runs list config', () => {
   it('adds needs review, skipped and switched off to Counters', async () => {
     const { useDocFeedRunsListConfig } = await import('./use-doc-feed-runs-list-config');
     const { result } = renderHook(() => useDocFeedRunsListConfig('co-1'));
-    const counters = result.current.columns.find((c) => c.id === 'summary') as { accessorFn: (r: DocFeedRun) => string };
+    const counters = result.current.columns.find((c) => c.id === 'summary') as unknown as { accessorFn: (r: DocFeedRun) => string };
     expect(counters.accessorFn(run({ created: 2, needsReview: 1, skipped: 3, switchedOff: 4 }))).toBe(
       '2 created, 0 updated, 0 unchanged, 1 needs review, 3 skipped, 4 switched off',
     );

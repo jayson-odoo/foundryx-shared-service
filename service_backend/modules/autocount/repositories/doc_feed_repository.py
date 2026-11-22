@@ -477,14 +477,17 @@ class DocFeedBackfillRepository:
         )
 
     def open_for_book(self, tenant_id: str, book: str) -> Optional[AcDocFeedBackfill]:
-        """Plan 72 - any open backfill (any feed, any company) reading ``book``:
-        one backfill per book at a time keeps one AutoCount call in flight."""
+        """Plan 72 - a backfill (any feed, any company) still reading ``book``
+        (running or stopping; a stopped one reads nothing): one backfill per
+        book at a time keeps one AutoCount call in flight."""
         return (
             self.db.query(AcDocFeedBackfill)
             .filter(
                 AcDocFeedBackfill.tenant_id == tenant_id,
                 AcDocFeedBackfill.book == book,
-                AcDocFeedBackfill.status.in_(DOC_FEED_BACKFILL_OPEN_STATUSES),
+                AcDocFeedBackfill.status.in_(
+                    (DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING)
+                ),
             )
             .first()
         )
@@ -515,6 +518,11 @@ class DocFeedBackfillRepository:
                 AcDocFeedBackfill.feed_id == feed_id,
                 AcDocFeedBackfill.dry_run.is_(True),
                 AcDocFeedBackfill.status == DOC_FEED_BACKFILL_DONE,
+                # A discarded dry run closed as `done` without its counts.
+                or_(
+                    AcDocFeedBackfill.error_code.is_(None),
+                    AcDocFeedBackfill.error_code != BACKFILL_DISCARDED_CODE,
+                ),
                 AcDocFeedBackfill.from_day <= from_day,
                 AcDocFeedBackfill.to_day >= to_day,
             )

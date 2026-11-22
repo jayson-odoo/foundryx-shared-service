@@ -583,6 +583,14 @@ class DocFeedService:
             raise DocFeedValidationError(
                 "mode", "A live backfill needs this feed in Push mode first."
             )
+        if (
+            feed == FEED_PROJECT_REGISTRATIONS and row.book
+            and self.backfills.open_for_book(tenant_id, row.book) is not None
+        ):
+            # Plan 72 - the same one-per-book rule Start applies.
+            raise DocFeedConflictError(
+                "BOOK_BUSY", "Another backfill is already reading this book."
+            )
         backfill.status = DOC_FEED_BACKFILL_RUNNING
         self.db.commit()
         job = JobService(self.db).create(

@@ -520,8 +520,13 @@ def _apply_document_verdict(
         # Plan 72 (contract 2.15 section 4) - the CRM listed it for a person
         # (or ignored it while switched off): nothing for the SS to store or
         # retry; a switched-off answer stops the run instead (the caller).
-        key_name = "switchedOff" if is_switched_off(result) else "skipped"
-        summary[key_name] = summary.get(key_name, 0) + 1
+        if is_switched_off(result):
+            summary["switchedOff"] = summary.get("switchedOff", 0) + 1
+        else:
+            summary["skipped"] = summary.get("skipped", 0) + 1
+            if not dry_run:
+                # Final: a held re-send row must not go out again every tick.
+                issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
     elif outcome == "failed" or too_large_record:
         # N7 - an over-cap document can never be stored for a D9 re-send, so
         # it is a permanent failure with a named error (never a retryable

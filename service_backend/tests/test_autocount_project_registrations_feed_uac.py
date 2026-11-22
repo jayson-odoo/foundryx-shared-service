@@ -424,3 +424,83 @@ def test_s0_13_an_allowed_book_without_a_feed_row_fails_loudly_and_others_run(db
                for r in caplog.records)
     missing = DocFeedService(db).missing_feed_books(co.tenant_id, PR)
     assert missing == ["db4"]
+
+
+# ── code review round 1 ─────────────────────────────────────────────────────
+
+
+def test_r1_a_held_retryable_registration_answered_skipped_is_cleared(db):
+    co, ac_conn = _wired(db)
+    feed = _feed(db, co, ac_conn)
+    rec = _reg("P1", "2026-11-21")
+    run_poll(db, feed, dry_run=False, now=NOW,
+             vendor_transport=_Vendor({"20261121": [rec]}).transport(),
+             sink_transport=_Crm(outcome="retryable").transport())
+    assert db.query(AcDocFeedIssue).filter_by(feed=PR, kind="retryable").count() == 1
+    run_poll(db, feed, dry_run=False, now=NOW,
+             vendor_transport=_Vendor({}).transport(),
+             sink_transport=_Crm(outcome="skipped", code="duplicate").transport())
+    assert db.query(AcDocFeedIssue).filter_by(feed=PR).count() == 0
+
+
+def test_r1_a_discarded_dry_run_does_not_open_the_live_pass(db, monkeypatch):
+    from modules.autocount.services.doc_feed_service import DocFeedConflictError
+
+    co, ac_conn = _wired(db)
+    feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, feed, from_day=date(2006, 1, 1), to_day=date(2006, 1, 31), dry_run=True,
+                   status="done")
+    bf.error_code = "DISCARDED"
+    db.commit()
+    service = DocFeedService(db)
+    monkeypatch.setattr(service, "_dispatch", lambda *a, **k: None)
+    with pytest.raises(DocFeedConflictError) as exc:
+        service.start_backfill(co.tenant_id, co.id, PR, dry_run=False,
+                               from_day=date(2006, 1, 1), to_day=date(2006, 1, 31))
+    assert exc.value.code == "DRY_RUN_FIRST"
+
+
+@pytest.mark.parametrize("where", ["code", "errors", "warnings"])
+def test_r1_switched_off_is_read_wherever_the_crm_puts_it(db, where):
+    from modules.autocount.doc_feed.runner import is_switched_off
+    from modules.autocount.sinks_sorento import SorentoSink
+
+    sink = SorentoSink.__new__(SorentoSink)
+    sink.entity_type = PR
+    sink.name = "sorento"
+    verdict = {"source_ref": "db3:PROJREG:P1", "outcome": "skipped"}
+    if where == "code":
+        verdict["code"] = "switched_off"
+    elif where == "errors":
+        verdict["errors"] = {"code": "switched_off"}
+    else:
+        verdict["warnings"] = ["switched_off"]
+    assert is_switched_off(sink._result_for("db3:PROJREG:P1", verdict))
+
+
+def test_r1_a_stopped_backfill_on_the_book_does_not_block_a_new_one(db, monkeypatch):
+    co, ac_conn = _wired(db)
+    _feed(db, co, ac_conn)
+    do_feed = _feed(db, co, ac_conn, feed="delivery_orders")
+    _backfill(db, do_feed, from_day=date(2019, 1, 1), to_day=date(2019, 1, 2), dry_run=True,
+              status="stopped")
+    service = DocFeedService(db)
+    monkeypatch.setattr(service, "_dispatch", lambda *a, **k: None)
+    bf = service.start_backfill(co.tenant_id, co.id, PR, dry_run=True)
+    assert bf.status == "running"
+
+
+def test_r1_resume_waits_while_another_backfill_reads_the_book(db, monkeypatch):
+    from modules.autocount.services.doc_feed_service import DocFeedConflictError
+
+    co, ac_conn = _wired(db)
+    feed = _feed(db, co, ac_conn)
+    do_feed = _feed(db, co, ac_conn, feed="delivery_orders")
+    _backfill(db, feed, from_day=date(2006, 1, 1), to_day=date(2006, 1, 2), dry_run=True,
+              status="stopped")
+    _backfill(db, do_feed, from_day=date(2019, 1, 1), to_day=date(2019, 1, 2), dry_run=True)
+    service = DocFeedService(db)
+    monkeypatch.setattr(service, "_dispatch", lambda *a, **k: None)
+    with pytest.raises(DocFeedConflictError) as exc:
+        service.resume_backfill(co.tenant_id, co.id, PR)
+    assert exc.value.code == "BOOK_BUSY"

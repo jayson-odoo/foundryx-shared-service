@@ -1730,6 +1730,15 @@ class SorentoSink:
                     ),
                     errors=verdict.get("errors") or None,
                 )
+            if self.entity_type == DOC_FEED_PROJECT_REGISTRATIONS:
+                # Plan 72 (contract 2.15 section 4) - a transient CRM-side
+                # condition: re-sent from the held issue row next run.
+                return WriteResult(
+                    ok=False, sink=self.name, external_id=None, delivered=False,
+                    outcome=outcome,
+                    message=f"Sorento reported '{ref}' retryable; it is sent again on the next run.",
+                    errors=verdict.get("errors") or None,
+                )
             # Must not happen for masters with no dependency reference
             # (AC-14-24). Loud, not re-queued.
             return WriteResult(
@@ -1752,6 +1761,12 @@ class SorentoSink:
             errors = verdict.get("errors")
             errors = dict(errors) if isinstance(errors, dict) else {}
             code = verdict.get("code") or errors.get("code")
+            if not code:
+                # The contract names the code but not its field: a warning
+                # word counts too, so a switched-off answer can never be
+                # mistaken for a final skip (which would move the cursor on).
+                words = {str(w) for w in (verdict.get("warnings") or ())}
+                code = next((w for w in ("switched_off", "needs_review") if w in words), None)
             if code:
                 errors["code"] = str(code)
             return WriteResult(
