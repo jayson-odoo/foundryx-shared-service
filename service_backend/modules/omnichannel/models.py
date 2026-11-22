@@ -20,7 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.types import JSON
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 from app.models.utc_datetime import UTCDateTime
 
 from .db import OmniBase
@@ -81,9 +81,25 @@ class Workspace(OmniBase):
     # round-robin mode's cursor (last-assigned member's user id, or NULL). No
     # separate pointer table - one workspace, one cursor.
     round_robin_cursor = Column(String, nullable=True)
+    # S7 partner path: the partner's own organisation id (`externalOrgId`).
+    # NULL for every dashboard-created workspace. Unique per tenant among live
+    # rows (partial index, migration 0031_omni_workspace_external_ref), which
+    # makes the partner PUT idempotent and race-safe.
+    external_ref = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_workspaces_tenant_external_ref",
+            "tenant_id",
+            "external_ref",
+            unique=True,
+            postgresql_where=text("external_ref IS NOT NULL AND is_trashed = false"),
+            sqlite_where=text("external_ref IS NOT NULL AND is_trashed = 0"),
+        ),
     )
 
 
