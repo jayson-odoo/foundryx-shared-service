@@ -90,6 +90,11 @@ def _feed(db, co, ac_conn, *, feed: str = PR, mode: str = "push", book: str = "d
     return row
 
 
+def _wire(rec: Dict[str, Any], book: str = "db3") -> Dict[str, Any]:
+    """The record as the contract (section 3) sends it."""
+    return dict(rec, source_ref=f"{book}:PROJREG:{rec['ProjNo'].strip()}", Date=rec["Date"][:10])
+
+
 class _Vendor:
     """``/api/db3/ProjectRegbyDate`` answering per ``Date``; records every call."""
 
@@ -204,7 +209,8 @@ def test_poll_reads_by_date_and_pushes_verbatim(db):
     assert vendor.calls == ["20261121", "20261122"]  # yesterday .. today, oldest first
     assert len(crm.pushes) == 1
     pushed = crm.pushes[0]
-    assert pushed["records"] == [rec]  # exactly as AutoCount returned it
+    # S0-3 - as AutoCount returned it, plus source_ref and Date as yyyy-mm-dd.
+    assert pushed["records"] == [_wire(rec)]
     assert pushed["companyCode"] == "SRT" and pushed["book"] == "db3"
     assert "backfill" not in pushed
     ledger = db.query(AcDocFeedLedger).filter_by(feed=PR).all()
@@ -275,7 +281,7 @@ def test_sweep_rechecks_by_content_and_has_no_deletion_step(db):
                     vendor_transport=_Vendor({"20261121": [edited]}).transport(),
                     sink_transport=crm2.transport())
     assert run.outcome == "SUCCESS", run.error
-    assert [p["records"] for p in crm2.pushes] == [[edited]]
+    assert [p["records"] for p in crm2.pushes] == [[_wire(edited)]]
     assert run.summary_json["changed"] == 1
     assert "candidates" not in run.summary_json
     assert crm2.other_paths == []
@@ -317,7 +323,9 @@ def test_dry_run_backfill_counts_by_month_and_writes_nothing(db):
     db.refresh(bf)
     assert bf.status == "done"
     assert vendor.calls == ["20060130", "20060131", "20060201", "20060202"]  # one day per call, oldest first
-    assert bf.summary_json["byMonth"] == {"2006-01": 2, "2006-02": 1}
+    by_month = bf.summary_json["byMonth"]
+    assert {m: v["read"] for m, v in by_month.items()} == {"2006-01": 2, "2006-02": 1}
+    assert by_month["2006-01"]["created"] == 2 and by_month["2006-02"]["created"] == 1
     assert all(p["_dry_run"] for p in crm.pushes)
     assert db.query(AcDocFeedLedger).filter_by(feed=PR).count() == 0
 
