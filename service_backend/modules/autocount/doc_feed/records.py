@@ -174,4 +174,19 @@ class RawVendorRecord(CanonicalRecord):
     raw: Dict[str, Any]
 
     def sink_payload(self) -> Dict[str, Any]:
+        if self.entity_type in PROJNO_FEEDS:
+            return project_registration_wire(self.raw, self.source_ref)
         return self.raw
+
+
+def project_registration_wire(raw: Dict[str, Any], ref: str) -> Dict[str, Any]:
+    """Plan 72 (contract 2.15 section 3) - a registration as it is pushed:
+    every value exactly as AutoCount answered it, plus ``source_ref``, with
+    ``Date`` as ``yyyy-mm-dd``. An unparseable ``Date`` is sent as read (the
+    CRM refuses that record by itself, D19)."""
+    out = dict(raw)
+    out["source_ref"] = ref
+    day = parse_doc_day(raw.get(PROJECT_REG_DATE_FIELD))
+    if day is not None:
+        out[PROJECT_REG_DATE_FIELD] = day.isoformat()
+    return out

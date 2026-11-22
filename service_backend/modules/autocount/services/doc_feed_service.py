@@ -139,6 +139,20 @@ class DocFeedService:
             out.append((conn, book))
         return out
 
+    def missing_feed_books(self, tenant_id: str, feed: str) -> List[str]:
+        """Plan 72 (contract 2.15 section 2, UAC S0-13) - the books this feed
+        may read (``book_allowed_for_feed``) that the tenant has an open
+        AutoCount connection for but no feed row: each one is a book whose
+        registrations would silently never sync."""
+        configured = {
+            row.book for row in self.feeds.list_for_tenant_feed(tenant_id, feed) if row.book
+        }
+        missing = {
+            book for _conn, book in self.eligible_connections(tenant_id)
+            if book_allowed_for_feed(feed, book) and book not in configured
+        }
+        return sorted(missing)
+
     # ── view ─────────────────────────────────────────────────────────────────
 
     def view(self, tenant_id: str, company_id: str) -> DocFeedsViewOut:

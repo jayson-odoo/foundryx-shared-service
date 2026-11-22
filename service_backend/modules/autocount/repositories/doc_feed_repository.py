@@ -45,6 +45,14 @@ def _dialect_insert(db: Session, table):
 
 
 class DocFeedRepository:
+    def list_for_tenant_feed(self, tenant_id: str, feed: str) -> List[AcDocFeed]:
+        """Plan 72 - every company's row of one feed in this tenant."""
+        return (
+            self.db.query(AcDocFeed)
+            .filter(AcDocFeed.tenant_id == tenant_id, AcDocFeed.feed == feed)
+            .all()
+        )
+
     def __init__(self, db: Session):
         self.db = db
 

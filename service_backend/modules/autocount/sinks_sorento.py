@@ -1742,6 +1742,24 @@ class SorentoSink:
                 ),
                 errors=verdict.get("errors") or None,
             )
+        if self.entity_type == DOC_FEED_PROJECT_REGISTRATIONS and outcome in (
+            "skipped", "failed",
+        ):
+            # Plan 72 (contract 2.15 section 4) - `skipped` is a final CRM
+            # verdict here (listed for a person there, never retried), and
+            # its `code` matters: `switched_off` holds the backfill cursor.
+            # A `failed` keeps its code too (`needs_review`).
+            errors = verdict.get("errors")
+            errors = dict(errors) if isinstance(errors, dict) else {}
+            code = verdict.get("code") or errors.get("code")
+            if code:
+                errors["code"] = str(code)
+            return WriteResult(
+                ok=False, sink=self.name, external_id=None, delivered=False,
+                outcome=outcome,
+                message=f"Sorento {outcome} '{ref}'" + (f": {code}" if code else ""),
+                errors=errors or None,
+            )
         if outcome == "failed":
             errors = verdict.get("errors") or {}
             return WriteResult(

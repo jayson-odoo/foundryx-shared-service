@@ -73,7 +73,37 @@ def sweep_doc_feeds(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
             fired += 1
         elif outcome == "skipped":
             skipped += 1
-    return {"fired": fired, "skipped": skipped, "failed": failed}
+    missing = _report_missing_feed_books(db)
+    return {"fired": fired, "skipped": skipped, "failed": failed, "missingFeedBooks": missing}
+
+
+def _report_missing_feed_books(db: Session) -> int:
+    """Plan 72 (UAC S0-13) - every tenant that runs the registrations feed
+    is checked for an allowed book with a connection but no feed row: that
+    book fails loudly (an error log line each tick) while the configured
+    books keep running. Never raises into the sweep."""
+    from ..services.doc_feed_service import DocFeedService
+
+    count = 0
+    for feed in PROJNO_FEEDS:
+        try:
+            tenant_ids = [
+                row[0] for row in active_tenant_service_join(
+                    db.query(AcDocFeed.tenant_id), AcDocFeed.tenant_id
+                ).filter(AcDocFeed.feed == feed).distinct().all()
+            ]
+            service = DocFeedService(db)
+            for tenant_id in tenant_ids:
+                for book in service.missing_feed_books(tenant_id, feed):
+                    count += 1
+                    logger.error(
+                        "AutoCount project registrations: book %s has no feed set up "
+                        "(tenant %s); its registrations are not read.", book, tenant_id,
+                    )
+        except Exception:  # noqa: BLE001 - the check never stops the sweep
+            logger.exception("doc-feed missing-book check failed for %s", feed)
+            db.rollback()
+    return count
 
 
 def _sweep_one_feed(db: Session, feed: AcDocFeed, *, now: datetime) -> str:

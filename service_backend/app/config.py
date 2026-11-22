@@ -207,6 +207,11 @@ class Settings(BaseSettings):
             if b.strip()
         ]
 
+    # Plan 72 - the pause between two backfill days of the project
+    # registrations feed (contract 2.15 section 2: one call in flight per book
+    # with a pause between days), so a 20-year walk never hammers the book.
+    autocount_project_registrations_day_pause_seconds: float = 1.0
+
     # Environment
     environment: str = "development"
     debug: bool = False

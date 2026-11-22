@@ -48,6 +48,7 @@ from ..repositories.doc_feed_repository import (
     DocFeedRepository,
 )
 from ..sinks_sorento import (
+    SORENTO_MAX_BATCH,
     doc_feed_contract_version,
     describe_consumer_failure,
     SorentoRateLimited,
@@ -142,6 +143,59 @@ def book_allowed_for_feed(feed: str, book: str) -> bool:
     return book in settings.autocount_project_registrations_feed_books_list
 
 
+# Plan 72 (contract 2.15 section 4, UAC S0-9) - the CRM's answer while its
+# "AutoCount project sync" switch is OFF: nothing applied, so the feed does
+# not move on.
+SWITCHED_OFF_CODE = "switched_off"
+CRM_SWITCHED_OFF = "CRM_SWITCHED_OFF"
+CRM_SWITCHED_OFF_MESSAGE = "CRM project sync is switched off"
+NEEDS_REVIEW_CODE = "needs_review"
+
+
+def _verdict_code(result: Any) -> str:
+    errors = getattr(result, "errors", None)
+    return str(errors.get("code") or "") if isinstance(errors, dict) else ""
+
+
+def is_switched_off(result: Any) -> bool:
+    return (getattr(result, "outcome", "") or "") == "skipped" and (
+        _verdict_code(result) == SWITCHED_OFF_CODE
+    )
+
+
+def _month_counts(by_month: Dict[str, Any], month: str) -> Dict[str, int]:
+    """Plan 72 (UAC S0-10) - one month's counts in a registrations backfill
+    summary: records read and the CRM's answers (failed / retryable only
+    appear when there are any)."""
+    bucket = by_month.get(month)
+    if not isinstance(bucket, dict):
+        bucket = {"read": 0, "created": 0, "updated": 0, "unchanged": 0,
+                  "needsReview": 0, "skipped": 0}
+        by_month[month] = bucket
+    return bucket
+
+
+def _count_month_verdict(bucket: Dict[str, int], result: Any) -> None:
+    outcome = getattr(result, "outcome", "") or ""
+    if outcome in ("created", "updated", "unchanged"):
+        key = outcome
+    elif outcome == "failed" and _verdict_code(result) == NEEDS_REVIEW_CODE:
+        key = "needsReview"
+    elif outcome == "skipped":
+        key = "skipped"
+    elif outcome == "failed":
+        key = "failed"
+    else:
+        key = "retryable"
+    bucket[key] = bucket.get(key, 0) + 1
+
+
+def _day_pause(seconds: float) -> None:
+    """Plan 72 (contract 2.15 section 2) - the pause between two backfill days."""
+    if seconds > 0:
+        time.sleep(seconds)
+
+
 class RunRefusal(Exception):
     """A run could not even start - ``code`` is the run row's ``errorCode``."""
 
@@ -217,9 +271,18 @@ def resolve_vendor(db, feed_row: AcDocFeed, *, vendor_transport=None) -> Resolve
         transport=vendor_transport, timeout_seconds=sizing.request_timeout_seconds,
         auth_headers=read_auth,
     )
+    vendor = DocFeedVendor(vendor_client)
+    if feed_row.feed in PROJNO_FEEDS:
+        # Plan 72 (contract 2.15 section 1, UAC S0-1) - every registration
+        # read is one `ac_api_call_log` row, as the #2648 reads are.
+        from ..write_back import call_log as cl
+
+        vendor.attach_call_log(cl.CallLog(db.get_bind(), cl.CallContext(
+            tenant_id=tenant_id, company_id=company.id, actor=cl.ACTOR_RUNNER,
+            doc_type=feed_row.feed,
+        )))
     return ResolvedVendor(
-        company=company, vendor_client=vendor_client, vendor=DocFeedVendor(vendor_client),
-        book=book,
+        company=company, vendor_client=vendor_client, vendor=vendor, book=book,
     )
 
 
@@ -274,6 +337,10 @@ def _resolve_sink_half(
         sink_conn.config_json or {}, credentials, entity_type=feed_row.feed,
         company_code=company.sorento_company_code, transport=sink_transport, book=book,
     )
+    if feed_row.feed in PROJNO_FEEDS:
+        # Plan 72 (UAC S0-4) - registrations go out 1,000 a push (the CRM's
+        # MAX_BATCH), so a day of 1,001 records is exactly two pushes.
+        sink.batch_size = SORENTO_MAX_BATCH
 
     # CONTRACT_GATE - checked again at the START of every run (D4/3.5, S1
     # review round 1): an unreachable or malformed probe now FAILS CLOSED,
@@ -449,11 +516,19 @@ def _apply_document_verdict(
                 )
         if not dry_run:
             issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
+    elif outcome == "skipped":
+        # Plan 72 (contract 2.15 section 4) - the CRM listed it for a person
+        # (or ignored it while switched off): nothing for the SS to store or
+        # retry; a switched-off answer stops the run instead (the caller).
+        key_name = "switchedOff" if is_switched_off(result) else "skipped"
+        summary[key_name] = summary.get(key_name, 0) + 1
     elif outcome == "failed" or too_large_record:
         # N7 - an over-cap document can never be stored for a D9 re-send, so
         # it is a permanent failure with a named error (never a retryable
         # row whose record is missing).
         summary["failed"] = summary.get("failed", 0) + 1
+        if _verdict_code(result) == NEEDS_REVIEW_CODE:
+            summary["needsReview"] = summary.get("needsReview", 0) + 1
         # N3 (review round 1) - a permanently-failed document push is
         # surfaced in `summary.failedRefs` (the same shape `run_sweep` already uses), not only the persistent issue row: an
         # operator reading one run's summary should see WHICH DocKeys failed
@@ -601,6 +676,10 @@ def run_poll(
         return _finish_failed(
             db, run, "SINK_ERROR", _sink_failure_text(chunk_error, resolved.sink), summary=summary,
         )
+    if summary.get("switchedOff"):
+        # Plan 72 (UAC S0-9) - the CRM applied nothing: the cursor stays and
+        # the run's error is the feed's last error.
+        return _finish_failed(db, run, CRM_SWITCHED_OFF, CRM_SWITCHED_OFF_MESSAGE, summary=summary)
 
     if not dry_run:
         feed_row.cursor_day = (end + timedelta(days=1)) if capped else today
@@ -766,6 +845,8 @@ def run_sweep(
         _record_vendor_activity(db, resolved.vendor_client, run)
         if vendor_transport is None:
             resolved.vendor_client.close()
+        if summary.get("switchedOff"):
+            return _finish_failed(db, run, CRM_SWITCHED_OFF, CRM_SWITCHED_OFF_MESSAGE, summary=summary)
         if not dry_run:
             feed_row.last_sweep_ok_at = now
         _finish_success(db, run, summary)
@@ -945,12 +1026,15 @@ def run_backfill(
             break
 
         deduped = dedupe_latest(rows, feed_row.feed)
+        month_bucket: Optional[Dict[str, int]] = None
         if feed_row.feed in PROJNO_FEEDS:
-            # Plan 72 - the dry-run pass reports records by month (of the day
-            # read), so the owner sees the 20-year volume before the real pass.
+            # Plan 72 (UAC S0-10) - the backfill reports records and the CRM's
+            # answers by month (of the day read), so the dry-run pass shows the
+            # 20-year volume and outcome mix before the real pass.
             by_month = aggregate_summary.setdefault("byMonth", {})
-            month = day.strftime("%Y-%m")
-            by_month[month] = by_month.get(month, 0) + len(deduped)
+            month_bucket = _month_counts(by_month, day.strftime("%Y-%m"))
+            month_bucket["read"] += len(deduped)
+        day_switched_off = False
         ordered = push_order(deduped)
         to_send: List[RawVendorRecord] = []
         for record in ordered:
@@ -987,11 +1071,17 @@ def run_backfill(
                     last_chunk_error = error
                     failed_chunk_refs.update(r.source_ref for r in chunk)
                     return
+                nonlocal day_switched_off
                 for record, result in zip(chunk, results):
                     _apply_document_verdict(
                         db, feed_row, resolved.book, record, result, dry_run=dry_run,
                         run_id=backfill_row.id, now=now, summary=aggregate_summary,
                     )
+                    if month_bucket is not None:
+                        if is_switched_off(result):
+                            day_switched_off = True
+                        else:
+                            _count_month_verdict(month_bucket, result)
                 db.commit()
                 _heartbeat(db, job_id)  # B2 - per committed chunk
                 credited.update(r.source_ref for r in chunk)
@@ -1043,6 +1133,11 @@ def run_backfill(
         if day_error is not None:
             stop_reason = {"code": "SINK_ERROR", "message": _sink_failure_text(day_error, resolved.sink)}
             break
+        if day_switched_off:
+            # Plan 72 (UAC S0-9) - the history is not "done" while the CRM
+            # ignored it: the cursor stays on this day.
+            stop_reason = {"code": CRM_SWITCHED_OFF, "message": CRM_SWITCHED_OFF_MESSAGE}
+            break
 
         backfill_row.next_day = day + timedelta(days=1)
         backfill_row.days_done = (backfill_row.days_done or 0) + 1
@@ -1051,6 +1146,10 @@ def run_backfill(
         backfill_row.summary_json = json.loads(json.dumps(aggregate_summary))
         db.commit()
         day = backfill_row.next_day
+        if feed_row.feed in PROJNO_FEEDS and day <= backfill_row.to_day:
+            from app.config import settings
+
+            _day_pause(float(settings.autocount_project_registrations_day_pause_seconds or 0))
 
     _record_vendor_activity(
         db, resolved.vendor_client,
