@@ -16,7 +16,7 @@ from contextlib import ExitStack
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -50,6 +50,7 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
     DOC_UNKNOWN,
     INTERNAL_ERROR,
     LOCATION_NOT_MOVED,
+    LOCATION_UNKNOWN,
     OUTCOME_DONE,
     OUTCOME_MISMATCH,
     OUTCOME_PENDING,
@@ -67,6 +68,9 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
     _lines,
     _safe_body,
     _same,
+    clean_location,
+    known_locations,
+    unknown_location_message,
 )
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
@@ -124,6 +128,7 @@ class _Plan:
     qty: Optional[Decimal] = None
     so_doc_date: Optional[date] = None  # AC-57-44: DocDate of an SO that is not staged
     doc_date: Optional[date] = None  # the caller's DocDate of the PO / SPO side when it is not staged
+    location: Optional[str] = None  # plan 70: the caller's location for the linked / moved row (None = the SO row's)
 
 
 
@@ -288,6 +293,8 @@ def verify_relocate(
 class WriteBackService(WriteFrame):
     #: True when the caller (an operation) already holds the SO row lock for this link
     so_lock_held: bool = False
+    # plan 70: set by the operation that already checked ``location`` against the Location master (split_link)
+    location_checked: bool = False
     _lock_stack: ExitStack = ExitStack()
 
     # ── public flows ─────────────────────────────────────────────────────────
@@ -308,6 +315,7 @@ class WriteBackService(WriteFrame):
         operations: Optional["OperationService"] = None,
         so_doc_date: Optional[date] = None,
         doc_date: Optional[date] = None,
+        location: Optional[str] = None,
     ) -> WriteActionResult:
         """Part of a row: the plan 55 split link (idempotent when a key is given).
         The whole row: the ``link_row`` operation (delete + add, plan 57). The gateway
@@ -317,7 +325,7 @@ class WriteBackService(WriteFrame):
             tenant_id=tenant_id, company_id=company_id, po_doc_key=po_doc_key, po_dtl_key=po_dtl_key,
             so_doc_key=so_doc_key, so_dtl_key=so_dtl_key, qty=qty, expected_last_modified=expected_last_modified,
             key_id=key_id, idempotency_key=idempotency_key, operations=operations, so_doc_date=so_doc_date,
-            doc_date=doc_date,
+            doc_date=doc_date, location=clean_location(location),
         )
         if result.outcome != OUTCOME_DONE:
             result.detail = None
@@ -341,7 +349,9 @@ class WriteBackService(WriteFrame):
         operations: Optional["OperationService"],
         so_doc_date: Optional[date],
         doc_date: Optional[date],
+        location: Optional[str] = None,
     ) -> WriteActionResult:
+        where = {"location": location} if location else {}  # plan 70; absent = today's idempotency hash
         if operations is not None:
             op = self._link_operation(operations, tenant_id, company_id, key_id, idempotency_key,
                                       po_doc_key, po_dtl_key, qty, doc_date)
@@ -351,16 +361,17 @@ class WriteBackService(WriteFrame):
                     {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
                      "so_dtl_key": so_dtl_key, "qty": qty, "whole_row": True, "target_doc_date": so_doc_date,
                      "doc_date": doc_date,
-                     "expected_last_modified": expected_last_modified},
+                     "expected_last_modified": expected_last_modified, **where},
                 )
             if op == "split_link":
                 return self._operation(
                     operations, op, tenant_id, company_id, key_id, idempotency_key,
                     {"po_doc_key": po_doc_key, "po_dtl_key": po_dtl_key, "so_doc_key": so_doc_key,
                      "so_dtl_key": so_dtl_key, "qty": qty, "target_doc_date": so_doc_date, "doc_date": doc_date,
-                     "expected_last_modified": expected_last_modified},
+                     "expected_last_modified": expected_last_modified, **where},
                 )
-        plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty, so_doc_date, doc_date)
+        plan = _Plan(ACTION_LINK, _PO, po_doc_key, po_dtl_key, so_doc_key, so_dtl_key, qty, so_doc_date, doc_date,
+                     location)
         return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
 
     def _link_operation(
@@ -486,9 +497,11 @@ class WriteBackService(WriteFrame):
         po_dtl_key: int,
         expected_last_modified: Optional[str] = None,
         key_id: Optional[str] = None,
+        location: Optional[str] = None,
     ) -> WriteActionResult:
-        """Move a linked PO row to its SO row's location (taken from staging)."""
-        plan = _Plan(ACTION_RELOCATE, _PO, po_doc_key, po_dtl_key)
+        """Move a linked PO row to its SO row's location (taken from staging); plan 70: to ``location``
+        when the caller names one (checked against the Location master first)."""
+        plan = _Plan(ACTION_RELOCATE, _PO, po_doc_key, po_dtl_key, location=clean_location(location))
         return self._run(plan, tenant_id, company_id, expected_last_modified, key_id)
 
     # ── flow ─────────────────────────────────────────────────────────────────
@@ -620,6 +633,8 @@ class WriteBackService(WriteFrame):
         expected_last_modified: Optional[str],
     ) -> WriteActionResult:
         reader = self._reader_for(base_url)
+        if plan.location and not self.location_checked:
+            plan = replace(plan, location=self._checked_location(plan.location, row, reader))
         doc = self._read_fresh(plan.kind, plan.doc_key, company, row, reader, plan.doc_date)
         if expected_last_modified and doc.get("LastModified") != expected_last_modified:
             raise self._refuse(row, DOC_STALE)
@@ -635,6 +650,19 @@ class WriteBackService(WriteFrame):
         row.request_json = body
         self.db.commit()  # in_flight + body committed before any PUT (AC-55-27)
         return self._put_and_verify(plan, company, base_url, row, reader, doc, body, so_doc)
+
+    def _checked_location(self, code: str, row: AcWriteAction, reader: AutoCountDocReader) -> str:
+        """Plan 70: AutoCount's own spelling of ``code``; an unknown code refuses ``LOCATION_UNKNOWN``, a
+        failed read refuses with the read's code (nothing written either way: the key is released)."""
+        self._check_deadline(row)
+        self.db.commit()  # no transaction open during the GET (AC-55-27)
+        try:
+            found = known_locations(reader, [code]).get(code.casefold())
+        except DocReadError as exc:
+            raise self._refuse(row, exc.code) from None
+        if found is None:
+            raise self._refuse(row, LOCATION_UNKNOWN, unknown_location_message(code))
+        return found
 
     def _read_fresh(
         self,
@@ -688,7 +716,7 @@ class WriteBackService(WriteFrame):
             spo_ref = self._spo_ref(tenant_id, company.id, plan.dtl_key)
             if plan.action == ACTION_RELOCATE:
                 return payloads.build_relocate(
-                    doc, plan.dtl_key, self._so_location(company, doc, plan.dtl_key), spo_ref=spo_ref
+                    doc, plan.dtl_key, plan.location or self._so_location(company, doc, plan.dtl_key), spo_ref=spo_ref
                 )
             if plan.action == ACTION_UNLINK:
                 return payloads.build_unlink_row(doc, plan.dtl_key, spo_ref=spo_ref)
@@ -698,6 +726,7 @@ class WriteBackService(WriteFrame):
             return payloads.build_link(
                 doc, plan.dtl_key, so_doc, plan.so_dtl_key, plan.qty, so_linked_qty=linked, spo_ref=spo_ref,
                 note=payloads.so_link_note(so_doc, so_row) if so_row is not None else None,  # plan 66
+                location=plan.location,  # plan 70
             )
         except WriteRefusal as exc:
             raise self._refuse(row, exc.code, str(exc)) from None
@@ -817,7 +846,7 @@ class WriteBackService(WriteFrame):
         ``ROW_VALUES_NOT_KEPT``, never a quiet ``done`` on a zero-priced row. The values are
         the batch's rule (plan 65 D2 / D4: the SO row's date, a percentage discount, the note)."""
         so_row = next((r for r in so_doc.get("Details") or [] if r.get("DtlKey") == plan.so_dtl_key), None)
-        target = so_row.get("Location") if so_row is not None else None
+        target = plan.location or (so_row.get("Location") if so_row is not None else None)  # plan 70
         so_link = payloads.so_link_values(so_doc, so_row) if so_row is not None else None
         before_keys = {r.get("DtlKey") for r in before.get("Details") or []}
         new_row = next(

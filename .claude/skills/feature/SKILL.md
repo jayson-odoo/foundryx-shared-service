@@ -52,7 +52,7 @@ coder/tester/reviewer job - is the same process violation as skipping the step.
   `node_modules`). Its prompt is ONLY the PLAN path, the UAC path, the slice id and the phase -
   the files are the contract. In Phase 2 it makes the tester's red tests green; it never authors
   or deletes a test.
-- **`reviewer`** (opus) + **`security-reviewer`** (opus) + browser verification (`tester`):
+- **`reviewer`** (opus, medium effort) + **`security-reviewer`** (opus, medium effort) + browser verification (`tester`):
   Phase 3, run in **parallel**, once per lane, not per slice. `reviewer` runs the hard-fail rules,
   the DoD gate and a **kill test** (disable the implementing branch for 2-3 UAC lines, the test
   must go red). `security-reviewer` runs only when the diff touches its trigger paths (auth, RBAC,
@@ -60,11 +60,12 @@ coder/tester/reviewer job - is the same process violation as skipping the step.
   `/codex-review` for a cross-model second opinion on large diffs.
 - **`guide-writer`** (sonnet): after review passes, when the lane touched a consumer-visible
   contract (public gateway, sink payload) - updates the ONE guide file for that contract.
-- **Model routing**: execution agents run on Sonnet; review + planner on Opus. Escalate a single
-  spawn to Opus (`model: "opus"` on the Agent call, never by editing the agent files) only for
-  tangled architecture, a bug that survived a Sonnet pass, a critical security review, or drift
-  control (a Sonnet coder that rewrote the plan). Never spawn subagents on Fable. Name the reason
-  in the brief.
+- **Model routing**: execution agents run on Sonnet; review + planner on Opus 5.5 medium; no Fable,
+  owner 21-22 Nov. Escalate a single spawn to Opus 5.5 medium (`model: "opus"`, `effort: "medium"` on
+  the Agent call, never by editing the agent files) only for tangled architecture, a bug that
+  survived a Sonnet pass, a critical security review, or drift control (a Sonnet coder that
+  rewrote the plan). Never Opus for coding, testing or scripting (those stay on Sonnet); xhigh/max effort
+  only when the owner asks for it by name. Name the reason in the brief.
 - Trivial one-file changes may run inline in the main session; say so instead of silently
   absorbing a real slice.
 - **Every coder/tester brief MUST embed PRINCIPLES.md's Design mandates + DoD gate +
@@ -176,11 +177,11 @@ full:
 
 Once the coder is green for the whole lane, run `reviewer` + `security-reviewer` (when in
 scope) + the `tester`'s browser verification **in parallel, once per lane**. The `reviewer`
-agent (Opus, `.claude/agents/reviewer.md`) is the primary pass: brief it with the branch, the
+agent (Opus 5.5 medium; no Fable, owner 21-22 Nov, `.claude/agents/reviewer.md`) is the primary pass: brief it with the branch, the
 diff range, the plan + UAC paths and the hard-fail list. NEVER the built-in `code-review`
-skill: it forks on the main session's model (Fable) and spawns 20+ Fable verifiers.
+skill: it forks on the main session's model and spawns 20+ same-model verifiers.
 `mattpocock-skills:code-review` (parallel Standards + Spec review) is a second lens only if
-it is run as a Sonnet/Opus agent, not a fork. Then
+it is run as a Sonnet or Opus 5.5 medium agent, not a fork. Then
 `/codex-review` (this repo's ported skill) for a cross-model second opinion on
 risky or large diffs. Apply findings via `simplify` or `--fix`.
 
@@ -215,7 +216,7 @@ active plan.
 | 6 red tests | UAC + contract block + captain's test list, no implementation | `tester` agent, BEFORE the coder |
 | 6 Phase 2 TDD | `mattpocock-skills:tdd` (scoped to backend phase) | the lane `coder` agent (same instance) |
 | 6 hard bugs | `mattpocock-skills:diagnosing-bugs` | main session or `coder` agent |
-| 8 review | `reviewer` agent on Opus (never the built-in `code-review` fork) + kill test, then optional `/codex-review` | `reviewer` agent, parallel with `security-reviewer` + tester browser verify |
+| 8 review | `reviewer` agent on Opus 5.5 medium; no Fable, owner 21-22 Nov (never the built-in `code-review` fork) + kill test, then optional `/codex-review` | `reviewer` agent, parallel with `security-reviewer` + tester browser verify |
 | 8 security review | trigger paths in `.claude/agents/security-reviewer.md` | `security-reviewer` agent |
 | 8 contract guide | ONE guide file per contract | `guide-writer` agent, after review |
 | periodic | `mattpocock-skills:codebase-design` | main session |
@@ -232,7 +233,7 @@ whenever the feature touches UI, not on every feature:
 | 2 UAC | `find-animation-opportunities` | Read-only; capped output becomes ACs or an explicit no-motion list |
 | 5 Phase 1 FE mock | `animate` | Decision gate for any new motion added in Phase 1 |
 | 8 review | `emil-design-eng` | Before/After/Why table on every UI diff |
-| 8 review | `review-animations` | Only when the diff touches motion. Runs as ONE `general-purpose` agent on Opus - **never** the built-in `/code-review` fork, and never delegated to the `reviewer` agent's own pass (they check different things: `reviewer` = correctness + hard-fails, `review-animations` = feel) |
+| 8 review | `review-animations` | Only when the diff touches motion. Runs as ONE `general-purpose` agent on Opus 5.5 medium (no Fable, owner 21-22 Nov) - **never** the built-in `/code-review` fork, and never delegated to the `reviewer` agent's own pass (they check different things: `reviewer` = correctness + hard-fails, `review-animations` = feel) |
 | Any new FE dependency | `pick-ui-library` | First - repo picks already made: `motion`, `sonner`, `vaul`, `@dnd-kit` |
 | Periodic | `improve-animations` | - |
 

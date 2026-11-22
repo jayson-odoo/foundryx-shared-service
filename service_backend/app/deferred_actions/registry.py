@@ -63,6 +63,10 @@ class DeferredActionDef:
     #: Further keys the actor must ALSO hold (the entity's own mutating endpoint
     #: requires more than one key - e.g. ideation embed-connection patch).
     also_requires: Tuple[str, ...] = ()
+    #: Shown as-is when the target is already gone at park time (removed
+    #: elsewhere while the list was open). Plain words in the entity's own
+    #: term, never its type or id (crew pass on #259).
+    gone_message: str = "This record no longer exists."
 
 
 _REGISTRY: Dict[str, DeferredActionDef] = {}

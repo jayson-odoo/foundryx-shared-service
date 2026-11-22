@@ -79,6 +79,7 @@ def key_item(row: LcApiKey) -> schemas.KeyItem:
         id=row.id,
         name=row.name,
         keyMasked=key_service.masked(row),
+        allowedOrigins=list(row.allowed_origins_json or []),
         createdAt=row.created_at,
         lastUsedAt=row.last_used_at,
         revokedAt=row.revoked_at,

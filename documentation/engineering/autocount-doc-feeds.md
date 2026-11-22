@@ -125,19 +125,26 @@ beyond `recheckDays`).
 
 A durable `ac_doc_feed_backfill` record: day by day, sequential, resumable, at most one OPEN
 (`running|stopping|stopped`) per feed (partial unique index; a lost Start race is a 409
-`BACKFILL_OPEN`). The day loop reads `bydocdate` per day and pushes it. Range floor `2023-01-01`
-(a `fromDay` below it is a 422); `toDay` <= MYT today. Live needs the feed in `push`; Start is
-refused (422) on an `off` feed even for a dry run. **Run-once guard:** a live range starting on
-or before the floor 409s `BACKFILL_ALREADY_DONE` once `full_backfill_done_at` is set (a later
-live range is allowed).
+`BACKFILL_OPEN`). The day loop reads `bydocdate` per day and pushes it. Range floor `2019-01-01`
+(`BACKFILL_FROM_DEFAULT`, `doc_feed/constants.py`; a `fromDay` below it is a 422; moved from
+2023-01-01 by SLOW-MOVING-BACKFILL); `toDay` <= MYT today, and a run stops at its `toDay` (a
+gap-only range, e.g. floor to the day before the CRM's existing history, never re-pushes later
+years). Live needs the feed in `push`; Start is refused (422) on an `off` feed even for a dry
+run. **Run-once guard:** a live range starting on or before the floor 409s
+`BACKFILL_ALREADY_DONE` once `full_backfill_done_at` is set AND the requested `fromDay` is not
+earlier than the earliest `fromDay` a completed live backfill of that feed ran from (dry runs and
+discarded rows never count; a stamp with no such row refuses, as before). So a feed backfilled
+from the old 2023 floor accepts one run from 2019 and refuses a second one. A later live range is
+always allowed.
 
-**Delivery-order backfill pushes are marked (DO-BACKFILL-SS).** Every ingest POST a
-`delivery_orders` backfill run makes carries `"backfill": true` in the envelope, after
-`companyCode`/`book`/`records`. A dry-run backfill sends it too, alongside `?dry_run=true`. The
-CRM uses the flag for its quiet ingest mode, which skips the cancel relink and the embeddings for
-old documents. The CRM accepts the flag on `delivery_orders` only and answers 422 on any other
-entity, so a `goods_receive_notes` backfill leaves it out. Only `run_backfill` sets it
-(`write_batch(backfill=(feed_row.feed == FEED_DELIVERY_ORDERS))`, `doc_feed/runner.py`). The poll,
+**Backfill pushes are marked (DO-BACKFILL-SS, SLOW-MOVING-BACKFILL S0.4).** Every ingest POST a
+`delivery_orders` or `goods_receive_notes` backfill run makes carries `"backfill": true` in the
+envelope, after `companyCode`/`book`/`records`. A dry-run backfill sends it too, alongside
+`?dry_run=true`. The CRM uses the flag for its quiet ingest mode, which skips the cancel relink,
+the GRN receipt hook / waiting-line attach and the embeddings for old documents. **Release
+order:** the CRM must accept the flag on `goods_receive_notes` before this SS build ships (an
+older CRM 422s it on every entity but `delivery_orders`). Only `run_backfill` sets it
+(`write_batch(backfill=True)`, `doc_feed/runner.py`). The poll,
 the sweep's re-check push and every sync push leave the key out entirely, so their body is
 unchanged. Pinned by `tests/test_doc_feed_backfill_flag.py`.
 
@@ -222,7 +229,7 @@ plan 10 Appendix A), built by the same `autocount_pull_snapshot` job, stored in 
 Facts a maintainer needs:
 
 - **Scope:** flat `fromDay` / `toDay` / `docNo` on the build body (MYT doc-date days, 31-day
-  cap, floor 2023-01-01, `toDay` <= MYT today; `docNo` alone = the 31 days ending today, filter
+  cap, floor 2019-01-01 (`BACKFILL_FROM_DEFAULT`), `toDay` <= MYT today; `docNo` alone = the 31 days ending today, filter
   only, the vendor has no by-DocNo door). Stored in `metadata_json` from creation and echoed on
   every response for this entity.
 - **Source:** this feed's own `ac_doc_feed` row for `delivery_orders` (its connection and book)

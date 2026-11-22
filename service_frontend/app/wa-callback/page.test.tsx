@@ -121,6 +121,58 @@ describe('wa-callback page, no state (existing behaviour)', () => {
   });
 });
 
+describe('wa-callback page, with the OAuth popup state (launchOAuthPopup)', () => {
+  // The shape `newOAuthState` mints: 32 lowercase hex characters.
+  const popupState = '0123456789abcdef0123456789abcdef';
+
+  it('popup: relays the code with its state and never calls the partner endpoint', () => {
+    vi.useFakeTimers();
+    const postMessage = vi.fn();
+    Object.defineProperty(window, 'opener', {
+      configurable: true,
+      value: { postMessage },
+    });
+    const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    setUrl(`?code=abc123&state=${popupState}`);
+
+    render(<WaCallbackPage />);
+
+    expect(postMessage).toHaveBeenCalledWith(
+      { type: 'FX_WA_OAUTH', code: 'abc123', state: popupState },
+      window.location.origin,
+    );
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(closeSpy).toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(replaceSpy).not.toHaveBeenCalled();
+  });
+
+  it('popup: relays an error with its state', () => {
+    vi.useFakeTimers();
+    const postMessage = vi.fn();
+    Object.defineProperty(window, 'opener', {
+      configurable: true,
+      value: { postMessage },
+    });
+    vi.spyOn(window, 'close').mockImplementation(() => {});
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    setUrl(`?error=access_denied&state=${popupState}`);
+
+    render(<WaCallbackPage />);
+
+    expect(postMessage).toHaveBeenCalledWith(
+      { type: 'FX_WA_OAUTH', error: 'access_denied', state: popupState },
+      window.location.origin,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('wa-callback page, with state (partner connect)', () => {
   const okResponse = (body: unknown) =>
     ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
@@ -154,6 +206,32 @@ describe('wa-callback page, with state (partner connect)', () => {
       state: 'st_1',
       code: 'secret_code',
     });
+  });
+
+  it('takes a server-issued state (43 url-safe characters) as a partner session', async () => {
+    // The shape `secrets.token_urlsafe(32)` gives; never the popup's own.
+    const serverState = 'Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZi1fQUI';
+    const postMessage = vi.fn();
+    Object.defineProperty(window, 'opener', {
+      configurable: true,
+      value: { postMessage },
+    });
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(okResponse({ redirect: 'https://app.example/r' }));
+    vi.stubGlobal('fetch', fetchSpy);
+    setUrl(`?state=${serverState}&code=c`);
+
+    render(<WaCallbackPage />);
+
+    await waitFor(() =>
+      expect(replaceSpy).toHaveBeenCalledWith('https://app.example/r'),
+    );
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
+      state: serverState,
+      code: 'c',
+    });
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   it('forwards the Meta error and sends no code', async () => {

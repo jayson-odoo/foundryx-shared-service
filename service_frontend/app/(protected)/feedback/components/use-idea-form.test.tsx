@@ -713,3 +713,40 @@ describe('useIdeaForm - History tab (owner standing rule, crew pass c4572865)', 
     expect(ids).not.toContain('history');
   });
 });
+
+// ── Lane FEEDBACK-WA-TEST-FLAG: staff turn a wrongly flagged test item real ──
+
+describe('useIdeaForm - Mark as real item', () => {
+  it('a test item offers "Mark as real item"; it calls service.markReal and shows the real item', async () => {
+    toastMock.success.mockClear();
+    const testItem = stageIdea({ isTest: true } as Partial<Idea>);
+    const real = stageIdea({ isTest: false } as Partial<Idea>);
+    const markReal = vi.fn().mockResolvedValue(real);
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(testItem), markReal });
+    const { result } = await loaded(testItem, service);
+    const action = result.current.config!.actions.find((a) => a.id === 'mark-real')!;
+    expect(action).toBeDefined();
+    expect(action.label).toBe('Mark as real item');
+    expect('permission' in action ? action.permission : undefined).toBe('ideation.triage.manage');
+    expect(action.isVisible?.([testItem]) ?? true).toBe(true);
+    await act(async () => {
+      await action.run?.([testItem], { reload: vi.fn() });
+    });
+    expect(markReal).toHaveBeenCalledWith('idea-1');
+    expect(toastMock.success).toHaveBeenCalledWith('Marked as a real item.');
+  });
+
+  it('a real item hides "Mark as real item"', async () => {
+    const real = stageIdea({ isTest: false } as Partial<Idea>);
+    const { result } = await loaded(real);
+    const action = result.current.config!.actions.find((a) => a.id === 'mark-real');
+    expect(action ? action.isVisible?.([real]) : false).toBe(false);
+  });
+
+  it('embed mode has no "Mark as real item"', async () => {
+    const testItem = stageIdea({ isTest: true } as Partial<Idea>);
+    const service = fakeService({ getIdea: vi.fn().mockResolvedValue(testItem) });
+    const { result } = await loaded(testItem, service, embedWrapper);
+    expect((result.current.config?.actions ?? []).map((a) => a.id)).not.toContain('mark-real');
+  });
+});

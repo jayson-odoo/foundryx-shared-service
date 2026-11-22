@@ -24,6 +24,10 @@ class KeyNotFound(Exception):
     pass
 
 
+class KeyInUse(Exception):
+    """The gateway caller tried to revoke the key it is calling with."""
+
+
 def _hash(full_key: str) -> str:
     return hashlib.sha256(full_key.encode("utf-8")).hexdigest()
 
@@ -70,10 +74,16 @@ def mark_used(db: Session, row: LcApiKey) -> None:
     db.commit()
 
 
-def revoke(db: Session, tenant_id: str, key_id: str) -> LcApiKey:
+def revoke(db: Session, tenant_id: str, key_id: str, *, calling_key_id: Optional[str] = None) -> LcApiKey:
+    """Revoke one of the tenant's keys. ``calling_key_id`` (gateway door) is
+    the key the request came in with: revoking it would lock the caller out
+    mid-request, so it is refused (create the new key, then revoke the old one
+    with the new key)."""
     row = db.query(LcApiKey).filter(LcApiKey.id == key_id, LcApiKey.tenant_id == tenant_id).first()
     if row is None:
         raise KeyNotFound()
+    if calling_key_id is not None and row.id == calling_key_id:
+        raise KeyInUse()
     if row.revoked_at is None:
         row.revoked_at = datetime.now(timezone.utc)
         db.commit()

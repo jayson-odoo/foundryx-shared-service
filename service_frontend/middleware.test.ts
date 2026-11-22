@@ -170,9 +170,33 @@ describe('middleware frame-ancestors (feedback board)', () => {
     expect(res.headers.get('Content-Security-Policy')).toBe('frame-ancestors https://shop.example');
   });
 
-  it('matches only the board routes, not other public pages', async () => {
+  it('applies the same policy to the read-only share page', async () => {
+    vi.stubEnv('FEEDBACK_BOARD_FRAME_ANCESTORS', 'https://crm.example.test');
+    const res = await middleware(boardRequest(`/public/feedback/share/${TOKEN}`));
+    expect(res.headers.get('Content-Security-Policy')).toBe(
+      "frame-ancestors 'self' https://crm.example.test",
+    );
+    expect(res.headers.get('X-Frame-Options')).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('matches only the board and share routes, not other public pages', async () => {
     const { config } = await import('./middleware');
     expect(config.matcher).toContain('/public/feedback/board/:path*');
+    expect(config.matcher).toContain('/public/feedback/share/:path*');
     expect(config.matcher).not.toContain('/public/feedback/:path*');
+  });
+});
+
+describe('middleware: hosted Lead Capture wizard (plan 64 L-C)', () => {
+  it('can never be framed and sends no referrer', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const res = await middleware(new NextRequest('http://localhost:3001/public/lead-capture/connect'));
+    expect(res.headers.get('Content-Security-Policy')).toBe("frame-ancestors 'none'");
+    expect(res.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(res.headers.get('Referrer-Policy')).toBe('no-referrer');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

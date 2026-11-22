@@ -20,8 +20,17 @@ STANDARD_KEYS = {
     "full_name": "name",
     "email": "email",
     "phone_number": "phone",
+    # Google Ads lead form column ids (card 68a R7,
+    # https://developers.google.com/google-ads/webhook/docs/implementation)
+    "FULL_NAME": "name",
+    "EMAIL": "email",
+    "WORK_EMAIL": "email",
+    "PHONE_NUMBER": "phone",
+    "WORK_PHONE": "phone",
 }
 NAME_PARTS = ("first_name", "last_name")
+# Google's name-part column ids -> the Meta name-part keys they stand for.
+NAME_PART_ALIASES = {"FIRST_NAME": "first_name", "LAST_NAME": "last_name"}
 ANY_FORM = "*"
 
 
@@ -113,8 +122,9 @@ def map_answers(
             if std_target and fields[std_target] is None:
                 fields[std_target] = value
                 continue
-            if key in NAME_PARTS and by_type.get("name"):
-                name_parts[key] = value
+            part = NAME_PART_ALIASES.get(key, key)
+            if part in NAME_PARTS and by_type.get("name"):
+                name_parts[part] = value
                 continue
             unmapped += 1
         notes.append(f"{key}: {value}")

@@ -11,8 +11,10 @@ write). Contract: ``documentation/plans/ideation/feedback-subscribe-behaviour-ca
 - the token lookup is the only cross-tenant read (the token IS the
   credential); the idea is then resolved WITH the row's own ``tenant_id``;
 - test items are never shared;
-- the link opens on the shared-service frontend (``ss_feedback_base``): the
-  product's CRM has no share page (lane FEEDBACK-SHARE-LIVE-FIX).
+- the link opens where the tenant's other public feedback pages open
+  (``feedback_base``): the product's CRM host for a CRM tenant
+  (``{crm}/feedback/share/<token>``, which frames this frontend's share page),
+  else this frontend (lane FEEDBACK-SHARE-SS-HOST).
 Writes flush; the caller commits.
 """
 import secrets
@@ -25,7 +27,7 @@ from sqlalchemy.orm import Session
 from ..models import Idea, IdeaShareLink
 from . import history
 from .history import HistoryActor
-from .feedback_links import LINK_TOKEN_RE, ss_feedback_base
+from .feedback_links import LINK_TOKEN_RE, feedback_base
 
 
 def _now() -> datetime:
@@ -77,7 +79,7 @@ def get_or_create_share_link(
 
 
 def share_url(db: Session, row: IdeaShareLink) -> str:
-    return f"{ss_feedback_base(db, row.tenant_id)}/share/{row.token}"
+    return f"{feedback_base(db, row.tenant_id)}/share/{row.token}"
 
 
 def stop_sharing(db: Session, tenant_id: str, idea_id: str) -> int:

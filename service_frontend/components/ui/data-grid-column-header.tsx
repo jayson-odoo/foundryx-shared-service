@@ -30,6 +30,7 @@ import {
   ChevronsUpDown,
   PinOff,
   Settings2,
+  X,
 } from 'lucide-react';
 
 interface DataGridColumnHeaderProps<TData, TValue> extends HTMLAttributes<HTMLDivElement> {
@@ -202,6 +203,12 @@ function DataGridColumnHeaderLegacy<TData, TValue>({
                   <span className="grow">Desc</span>
                   {column.getIsSorted() === 'desc' && <Check className="size-4 opacity-100! text-primary" />}
                 </DropdownMenuItem>
+                {column.getIsSorted() ? (
+                  <DropdownMenuItem onClick={() => column.clearSorting()}>
+                    <X className="size-3.5!" aria-hidden="true" />
+                    <span className="grow">Clear sort</span>
+                  </DropdownMenuItem>
+                ) : null}
               </>
             )}
 

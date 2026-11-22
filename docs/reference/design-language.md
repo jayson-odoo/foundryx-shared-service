@@ -132,6 +132,8 @@ pins the settle times by running the generator. Fed back to Sorento as BL-SS-049
 | `Tabs` (`variant="line"`) | `components/ui/tabs.tsx` | The default everywhere, dialogs included; pills (`variant="default"`) are reserved for a view TOGGLE that is not navigation (Grid/List, never a set of tabbed panels). |
 | `Dialog` / `Sheet` / `AlertDialog` | `components/ui/dialog.tsx`, `sheet.tsx`, `alert-dialog.tsx` | Lightbox surfaces, shared `OVERLAY_CLASS` / `OVERLAY_CLASS_STATIC` from `components/ui/primitive-classes.ts`. |
 | `SearchSelect` / `MultiSelect` | `components/platform/search-select/search-select.tsx`, `components/platform/multi-select/multi-select.tsx` | Every dropdown-select; no bare `@/components/ui/select` (`no-restricted-imports`, AC-DLA-63; pre-existing debt tracked as BL-062/BL-SS-043). |
+| `PhoneInput` | `components/platform/phone-input/phone-input.tsx` | Every phone number field - country picker (default MY, searchable), as-you-type formatting, E.164 out, error only after blur or on submit; mirrors the Sorento CRM Dealer Access field (lane FEEDBACK-SHARE-SS-HOST). |
+| `OtpCodeField` / `useResendCooldown` | `components/platform/otp-code-field/otp-code-field.tsx` | Every one-time code step - one 6-digit field that checks itself at the 6th digit, resend countdown, status row while checking; mirrors the Sorento CRM portal code field. |
 | `ListSearchInput` | `components/platform/list-search-input.tsx` | Every list search box - 200ms debounce, a settling spinner gated behind 250ms of continuous `settling \|\| busy` (never flashes on a fast keystroke pause, T6 fix round 1 item 7). |
 | `ClampedText` | `components/platform/clamped-text.tsx` | Truncated text - tooltip on real overflow. Never a bare `truncate`/`line-clamp-*`. |
 | `OverflowPills` | `components/platform/overflow-pills/overflow-pills.tsx` | A multi-value cell/field - width-aware `+N` overflow, never an unbounded pill row. |
@@ -262,7 +264,7 @@ park/observe/commit that module's actions.
 | Step 2 UAC | `find-animation-opportunities` | Read-only; capped output becomes ACs or an explicit no-motion list |
 | Step 5 Phase 1 (FE mock) | `animate` | Decision gate for any new motion added in Phase 1 |
 | Step 8 review | `emil-design-eng` | Before/After/Why table on every UI diff |
-| Step 8 review | `review-animations` | Only when the diff touches motion; runs as ONE `general-purpose` agent on Opus, never a `/code-review` fork |
+| Step 8 review | `review-animations` | Only when the diff touches motion; runs as ONE `general-purpose` agent on Opus 5.5 medium (no Fable), never a `/code-review` fork |
 | Any new FE dependency | `pick-ui-library` | First - repo picks already made: `motion`, `sonner`, `vaul`, `@dnd-kit` |
 | Periodic | `improve-animations` | - |
 

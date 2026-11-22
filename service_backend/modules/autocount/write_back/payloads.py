@@ -214,12 +214,13 @@ def build_link(
     so_linked_qty: Decimal = Decimal(0),
     spo_ref: Optional[str] = None,
     note: Optional[str] = None,
+    location: Optional[str] = None,
 ) -> Doc:
     """Link ``qty`` of a PO row to an SO row in ONE PUT. AutoCount never links an
     existing row, so the whole row is replaced (the row ``"D"`` plus a new linked row,
     plan 61 F5) and part of it is split (the row cut to the rest plus a new linked row).
-    The new row asks for the SO row's location; AutoCount forces HQ and the caller
-    moves it back in a second write."""
+    The new row asks for the SO row's location (plan 70: the caller's ``location`` when given);
+    AutoCount forces HQ and the caller moves it back in a second write."""
     _check_doc(po, want_spo=False)
     if so.get("Cancelled") == "T":
         raise WriteRefusal("DOC_CANCELLED", "sales order is cancelled")
@@ -243,7 +244,7 @@ def build_link(
         "FromDocType": "SO",
         "FromDocNo": so.get("DocNo"),
         "FromDocDtlKey": so_dtl_key,
-        "Location": so_row.get("Location"),
+        "Location": location or so_row.get("Location"),
     }
     body = _header(po)
     new = _normal(_row_fields(po_row))
@@ -745,25 +746,38 @@ def build_row_replace(kind_name: str, doc: Doc, old_row: Mapping[str, Any], new_
 
 
 def build_link_batch(kind_name: str, doc: Doc, old_key: int, new_rows: Sequence[Mapping[str, Any]]) -> VendorRequest:
-    """Plan 62 D3: ONE PUT on the edit door linking one row to N source rows. The row is
-    marked ``"D"`` when the new rows take all of its quantity, else kept with the rest;
-    every new row is a full vendor row, ``DtlKey 0``, with its own ``FromDocType /
-    FromDocNo / FromDocDtlKey``. AutoCount applies the PUT all or nothing (plan 62 S0)."""
+    """Plan 62 D3: ONE PUT on the edit door linking one row to N source rows (``build_link_doc`` with one
+    row)."""
+    return build_link_doc(kind_name, doc, [(old_key, new_rows)])
+
+
+def build_link_doc(kind_name: str, doc: Doc,
+                   groups: Sequence[Tuple[int, Sequence[Mapping[str, Any]]]]) -> VendorRequest:
+    """Plan 62 D3 / 69 D1: ONE PUT on the edit door linking every listed row of ONE document, each to its
+    N source rows. Each row is marked ``"D"`` when its new rows take all of its quantity, else kept with the
+    rest; every new row is a full vendor row, ``DtlKey 0``, with its own ``FromDocType / FromDocNo /
+    FromDocDtlKey``. AutoCount applies the PUT all or nothing (plan 62 S0)."""
     kind = kind_of(kind_name)
     _check_kind_doc(kind, doc)
-    old = _find_row(doc, old_key)
-    taken = sum((_dec(r.get("Qty")) for r in new_rows), Decimal(0))
-    rest = _dec(old.get("Qty")) - taken
-    if rest < 0:
-        raise WriteRefusal("QTY_ABOVE_FREE", "quantity above the PO row quantity")
-    added = [with_link_note(_vendor_line(r, 0, kind.name), r) for r in new_rows]
+    if not groups or len({k for k, _ in groups}) != len(groups):
+        raise WriteRefusal("INVALID_PARAMS", "each row is listed once")
+    details: List[Doc] = []
+    added: List[Doc] = []
+    for old_key, new_rows in groups:
+        old = _find_row(doc, old_key)
+        taken = sum((_dec(r.get("Qty")) for r in new_rows), Decimal(0))
+        rest = _dec(old.get("Qty")) - taken
+        if rest < 0:
+            raise WriteRefusal("QTY_ABOVE_FREE", "quantity above the PO row quantity")
+        if rest == 0:
+            details.append(_deleted(old))
+        else:
+            kept = _normal(_row_fields(old))
+            kept["Qty"] = _num(rest)
+            details.append(kept)
+        added.extend(with_link_note(_vendor_line(r, 0, kind.name), r) for r in new_rows)
     body = _doc_header(kind, doc)
-    if rest == 0:
-        body["Details"] = [_deleted(old)] + added
-    else:
-        kept = _normal(_row_fields(old))
-        kept["Qty"] = _num(rest)
-        body["Details"] = [kept] + added
+    body["Details"] = details + added
     return VendorRequest("PUT", kind.edit_path, body)
 
 
@@ -1023,31 +1037,41 @@ def verify_row_replace(kind_name: str, before: Doc, old_key: int, line: Mapping[
 def verify_link_batch(
     kind_name: str, before: Doc, old_key: int, lines: Sequence[Mapping[str, Any]], after: Doc
 ) -> Verdict:
-    """Plan 62: the old row is gone (all taken) or kept with the rest, exactly one new row per
-    link reads back with its link and quantity (location, price and date aside: AutoCount resets
-    them, the move step restores them), and no other row or header field moved."""
+    """Plan 62: ``verify_link_doc`` for one row."""
+    return verify_link_doc(kind_name, before, [(old_key, lines)], after)
+
+
+def verify_link_doc(
+    kind_name: str, before: Doc, groups: Sequence[Tuple[int, Sequence[Mapping[str, Any]]]], after: Doc
+) -> Verdict:
+    """Plan 62 / 69: every listed row is gone (all taken) or kept with its rest, exactly one new row per
+    link reads back with its link and quantity (location, price and date aside: AutoCount resets them, the
+    move step restores them), and no other row or header field moved."""
     kind_of(kind_name)
-    old = _find_row(before, old_key)
-    rest = _dec(old.get("Qty")) - sum((_dec(r.get("Qty")) for r in lines), Decimal(0))
-    now = _row_by_key(after, old_key)
-    if rest == 0:
-        if now is not None:
-            return Verdict(MISMATCH, "LINE_NOT_DELETED")
-    elif now is None or _dec(now.get("Qty")) != rest:
-        return Verdict(MISMATCH, "ROW_MISMATCH")
+    total: List[Mapping[str, Any]] = []
+    for old_key, lines in groups:
+        old = _find_row(before, old_key)
+        rest = _dec(old.get("Qty")) - sum((_dec(r.get("Qty")) for r in lines), Decimal(0))
+        now = _row_by_key(after, old_key)
+        if rest == 0:
+            if now is not None:
+                return Verdict(MISMATCH, "LINE_NOT_DELETED")
+        elif now is None or _dec(now.get("Qty")) != rest:
+            return Verdict(MISMATCH, "ROW_MISMATCH")
+        total.extend(lines)
     known = {r.get("DtlKey") for r in before.get("Details") or []}
     added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]
-    if len(added) != len(lines):
-        return Verdict(MISMATCH, "ROWS_DROPPED" if len(added) < len(lines) else "ROWS_UNEXPECTED")
+    if len(added) != len(total):
+        return Verdict(MISMATCH, "ROWS_DROPPED" if len(added) < len(total) else "ROWS_UNEXPECTED")
     left = list(added)
-    for line in lines:
+    for line in total:
         match = next((r for r in left if _link_of_row(kind_name, r) == int(line.get("FromDocDtlKey") or 0)
                       and _dec(r.get("Qty")) == _dec(line.get("Qty"))
                       and r.get("ItemCode") == line.get("ItemCode") and r.get("UOM") == line.get("UOM")), None)
         if match is None:
             return Verdict(MISMATCH, "LINK_MISMATCH")
         left.remove(match)
-    if _drifted(before, after, (), [old_key], kind_name):
+    if _drifted(before, after, (), [k for k, _ in groups], kind_name):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 

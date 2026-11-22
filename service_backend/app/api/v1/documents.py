@@ -9,6 +9,7 @@ Gating (D15): browse/preview/download = ``documents.read``; mutations =
 upload 409 → ``{"fileName","existingFileId"}``; 413 quota; 415 type/size reject
 (plain string); 422 cycle.
 """
+import os
 import re
 from typing import List, Optional
 
@@ -137,6 +138,52 @@ def _serve_blob(
     if location in ("presigned", "url"):
         return RedirectResponse(value, headers=headers)
     return FileResponse(value, media_type=mime, headers=headers)
+
+
+def stream_blob(
+    db: Session,
+    tenant_id: str,
+    storage_key: str,
+    mime: str,
+    filename: str,
+    disposition: str = "inline",
+):
+    """``_serve_blob`` (same sandbox / nosniff / private-cache headers) that
+    always answers SAME-ORIGIN: a remote (R2/S3) blob is read through the
+    storage adapter and re-served, never a 307 to a presigned bucket URL - a
+    browser ``fetch`` carrying an Authorization header is CORS-blocked on the
+    bucket (the omnichannel media route learned this first). Local disk still
+    streams from the file. Missing blob = 404; storage unreachable = 503."""
+    from app.services.storage import StorageUnavailable, UnresolvableKey, storage_for_tenant
+
+    storage = storage_for_tenant(db, tenant_id)
+    try:
+        location, value = storage.resolve(storage_key)
+    except Exception:  # noqa: BLE001 - unresolvable key (connection gone)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
+    dispo = "attachment" if disposition == "attachment" else "inline"
+    headers = {
+        "Content-Disposition": _content_disposition(dispo, filename),
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=300",
+    }
+    if location == "path":
+        if not os.path.isfile(value):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
+        return FileResponse(value, media_type=mime, headers=headers)
+    try:
+        data, stored_mime = storage.fetch(storage_key)
+    except (UnresolvableKey, FileNotFoundError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
+    except StorageUnavailable:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The file is temporarily unavailable. Please try again.",
+            headers={"Retry-After": "5"},
+        )
+    media_type = mime or stored_mime or "application/octet-stream"
+    return Response(content=data, media_type=media_type, headers=headers)
 
 
 # ---- navigation ----

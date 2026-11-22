@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRef } from 'react';
 import { publicFetch } from '@/lib/api-client';
+import { isPopupOAuthState } from '@/lib/embedded-signup';
 import { useFxControls } from '@/hooks/use-fx';
 
 /**
@@ -14,24 +15,36 @@ import { useFxControls } from '@/hooks/use-fx';
  * opener does the authenticated exchange. Registered as a Valid OAuth Redirect
  * URI in the Meta app.
  *
- * A partner connect session (hosted sign-up for a client app) comes back here
- * with `?state=...`: that branch strips the query, hands the code to the backend
- * and follows the stored return URL. Without `state` nothing below changes.
+ * Two flows come back here with a `?state=...`, told apart by its shape:
+ * - The ONE OAuth popup (`launchOAuthPopup`: WhatsApp Embedded Signup, Lead
+ *   Capture's Facebook and Google sign-in) sends its own random state
+ *   (`isPopupOAuthState`). It is relayed to the opener with the code, and the
+ *   opener takes only the answer carrying its own state (login CSRF).
+ * - A partner connect session (hosted sign-up for a client app) carries the
+ *   server-issued state: that branch strips the query, hands the code to the
+ *   backend and follows the stored return URL.
+ * Without `state` the popup relay runs as it always did.
  */
 export default function WaCallbackPage() {
   // Foundryx UIUX: this page stays outside the switch's components (global
   // look only), so only its words follow the switch; the message posted to
   // the opener never changes.
   const fx = Boolean(useFxControls()?.on);
-  const [message, setMessage] = useState(fx ? 'Finishing your WhatsApp connection.' : 'Completing your WhatsApp connection…');
+  const [message, setMessage] = useState(fx ? 'Finishing your sign-in.' : 'Completing your sign-in…');
   const partnerLoad = useRef(false);
 
   useEffect(() => {
     if (partnerLoad.current) return;
     const params = new URLSearchParams(window.location.search);
 
+    // The ONE OAuth popup's own state: relayed to the opener below, never
+    // sent to the partner connect endpoint.
+    const popupState = isPopupOAuthState(params.get('state'))
+      ? params.get('state')
+      : null;
+
     // Partner connect session: the single-use `state` is the credential.
-    if (params.has('state')) {
+    if (params.has('state') && !popupState) {
       partnerLoad.current = true;
       const state = params.get('state');
       const partnerCode = params.get('code');
@@ -66,9 +79,12 @@ export default function WaCallbackPage() {
 
     const code = params.get('code');
     const error = params.get('error_description') || params.get('error');
+    // The popup's state rides along so the opener can match the answer to its
+    // own dialog; a callback without one posts the same message as before.
+    const relayState = popupState ? { state: popupState } : {};
     const payload = code
-      ? { type: 'FX_WA_OAUTH', code }
-      : { type: 'FX_WA_OAUTH', error: error || 'Signup cancelled.' };
+      ? { type: 'FX_WA_OAUTH', code, ...relayState }
+      : { type: 'FX_WA_OAUTH', error: error || 'Signup cancelled.', ...relayState };
 
     if (window.opener) {
       window.opener.postMessage(payload, window.location.origin);

@@ -252,25 +252,69 @@ def store_lead(
     askers = (
         {s.id for s in _live_sources(db, page_id) if test_requested(s, lead_form, now)} if is_test else set()
     )
+    _cache_form_name(todo, lead_form, form_name)
+    return store_for_sources(
+        db,
+        todo,
+        platform=PLATFORM_FACEBOOK,
+        platform_lead_id=leadgen_id,
+        page_id=page_id,
+        form_id=lead_form,
+        form_name=form_name,
+        answers=answers,
+        raw=raw,
+        platform_created_at=platform_created,
+        attribution=attribution,
+        is_test=is_test,
+        received_at=now,
+        test_askers=askers,
+    )
+
+
+def store_for_sources(
+    db: Session,
+    todo: List[LcSource],
+    *,
+    platform: str,
+    platform_lead_id: str,
+    page_id: Optional[str],
+    form_id: str,
+    form_name: Optional[str],
+    answers: List[Dict[str, Any]],
+    raw: Dict[str, Any],
+    platform_created_at: Optional[datetime],
+    attribution: Dict[str, Any],
+    is_test: bool,
+    received_at: datetime,
+    test_askers: Optional[set] = None,
+    live_on_any_lead: bool = False,
+) -> List[str]:
+    """THE per-source store, shared by every platform (Meta webhook +
+    backfill, Google receiver, card 68a R4): one ``lc_lead`` per source in
+    ``todo`` (idempotent on (source, platform lead id), AC-64-27), mapped with
+    that source's own map, delivered to that tenant only. A test lead (or, with
+    ``live_on_any_lead``, any lead) flips a WAITING_FOR_TEST source to LIVE;
+    ``test_askers`` limits a test lead's flip to the sources that asked.
+    Commits, then hands the deliveries to the worker."""
+    askers = test_askers or set()
     created_ids: List[str] = []
     delivery_ids: List[str] = []
-    _cache_form_name(todo, lead_form, form_name)
     target_cache: Dict[str, List] = {}
     for source in todo:
         if source.tenant_id not in target_cache:
             target_cache[source.tenant_id] = field_service.targets(db, source.tenant_id)
         targets = target_cache[source.tenant_id]
-        form_map, has_map = mapping.form_map_for(source.field_map_json, lead_form)
+        form_map, has_map = mapping.form_map_for(source.field_map_json, form_id)
         fields, unmapped = mapping.map_answers(answers, form_map, targets)
         lead = LcLead(
             tenant_id=source.tenant_id,
             source_id=source.id,
-            platform=PLATFORM_FACEBOOK,
-            platform_lead_id=leadgen_id,
-            form_id=lead_form or None,
+            platform=platform,
+            platform_lead_id=platform_lead_id,
+            form_id=form_id or None,
             form_name=form_name,
-            received_at=now,
-            platform_created_at=platform_created,
+            received_at=received_at,
+            platform_created_at=platform_created_at,
             fields_encrypted=encrypt_secret({"fields": fields, "answers": answers}),
             raw_encrypted=encrypt_secret({"raw": raw}),
             attribution_json=attribution,
@@ -284,28 +328,28 @@ def store_lead(
                 db.flush()
         except IntegrityError:
             continue  # a parallel run stored it first (AC-64-27)
-        source.last_lead_at = now
+        source.last_lead_at = received_at
         if (
-            is_test
+            (is_test or live_on_any_lead)
             and source.status == SOURCE_WAITING_FOR_TEST
             and (not askers or source.id in askers)
         ):
             source.status = SOURCE_LIVE  # the source passed its test (AC-64-16)
-        if lead_form and not has_map and unmapped:
+        if form_id and not has_map and unmapped:
             notice = dict(source.needs_mapping_json or {})
-            notice[lead_form] = {"formId": lead_form, "formName": form_name, "unmappedCount": unmapped}
+            notice[form_id] = {"formId": form_id, "formName": form_name, "unmappedCount": unmapped}
             source.needs_mapping_json = notice
         body = mapping.lead_body(
             lead_id=lead.id,
             source_id=source.id,
             source_name=source.name,
-            platform=PLATFORM_FACEBOOK,
-            platform_lead_id=leadgen_id,
+            platform=platform,
+            platform_lead_id=platform_lead_id,
             page_id=page_id,
-            form_id=lead_form or None,
+            form_id=form_id or None,
             form_name=form_name,
-            received_at=now,
-            platform_created_at=platform_created,
+            received_at=received_at,
+            platform_created_at=platform_created_at,
             is_test=is_test,
             duplicate_of=None,
             fields=fields,

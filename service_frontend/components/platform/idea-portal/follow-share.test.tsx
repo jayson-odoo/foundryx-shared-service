@@ -222,76 +222,121 @@ describe('the read-only share view', () => {
     expect(p.vote).not.toHaveBeenCalled();
   });
 
-  it('phone -> code -> follows as the visitor, then opens their own board', async () => {
+  // Lane FEEDBACK-SHARE-SS-HOST (owner 19 Nov): the phone step mirrors the
+  // CRM /signin phone mode 1:1 (Dealer Access phone field + the portal code
+  // field). All numbers below are made up.
+  async function openPhoneStep(): Promise<HTMLElement> {
+    render(<IdeaPage ideaId="tok" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Follow' }));
+    return screen.findByLabelText('Phone number');
+  }
+
+  async function reachCodeStep(): Promise<HTMLElement> {
+    svc.share.sendCode.mockResolvedValue({ sent: true });
+    const field = await openPhoneStep();
+    await userEvent.type(field, '012-345 0002');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    return screen.findByLabelText('Verification code');
+  }
+
+  it('phone field defaults to Malaysia, drops the trunk 0 and sends E.164', async () => {
+    mockPage();
+    svc.share.sendCode.mockResolvedValue({ sent: true });
+    const field = await openPhoneStep();
+    expect(screen.getByRole('button', { name: 'Country: Malaysia (+60)' })).toBeInTheDocument();
+    expect(field).toHaveAttribute('placeholder', '12-345 6789');
+    await userEvent.type(field, '012-345 0002');
+    expect(field).toHaveValue('12-345 0002');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(svc.share.sendCode).toHaveBeenCalledWith('tok', '+60123450002');
+  });
+
+  it('an incomplete number shows the field error and sends nothing', async () => {
+    mockPage();
+    const field = await openPhoneStep();
+    await userEvent.type(field, '0123');
+    expect(screen.queryByRole('alert')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a complete phone number.');
+    expect(svc.share.sendCode).not.toHaveBeenCalled();
+  });
+
+  it('code step reads like the CRM: number, Change number, resend countdown', async () => {
+    mockPage();
+    const code = await reachCodeStep();
+    expect(
+      screen.getByText((_, el) => el?.tagName === 'P' && el.textContent === "We'll send a code to your WhatsApp +60 12 345 0002"),
+    ).toBeInTheDocument();
+    expect(code).toHaveAttribute('placeholder', '6-digit code');
+    expect(code).toHaveAttribute('autocomplete', 'one-time-code');
+    expect(screen.getByRole('button', { name: /^Resend in \d+s$/ })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Change number' }));
+    expect(await screen.findByLabelText('Phone number')).toBeInTheDocument();
+  });
+
+  it('the 6th digit verifies on its own, then opens their own board', async () => {
     mockPage();
     const assign = vi.fn();
     Object.defineProperty(window, 'location', { value: { ...window.location, assign }, writable: true });
-    svc.share.sendCode.mockResolvedValue({ sent: true });
     svc.share.verifyCode.mockResolvedValue({
       token: 'portal-jwt',
       principal: { kind: 'contact', name: 'Manager', role: 'Dealer', productId: null, canManage: false },
       boardUrl: 'https://x.test/public/feedback/board/own/FB-0042',
     });
     svc.portal.follow.mockResolvedValue({ following: true, followerCount: 3 });
-    render(<IdeaPage ideaId="tok" />);
-    await userEvent.click(screen.getByRole('button', { name: 'Follow' }));
-    await userEvent.type(await screen.findByLabelText('Your WhatsApp number'), '012-345 0002');
-    await userEvent.click(screen.getByRole('button', { name: 'Send code' }));
-    expect(svc.share.sendCode).toHaveBeenCalledWith('tok', '012-345 0002');
-    await userEvent.type(await screen.findByLabelText('Code sent to 012-345 0002'), '123456');
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    const code = await reachCodeStep();
+    await userEvent.type(code, '123456');
     await waitFor(() => expect(assign).toHaveBeenCalledWith('https://x.test/public/feedback/board/own/FB-0042'));
-    expect(svc.share.verifyCode).toHaveBeenCalledWith('tok', '012-345 0002', '123456');
+    expect(svc.share.verifyCode).toHaveBeenCalledWith('tok', '+60123450002', '123456');
+    expect(svc.share.verifyCode).toHaveBeenCalledTimes(1);
     expect(auth.set).toHaveBeenCalledWith('portal-jwt');
     expect(svc.portal.follow).toHaveBeenCalledWith('i10');
   });
 
-  it('an unknown number shows the product message next to the field', async () => {
+  it('an unknown number shows the product message under the field', async () => {
     mockPage();
-    const { ApiError } = await import('@/lib/api-client');
     svc.share.sendCode.mockRejectedValue(
       new ApiError("This number isn't registered with Sorento CRM. Ask your Sorento CRM contact to add you.", 404, null, null),
     );
-    render(<IdeaPage ideaId="tok" />);
-    await userEvent.click(screen.getByRole('button', { name: 'Follow' }));
-    await userEvent.type(await screen.findByLabelText('Your WhatsApp number'), '0123450009');
-    await userEvent.click(screen.getByRole('button', { name: 'Send code' }));
+    const field = await openPhoneStep();
+    await userEvent.type(field, '012-345 0009');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
     expect(await screen.findByRole('alert')).toHaveTextContent("isn't registered with Sorento CRM");
-    expect(screen.getByLabelText('Your WhatsApp number')).toBeInTheDocument();
+    expect(screen.getByLabelText('Phone number')).toBeInTheDocument();
   });
 
   it('the refusal clears as soon as the number is edited (crew pass 6b78d15b)', async () => {
     mockPage();
-    const { ApiError } = await import('@/lib/api-client');
     svc.share.sendCode.mockRejectedValue(
       new ApiError("This number isn't registered with Sorento CRM. Ask your Sorento CRM contact to add you.", 404, null, null),
     );
-    render(<IdeaPage ideaId="tok" />);
-    await userEvent.click(screen.getByRole('button', { name: 'Follow' }));
-    const field = await screen.findByLabelText('Your WhatsApp number');
-    await userEvent.type(field, '0123450009');
-    await userEvent.click(screen.getByRole('button', { name: 'Send code' }));
+    const field = await openPhoneStep();
+    await userEvent.type(field, '012-345 0009');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await screen.findByRole('alert');
     await userEvent.type(field, '2');
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('a wrong-code line clears as soon as the code is edited', async () => {
+  it('a wrong code shows the server text verbatim, clears the code and refocuses', async () => {
     mockPage();
-    const { ApiError } = await import('@/lib/api-client');
-    svc.share.sendCode.mockResolvedValue({ sent: true });
     svc.share.verifyCode.mockRejectedValue(
       new ApiError('That code is not right. Check WhatsApp and try again.', 400, null, null),
     );
-    render(<IdeaPage ideaId="tok" />);
-    await userEvent.click(screen.getByRole('button', { name: 'Follow' }));
-    await userEvent.type(await screen.findByLabelText('Your WhatsApp number'), '012-345 0002');
-    await userEvent.click(screen.getByRole('button', { name: 'Send code' }));
-    const code = await screen.findByLabelText('Code sent to 012-345 0002');
+    const code = await reachCodeStep();
     await userEvent.type(code, '111111');
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That code is not right');
-    await userEvent.type(code, '{Backspace}');
+    expect(await screen.findByRole('alert')).toHaveTextContent('That code is not right. Check WhatsApp and try again.');
+    await waitFor(() => expect(code).toHaveValue(''));
+    expect(code).toHaveFocus();
+    await userEvent.type(code, '2');
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a network failure reads like the CRM', async () => {
+    mockPage();
+    svc.share.verifyCode.mockRejectedValue(new TypeError('Failed to fetch'));
+    const code = await reachCodeStep();
+    await userEvent.type(code, '123456');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to reach the server. Please try again.');
   });
 });

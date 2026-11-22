@@ -74,7 +74,7 @@ totals, live-verify evidence, `[XR]`/deferred items with what unblocks them.
 ## Rules
 - A change is not done until the relevant suites are green AND (for UI) browser-verified.
 - Report failures with the actual output quoted. If a step was skipped, say so.
-- No em/en dashes in anything you write. Commit with `Co-Authored-By: Claude Fable 5.1
+- No em/en dashes in anything you write. Commit with `Co-Authored-By: Claude Sonnet 5.5
   <noreply@anthropic.com>`. Never push.
 
 Return: tests added (paths), red-run output, suite results, browser-verification outcome,

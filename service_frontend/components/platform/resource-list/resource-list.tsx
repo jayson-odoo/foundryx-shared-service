@@ -25,6 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { buildListNav, encodeListQuery } from '@/lib/list-context';
+import { keepListCtxOnSamePathClick, writeListUrlState } from '@/lib/list-url-state';
 import { cn } from '@/lib/utils';
 import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
@@ -166,6 +167,7 @@ function ResourceListLegacy<T extends object>({
     restoreFromCtx: restoreFromCtx ?? !hideHeader,
     filterFields: config.filterFields,
     timeZone,
+    listKey: config.viewKey,
   });
   const prefs = useViewPreferences(config.viewKey);
   // Right-click (long-press on touch) on a row opens that row's actions at
@@ -181,13 +183,20 @@ function ResourceListLegacy<T extends object>({
 
   // Opt-in (config.urlState): mirror the live query into the address bar's
   // `ctx` so reload / a shared link restores the exact view.
+  // Written as the router's own entry (no router action, so a click that is
+  // still loading is never dropped) and remembered for a remount (#259).
   const urlState = config.urlState;
+  const viewKey = config.viewKey;
   useEffect(() => {
-    if (!urlState || typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    url.searchParams.set('ctx', encodeListQuery(list.query));
-    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
-  }, [urlState, list.query]);
+    if (!urlState) return;
+    writeListUrlState(viewKey, encodeListQuery(list.query));
+  }, [urlState, viewKey, list.query]);
+  // Its own sidebar link (same path) would drop `ctx` without a remount:
+  // that click is kept from navigating (no timing involved).
+  useEffect(() => {
+    if (!urlState) return;
+    return keepListCtxOnSamePathClick();
+  }, [urlState]);
 
   // Mirror the current ad-hoc filter tree out to the parent page (opt-in,
   // plan 26 "Save as segment") - purely additive, no behavior change for

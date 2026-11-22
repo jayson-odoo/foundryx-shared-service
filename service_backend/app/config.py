@@ -131,6 +131,10 @@ class Settings(BaseSettings):
     # (unknown / cancelled) link exchanges per client IP; window-throttle.
     throttle_idea_feedback_link_max_fails: int = 20
     throttle_idea_feedback_link_window_minutes: int = 15
+    # Files read through a feedback share link (lane FEEDBACK-IMAGE-PREVIEW):
+    # every read (thumbnails + previews) per client IP; window-throttle.
+    throttle_idea_share_file_max: int = 600
+    throttle_idea_share_file_window_minutes: int = 15
     # Share-link phone step (lane FEEDBACK-SUBSCRIBE): send/verify requests per
     # client IP and per phone; window-throttle (the product also locks a phone).
     throttle_idea_follow_phone_max: int = 10
@@ -190,6 +194,12 @@ class Settings(BaseSettings):
     @property
     def autocount_write_allowed_books_list(self) -> List[str]:
         return [b.strip() for b in self.autocount_write_allowed_books.split(",") if b.strip()]
+
+    # AutoCount project registration (plan 71): the admin switch of the four
+    # /api/v1/autocount/project-registrations routes. OFF = every route refuses
+    # VENDOR_UNSUPPORTED with no AutoCount call, and the capability feed says so.
+    # Read per call (env AUTOCOUNT_PROJECT_REGISTRATION_ENABLED).
+    autocount_project_registration_enabled: bool = False
 
     # Environment
     environment: str = "development"
@@ -402,6 +412,25 @@ class Settings(BaseSettings):
     meta_es_dialog_version: str = ""
     # How long a partner connect session stays usable, in minutes.
     partner_connect_session_ttl_minutes: int = 30
+    # Lead Capture: Facebook Login for Business configuration id for the hosted
+    # connect wizard (plan 64 AC-64-20). Unset with META_APP_ID set = the
+    # Facebook channel is not offered (AC-64-13); META_APP_ID unset = simulated.
+    lead_capture_login_config_id: str = ""
+    # Lead Capture Google sign-in (plan 68, G-D8). OAuth web client + Google Ads
+    # API developer token from the owner's Google Cloud project / Ads manager
+    # account. GOOGLE_ADS_CLIENT_ID unset = the Google sign-in is simulated
+    # (dev + tests): any code works, sample accounts and forms come back.
+    google_ads_client_id: str = ""
+    google_ads_client_secret: str = ""
+    google_ads_developer_token: str = ""
+    # Manager account id (digits) when the signed-in person reaches accounts
+    # through a manager; empty = none. Confirmed by spike S-GOOGLE (G4).
+    google_ads_login_customer_id: str = ""
+    google_ads_api_version: str = "v20"
+    # Offer "Continue with Google" in the hosted wizard. OFF until Google has
+    # verified the app for the Google Ads scope (plan 68 risk 1); ON without a
+    # client id = simulated sign-in for dev / test copies.
+    lead_capture_google_signin: bool = False
     # Fernet key for encrypting channel credentials at rest. A throwaway dev
     # key is generated per-process if unset (NEVER rely on that in prod - set
     # OMNICHANNEL_FERNET_KEY so encrypted credentials survive a restart).

@@ -1744,6 +1744,11 @@ export interface DocFeedItem {
   cursorDay: string | null; // YYYY-MM-DD
   /** Set once the full-history live backfill has completed (ISO Z). */
   fullBackfillDoneAt: string | null;
+  /** The backfill range floor (YYYY-MM-DD). */
+  backfillFloor?: string | null;
+  /** Earliest from-day a completed live backfill ran from (YYYY-MM-DD); a
+   * live run from the floor is offered again only when this is later. */
+  fullBackfillFromDay?: string | null;
   contractGate: DocFeedContractGate | null;
   retryableCount: number;
   failedCount: number;
@@ -1842,7 +1847,7 @@ export interface DocFeedIssue {
 }
 
 /** `POST /autocount/doc-feeds/{companyId}/{feed}/backfill` body - defaults
- * (2023-01-01 .. today) are resolved server-side; the dialog only sends what
+ * (2019-01-01 .. today) are resolved server-side; the dialog only sends what
  * the operator changed. */
 export interface DocFeedBackfillStartInput {
   dryRun: boolean;

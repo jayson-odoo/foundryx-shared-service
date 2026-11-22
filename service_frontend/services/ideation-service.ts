@@ -85,6 +85,9 @@ export interface IdeaService {
   unmerge?(id: string): Promise<Idea[]>;
   /** The children merged into a survivor, oldest merge first (AC-94-03/25). */
   listMerged?(id: string): Promise<Idea[]>;
+  /** Turn a wrongly flagged test item into a real one (with its merged
+   * children) so it can be shared and followed (lane FEEDBACK-WA-TEST-FLAG). */
+  markReal?(id: string): Promise<Idea>;
   /** The triage board - statuses grouped into columns with their cards
    * (AC-94-54/58), never a hardcoded FE column list. */
   getBoard?(opts?: { includeTest?: boolean; productId?: string }): Promise<Board>;

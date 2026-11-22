@@ -172,6 +172,8 @@ export function DocFeedsTab({ companyId }: { companyId: string }) {
           feed={backfillingItem.feed}
           mode={backfillingItem.mode}
           fullBackfillDoneAt={backfillingItem.fullBackfillDoneAt}
+          backfillFloor={backfillingItem.backfillFloor}
+          fullBackfillFromDay={backfillingItem.fullBackfillFromDay}
           backfill={
             backfillingItem.backfill
               ? {
