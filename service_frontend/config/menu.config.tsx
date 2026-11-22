@@ -8,6 +8,7 @@ import {
   Lightbulb,
   MessageSquare,
   Video,
+  Magnet,
   Network,
   Package,
   Plug,
@@ -393,6 +394,21 @@ export const MENU_SIDEBAR: MenuConfig = [
       },
     ],
   },
+  // Lead Capture (plan 64 lanes L-C/L-D) - module menu block, visible only
+  // while `lead_capture` is ACTIVE for the tenant AND the user holds the key
+  // each page gates on. Same tags in all three menu copies.
+  {
+    title: 'Lead Capture',
+    icon: Magnet,
+    module: 'lead_capture',
+    children: [
+      { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
+      { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
+      { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
+      { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
+      { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
+    ],
+  },
   // Meetings (sprint-5 S0) - module menu block, visible only while the
   // `meetings` module is ACTIVE for the tenant AND the user holds the key its
   // page gates on (filterMenu prunes at every level). No clickable parent.
@@ -572,6 +588,22 @@ export const MENU_MEGA: MenuConfig = [
                 module: 'omnichannel',
                 permission: 'omnichannel_migration.read',
               },
+            ],
+          },
+        ],
+      },
+      // Lead Capture (plan 64 lanes L-C/L-D) - desktop mega copy.
+      {
+        title: 'Lead Capture',
+        module: 'lead_capture',
+        children: [
+          {
+            children: [
+              { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
+              { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
+              { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
+              { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
+              { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
             ],
           },
         ],
@@ -768,6 +800,21 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         module: 'omnichannel',
         permission: 'omnichannel_migration.read',
       },
+    ],
+  },
+  // Lead Capture (plan 64 lanes L-C/L-D) - module menu block, visible only
+  // while `lead_capture` is ACTIVE for the tenant AND the user holds the key
+  // each page gates on. Same tags in all three menu copies.
+  {
+    title: 'Lead Capture',
+    icon: Magnet,
+    module: 'lead_capture',
+    children: [
+      { title: 'Sources', path: '/lead-capture/sources', permission: 'lead_capture.view' },
+      { title: 'Leads', path: '/lead-capture/leads', permission: 'lead_capture.view' },
+      { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
+      { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
+      { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
     ],
   },
   // Meetings (sprint-5 S0) - third menu copy; same module + permission tags so

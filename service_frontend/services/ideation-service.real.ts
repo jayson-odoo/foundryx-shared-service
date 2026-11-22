@@ -213,6 +213,10 @@ export const realIdeationService: IdeaService & IdeaExtendedOps = {
     return apiFetch<Idea[]>(`${idea(id)}/merged`);
   },
 
+  markReal(id: string): Promise<Idea> {
+    return apiFetch<Idea>(`${idea(id)}/mark-real`, { method: 'POST' });
+  },
+
   // Attachment upload + serve (plan sprint-5/15). `apiFetch` skips the JSON
   // content-type for a FormData body so the browser sets the multipart boundary.
   uploadAttachment(id: string, file: File, commentId?: string): Promise<IdeaAttachment> {

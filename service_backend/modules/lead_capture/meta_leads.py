@@ -39,6 +39,14 @@ from app.integrations.meta.graph import (
 
 logger = logging.getLogger(__name__)
 
+# Plan 64 D4 / AC-64-20: what the Lead Capture login config asks for.
+LOGIN_SCOPES = (
+    "pages_show_list",
+    "pages_manage_metadata",
+    "pages_read_engagement",
+    "leads_retrieval",
+    "pages_manage_ads",
+)
 LEAD_FIELDS = "id,created_time,field_data,form_id,ad_id,adset_id,campaign_id,is_organic,platform"
 # S-META F7 test-lead subcodes.
 SUBCODE_TEST_LEAD_EXISTS = 1892058  # POST /{form}/test_leads: one already exists
@@ -47,6 +55,14 @@ _TEXT_CAP = 500
 PAGE_SIZE = 100
 MAX_PAGES = 20  # 2,000 rows per call at most; the next backfill run continues
 DEV_FORM_ID = "100000000000000"
+DEV_FORM_NAME = "Sample lead form"
+# Simulated Pages (no Meta app configured: dev + tests) - digits like real
+# Page ids, neutral names (white-label). The hosted wizard lists them and the
+# dev connect names the source after them.
+DEV_PAGES: List[Dict[str, str]] = [
+    {"id": "100000000000701", "name": "Sample Home Page"},
+    {"id": "100000000000702", "name": "Sample Store Page"},
+]
 
 
 class MetaLeadError(Exception):
@@ -165,10 +181,27 @@ class MetaLeadClient(MetaGraphMixin):
             if self._client is None:
                 client.close()
 
+    def granted_permissions(self, token: str, *, dev: bool = False) -> Set[str]:
+        """The permissions the person (or system user) granted this app
+        (``GET /me/permissions``, token in the header). Dev = every scope the
+        wizard asks for. Read errors raise ``MetaLeadError``."""
+        if not self._configured or dev:
+            return set(LOGIN_SCOPES)
+        resp = self._get("me/permissions", token)
+        if resp.status_code != 200:
+            raise _error(resp, "Meta refused the permission read.")
+        granted: Set[str] = set()
+        for item in _dict_items(_json_obj(resp).get("data")):
+            name, status = _text(item.get("permission")), _text(item.get("status"))
+            if name and status == "granted":
+                granted.add(name)
+        return granted
+
     def page_token(self, system_user_token: str, page_id: str, *, dev: bool = False) -> Dict[str, str]:
         """``{"pageToken", "pageName"}`` for a Page the system user holds."""
         if not self._configured or dev:
-            return {"pageToken": f"dev-page-token-{page_id}", "pageName": f"Dev Page {page_id}"}
+            name = next((p["name"] for p in DEV_PAGES if p["id"] == page_id), f"Dev Page {page_id}")
+            return {"pageToken": f"dev-page-token-{page_id}", "pageName": name}
         resp = self._get(page_id, system_user_token, {"fields": "access_token,name"})
         if resp.status_code != 200:
             raise _error(resp, "Meta refused the Page.")
@@ -199,7 +232,7 @@ class MetaLeadClient(MetaGraphMixin):
         if not form_id:
             return None
         if not self._configured or dev:
-            return f"Dev form {form_id}"
+            return DEV_FORM_NAME
         try:
             resp = self._get(form_id, page_token, {"fields": "name"})
         except MetaLeadError:
@@ -233,7 +266,7 @@ class MetaLeadClient(MetaGraphMixin):
         """``{"formName", "questions": [{key, label, type, options}]}`` read with
         ``GET /{form}?fields=name,questions`` (Page token). Raises MetaLeadError."""
         if not self._configured or dev:
-            return {"formName": f"Dev form {form_id}", "questions": dev_questions()}
+            return {"formName": DEV_FORM_NAME, "questions": dev_questions()}
         resp = self._get(form_id, page_token, {"fields": "name,questions"})
         if resp.status_code != 200:
             raise _error(resp, "Meta refused the form read.")
@@ -266,7 +299,7 @@ class MetaLeadClient(MetaGraphMixin):
         (``GET /{page}/leadgen_forms``, Page token, every page of the list up
         to ``MAX_PAGES``). Raises MetaLeadError."""
         if not self._configured or dev:
-            return [{"id": DEV_FORM_ID, "name": f"Dev form {DEV_FORM_ID}", "status": "ACTIVE", "createdTime": None}]
+            return [{"id": DEV_FORM_ID, "name": DEV_FORM_NAME, "status": "ACTIVE", "createdTime": None}]
         forms: List[Dict[str, Any]] = []
         after = ""
         for _ in range(MAX_PAGES):

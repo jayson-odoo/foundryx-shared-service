@@ -463,16 +463,19 @@ def get_snapshot_rows_route(
 # like ``/snapshots``; the service does every DB / AutoCount step.
 
 _WRITE_DISABLED_CODES = ("WRITE_DISABLED", "WRITE_NOT_ALLOWED")
+_FIELD_REFUSALS = ("LOCATION_UNKNOWN",)  # plan 70: the caller's field is wrong, like any 422
 
 
 def _write_status(result: WriteActionResult) -> int:
-    """done 200, pending_verification 202, write refusals 403, other refusals
-    409, vendor_error / mismatch 502."""
+    """done 200, pending_verification 202, write refusals 403, a refused field
+    (``LOCATION_UNKNOWN``) 422, other refusals 409, vendor_error / mismatch 502."""
     if result.outcome == "done":
         return 200
     if result.outcome == "pending_verification":
         return 202
     if result.outcome == "refused":
+        if result.error_code in _FIELD_REFUSALS:
+            return 422
         return 403 if result.error_code in _WRITE_DISABLED_CODES else 409
     return 502
 
@@ -568,15 +571,20 @@ def _optional_text(raw: WriteBody, name: str) -> Optional[str]:
     return value[:MAX_ECHO_LEN]
 
 
-def _pool_location(raw: WriteBody) -> Optional[str]:
-    """Plan 66: ``poolLocation`` on ``po-links/unlink``, an exact Location code; blank = none. Never cut
-    short (a cut code would be matched "exactly"): too long is 422 like any malformed field."""
-    value = raw.get("poolLocation")
+def _location_code(raw: WriteBody, name: str) -> Optional[str]:
+    """An optional Location code field (``poolLocation`` plan 66, ``location`` plan 70); blank = none. Never
+    cut short (a cut code would be matched "exactly"): too long or not text is 422 like any malformed field."""
+    value = raw.get(name)
     if value is None:
         return None
     if not isinstance(value, str) or len(value) > MAX_ECHO_LEN:
-        raise PullGatewayError(422, "INVALID_REQUEST", f"poolLocation must be text of at most {MAX_ECHO_LEN} characters.")
+        raise PullGatewayError(422, "INVALID_REQUEST", f"{name} must be text of at most {MAX_ECHO_LEN} characters.")
     return value.strip() or None
+
+
+def _pool_location(raw: WriteBody) -> Optional[str]:
+    """Plan 66: ``poolLocation`` on ``po-links/unlink``, an exact Location code; blank = none."""
+    return _location_code(raw, "poolLocation")
 
 
 def _write_route(
@@ -649,6 +657,7 @@ def link_po_row(
             qty=_qty_field(raw), so_doc_date=optional_iso_date(raw, "soDocDate"),
             doc_date=optional_iso_date(raw, "docDate"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
+            location=_location_code(raw, "location"),  # plan 70: absent = the SO row's location
         )
 
     return _write_route(request, db, raw_body, service, "write_link", call, operations, with_detail=True)
@@ -717,6 +726,7 @@ def relocate_po_row(
             tenant_id=tenant_id, company_id=company_id, key_id=key_id,
             po_doc_key=_int_field(raw, "poDocKey"), po_dtl_key=_int_field(raw, "poDtlKey"),
             expected_last_modified=_optional_text(raw, "expectedLastModified"),
+            location=_location_code(raw, "location"),  # plan 70: absent = the SO row's location
         )
 
     return _write_route(request, db, raw_body, service, "write_relocate", call)

@@ -27,6 +27,11 @@ page is the short path: which call backs which screen, with real payloads.
 | Source History tab | `GET /sources/{id}/history` |
 | Disconnect | `DELETE /sources/{id}` |
 | Live refresh of the list | webhook event `source.updated` |
+| Keys (create, list, revoke) | `GET /keys`, `POST /keys`, `DELETE /keys/{id}` |
+| Delivery (receivers, test push, pull only) | `GET /webhooks`, `POST /webhooks`, `POST /webhooks/{id}/test`, `DELETE /webhooks/{id}` |
+
+Keys, Delivery and the Fields screen (field list + per-form map) are written up screen by screen, with the states to
+show, in `docs/lead-capture/ecohub-quickstart-screens.md`.
 
 ## 1. Sources list and health
 
@@ -69,7 +74,14 @@ the product's webhook receives `source.updated` with `change: "needs_reconnect"`
 
 ## 2. Connect and reconnect
 
-`POST /sources/facebook`
+Easiest: the hosted wizard. Your server calls `POST /connect-sessions {"returnOrigin": "<your origin>",
+"sourceId": null | "<source id to reconnect / map>"}` and opens the returned `url` in a popup; on the
+`lead-capture:done` / `lead-capture:closed` postMessage (from the Shared Service origin) refresh the list. Your
+origin must first be on the key's allowed origins (Shared Service admin, Lead Capture > Keys). Building your own
+wizard instead: every step is an API, see the consumer guide section 7b (`GET /channels`,
+`GET /facebook/login-config`, `POST /facebook/login` -> `loginId`, then the call below with `loginId`).
+
+`POST /sources/facebook` (with a system user token, or with `"loginId"` from `POST /facebook/login`)
 
 ```json
 {"pageId": "300000000000001", "systemUserToken": "<business system user token>", "formsMode": "all"}

@@ -11,6 +11,7 @@ an ``httpx.MockTransport``. It honours the behaviour recorded on db3 on 4 Nov 20
   an EXISTING row are ignored; a NEW row linked to an SO row is forced to Location
   HQ and an SO link reads back as ``FromSODtlKey`` on PO rows.
 * GET /<doc>bydocdate?DocDate=YYYYMMDD.
+* GET /location - the Location master (plan 70), a bare array of ``{Location, Description}``.
 * GET /debtorbypage?page=&pageSize= - the paged envelope over ``debtors``
   (SS-QTSO-DISPLAYTERM: the debtor's own ``DisplayTerm``).
 * Plan 61 (db3 probes, 10 Nov 2026): GET ``/<Doc>bydocno?DocNo=`` (list, ``[]`` when
@@ -67,7 +68,7 @@ class Call:
 class _Injection:
     method: str
     leaf: str
-    mode: str  # fail | timeout | apply_then_500
+    mode: str  # fail | timeout | apply_then_500 | apply_then_refuse | refuse_json
     status: int = 500
     text: str = "injected failure"
     skip: int = 0  # matching calls to let through first
@@ -131,6 +132,8 @@ class FakeAutoCountVendor:
         self.inherit_qt_values = False
         # SS-QTSO-DISPLAYTERM: Debtor master rows served by GET /debtorbypage
         self.debtors: List[Dict[str, Any]] = []
+        # plan 70: the Location master served by GET /location (a bare array, like live hapi)
+        self.locations: List[str] = ["HQ", "BR1", "BRW", "BRW-AM", "BRW-BB"]
         # plan 61: new PO rows with these ItemCodes are refused 500 (atomic-PUT probes P-AT1)
         self.invalid_items: set = set()
         # plan 62: created docs carry CreatedTimeStamp + LastModified = now in AutoCount local time (MYT, no zone, ms)
@@ -182,6 +185,23 @@ class FakeAutoCountVendor:
     def apply_then_500_next(self, method: str, leaf: str, after: int = 0) -> None:
         self._injections.append(_Injection(method.upper(), leaf.lower(), "apply_then_500", skip=after))
 
+    def apply_then_refuse_next(self, method: str, leaf: str, message: str = "Timeout expired.",
+                               after: int = 0) -> None:
+        """Plan 69 Q1: the write LANDS, then hapi answers 500 with an AutoCount message (a command
+        timeout after the save, ~30 s on db1): the answer looks like a refusal but is not one."""
+        self._injections.append(_Injection(method.upper(), leaf.lower(), "apply_then_refuse", text=message,
+                                           skip=after))
+
+    def refuse_json_next(self, method: str, leaf: str, message: str = "Timeout expired.",
+                         after: int = 0) -> None:
+        """A 500 with an AutoCount message and NOTHING applied (a lock wait that rolled back)."""
+        self._injections.append(_Injection(method.upper(), leaf.lower(), "refuse_json", text=message, skip=after))
+
+    def fail_reads_next(self, leaf: str, count: int = 1) -> None:
+        """The next ``count`` GETs of ``leaf`` answer a bare 500 (the document cannot be read)."""
+        for _ in range(count):
+            self._injections.append(_Injection("GET", leaf.lower(), "fail", 500, "read failed"))
+
     def drop_rows_next_create(self) -> None:
         self._drop_rows_next_create = True
 
@@ -213,10 +233,16 @@ class FakeAutoCountVendor:
         if inj and inj.mode == "fail":
             call.status = inj.status
             return httpx.Response(inj.status, text=inj.text)
+        if inj and inj.mode == "refuse_json":
+            call.status = 500
+            return httpx.Response(500, json={"Message": "An error has occurred.", "ExceptionMessage": inj.text})
         response = self._route(method, leaf, call)
         if inj and inj.mode == "apply_then_500":
             call.status = 500
             return httpx.Response(500, text="applied but answered 500")
+        if inj and inj.mode == "apply_then_refuse" and response.status_code < 300:
+            call.status = 500
+            return httpx.Response(500, json={"Message": "An error has occurred.", "ExceptionMessage": inj.text})
         call.status = response.status_code
         return response
 
@@ -224,6 +250,8 @@ class FakeAutoCountVendor:
         if method == "GET":
             if leaf == "debtorbypage":
                 return self._debtor_page(call)
+            if leaf == "location":
+                return httpx.Response(200, json=[{"Location": c, "Description": c} for c in self.locations])
             for kind, spec in SPECS.items():
                 if spec["get"] == leaf:
                     return self._get(kind, call)

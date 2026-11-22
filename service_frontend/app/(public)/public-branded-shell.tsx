@@ -39,12 +39,16 @@ export function usePublicPageBranding(): PublicBranding | null {
  *  - the public idea-status page (issue #90 W1) - a real branded header +
  *    footer BrandMark of its own; a visitor opening a WhatsApp link should
  *    never see instructional stub links either.
- *  - the idea portal (lane IDEA-PORTAL) - its own brand header + tabs. */
+ *  - the idea portal (lane IDEA-PORTAL) - its own brand header + tabs.
+ *  - the hosted Lead Capture wizard - the session's tenant brand. */
 function ownsChromePath(pathname: string | null): boolean {
   return Boolean(
     pathname?.startsWith('/public/webchat/') ||
       pathname?.startsWith('/public/feedback/') ||
-      pathname?.startsWith('/portal/feedback'),
+      pathname?.startsWith('/portal/feedback') ||
+      // The hosted Lead Capture wizard: its tenant comes from the session, not
+      // the host, so it draws the tenant's own brand (AC-64-11).
+      pathname?.startsWith('/public/lead-capture/'),
   );
 }
 
@@ -63,14 +67,16 @@ export function PublicBrandedShell({ children, initialBranding }: PublicBrandedS
   if (ownsChromePath(pathname)) {
     return (
       <PublicPageBrandingContext.Provider value={branding}>
-        <div className="flex h-full min-h-full grow flex-col">{children}</div>
+        {/* min-w-0: <body> is a flex row; without it a long unbreakable line (a
+            one-line URL) widens the whole page past a 375 px screen. */}
+        <div className="flex h-full min-h-full min-w-0 grow flex-col">{children}</div>
       </PublicPageBrandingContext.Provider>
     );
   }
 
   return (
     <PublicPageBrandingContext.Provider value={branding}>
-      <div className="flex min-h-full grow flex-col">
+      <div className="flex min-h-full min-w-0 grow flex-col">
         <header className="border-b border-border">
           <div className="mx-auto flex w-full max-w-3xl items-center px-4 py-4 sm:px-6">
             <BrandMark branding={branding} />

@@ -389,10 +389,11 @@ def test_share_live_fix_real_item_is_not_flagged_test(setup):
     assert s["client"].get(f"/portal/ideas/{iid}", headers=_contact_session(s, author)).json()["isTest"] is False
 
 
-def test_share_live_fix_link_opens_on_the_ss_frontend_for_a_crm_tenant(setup, monkeypatch):
-    """A tenant whose public links go to the CRM (template base) still gets a
-    share link on the shared-service frontend: only it has the share page
-    (``app/(public)/public/feedback/share/[token]``). Board links keep the CRM."""
+def test_share_link_opens_on_the_crm_host_for_a_crm_tenant(setup, monkeypatch):
+    """Lane FEEDBACK-SHARE-SS-HOST: a tenant whose public links go to the CRM
+    (template base) gets its share link on the CRM host, like its board links
+    (``{crm origin}/feedback/share/<token>``); the CRM page frames this
+    frontend's share page."""
     from app.config import settings
     from modules.ideation.services import feedback_links
 
@@ -403,11 +404,13 @@ def test_share_live_fix_link_opens_on_the_ss_frontend_for_a_crm_tenant(setup, mo
     s = setup
     iid = _idea(s, 540, submitter_contact_id=_contact(s))
     url = s["client"].post(f"/ideation/ideas/{iid}/share-link", headers=s["h"]).json()["url"]
-    assert url.startswith("https://ss.example.test/public/feedback/share/")
+    assert url.startswith("https://crm.example.test/feedback/share/")
+    token = url.rsplit("/", 1)[1]
+    assert s["client"].get(f"/portal/ideas/shared/{token}").status_code == 200
     author = _contact(s)
     iid2 = _idea(s, 542, submitter_contact_id=author)
     res = s["client"].post(f"/portal/ideas/{iid2}/share", headers=_contact_session(s, author))
-    assert res.json()["url"].startswith("https://ss.example.test/public/feedback/share/")
+    assert res.json()["url"].startswith("https://crm.example.test/feedback/share/")
     assert feedback_links.board_base(None, "t").startswith("https://crm.example.test/feedback/board")
 
 
@@ -602,6 +605,67 @@ def test_ac_fs_03_no_product_connection_is_a_retryable_error(setup, product):
     res = _send(s, token, "+60123450002")
     assert res.status_code == 503
     assert res.json()["error"]["code"] == "unavailable"
+
+
+NOT_SET_UP = "Phone check is not set up for this product yet."
+
+
+def test_lookup_403_says_phone_check_not_set_up(setup, product):
+    """The CRM refuses the lookup (integration user lacks the permission):
+    a distinct message, never the generic "try again", and no code sent."""
+    s = setup
+    _product_connection(s)
+    product["lookup"] = 403
+    _iid, token = _shared_item(s, 560)
+    res = _send(s, token, "+60123450002")
+    assert res.status_code == 503
+    err = res.json()["error"]
+    assert err["code"] == "not_set_up"
+    assert err["message"] == NOT_SET_UP
+    assert product["codes"] == []
+
+
+def test_send_code_403_says_phone_check_not_set_up_and_voids_the_code(setup, product):
+    from modules.ideation.models import IdeaPhoneCode
+
+    s = setup
+    _product_connection(s)
+    product["send"] = 403
+    _iid, token = _shared_item(s, 561)
+    res = _send(s, token, "+60123450002")
+    assert res.status_code == 503
+    assert res.json()["error"] == {**res.json()["error"], "code": "not_set_up", "message": NOT_SET_UP}
+    db = s["factory"]()
+    try:
+        assert all(r.used_at is not None for r in db.query(IdeaPhoneCode).all())
+    finally:
+        db.close()
+
+
+def test_no_connection_logs_why_without_secrets(setup, product, caplog):
+    import logging
+
+    s = setup
+    _iid, token = _shared_item(s, 562)
+    with caplog.at_level(logging.WARNING, logger="modules.ideation.services.phone_verify"):
+        res = _send(s, token, "+60123450002")
+    assert res.status_code == 503
+    text = caplog.text
+    assert "no active consumer connection" in text
+    assert PRODUCT_KEY not in text and "60123450002" not in text
+
+
+def test_lookup_refusal_logs_the_http_status(setup, product, caplog):
+    import logging
+
+    s = setup
+    _product_connection(s)
+    product["lookup"] = 403
+    _iid, token = _shared_item(s, 563)
+    with caplog.at_level(logging.WARNING, logger="modules.ideation.services.phone_verify"):
+        _send(s, token, "+60123450002")
+    assert "lookup refused: HTTP 403" in caplog.text
+    assert PRODUCT_KEY not in caplog.text
 
 
 def test_ac_fs_03_undelivered_code_is_dead(setup, product):

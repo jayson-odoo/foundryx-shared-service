@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -21,6 +22,8 @@ from ..models import (
     AcDocFeedIssue,
     AcDocFeedLedger,
     AcDocFeedRun,
+    BACKFILL_DISCARDED_CODE,
+    DOC_FEED_BACKFILL_DONE,
     DOC_FEED_BACKFILL_OPEN_STATUSES,
 )
 
@@ -469,6 +472,27 @@ class DocFeedBackfillRepository:
             .filter(AcDocFeedBackfill.tenant_id == tenant_id, AcDocFeedBackfill.feed_id == feed_id)
             .order_by(AcDocFeedBackfill.started_at.desc())
             .first()
+        )
+
+    def earliest_completed_live_from_day(self, tenant_id: str, feed_id: str) -> Optional[date]:
+        """SLOW-MOVING-BACKFILL S0.3 - the earliest from-day a LIVE backfill
+        of this feed ran to completion from (dry runs and discarded rows never
+        count). The run-once guard compares a new full-history request against
+        this, not against the floor constant, so moving the floor earlier
+        re-opens exactly one run from the new floor."""
+        return (
+            self.db.query(func.min(AcDocFeedBackfill.from_day))
+            .filter(
+                AcDocFeedBackfill.tenant_id == tenant_id,
+                AcDocFeedBackfill.feed_id == feed_id,
+                AcDocFeedBackfill.status == DOC_FEED_BACKFILL_DONE,
+                AcDocFeedBackfill.dry_run.is_(False),
+                or_(
+                    AcDocFeedBackfill.error_code.is_(None),
+                    AcDocFeedBackfill.error_code != BACKFILL_DISCARDED_CODE,
+                ),
+            )
+            .scalar()
         )
 
     def add(self, backfill: AcDocFeedBackfill) -> AcDocFeedBackfill:

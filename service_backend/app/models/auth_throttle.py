@@ -74,6 +74,9 @@ THROTTLE_SCOPE_IDEA_FEEDBACK_LINK = "idea_feedback_link"
 # Follow / comment from a feedback share link (lane FEEDBACK-SUBSCRIBE): every
 # send-code / verify-code request, keyed per client IP and per phone digits.
 THROTTLE_SCOPE_IDEA_FOLLOW_PHONE = "idea_follow_phone"
+# Files read through a feedback share link (lane FEEDBACK-IMAGE-PREVIEW): every
+# read counts, per client IP - the route is public and re-serves the bytes.
+THROTTLE_SCOPE_IDEA_SHARE_FILE = "idea_share_file"
 # Omnichannel replace-token attempts per channel (plan 42): every attempt counts,
 # refused ones included (key = channel id).
 THROTTLE_SCOPE_CHANNEL_TOKEN = "channel_token"

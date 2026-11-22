@@ -10,7 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.api.v1.documents import _serve_blob
+from app.api.v1.documents import stream_blob
 from app.database import get_db
 from app.dependencies import effective_permission_keys, get_current_user, require_permission
 from app.models.user import User
@@ -298,7 +298,7 @@ def get_idea_attachment_content(
     key, mime, filename = IdeaAttachmentService(db).content(
         current_user.tenant_id, idea_id, attachment_id, variant
     )
-    return _serve_blob(db, current_user.tenant_id, key, mime, filename, "inline")
+    return stream_blob(db, current_user.tenant_id, key, mime, filename, "inline")
 
 
 @router.get("/{idea_id}/business-requirements", response_model=List[BusinessRequirementOut])
@@ -372,6 +372,24 @@ def unmerge_idea(
     group (AC-94-08); 422 for an idea that is neither."""
     return IdeaMergeService(db).unmerge(
         current_user.tenant_id, idea_id, actor=current_user, history_actor=request_actor(request, current_user)
+    )
+
+
+@router.post("/{idea_id}/mark-real", response_model=IdeaOut)
+def mark_idea_real(
+    idea_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    db: Session = Depends(get_db),
+) -> IdeaOut:
+    """Turn a wrongly flagged test item into a real one (lane
+    FEEDBACK-WA-TEST-FLAG): it then shares and follows like any real item.
+    409 in plain words when already real, a merged child, or on a test BR."""
+    return IdeaActionService(db).mark_real(
+        current_user.tenant_id,
+        idea_id,
+        request_actor(request, current_user),
+        voter_id=current_user.id,
     )
 
 

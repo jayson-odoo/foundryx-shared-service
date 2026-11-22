@@ -514,6 +514,9 @@ def test_feed_order_and_settle_window(ideation_client):
     assert _transition(ideation_client, s["h"], s["idea_id"], "linked").status_code == 200
 
     # Freshly committed rows (inside the 5s settle window) are withheld.
+    # Re-stamp them to "now" first: on a slow CI runner the two transitions
+    # above can take longer than the window, which made this check flaky.
+    _age_events(ideation_client._factory, s["idea_id"], seconds=0)
     res_fresh = ideation_client.get("/ideation/intake/status-events", headers=_key_auth(s["key"]))
     assert res_fresh.status_code == 200, res_fresh.text
     assert res_fresh.json()["events"] == []

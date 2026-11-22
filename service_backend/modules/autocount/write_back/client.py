@@ -83,6 +83,11 @@ class AutoCountWriteClient:
         self._call_log: Optional[cl.CallLog] = None
         self._auth_headers: Dict[str, str] = {}
         self._secrets: Tuple[str, ...] = ()
+        self._extra_headers: Dict[str, str] = {}
+
+    def set_user_agent(self, user_agent: str) -> None:
+        """Send ``user_agent`` on every request (plan 71: the ESB client's own User-Agent)."""
+        self._extra_headers = {"User-Agent": user_agent}
 
     def set_auth_headers(self, headers: Mapping[str, str]) -> None:
         """The optional API key header this client sends on every request (plan 63); never logged."""
@@ -130,10 +135,10 @@ class AutoCountWriteClient:
         try:
             with self._http() as http:
                 if params is not None:
-                    request = http.build_request(method, url, params=dict(params), headers=self._auth_headers,
+                    request = http.build_request(method, url, params=dict(params), headers={**self._extra_headers, **self._auth_headers},
                                                  timeout=self._timeout)
                 else:
-                    request = http.build_request(method, url, json=body, headers=self._auth_headers,
+                    request = http.build_request(method, url, json=body, headers={**self._extra_headers, **self._auth_headers},
                                                  timeout=self._timeout)
                 sent_path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
                 response = http.send(request)

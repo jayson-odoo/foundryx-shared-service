@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from sqlalchemy.exc import IntegrityError
 
@@ -145,6 +145,8 @@ class _Call:
     stage: bool = True
     doc_no: Optional[str] = None
     merge_key: Optional[int] = None  # unlink_merge: the free row that takes the quantity
+    # plan 69 D1: batch_link over several rows of ONE document: ((row DtlKey, [new rows]), ...)
+    groups: Optional[Sequence[Tuple[int, Sequence[Dict[str, Any]]]]] = None
     # SS-AUTOCOUNT-SPEEDUP: the document as the previous step of the SAME operation just read
     # it back (no vendor call since). It stands in for the fresh GET; None = read it.
     fresh_doc: Optional[Dict[str, Any]] = None
@@ -218,6 +220,19 @@ def is_business_refusal(status: int, body: Any) -> bool:
             message = "" if body.get("Message") == _GENERIC else str(body.get("Message") or "")
         return bool(message.strip())
     return isinstance(body, str) and 400 <= status < 500 and bool(body.strip())
+
+
+def _groups_of(call: "_Call") -> List[Tuple[int, Sequence[Dict[str, Any]]]]:
+    """The rows a batch link changes: ``groups`` (plan 69), else the one row and its lines (plan 62)."""
+    if call.groups is not None:
+        return [(int(k), v) for k, v in call.groups]
+    return [(int(call.dtl_key or 0), call.lines or [])]
+
+
+def _unchanged(before: Doc, after: Doc) -> bool:
+    """The document reads back exactly as before the PUT (its stamp and every row)."""
+    return (before.get("LastModified") == after.get("LastModified")
+            and (before.get("Details") or []) == (after.get("Details") or []))
 
 
 def _vendor_refusal(primitive: str, status: int, body: Any) -> Optional[str]:
@@ -315,12 +330,15 @@ class PrimitiveService(WriteFrame):
         lines: Sequence[Dict[str, Any]], doc_date: Optional[date] = None,
         expected_last_modified: Optional[str] = None, key_id: Optional[str] = None,
         operation_id: Optional[str] = None, step: Optional[str] = None, stage: bool = True,
+        groups: Optional[Sequence[Tuple[int, Sequence[Dict[str, Any]]]]] = None,
     ) -> PrimitiveResult:
         """Plan 62 D3: ONE PUT ``[row dtl_key "D" or cut to the rest, one new linked row per
-        line]``; done = every new row read back with its link and quantity."""
+        line]``; done = every new row read back with its link and quantity. Plan 69 D1: ``groups``
+        = several rows of the same document in the same ONE PUT (``dtl_key`` / ``lines`` = the first)."""
         call = _Call(BATCH_LINK, kind, tenant_id, doc_key=doc_key, dtl_key=dtl_key, key_id=key_id,
                      operation_id=operation_id, step=step, doc_date=doc_date,
-                     expected_last_modified=expected_last_modified, lines=lines, stage=stage)
+                     expected_last_modified=expected_last_modified, lines=lines, stage=stage,
+                     groups=None if groups is None else [(int(k), list(v)) for k, v in groups])
         return self._run(call, company_id)
 
     def unlink_merge(
@@ -628,7 +646,9 @@ class PrimitiveService(WriteFrame):
     def _build(call: _Call, doc: Doc) -> VendorRequest:
         if call.operation_id is None:  # plan 66: only an operation's link step may carry the note
             call = replace(call, line=_no_note(call.line),
-                           lines=None if call.lines is None else [_no_note(x) for x in call.lines])
+                           lines=None if call.lines is None else [_no_note(x) for x in call.lines],
+                           groups=None if call.groups is None else [(k, [_no_note(x) for x in v])
+                                                                    for k, v in call.groups])
         if call.primitive == EDIT:
             return payloads.build_edit(call.kind, doc, call.header_changes, call.line_changes,
                                        restore=call.restore)
@@ -639,7 +659,7 @@ class PrimitiveService(WriteFrame):
         if call.primitive == REPLACE_LINE:
             return payloads.build_row_replace(call.kind, doc, {"DtlKey": call.dtl_key}, call.line or {})
         if call.primitive == BATCH_LINK:
-            return payloads.build_link_batch(call.kind, doc, int(call.dtl_key or 0), call.lines or [])
+            return payloads.build_link_doc(call.kind, doc, _groups_of(call))
         if call.primitive == UNLINK_MERGE:
             return payloads.build_unlink_merge(call.kind, doc, int(call.dtl_key or 0), int(call.merge_key or 0))
         if call.primitive == CANCEL:
@@ -738,17 +758,24 @@ class PrimitiveService(WriteFrame):
         linked = int(row.get("FromSODtlKey") or 0)
         for op in OperationRepository(self.db).pending_po_row_links(
                 company.tenant_id, company.id, doc_key, None, exclude_id=exclude_id):
-            if op.dtl_key == dtl_key:
-                return True
-            snap = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
-            if not linked or "knownKeys" not in snap or dtl_key in set(snap.get("knownKeys") or []):
-                continue
-            so_rows = {int(link.get("soDtlKey") or 0) for link in snap.get("links") or []}
-            new_link = snap.get("newLink") if isinstance(snap.get("newLink"), dict) else {}
-            if new_link.get("FromDocType") == "SO":
-                so_rows.add(int(new_link.get("FromDocDtlKey") or 0))
-            if linked in so_rows:
-                return True
+            whole = op.snapshot_json if isinstance(op.snapshot_json, dict) else {}
+            if whole.get("mode") == "doc_batch":  # plan 69: each sent part is a one-row batch snapshot
+                parts = [p for p in whole.get("parts") or [] if isinstance(p, dict) and p.get("sent")]
+                if any(int((p.get("row") or {}).get("DtlKey") or 0) == dtl_key for p in parts):
+                    return True
+            else:
+                if op.dtl_key == dtl_key:
+                    return True
+                parts = [whole]
+            for snap in parts:
+                if not linked or "knownKeys" not in snap or dtl_key in set(snap.get("knownKeys") or []):
+                    continue
+                so_rows = {int(link.get("soDtlKey") or 0) for link in snap.get("links") or []}
+                new_link = snap.get("newLink") if isinstance(snap.get("newLink"), dict) else {}
+                if new_link.get("FromDocType") == "SO":
+                    so_rows.add(int(new_link.get("FromDocDtlKey") or 0))
+                if linked in so_rows:
+                    return True
         return False
 
     def _guard_po_line(self, call: _Call, company: AcCompany, doc: Doc) -> None:
@@ -797,8 +824,14 @@ class PrimitiveService(WriteFrame):
             if is_business_refusal(response.status_code, response.body):
                 message = vendor_message(response.stored, base_url)
                 row.response_json = {"message": message}  # the same safe text, never the stack
+                vendor_class = vendor_class_of(response.body)
+                if request.method == "PUT":  # plan 69 Q1: the read decides, never the answer text
+                    looked = self._look_after_refusal(call, company, row, reader, request, before, read_date,
+                                                      extra, message, vendor_class)
+                    if looked is not None:
+                        return looked
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_REFUSED, message=message),
-                                  vendor_class=vendor_class_of(response.body))
+                                  vendor_class=vendor_class)
             # a bare failure (an IIS page, a stack): the status and redacted text only (AC-57-47)
             text = vendor_message(response.stored, base_url)
             row.response_json = {"text": text}
@@ -810,6 +843,35 @@ class PrimitiveService(WriteFrame):
             after = self._read_back(call, reader, response.body, request, before, read_date, row)
         except DocReadError as exc:
             return self._wrap(self._finish(row, OUTCOME_PENDING, exc.code))
+        return self._verified(call, company, row, request, before, after, extra)
+
+    def _look_after_refusal(
+        self, call: _Call, company: AcCompany, row: AcWriteAction, reader: Any, request: VendorRequest,
+        before: Optional[Doc], read_date: Optional[date], extra: Dict[str, Any], message: str,
+        vendor_class: Optional[str],
+    ) -> Optional[PrimitiveResult]:
+        """Plan 69 Q1 / D3: an edit PUT hapi answered with an AutoCount message (hapi's request is over:
+        a refusal, or a command timeout that may have come after the save). ONE read decides: the document
+        as it was = a real refusal (None: the caller answers ``VENDOR_REFUSED``); changed = it landed, judged
+        like a 2xx answer; cannot be read = unknown (``pending_verification``, never refused)."""
+        self.db.commit()  # the vendor answer is on the row before the read
+        try:
+            after = self._read_back(call, reader, None, request, before, read_date, row)
+        except DocReadError:
+            return self._wrap(self._finish(row, OUTCOME_PENDING, VENDOR_REFUSED, message=message),
+                              vendor_class=vendor_class)
+        if before is not None and _unchanged(before, after):
+            row.after_json = after
+            return None
+        logger.warning("autocount PUT answered a refusal but the document changed (action %s): judged landed",
+                       row.id)
+        return self._verified(call, company, row, request, before, after, extra)
+
+    def _verified(
+        self, call: _Call, company: AcCompany, row: AcWriteAction, request: VendorRequest,
+        before: Optional[Doc], after: Doc, extra: Dict[str, Any],
+    ) -> PrimitiveResult:
+        """A read-back in hand: verify it, finish the row, stage it."""
         row.after_json = after  # a read-back in hand is always verified
         verdict_code, message, warnings, new_key = self._verify(call, request, before, after)
         extra.update(doc_key=after.get("DocKey"), doc_no=after.get("DocNo"), new_dtl_key=new_key)
@@ -869,7 +931,7 @@ class PrimitiveService(WriteFrame):
             ok = v.outcome == payloads.DONE
             return (None if ok else v.code), "", [], (added[0] if ok and added else None)
         if call.primitive == BATCH_LINK:
-            v = payloads.verify_link_batch(call.kind, before, int(call.dtl_key or 0), call.lines or [], after)
+            v = payloads.verify_link_doc(call.kind, before, _groups_of(call), after)
             return (v.code if v.outcome == payloads.MISMATCH else None), "", [], None
         if call.primitive == UNLINK_MERGE:
             v = payloads.verify_unlink_merge(

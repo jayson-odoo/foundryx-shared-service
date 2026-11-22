@@ -33,10 +33,18 @@ function uploadFiles(ideaId: string, files: File[], commentId?: string): Promise
   return uploadInOrder(files, (file) => ideaPortalService.uploadAttachment(ideaId, file, commentId));
 }
 
-/** Fetch an uploaded file's bytes (its content route needs the portal token),
- * for the thumbnails + preview dialog. */
+/** Fetch an uploaded file's bytes for the thumbnails + preview dialog. The
+ * portal route needs the portal token; on a share link the file comes from the
+ * token-checked share route instead (no portal token sent or cleared). */
 export function usePortalAttachmentFetch(): (attachment: IdeaAttachment) => Promise<Blob> {
-  return useCallback((attachment) => ideaPortalService.attachmentContent(attachment.contentPath ?? ''), []);
+  const share = useContext(IdeaPortalContext)?.mode === 'share';
+  return useCallback(
+    (attachment) =>
+      share
+        ? ideaShareService.attachmentContent(attachment.contentPath ?? '')
+        : ideaPortalService.attachmentContent(attachment.contentPath ?? ''),
+    [share],
+  );
 }
 
 // ── runtime (portal vs Sorento iframe) ─────────────────────────────────────────
@@ -595,7 +603,8 @@ function stepError(err: unknown): string {
     if (err.status === 429) return 'Too many attempts. Try again later.';
     return err.message || 'Something went wrong. Try again.';
   }
-  return 'Something went wrong. Try again.';
+  // Same words as the CRM sign-in code step (lane FEEDBACK-SHARE-SS-HOST).
+  return 'Unable to reach the server. Please try again.';
 }
 
 export function useSharePhoneStep(shareToken: string): UseSharePhoneStep {

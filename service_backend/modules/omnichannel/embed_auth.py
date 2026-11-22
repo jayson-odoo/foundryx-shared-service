@@ -37,6 +37,7 @@ from app.dependencies import (
 )
 from app.models.user import User
 from app.repositories.module_repository import ModuleRepository
+from app.scoped_tokens import decode_scoped_token
 from app.security import decode_access_token
 
 from .models import Workspace
@@ -216,11 +217,8 @@ def _resolve_embed(token: str, db: Session) -> Optional[EmbedPrincipal]:
     """Return an EmbedPrincipal iff ``token`` is a valid embed access token, else
     None (the caller falls through to the native path). A malformed/expired token
     returns None → the native path then 401s uniformly."""
-    try:
-        payload = decode_access_token(token)
-    except JWTError:
-        return None
-    if payload.get("typ") != "embed":
+    payload = decode_scoped_token(token, "embed")
+    if payload is None:
         return None
     tenant_id, workspace_id, agent_id, connection_id = _embed_claims(payload)
     # The tenant must still be allowed to sign in (not suspended or archived).

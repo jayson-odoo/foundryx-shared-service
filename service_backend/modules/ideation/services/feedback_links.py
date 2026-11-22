@@ -195,24 +195,12 @@ def feedback_base(db: Session, tenant_id: str) -> str:
     ``public_link_base_url`` that is a TEMPLATE (``{token}``/``{ideaId}``)
     points at the Sorento CRM: ``{origin}/feedback``. A plain tenant base (or
     none) is the shared-service frontend: ``{base}/public/feedback``.
-    Pages the CRM does not frame (the share page) use ``ss_feedback_base``;
-    keep the two base rules in step."""
+    Board AND share links both use it: the CRM frames both pages
+    (lane FEEDBACK-SHARE-SS-HOST)."""
     tenant_base = tenant_public_link_base(db, tenant_id)
     if tenant_base and any(p in tenant_base for p in LINK_PLACEHOLDERS):
         parts = urlsplit(tenant_base)
         return f"{parts.scheme}://{parts.netloc}/feedback"
-    return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback"
-
-
-def ss_feedback_base(db: Session, tenant_id: str) -> str:
-    """The shared-service frontend's own public feedback pages
-    (``{base}/public/feedback``), for pages only this frontend serves (the
-    read-only share page, lane FEEDBACK-SHARE-LIVE-FIX). A TEMPLATE tenant base
-    points at the product's CRM, which has no share page, so it falls back to
-    ``settings.frontend_url``; a plain tenant base IS this frontend."""
-    tenant_base = tenant_public_link_base(db, tenant_id)
-    if tenant_base and any(p in tenant_base for p in LINK_PLACEHOLDERS):
-        tenant_base = None
     return f"{(tenant_base or settings.frontend_url).rstrip('/')}/public/feedback"
 
 

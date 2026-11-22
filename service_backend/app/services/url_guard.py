@@ -18,6 +18,7 @@ Security invariants (unchanged from the original):
   re-pointed after a URL is accepted.
 """
 import ipaddress
+import re
 import socket
 import threading
 import time
@@ -71,6 +72,28 @@ def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
     )
 
 
+# A DNS name: letters, digits, '-', '_' (seen in real hostnames) and '.'. An IP
+# literal (IPv6 arrives here without its brackets) and an IDN name are checked
+# separately. urlparse and httpx both accept a space or "%20" in the host, so
+# without this a receiver like "https://exa mple.com" was stored (#259).
+_HOST_RE = re.compile(r"^[a-z0-9_.-]+$")
+
+
+def _valid_host(host: str) -> bool:
+    if ":" in host:  # IPv6 literal
+        try:
+            ipaddress.ip_address(host.split("%", 1)[0])
+            return "%" not in host
+        except ValueError:
+            return False
+    if host.isascii():
+        return bool(_HOST_RE.match(host))
+    try:
+        return bool(_HOST_RE.match(host.encode("idna").decode("ascii")))
+    except UnicodeError:
+        return False
+
+
 def validate_public_https_url(
     url: str, *, strict_dns: bool = False, subject: str = "URL"
 ) -> str:
@@ -99,6 +122,8 @@ def validate_public_https_url(
         host = parsed.hostname
         if scheme == "https" and host:
             httpx.URL(url)
+            if not _valid_host(host):
+                raise ValueError("host")
     except (ValueError, httpx.InvalidURL):
         raise UnparseableUrlError(f"{subject} is not a valid URL.") from None
     if scheme != "https":

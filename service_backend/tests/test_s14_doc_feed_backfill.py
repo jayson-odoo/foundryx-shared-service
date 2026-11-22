@@ -352,8 +352,125 @@ def test_a_second_full_history_live_backfill_409s_once_the_first_is_done(session
     with pytest.raises(Exception) as exc_info:
         DocFeedService(db).start_backfill(
             co.tenant_id, co.id, "delivery_orders", dry_run=False,
-            from_day=date(2023, 1, 1), to_day=date(2026, 9, 29), actor_user_id=ACTOR_USER_ID,
+            from_day=date(2019, 1, 1), to_day=date(2026, 9, 29), actor_user_id=ACTOR_USER_ID,
         )
+    assert "BACKFILL_ALREADY_DONE" in str(exc_info.value)
+
+
+# ── SLOW-MOVING-BACKFILL S0.3 - the guard compares against the completed run's
+# own from-day, so moving the floor earlier re-opens exactly ONE run ─────────
+
+
+def _done_live_row(db, feed, from_day, *, dry_run=False, error_code=None):
+    row = _backfill(db, feed, from_day=from_day, to_day=date(2026, 9, 29), dry_run=dry_run, status="done")
+    row.error_code = error_code
+    feed.full_backfill_done_at = NOW
+    db.commit()
+    return row
+
+
+def _start_from_floor(db, co):
+    return DocFeedService(db).start_backfill(
+        co.tenant_id, co.id, "delivery_orders", dry_run=False,
+        from_day=date(2019, 1, 1), to_day=date(2019, 1, 2), actor_user_id=ACTOR_USER_ID,
+    )
+
+
+def test_s03_a_feed_done_from_2023_accepts_a_run_from_the_2019_floor(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+
+    bf = _start_from_floor(db, co)
+
+    assert bf is not None
+    assert bf.from_day == date(2019, 1, 1)
+    assert bf.to_day == date(2019, 1, 2)
+
+
+def test_s03_a_second_run_from_the_2019_floor_is_refused(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+    _done_live_row(db, do_feed, date(2019, 1, 1))
+
+    with pytest.raises(Exception) as exc_info:
+        _start_from_floor(db, co)
+    assert "BACKFILL_ALREADY_DONE" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("kind", ["dry_run", "discarded"])
+def test_s03_a_dry_run_or_discarded_2019_row_does_not_count_as_done(session_factory, kind):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+    _done_live_row(
+        db, do_feed, date(2019, 1, 1),
+        dry_run=(kind == "dry_run"), error_code=("DISCARDED" if kind == "discarded" else None),
+    )
+
+    assert _start_from_floor(db, co) is not None
+
+
+def test_s03_the_guard_reads_only_this_feeds_rows(session_factory):
+    """A GRN feed done from 2019 never blocks the DO feed's 2019 run."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+    grn_feed = AcDocFeed(
+        tenant_id=co.tenant_id, company_id=co.id, feed="goods_receive_notes",
+        connection_id=ac_conn.id, book="db1", mode="push", cursor_day=date(2026, 9, 29),
+    )
+    db.add(grn_feed)
+    db.commit()
+    _done_live_row(db, grn_feed, date(2019, 1, 1))
+
+    assert _start_from_floor(db, co) is not None
+
+
+def test_s02_from_day_before_the_2019_floor_422s(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    _feed(db, co, ac_conn)
+
+    with pytest.raises(Exception) as exc_info:
+        DocFeedService(db).start_backfill(
+            co.tenant_id, co.id, "delivery_orders", dry_run=True,
+            from_day=date(2018, 12, 31), to_day=date(2019, 1, 2), actor_user_id=ACTOR_USER_ID,
+        )
+    assert "2019-01-01" in str(exc_info.value)
+    assert db.query(AcDocFeedBackfill).count() == 0
+
+
+# ── SLOW-MOVING-BACKFILL S0.5 - a run from the floor stops at its to-day ────
+
+
+def test_s05_a_gap_run_from_the_floor_ends_at_its_to_day_closes_and_stamps_done(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+    do_feed.full_backfill_done_at = None
+    db.commit()
+    bf = _backfill(db, do_feed, from_day=date(2019, 1, 1), to_day=date(2019, 1, 3))
+    seen: List[str] = []
+
+    run_backfill(db, bf, now=NOW, vendor_transport=_empty_vendor(seen), sink_transport=_ok_sink())
+
+    db.refresh(bf)
+    db.refresh(do_feed)
+    assert bf.status == "done"
+    assert bf.finished_at is not None
+    assert bf.days_done == 3
+    assert seen == ["20190101", "20190102", "20190103"]  # nothing past the to-day
+    assert do_feed.full_backfill_done_at is not None
+    # and the floor run is now run-once
+    with pytest.raises(Exception) as exc_info:
+        _start_from_floor(db, co)
     assert "BACKFILL_ALREADY_DONE" in str(exc_info.value)
 
 
@@ -1091,3 +1208,41 @@ def test_n1_the_orphan_fence_before_a_429_sleep_stops_as_job_orphaned(session_fa
     # The runner's own wait (Retry-After 1, after the sink's internal ones)
     # never happens: the fence fires first, so no further POSTs either.
     assert bf.error_code != "SINK_ERROR"
+
+
+def test_s03_the_feed_view_carries_the_floor_and_the_completed_from_day(session_factory):
+    """The Backfill dialog derives the run-once rule from these two values."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+
+    view = DocFeedService(db).view(co.tenant_id, co.id)
+    item = next(i for i in view.feeds if i.feed == "delivery_orders")
+    assert item.backfillFloor == date(2019, 1, 1)
+    assert item.fullBackfillFromDay is None
+
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+    view = DocFeedService(db).view(co.tenant_id, co.id)
+    item = next(i for i in view.feeds if i.feed == "delivery_orders")
+    assert item.fullBackfillFromDay == date(2023, 1, 1)
+
+
+def test_s03_the_guard_query_is_tenant_scoped(session_factory):
+    """A row carrying another tenant's id (even on the same feed id) never
+    counts as this feed's completed run."""
+    from modules.autocount.repositories.doc_feed_repository import DocFeedBackfillRepository
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    _done_live_row(db, do_feed, date(2023, 1, 1))
+    planted = _backfill(
+        db, do_feed, from_day=date(2019, 1, 1), to_day=date(2026, 9, 29), status="done",
+    )
+    planted.tenant_id = "another-tenant"
+    db.commit()
+
+    repo = DocFeedBackfillRepository(db)
+    assert repo.earliest_completed_live_from_day(co.tenant_id, do_feed.id) == date(2023, 1, 1)
+    assert repo.earliest_completed_live_from_day("another-tenant", do_feed.id) == date(2019, 1, 1)
+    assert _start_from_floor(db, co) is not None
