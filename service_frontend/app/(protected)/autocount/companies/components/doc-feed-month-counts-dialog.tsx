@@ -80,7 +80,7 @@ export function DocFeedMonthCountsDialog({ run, onClose }: DocFeedMonthCountsDia
         cell: ({ row }) => (
           <span className={row.original.id === 'total' ? 'font-medium' : undefined}>{row.original.label}</span>
         ),
-        size: 110,
+        size: 100,
       },
       ...COLUMNS.map<ColumnDef<MonthRow>>((c) => ({
         id: c.key,
@@ -90,7 +90,7 @@ export function DocFeedMonthCountsDialog({ run, onClose }: DocFeedMonthCountsDia
             {row.original[c.key] ?? 0}
           </span>
         ),
-        size: 100,
+        size: 115,
       })),
     ],
     [],
@@ -99,7 +99,7 @@ export function DocFeedMonthCountsDialog({ run, onClose }: DocFeedMonthCountsDia
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>Counts by month - {docFeedLabel(run.feed)}</DialogTitle>
           <DialogDescription className="sr-only">Counts by month</DialogDescription>
