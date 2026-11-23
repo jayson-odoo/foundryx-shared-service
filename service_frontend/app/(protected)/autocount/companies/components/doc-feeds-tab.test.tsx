@@ -92,7 +92,7 @@ describe('DocFeedsTab (AC-14-90)', () => {
     expect(screen.queryByText(/branches/i)).not.toBeInTheDocument();
   });
 
-  it('AC-14-46/47 - the tab fed by the service mock shows exactly two feed rows, never a Branches row', async () => {
+  it('AC-14-46/47 - the tab fed by the service mock shows the three feed rows, never a Branches row', async () => {
     // The mock IS the Phase 1 backend spec (`getDocFeeds` answers what
     // `GET /autocount/doc-feeds/{company}` must), so wiring it into the tab
     // pins the whole seam: two feeds in, two rows out.
@@ -105,18 +105,25 @@ describe('DocFeedsTab (AC-14-90)', () => {
 
     expect(await screen.findByText(/delivery orders/i, {}, { timeout: 5000 })).toBeInTheDocument();
     expect(await screen.findByText(/goods receive notes/i)).toBeInTheDocument();
-    expect(view.feeds).toHaveLength(2);
+    expect(await screen.findByText(/project registrations/i)).toBeInTheDocument();
+    expect(view.feeds).toHaveLength(3);
     expect(screen.queryByText(/branches/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^branch$/i)).not.toBeInTheDocument();
   });
 
-  it('AC-14-46 - the DocFeedKey type accepts only the two document feeds', () => {
+  it('AC-14-46 - the DocFeedKey type accepts only the three document feeds (plan 72)', () => {
     // Compile-time pin (tsc / `next build`); the runtime pin is AC_DOC_FEED_KEYS
     // in autocount-meta.test.ts and the mock-service test above.
-    expectTypeOf<DocFeedKey>().toEqualTypeOf<'delivery_orders' | 'goods_receive_notes'>();
+    expectTypeOf<DocFeedKey>().toEqualTypeOf<
+      'delivery_orders' | 'goods_receive_notes' | 'project_registrations'
+    >();
     expectTypeOf<DocFeedRunKind>().toEqualTypeOf<'poll' | 'sweep' | 'backfill'>();
-    const keys = ['delivery_orders', 'goods_receive_notes'] as const satisfies readonly DocFeedKey[];
-    expect(keys).toHaveLength(2);
+    const keys = [
+      'delivery_orders',
+      'goods_receive_notes',
+      'project_registrations',
+    ] as const satisfies readonly DocFeedKey[];
+    expect(keys).toHaveLength(3);
   });
 
   it('offers a Run now action gated by autocount.sync.run', async () => {

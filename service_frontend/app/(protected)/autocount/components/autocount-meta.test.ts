@@ -162,9 +162,9 @@ describe('sourceKindLabel (AC-01-16, AC-08-10)', () => {
 });
 
 describe('AC_DOC_FEED_KEYS (AC-14-46/47, plan 14 section 11)', () => {
-  it('has exactly the two document feeds - branches left the doc feed and became an entity', () => {
-    expect(AC_DOC_FEED_KEYS).toEqual(['delivery_orders', 'goods_receive_notes']);
-    expect(AC_DOC_FEED_KEYS).toHaveLength(2);
+  it('has the three document feeds - branches left the doc feed, plan 72 added project registrations', () => {
+    expect(AC_DOC_FEED_KEYS).toEqual(['delivery_orders', 'goods_receive_notes', 'project_registrations']);
+    expect(AC_DOC_FEED_KEYS).toHaveLength(3);
     expect(AC_DOC_FEED_KEYS).not.toContain('branches');
   });
 });

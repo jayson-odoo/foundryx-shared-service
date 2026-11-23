@@ -528,9 +528,16 @@ export const AC_STAGED_STATUS_REGISTRY: StatusRegistry<AutocountStagedStatus> = 
 
 // ── document feeds (sprint-5/14, D17) - AC-14-90..95 ─────────────────────────
 
-/** The tab's fixed row order (D2 - two feeds, always, a missing row reads
- * `off`; branches became the `branch` entity, plan 14 section 11). */
-export const AC_DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
+/** The tab's fixed row order (a missing row reads `off`; branches became the
+ * `branch` entity, plan 14 section 11; plan 72 added project registrations). */
+export const AC_DOC_FEED_KEYS: DocFeedKey[] = [
+  'delivery_orders',
+  'goods_receive_notes',
+  'project_registrations',
+];
+
+/** Plan 72 - feeds AutoCount answers by date only: no "Read by" choice. */
+export const AC_DOC_FEED_DATE_ONLY_KEYS: DocFeedKey[] = ['project_registrations'];
 
 /** Canonical feed key -> display label - derived the SAME way `entityLabel`
  * humanizes every other code constant (never a tenant-editable lookup). */

@@ -123,6 +123,7 @@ from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
     CONTRACT_GATED_ENTITIES,
     DOC_FEED_CONTRACT_VERSION,
+    doc_feed_contract_version,
     LINKED_DOCUMENTS_CONTRACT_VERSION,
     AR_OUTSTANDING_CONTRACT_VERSION,
     BILLING_DOCUMENTS_CONTRACT_VERSION,
@@ -1370,16 +1371,18 @@ class CompanyService:
         would store a configuration guaranteed to fail at run time
         (foolproof-UI: never let the UI reach a certain runtime error).
         """
+        # Plan 72 - each feed's own floor (project registrations: 2.15).
+        required = doc_feed_contract_version(feed)
         if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
-            return {"version": None, "requiredVersion": DOC_FEED_CONTRACT_VERSION}
+            return {"version": None, "requiredVersion": required}
         if not (company.sorento_company_code or "").strip():
             return {
-                "version": None, "requiredVersion": DOC_FEED_CONTRACT_VERSION,
+                "version": None, "requiredVersion": required,
                 "reason": "config_error",
             }
         return self._contract_refusal(
             tenant_id, company,
-            required_version=DOC_FEED_CONTRACT_VERSION,
+            required_version=required,
             entity_name=feed,
             cache=self._doc_feed_gate_cache,
             cache_key=(tenant_id, company.id, feed),

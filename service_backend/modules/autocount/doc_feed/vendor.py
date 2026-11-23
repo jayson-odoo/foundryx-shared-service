@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -24,7 +25,7 @@ from ..http_source.source import (
     TRANSPORT_RETRY_BACKOFFS_SECONDS,
 )
 from .clock import yyyymmdd
-from .constants import BY_DOC_DATE_PATH, BY_LAST_MODIFIED_PATH
+from .constants import BY_DOC_DATE_PARAM, BY_DOC_DATE_PATH, BY_LAST_MODIFIED_PATH
 
 VENDOR_TRANSPORT = "VENDOR_TRANSPORT"
 VENDOR_HTTP = "VENDOR_HTTP"
@@ -48,6 +49,39 @@ class DocFeedVendor:
 
     def __init__(self, client: HttpApiClient) -> None:
         self._client = client
+        self._call_log = None
+
+    def attach_call_log(self, log) -> None:
+        """Plan 72 (contract 2.15 section 1, UAC S0-1) - from now on every GET
+        attempt also writes one ``ac_api_call_log`` row (``write_back.call_log``,
+        the logged reader's own log): the vendor path + query as sent, the
+        status and the capped body; never the host or a header."""
+        self._call_log = log
+
+    def _logged_get(self, path: str, params: Dict[str, Any]) -> httpx.Response:
+        if self._call_log is None:
+            return self._client.get(path, params)
+        from ..write_back import call_log as cl
+
+        started = self._call_log.started()
+        sent = f"{path}?{urlencode(params)}" if params else path
+        base_url = self._client.base_url
+        try:
+            response = self._client.get(path, params)
+        except HttpTransportError as exc:
+            self._call_log.record(
+                base_url=base_url, method="GET", path=sent, started=started,
+                outcome=cl.TIMEOUT if exc.is_timeout else cl.CONNECT_ERROR,
+                error_code=VENDOR_TRANSPORT,
+            )
+            raise
+        ok = 200 <= response.status_code < 300
+        self._call_log.record(
+            base_url=base_url, method="GET", path=sent, started=started,
+            status=response.status_code, body=response.text,
+            outcome=cl.OK if ok else cl.HTTP_ERROR, error_code=None if ok else VENDOR_HTTP,
+        )
+        return response
 
     # ── document doors (plain arrays, V2) ────────────────────────────────────
 
@@ -56,8 +90,9 @@ class DocFeedVendor:
         return self._document_day(path, {"lastModified": yyyymmdd(day)})
 
     def day_by_doc_date(self, feed: str, day) -> List[Dict[str, Any]]:
+        # Plan 72 - ``ProjectRegbyDate`` takes ``Date``, the document doors ``DocDate``.
         path = BY_DOC_DATE_PATH[feed]
-        return self._document_day(path, {"DocDate": yyyymmdd(day)})
+        return self._document_day(path, {BY_DOC_DATE_PARAM[feed]: yyyymmdd(day)})
 
     def get_day(self, path: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Any registered day door (sprint-5/17 doc finder) - the SAME retry
@@ -83,7 +118,7 @@ class DocFeedVendor:
         transport_attempts = 0
         while True:
             try:
-                response = self._client.get(path, params)
+                response = self._logged_get(path, params)
             except HttpTransportError as exc:
                 if exc.is_timeout:
                     timeout_attempts += 1
