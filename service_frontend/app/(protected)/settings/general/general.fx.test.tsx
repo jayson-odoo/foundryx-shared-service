@@ -91,7 +91,17 @@ beforeEach(() => {
 afterEach(() => resetPageActionsForTests());
 
 /** Types a value into a stepper (or a number field) and leaves it. */
+/**
+ * Type a value and leave the field. The change is sent twice on purpose: the
+ * render that first shows a field (the settings load resolving) is not a user
+ * event, so React runs its effects on a later scheduler task, and on a loaded
+ * runner the test can type before that task runs. The first change's render
+ * then runs the stepper's mount-time text sync AFTER the typed text, putting
+ * the loaded value back. The second change types for real; it is a no-op when
+ * the first one already stuck.
+ */
 function typeInto(el: HTMLElement, value: string) {
+  fireEvent.change(el, { target: { value } });
   fireEvent.change(el, { target: { value } });
   fireEvent.blur(el);
 }
@@ -101,6 +111,14 @@ type Edit = { decimals?: string; deletes?: string; others?: string };
 async function saveOff(edit: Edit) {
   const view = render(<GeneralSettingsPage />, { wrapper: look(false) });
   await screen.findByDisplayValue('10');
+  // The currency and Undo-window cards load separately; '10' only proves the
+  // second one. Wait for both Save buttons, which stay disabled while their
+  // card loads, so a click on the currency card's is never a no-op.
+  await waitFor(() =>
+    screen
+      .getAllByRole('button', { name: 'Save settings' })
+      .forEach((button) => expect(button).toBeEnabled()),
+  );
   if (edit.decimals) typeInto(screen.getByLabelText('Price decimal places'), edit.decimals);
   if (edit.deletes) typeInto(screen.getByDisplayValue('10'), edit.deletes);
   if (edit.others) typeInto(screen.getByDisplayValue('5'), edit.others);
@@ -125,7 +143,9 @@ async function saveOn(edit: Edit) {
   if (edit.decimals) typeInto(screen.getByLabelText('Price decimal places'), edit.decimals);
   if (edit.deletes) typeInto(screen.getByLabelText('After a delete'), edit.deletes);
   if (edit.others) typeInto(screen.getByLabelText('After other actions'), edit.others);
-  fireEvent.click(screen.getByRole('button', { name: 'Save general settings' }));
+  // The page registers its header Save from an effect after the load, so with
+  // nothing typed it can still be on its way: find it rather than get it.
+  fireEvent.click(await screen.findByRole('button', { name: 'Save general settings' }));
   await waitFor(() => expect(toasts.fxDone).toHaveBeenCalled());
   return view;
 }

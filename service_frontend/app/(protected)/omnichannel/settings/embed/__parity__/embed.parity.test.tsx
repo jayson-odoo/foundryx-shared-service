@@ -84,6 +84,14 @@ describe('parity (switch off): embed access', () => {
     render(<EmbedAccessPanel />);
     fireEvent.click(await screen.findByRole('button', { name: 'Rotate secret' }));
     await screen.findByText('Rotate the embed secret?');
+    // The confirm opens on a motion spring; skipAnimations lands the final
+    // keyframe a frame after mount, so snapshot it once it has settled.
+    const dialog = screen.getByRole('alertdialog');
+    const overlay = document.querySelector<HTMLElement>('[data-slot="alert-dialog-overlay"]');
+    await waitFor(() => {
+      expect(dialog.style.opacity).toBe('1');
+      expect(overlay?.style.opacity).toBe('1');
+    });
     expect(stable(document.body)).toMatchSnapshot();
   });
 

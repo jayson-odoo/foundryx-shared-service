@@ -73,7 +73,17 @@ function writes() {
     }));
 }
 
+/**
+ * Type a value and leave the field. The change is sent twice on purpose: the
+ * render that first shows a field (the settings load resolving) is not a user
+ * event, so React runs its effects on a later scheduler task, and on a loaded
+ * runner the test can type before that task runs. The first change's render
+ * then runs the stepper's mount-time text sync AFTER the typed text, putting
+ * the loaded value back. The second change types for real; it is a no-op when
+ * the first one already stuck.
+ */
 function typeInto(el: HTMLElement, value: string) {
+  fireEvent.change(el, { target: { value } });
   fireEvent.change(el, { target: { value } });
   fireEvent.blur(el);
 }

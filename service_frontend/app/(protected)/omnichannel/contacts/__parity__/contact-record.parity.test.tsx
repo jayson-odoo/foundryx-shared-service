@@ -261,9 +261,16 @@ describe('contact record, switch off (parity)', () => {
     fireEvent.pointerDown(gear, { button: 0, pointerType: 'mouse' });
     fireEvent.click(gear);
     const item = await screen.findByRole('menuitem', { name: /Erase contact/ });
+    // The menu opens and closes on a motion spring; skipAnimations lands the
+    // final keyframe a frame later, not on mount. Snapshot each surface once
+    // it has settled (menu fully in, then menu fully gone behind the confirm)
+    // so the markup does not depend on how fast the runner is.
+    const surface = item.parentElement as HTMLElement;
+    await waitFor(() => expect(surface.style.transform).toBe('none'));
     expect(parityHtml(document.body)).toMatchSnapshot('menu');
     fireEvent.click(item);
     await screen.findByRole('alertdialog');
+    await waitFor(() => expect(document.querySelector('[role="menu"]')).toBeNull());
     expect(parityHtml(document.body)).toMatchSnapshot('confirm');
   });
 
