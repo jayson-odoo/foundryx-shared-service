@@ -187,6 +187,9 @@ class AcCompany(AutocountBase):
     # (db3 only, enforced in code by ``write_back.guard``). NULL = writes
     # disabled; every existing row stays NULL (no backfill needed).
     write_connection_id = Column(String, nullable=True)
+    # Plan 73: core ``connections.id`` of a same-tenant ``sql_database`` connection the PO line Further
+    # Description is read through (read-only). NULL = hapi only. Not an entity source; existing rows stay NULL.
+    line_notes_connection_id = Column(String, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

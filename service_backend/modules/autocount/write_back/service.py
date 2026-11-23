@@ -962,3 +962,26 @@ def set_write_connection(
     company.write_connection_id = conn.id
     db.commit()
     return company
+
+
+def set_line_notes_connection(
+    db: Session, *, tenant_id: str, company_id: str, connection_id: Optional[str]
+) -> AcCompany:
+    """Plan 73: point a company's PO line-notes read at a same-tenant ``sql_database`` connection (None
+    clears it), else a ``WriteConnectionError("CONNECTION_NOT_FOUND")`` with the company unchanged. Not an
+    entity source and not a write connection: the write guard (``assert_test_company``) does not apply."""
+    from modules.autocount.sql_provider import SQL_DATABASE_PROVIDER_KEY
+
+    company = CompanyRepository(db).get(tenant_id, company_id)
+    if company is None:
+        raise WriteConnectionError("CONNECTION_NOT_FOUND")
+    if connection_id is None:
+        company.line_notes_connection_id = None
+        db.commit()
+        return company
+    conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, SQL_DATABASE_PROVIDER_KEY)
+    if conn is None:
+        raise WriteConnectionError("CONNECTION_NOT_FOUND")
+    company.line_notes_connection_id = conn.id
+    db.commit()
+    return company

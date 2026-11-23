@@ -25,6 +25,12 @@ from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back import auth
 from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
+from modules.autocount.write_back.line_notes import (
+    CompositeLineNotes,
+    HapiLineNotes,
+    NotesReader,
+    SqlLineNotes,
+)
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
@@ -170,6 +176,7 @@ class WriteFrame:
         self._refused_base_url: Optional[str] = None
         self._write_headers: Dict[str, str] = {}
         self._read_headers: Dict[str, str] = {}
+        self._notes_extra: Optional[Any] = None  # plan 73: the company's SQL line-notes source (None = hapi only)
         self.actions = WriteActionRepository(db)
         self.staged = StagedDocRepository(db)
         self.connections = ConnectionRepository(db)
@@ -210,7 +217,9 @@ class WriteFrame:
 
     def _reader_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
         reader = auth.attach_headers(self._reader_factory(base_url), self._read_headers)
-        return cl.attach_call_log(reader, log or self._call_log)
+        reader = cl.attach_call_log(reader, log or self._call_log)
+        # plan 73 D1: every PO / SPO read carries its Further Description (hapi's GET, else the SQL source)
+        return NotesReader(reader, CompositeLineNotes(HapiLineNotes(), self._notes_extra))
 
     def _client_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
         client = auth.attach_headers(self._client_factory(base_url), self._write_headers)
@@ -265,10 +274,23 @@ class WriteFrame:
             )
         return conn if conn is not None and conn.is_active else None
 
+    def _line_notes_source(self, company: AcCompany) -> Optional[Any]:
+        """Plan 73 R1: the company's SQL line-notes source (its same-tenant ``sql_database`` connection
+        resolved WITH tenant_id), or None when none is set or it is gone or inactive (unknown, fail closed)."""
+        if not company.line_notes_connection_id:
+            return None
+        from modules.autocount.sql_provider import SQL_DATABASE_PROVIDER_KEY
+
+        conn = self.connections.get_for_provider(
+            company.tenant_id, company.line_notes_connection_id, SQL_DATABASE_PROVIDER_KEY
+        )
+        return SqlLineNotes(conn) if conn is not None and conn.is_active else None
+
     def _resolve_write_base_url(self, company: AcCompany) -> "Tuple[Optional[str], Optional[Tuple[str, str]]]":
         """``(url, None)`` or ``(None, (code, message))``: the company's write
         connection URL resolved WITH tenant_id and the write guard applied."""
         self._refused_base_url = None
+        self._notes_extra = self._line_notes_source(company)
         conn = self._write_connection(company)
         if conn is None:
             return None, (WRITE_DISABLED, "")

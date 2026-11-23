@@ -40,6 +40,7 @@ ROW_KEYS = (
     "DtlKey", "ItemCode", "Location", "Description", "ProjNo", "UOM", "UserUOM", "Qty",
     "FOCQty", "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Desc2", "FromDocType",
     "FromDocNo", "FromDocDtlKey", "FullTransferOption", "FullTransferFromDocList",
+    "FurtherDescription",
 )
 
 
@@ -131,6 +132,37 @@ def header_of(doc: Doc) -> Doc:
 
 def _row_fields(row: Doc) -> Doc:
     return _pick(row, ROW_KEYS)
+
+
+# Plan 73: the row's Further Description (RTF, may hold pictures). hapi never returns it on a PO GET, so the
+# frame's NotesReader sets it on every PO / SPO row it reads; a row without the key is "unknown".
+FURTHER_DESC = "FurtherDescription"
+LINE_NOTES_UNKNOWN = "LINE_NOTES_UNKNOWN"
+LINE_NOTES_UNKNOWN_MESSAGE = (
+    "The line notes of this purchase order could not be read, so the change was not made. Try again later."
+)
+_NOTES_KINDS = ("PO", "SPO")
+
+
+def require_line_notes(*rows: Mapping[str, Any]) -> None:
+    """Plan 73 D3: a row we re-send or copy must carry its Further Description (as read). Missing = unknown:
+    refused before any write (resending it blank could erase the note and its pictures)."""
+    if any(FURTHER_DESC not in row for row in rows):
+        raise WriteRefusal(LINE_NOTES_UNKNOWN, LINE_NOTES_UNKNOWN_MESSAGE, plain=True)
+
+
+def _resend(kind_name: str, row: Doc) -> Doc:
+    """``_row_fields`` of a row that is sent again (not deleted): a PO / SPO row must carry its note."""
+    if kind_name in _NOTES_KINDS:
+        require_line_notes(row)
+    return _row_fields(row)
+
+
+def _inherit_note(new: Doc, old: Mapping[str, Any]) -> Doc:
+    """A new row copied from ``old`` keeps ``old``'s Further Description unless the line brought its own."""
+    if FURTHER_DESC not in new and FURTHER_DESC in old:
+        new[FURTHER_DESC] = old[FURTHER_DESC]
+    return new
 
 
 def _is_spo(doc: Doc) -> bool:
@@ -292,7 +324,7 @@ def build_link(
         "Location": location or so_row.get("Location"),
     }
     body = keep_shipping_po(_header(po), po)
-    new = _normal(_row_fields(po_row))
+    new = _normal(_resend("PO", po_row))
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
     with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
     if qty == free:
@@ -316,7 +348,7 @@ def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref
         raise WriteRefusal("DOC_UNKNOWN", "the linked sales order row is not in the synced copy")
     if row.get("Location") == location:
         raise WriteRefusal("ROW_ALREADY_AT_LOCATION", "row is already at that location")
-    moved = _normal(_row_fields(row))
+    moved = _normal(_resend("PO", row))
     moved["Location"] = location
     body = keep_shipping_po(_header(po), po)
     body["Details"] = [moved]
@@ -375,7 +407,7 @@ def transfer_restore(source: Mapping[str, Any], location: Optional[str],
         wanted["Discount"] = discount
     note = so_link.get("note")
     if note:
-        wanted["FurtherDescription"] = autocount_rtf(str(note))
+        wanted[FURTHER_DESC] = append_note(source.get(FURTHER_DESC), str(note))
     return wanted
 
 
@@ -453,6 +485,58 @@ def autocount_rtf(text: str) -> str:
     return _RTF_HEAD + "".join(_rtf_char(ch) for ch in text) + _RTF_TAIL
 
 
+def _bare_note(value: Any) -> Optional[str]:
+    """The escaped note text of a value that is exactly ``autocount_rtf(note)``, else None."""
+    if isinstance(value, str) and value.startswith(_RTF_HEAD) and value.endswith(_RTF_TAIL):
+        return value[len(_RTF_HEAD):len(value) - len(_RTF_TAIL)]
+    return None
+
+
+def _merge_bare_note(out: Doc, row: Mapping[str, Any], values: Mapping[str, Any]) -> None:
+    """Plan 73 D4: a restore value that is only a note in AutoCount's wrapper is merged after the row's own
+    FD (idempotent), never sent in place of it. A full FD value is sent as given."""
+    escaped = _bare_note(values.get(FURTHER_DESC))
+    if escaped is not None:
+        out[FURTHER_DESC] = _append_escaped(row.get(FURTHER_DESC), escaped)
+
+
+def _ends_with_note(fd: str, escaped: str) -> bool:
+    """True when ``fd`` already ends with the note (its trailing ``\\par``, blanks and braces ignored)."""
+    tail = fd.rstrip()
+    while True:
+        if tail.endswith("}") or tail.endswith("\\par"):
+            tail = tail[:-1] if tail.endswith("}") else tail[:-4]
+            tail = tail.rstrip()
+            continue
+        return tail.endswith(escaped)
+
+
+def _append_escaped(fd: Any, escaped: str) -> str:
+    text = fd if isinstance(fd, str) else ""
+    if not escaped:
+        return text
+    if not text.strip():
+        return _RTF_HEAD + escaped + _RTF_TAIL
+    if text.lstrip().startswith("{\\rtf"):
+        if _ends_with_note(text, escaped):
+            return text
+        return text[:-1] + "\\par " + escaped + "}" if text.rstrip().endswith("}") else text + "\\par " + escaped
+    return text
+
+
+def append_note(fd: Any, note: str) -> str:
+    """Plan 73 D4: ``note`` appended after the existing Further Description ``fd``. RTF: a paragraph before the
+    final ``}`` (the rest byte for byte, pictures included); plain text: both in AutoCount's wrapper, the note on
+    a new line; empty: the note in the wrapper. Idempotent: an FD that already ends with the note is unchanged."""
+    escaped = "".join(_rtf_char(ch) for ch in str(note or ""))
+    text = fd if isinstance(fd, str) else ""
+    if text.strip() and not text.lstrip().startswith("{\\rtf"):
+        if text.rstrip().endswith(str(note)):
+            return text
+        return autocount_rtf(text + "\n" + str(note))
+    return _append_escaped(text, escaped)
+
+
 def so_link_values(so: Mapping[str, Any], so_row: Mapping[str, Any]) -> Doc:
     """Plan 65 D2 / D4: the ``so_link`` of ``transfer_restore`` for a row newly linked to
     ``so_row``: the SO row's day (None when it has none) and the note text."""
@@ -470,7 +554,7 @@ def with_link_note(new: Doc, line: Mapping[str, Any]) -> Doc:
     17 Nov). Only a row that carries a link and a note; anything else is left as built."""
     note = line.get(LINK_NOTE_KEY)
     if note and new.get("FromDocDtlKey"):
-        new["FurtherDescription"] = autocount_rtf(str(note))
+        new[FURTHER_DESC] = append_note(new.get(FURTHER_DESC), str(note))  # plan 73 D4: after the existing FD
     return new
 
 
@@ -496,8 +580,9 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
     (location, unit price, delivery date) set back to what the split sent."""
     if not values:
         raise WriteRefusal("NO_CHANGE", "nothing to restore")
-    row = _normal(_row_fields(_find_row(po, dtl_key)))
+    row = _normal(_resend("PO", _find_row(po, dtl_key)))
     row.update(values)
+    _merge_bare_note(row, _find_row(po, dtl_key), values)
     body = keep_shipping_po(_header(po), po)
     body["Details"] = [row]
     return body
@@ -741,8 +826,9 @@ def build_edit(
         for key in edits:
             if key not in line_keys:
                 raise WriteRefusal("FIELD_NOT_EDITABLE", key)
-        out = _normal(_row_fields(row))
+        out = _normal(_resend(kind.name, row))
         out.update({k: _plain(v) for k, v in edits.items()})
+        _merge_bare_note(out, row, edits)
         price = _num_of(out.get("UnitPrice"))
         if "Qty" in edits:
             validate_qty(_dec(out.get("Qty")))  # QTY_INVALID: not above zero, over 1e9 or over 8 places
@@ -784,7 +870,9 @@ def build_row_replace(kind_name: str, doc: Doc, old_row: Mapping[str, Any], new_
     kind = kind_of(kind_name)
     _check_kind_doc(kind, doc)
     old = _find_row(doc, old_row.get("DtlKey"))  # type: ignore[arg-type]
-    new = _vendor_line(new_row, 0, kind.name)
+    if kind.name in _NOTES_KINDS:
+        require_line_notes(old)
+    new = _inherit_note(_vendor_line(new_row, 0, kind.name), old)
     if not new.get("FromDocType"):
         new.update(FromDocType="", FromDocNo="", FromDocDtlKey=0)
     with_link_note(new, new_row)
@@ -813,6 +901,8 @@ def build_link_doc(kind_name: str, doc: Doc,
     added: List[Doc] = []
     for old_key, new_rows in groups:
         old = _find_row(doc, old_key)
+        if kind.name in _NOTES_KINDS:
+            require_line_notes(old)
         taken = sum((_dec(r.get("Qty")) for r in new_rows), Decimal(0))
         rest = _dec(old.get("Qty")) - taken
         if rest < 0:
@@ -823,7 +913,7 @@ def build_link_doc(kind_name: str, doc: Doc,
             kept = _normal(_row_fields(old))
             kept["Qty"] = _num(rest)
             details.append(kept)
-        added.extend(with_link_note(_vendor_line(r, 0, kind.name), r) for r in new_rows)
+        added.extend(with_link_note(_inherit_note(_vendor_line(r, 0, kind.name), old), r) for r in new_rows)
     body = _doc_header(kind, doc)
     body["Details"] = details + added
     return VendorRequest("PUT", kind.edit_path, body)
@@ -836,7 +926,7 @@ def build_unlink_merge(kind_name: str, doc: Doc, linked_key: int, free_key: int)
     _check_kind_doc(kind, doc)
     linked = _find_row(doc, linked_key)
     free = _find_row(doc, free_key)
-    raised = _normal(_row_fields(free))
+    raised = _normal(_resend(kind.name, free))
     raised["Qty"] = _num(_dec(free.get("Qty")) + _dec(linked.get("Qty")))
     body = _doc_header(kind, doc)
     body["Details"] = [_deleted(linked), raised]
