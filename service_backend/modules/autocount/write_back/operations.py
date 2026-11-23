@@ -1263,6 +1263,11 @@ class OperationService:
                 # the "D" never landed: the line is as it was once the strays are gone
                 self.prims._stage(company, snap["kind"], doc)
                 return self._finish(row, RECOVERED, failed_code, document=doc)
+            if payloads.FURTHER_DESC not in snap["row"]:
+                # plan 73 F4: a snapshot from before the line notes were kept. The "D" already landed, so refusing
+                # would strand a deleted row: the re-add stands, without a Further Description (code only, no content).
+                logger.warning("autocount recover re-adds a row without its Further Description (%s), op %s",
+                               payloads.LINE_NOTES_UNKNOWN, row.id)
             res = self.prims.add_line(
                 **self._call(row, company, snap, "recover"), line=self._line_of(snap, snap["oldLink"])
             )

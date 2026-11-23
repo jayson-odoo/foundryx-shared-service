@@ -127,3 +127,25 @@ def test_operation_restore_after_a_landed_put_never_ends_internal_error(op_h, mo
     assert res.error_code != "INTERNAL_ERROR", (res.outcome, res.error_code)
     assert res.outcome != "pending" or res.error_code != "INTERNAL_ERROR"
     print(op, res.outcome, res.error_code)
+
+
+# ---- F4: a recover whose snapshot row has no Further Description (snapshot from before the deploy) -----
+
+def test_recover_re_adds_the_row_and_logs_the_code_when_the_snapshot_has_no_fd(op_h, monkeypatch, caplog):
+    from tests.test_autocount_write_back_operations import drop_new_row_once
+    from modules.autocount.write_back.operations import OperationService
+
+    h = op_h
+    w = World(h)
+    drop_new_row_once(h)
+    real = OperationService._line_of
+
+    def old_snapshot(self, snap, link, qty=None):
+        snap["row"].pop(P.FURTHER_DESC, None)
+        return real(self, snap, link, qty)
+
+    monkeypatch.setattr(OperationService, "_line_of", old_snapshot)
+    with caplog.at_level("WARNING", logger="foundryx.autocount"):
+        res = h.run("link_row", w.params["link_row"])
+    assert res.outcome == "recovered"  # not stranded: the deleted row is back
+    assert any(P.LINE_NOTES_UNKNOWN in r.getMessage() for r in caplog.records)
