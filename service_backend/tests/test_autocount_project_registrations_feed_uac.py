@@ -504,3 +504,85 @@ def test_r1_resume_waits_while_another_backfill_reads_the_book(db, monkeypatch):
     with pytest.raises(DocFeedConflictError) as exc:
         service.resume_backfill(co.tenant_id, co.id, PR)
     assert exc.value.code == "BOOK_BUSY"
+
+
+# ── crew pass 458acd52: the CRM's real switched-off answer ───────────────────
+
+
+class _CrmFailedSwitchedOff(_Crm):
+    """The CRM as built (S1): switch OFF answers each record `failed` with
+    `errors: {"switched_off": "..."}` (no `code`, no warning)."""
+
+    def transport(self) -> httpx.MockTransport:
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/api/v1/external/contract":
+                return httpx.Response(200, json={"version": "2.15", "entities": [PR]})
+            body = json.loads(request.content)
+            self.pushes.append(body)
+            records = [
+                {"source_ref": r["source_ref"], "outcome": "failed", "warnings": [],
+                 "errors": {"switched_off": "AutoCount project sync is switched off."}}
+                for r in body["records"]
+            ]
+            return httpx.Response(200, json={"summary": {}, "records": records})
+
+        return httpx.MockTransport(handler)
+
+
+def test_crm_failed_switched_off_holds_the_backfill_and_stores_nothing(db):
+    co, ac_conn = _wired(db)
+    feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, feed, from_day=date(2006, 1, 1), to_day=date(2006, 1, 2), dry_run=False)
+    vendor = _Vendor({"20060101": [_reg("A1", "2006-01-01")], "20060102": [_reg("B1", "2006-01-02")]})
+    run_backfill(db, bf, now=NOW, vendor_transport=vendor.transport(),
+                 sink_transport=_CrmFailedSwitchedOff().transport())
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert bf.next_day == date(2006, 1, 1)
+    assert bf.error_code == "CRM_SWITCHED_OFF"
+    assert bf.error == "CRM project sync is switched off"
+    assert vendor.calls == ["20060101"]
+    assert db.query(AcDocFeedIssue).filter_by(feed=PR).count() == 0
+    assert db.query(AcDocFeedLedger).filter_by(feed=PR).count() == 0
+    db.refresh(feed)
+    assert feed.full_backfill_done_at is None
+
+    # Switch turned on: the resumed backfill re-reads the held day and finishes.
+    bf.status = "running"
+    db.commit()
+    again = _Vendor({"20060101": [_reg("A1", "2006-01-01")], "20060102": [_reg("B1", "2006-01-02")]})
+    run_backfill(db, bf, now=NOW, vendor_transport=again.transport(), sink_transport=_Crm().transport())
+    db.refresh(bf)
+    assert again.calls == ["20060101", "20060102"]
+    assert bf.status == "done"
+    assert db.query(AcDocFeedLedger).filter_by(feed=PR).count() == 2
+
+
+def test_crm_failed_switched_off_holds_the_poll_and_is_its_last_error(db):
+    co, ac_conn = _wired(db)
+    feed = _feed(db, co, ac_conn, cursor_day=date(2026, 11, 21))
+    run = run_poll(db, feed, dry_run=False, now=NOW,
+                   vendor_transport=_Vendor({"20261121": [_reg("P1", "2026-11-21")]}).transport(),
+                   sink_transport=_CrmFailedSwitchedOff().transport())
+    assert run.outcome == "FAILED" and run.error_code == "CRM_SWITCHED_OFF"
+    assert run.error == "CRM project sync is switched off"
+    db.refresh(feed)
+    assert feed.cursor_day == date(2026, 11, 21)
+    assert db.query(AcDocFeedIssue).filter_by(feed=PR).count() == 0
+    item = next(i for i in DocFeedService(db).view(co.tenant_id, co.id).feeds if i.feed == PR)
+    assert item.lastRun.error == "CRM project sync is switched off"
+
+
+def test_crm_failed_needs_review_by_errors_key_is_counted(db):
+    from modules.autocount.doc_feed.runner import _verdict_code
+    from modules.autocount.sinks_sorento import SorentoSink
+
+    sink = SorentoSink.__new__(SorentoSink)
+    sink.entity_type = PR
+    sink.name = "sorento"
+    result = sink._result_for("db3:PROJREG:P1", {
+        "source_ref": "db3:PROJREG:P1", "outcome": "failed",
+        "errors": {"needs_review": "Clashes with a CRM project."},
+    })
+    assert result.outcome == "failed" and _verdict_code(result) == "needs_review"

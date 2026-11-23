@@ -158,7 +158,10 @@ def _verdict_code(result: Any) -> str:
 
 
 def is_switched_off(result: Any) -> bool:
-    return (getattr(result, "outcome", "") or "") == "skipped" and (
+    """The CRM ignored the record because its sync switch is OFF: `skipped`
+    (contract Appendix A) or `failed` (the CRM as built) with code
+    `switched_off`. Never a final answer: nothing is stored, the run holds."""
+    return (getattr(result, "outcome", "") or "") in ("skipped", "failed") and (
         _verdict_code(result) == SWITCHED_OFF_CODE
     )
 
@@ -516,17 +519,18 @@ def _apply_document_verdict(
                 )
         if not dry_run:
             issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
+    elif is_switched_off(result):
+        # Plan 72 (UAC S0-9) - the CRM's switch is OFF (`skipped` or, as the
+        # CRM is built, `failed` + `errors.switched_off`): no ledger row, no
+        # issue row; the caller holds the cursor so nothing is lost.
+        summary["switchedOff"] = summary.get("switchedOff", 0) + 1
     elif outcome == "skipped":
         # Plan 72 (contract 2.15 section 4) - the CRM listed it for a person
-        # (or ignored it while switched off): nothing for the SS to store or
-        # retry; a switched-off answer stops the run instead (the caller).
-        if is_switched_off(result):
-            summary["switchedOff"] = summary.get("switchedOff", 0) + 1
-        else:
-            summary["skipped"] = summary.get("skipped", 0) + 1
-            if not dry_run:
-                # Final: a held re-send row must not go out again every tick.
-                issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
+        # (a switched-off answer never reaches here, see above): final, so
+        # nothing to store or retry, and a held re-send row is dropped.
+        summary["skipped"] = summary.get("skipped", 0) + 1
+        if not dry_run:
+            issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
     elif outcome == "failed" or too_large_record:
         # N7 - an over-cap document can never be stored for a D9 re-send, so
         # it is a permanent failure with a named error (never a retryable

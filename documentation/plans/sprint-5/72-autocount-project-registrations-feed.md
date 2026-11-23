@@ -77,7 +77,10 @@ records a push (the CRM's MAX_BATCH; DO / GRN keep `autocount_sink_batch_size`).
    this feed writes those rows; DO / GRN reads are unchanged.
 6. CRM answers (section 4): `created` / `updated` / `unchanged` = delivered (ledger row);
    `failed` (incl. `needs_review`) = a failed issue row, never retried; `skipped` = final,
-   nothing stored; `skipped` with code `switched_off` = the run stops with
+   nothing stored; switched off = `skipped` with code `switched_off` (Appendix A) OR, as the
+   CRM is built, `failed` with `errors: {"switched_off": ...}` (crew pass on 458acd52,
+   CRM `project_registration_ingest_service.py`); the code is read from `code`,
+   `errors.code`, an `errors` key or a warning. Switched off = the run stops with
    `CRM_SWITCHED_OFF` "CRM project sync is switched off", the poll cursor / backfill cursor
    stay where they were; `retryable` = re-sent from the issue row, as every feed. A 4xx /
    5xx / time-out stops the day: the cursor stays and the next run re-sends it.
@@ -111,6 +114,15 @@ records a push (the CRM's MAX_BATCH; DO / GRN keep `autocount_sink_batch_size`).
 - Left open (to settle with the CRM / crew): `source_ref` uses the trimmed ProjNo while
   the record keeps ProjNo as read; DO / GRN backfills do not take the per-book lock; a
   poll already queued before a backfill starts can overlap its first day.
+
+## Crew pass on 458acd52 (fixed)
+
+NOT READY on S0-9 only: the CRM as built answers switched off as `failed` +
+`errors.switched_off`, which the SS stored as a failed issue row while the backfill ran to
+done. Now any switched-off answer stores nothing (no ledger, no issue row), stops the
+backfill on that day (`CRM_SWITCHED_OFF`, cursor held) and fails the poll with "CRM project
+sync is switched off" (cursor held), so turning the CRM switch on later loses nothing.
+Tests: `test_crm_failed_switched_off_*`, `test_crm_failed_needs_review_by_errors_key_*`.
 
 ## Verification
 

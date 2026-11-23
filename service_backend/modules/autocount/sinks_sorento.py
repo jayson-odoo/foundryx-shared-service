@@ -1762,6 +1762,10 @@ class SorentoSink:
             errors = dict(errors) if isinstance(errors, dict) else {}
             code = verdict.get("code") or errors.get("code")
             if not code:
+                # The CRM as built (S1) names the reason as an `errors` KEY:
+                # `{"switched_off": "..."}` / `{"needs_review": "..."}`.
+                code = next((k for k in ("switched_off", "needs_review") if k in errors), None)
+            if not code:
                 # The contract names the code but not its field: a warning
                 # word counts too, so a switched-off answer can never be
                 # mistaken for a final skip (which would move the cursor on).
