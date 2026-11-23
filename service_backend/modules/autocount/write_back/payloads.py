@@ -7,6 +7,7 @@ rows appear in ``Details``. Quantities are computed in ``Decimal``.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -16,6 +17,7 @@ from modules.autocount.write_back import capabilities
 from modules.autocount.write_back.doc_kinds import DocKind, kind_of
 
 Doc = Dict[str, Any]
+logger = logging.getLogger("foundryx.autocount")
 
 HEADER_KEYS = (
     "DocKey", "DocNo", "DocDate", "CreditorCode", "CreditorName", "Ref", "Description",
@@ -135,7 +137,50 @@ def _is_spo(doc: Doc) -> bool:
     return doc.get("ShippingPO") == "T"
 
 
+SHIPPING_PO = "ShippingPO"
+SHIPPING_PO_CHANGED = "SHIPPING_PO_CHANGED"
+SHIPPING_PO_CHANGED_MESSAGE = "AutoCount changed Shipping Order on this PO"
+SHIPPING_PO_UNKNOWN = "SHIPPING_PO_UNKNOWN"
+SHIPPING_PO_UNKNOWN_MESSAGE = (
+    "Shipping Order on this PO is not set to yes or no in AutoCount, so the change was not made. "
+    "Set Shipping Order on the PO in AutoCount, then try again."
+)
+_SHIPPING_FLAGS = ("T", "F")
+
+
+def _require_known_shipping(doc: Doc) -> None:
+    """SS-SHIPPINGPO-PRESERVE (prod proof, PO 202607-S0083): a read whose ``ShippingPO`` is
+    not exactly "T" or "F" ("\u0000", "", null, missing) is unknown. SS never guesses it and
+    never sends it back: the edit is refused before any write."""
+    value = doc.get(SHIPPING_PO)
+    if value not in _SHIPPING_FLAGS:
+        logger.warning("autocount edit refused: ShippingPO reads %r (DocKey %s, DocNo %s)",
+                       value, doc.get("DocKey"), doc.get("DocNo"))
+        raise WriteRefusal(SHIPPING_PO_UNKNOWN, SHIPPING_PO_UNKNOWN_MESSAGE, plain=True)
+
+
+def keep_shipping_po(body: Doc, doc: Doc) -> Doc:
+    """SS-SHIPPINGPO-PRESERVE: a PO / SPO edit body carries ``ShippingPO`` exactly as SS just
+    read it ("F" stays "F", "T" stays "T"); omitted, the vendor edit writes NUL, which
+    AutoCount shows as ticked (prod 20 Nov). Copied, never computed; unknown is refused."""
+    _require_known_shipping(doc)
+    body[SHIPPING_PO] = doc[SHIPPING_PO]
+    return body
+
+
+def shipping_po_changed(before: Doc, after: Doc) -> bool:
+    """True when the read-back's ``ShippingPO`` is not exactly the pre-write value (a NUL,
+    blank or missing read-back after "F" is a change)."""
+    return before.get(SHIPPING_PO) != after.get(SHIPPING_PO)
+
+
+def shipping_po_values(before: Doc, after: Doc) -> Tuple[str, str]:
+    """``(before, after)`` as printable text for the log line of a ``SHIPPING_PO_CHANGED``."""
+    return repr(before.get(SHIPPING_PO)), repr(after.get(SHIPPING_PO))
+
+
 def _check_doc(doc: Doc, want_spo: bool) -> None:
+    _require_known_shipping(doc)
     if _is_spo(doc) != want_spo:
         raise WriteRefusal("DOC_KIND_MISMATCH", "wrong document kind")
     if doc.get("Cancelled") == "T":
@@ -246,7 +291,7 @@ def build_link(
         "FromDocDtlKey": so_dtl_key,
         "Location": location or so_row.get("Location"),
     }
-    body = _header(po)
+    body = keep_shipping_po(_header(po), po)
     new = _normal(_row_fields(po_row))
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
     with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
@@ -273,7 +318,7 @@ def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref
         raise WriteRefusal("ROW_ALREADY_AT_LOCATION", "row is already at that location")
     moved = _normal(_row_fields(row))
     moved["Location"] = location
-    body = _header(po)
+    body = keep_shipping_po(_header(po), po)
     body["Details"] = [moved]
     return body
 
@@ -453,9 +498,7 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
         raise WriteRefusal("NO_CHANGE", "nothing to restore")
     row = _normal(_row_fields(_find_row(po, dtl_key)))
     row.update(values)
-    body = _header(po)
-    if _is_spo(po):
-        body["ShippingPO"] = "T"
+    body = keep_shipping_po(_header(po), po)
     body["Details"] = [row]
     return body
 
@@ -558,7 +601,10 @@ def _same(a: Any, b: Any) -> bool:
     return a == b
 
 
-def _check_kind_doc(kind: DocKind, doc: Doc, *, cancelled_ok: bool = False) -> None:
+def _check_kind_doc(kind: DocKind, doc: Doc, *, cancelled_ok: bool = False, write: bool = True) -> None:
+    """``write`` False = a plain read (``get_doc``): an unknown ``ShippingPO`` is still readable."""
+    if write and kind.name in ("PO", "SPO"):
+        _require_known_shipping(doc)
     if kind.name in ("PO", "SPO") and _is_spo(doc) != (kind.name == "SPO"):
         raise WriteRefusal("DOC_KIND_MISMATCH", "wrong document kind")
     if not cancelled_ok and doc.get("Cancelled") == "T":
@@ -596,9 +642,11 @@ def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None, kind: s
 
 
 def _doc_header(kind: DocKind, doc: Doc) -> Doc:
+    """The edit header: the document's own header fields; a PO / SPO also carries its
+    ``ShippingPO`` as read (``_check_kind_doc`` already held it to the kind)."""
     body = _pick_header(doc, ("DocKey",) + CREATE_HEADER_KEYS)
-    if kind.name == "SPO":
-        body["ShippingPO"] = "T"
+    if kind.name in ("PO", "SPO"):
+        keep_shipping_po(body, doc)
     return body
 
 
