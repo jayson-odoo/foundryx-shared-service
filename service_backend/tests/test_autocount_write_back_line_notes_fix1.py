@@ -81,3 +81,49 @@ def test_split_link_restore_that_cannot_be_built_is_a_clean_mismatch(h, monkeypa
     res = h.link_split()
     assert (res.outcome, res.error_code) == ("mismatch", "ROW_VALUES_NOT_KEPT")
     assert len(h.ac.put_calls) == 1
+
+
+# ---- F2 (operations): the same failure after a link PUT landed -------------------------------------
+
+from tests.test_autocount_write_back_operations import OpHarness, World  # noqa: E402,F401
+from tests.test_autocount_write_back_operations import h as op_h  # noqa: E402,F401
+
+
+class _OpKnownThenUnknown:
+    def __init__(self, vendor):
+        self.vendor = vendor
+
+    def notes(self, kind, doc):
+        if self.vendor.writes():
+            return None
+        return {r.get("DtlKey"): "" for r in doc.get("Details") or []}
+
+
+def _op_strip_fd_after_put(vendor):
+    orig = vendor._handle
+
+    def handle(request):
+        resp = orig(request)
+        if not vendor.writes() or resp.status_code != 200 or request.method != "GET":
+            return resp
+        docs = json.loads(resp.content)
+        for doc in docs if isinstance(docs, list) else [docs]:
+            for r in (doc.get("Details") or []) if isinstance(doc, dict) else []:
+                r.pop("FurtherDescription", None)
+        return httpx.Response(200, json=docs)
+
+    vendor.transport = httpx.MockTransport(handle)
+
+
+@pytest.mark.parametrize("op", ["link_row", "relink_row", "unlink_row", "spo_link_row", "spo_relink_row"])
+def test_operation_restore_after_a_landed_put_never_ends_internal_error(op_h, monkeypatch, op):
+    h = op_h
+    world = World(h)
+    if op not in world.params:
+        pytest.skip(f"{op} has no World params")
+    _op_strip_fd_after_put(h.vendor)
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _OpKnownThenUnknown(h.vendor))
+    res = h.run(op, world.params[op])
+    assert res.error_code != "INTERNAL_ERROR", (res.outcome, res.error_code)
+    assert res.outcome != "pending" or res.error_code != "INTERNAL_ERROR"
+    print(op, res.outcome, res.error_code)
