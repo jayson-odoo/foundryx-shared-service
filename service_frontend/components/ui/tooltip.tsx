@@ -4,6 +4,7 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Tooltip as TooltipPrimitive } from 'radix-ui';
+import { useFx } from '@/hooks/use-fx';
 
 function TooltipProvider({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return <TooltipPrimitive.Provider data-slot="tooltip-provider" {...props} />;
@@ -37,12 +38,38 @@ const tooltipVariants = cva(
   },
 );
 
-function TooltipContent({
+type TooltipContentProps = React.ComponentProps<typeof TooltipPrimitive.Content> &
+  VariantProps<typeof tooltipVariants>;
+
+// Foundryx UIUX switch (playbook-uiux.md): with it on, every existing tooltip
+// takes the playbook look (solid themed backing, hairline edge, grow from 60%
+// with a fade at the tooltip fade-in setting). Off renders the legacy body.
+function TooltipContent(props: TooltipContentProps) {
+  return useFx() ? <FxTooltipContent {...props} /> : <TooltipContentLegacy {...props} />;
+}
+
+function FxTooltipContent({ className, sideOffset = 6, variant, ...props }: TooltipContentProps) {
+  // One look under the switch: the light/dark variants do not apply.
+  void variant;
+  return (
+    <TooltipPrimitive.Content
+      data-slot="tooltip-content"
+      sideOffset={sideOffset}
+      className={cn(
+        'z-(--fx-z-tip) w-max max-w-[300px] rounded-(--fx-r-m) border border-(--fx-line) bg-[color-mix(in_srgb,var(--fx-surface)_var(--fx-tip-bg,92%),transparent)] px-2.5 py-1.5 text-sm text-(--fx-ink) shadow-[0_8px_24px_var(--fx-shade)] backdrop-blur-[6px] duration-(--fx-tip-fade,0.15s) ease-(--fx-ease-spring) animate-in fade-in-0 zoom-in-60 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-60 motion-reduce:zoom-in-100 motion-reduce:zoom-out-100',
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function TooltipContentLegacy({
   className,
   sideOffset = 4,
   variant,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content> & VariantProps<typeof tooltipVariants>) {
+}: TooltipContentProps) {
   return (
     <TooltipPrimitive.Content
       data-slot="tooltip-content"

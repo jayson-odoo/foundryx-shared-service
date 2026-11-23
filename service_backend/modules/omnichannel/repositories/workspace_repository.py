@@ -53,6 +53,64 @@ class WorkspaceRepository:
             .first()
         )
 
+    def get_in_client_app(
+        self, ws_id: str, tenant_id: str, client_app_id: str
+    ) -> Optional[Workspace]:
+        """The tenant's workspace if it belongs to this client app."""
+        return (
+            self.db.query(Workspace)
+            .filter(
+                Workspace.tenant_id == tenant_id,
+                Workspace.id == ws_id,
+                Workspace.client_app_id == client_app_id,
+            )
+            .first()
+        )
+
+    def get_live_by_external_ref(
+        self, tenant_id: str, external_ref: str, client_app_id: str
+    ) -> Optional[Workspace]:
+        """The client app's live (not trashed) workspace for a partner
+        organisation id."""
+        return (
+            self.db.query(Workspace)
+            .filter(
+                Workspace.tenant_id == tenant_id,
+                Workspace.external_ref == external_ref,
+                Workspace.is_trashed.is_(False),
+                Workspace.client_app_id == client_app_id,
+            )
+            .order_by(Workspace.created_at.asc(), Workspace.id.asc())
+            .first()
+        )
+
+    def paginate_live_by_external_ref(
+        self,
+        tenant_id: str,
+        external_ref: Optional[str],
+        client_app_id: str,
+        *,
+        page: int,
+        page_size: int,
+    ) -> Tuple[List[Workspace], int]:
+        """The client app's live workspaces, oldest first, optionally one
+        partner organisation id only."""
+        q = self.db.query(Workspace).filter(
+            Workspace.tenant_id == tenant_id,
+            Workspace.is_trashed.is_(False),
+            Workspace.client_app_id == client_app_id,
+        )
+        if external_ref is not None:
+            q = q.filter(Workspace.external_ref == external_ref)
+        total = q.count()
+        rows = (
+            q.order_by(Workspace.created_at.asc(), Workspace.id.asc())
+            .offset(page * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return rows, total
+
     def get_many(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> List[Workspace]:
         if not ids:
             return []

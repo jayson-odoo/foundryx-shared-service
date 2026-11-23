@@ -1,4 +1,5 @@
 import { toast } from '@/lib/toast';
+import { fxExportPendingWords } from './contacts-fx';
 
 /**
  * D-A2-6a fallback: the export job hasn't finished inside the short wait
@@ -15,6 +16,21 @@ export function exportPendingToast(push: (href: string) => void): void {
     action: {
       label: 'View Jobs',
       onClick: () => push('/jobs'),
+    },
+  });
+}
+
+/**
+ * Foundryx UIUX switch only (gap audit 2, "one Jobs place"): the hand-off
+ * says what is still running and where it will be, and "View jobs" opens the
+ * one Jobs sheet in the top bar instead of leaving the page. `count` is the
+ * ticked rows, else the list's matching total (null while unknown).
+ */
+export function fxExportPendingToast(count: number | null, openJobs: () => void): void {
+  toast.info(fxExportPendingWords(count), {
+    action: {
+      label: 'View jobs',
+      onClick: openJobs,
     },
   });
 }

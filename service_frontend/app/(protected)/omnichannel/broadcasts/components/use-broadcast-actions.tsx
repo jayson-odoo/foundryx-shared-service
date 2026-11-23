@@ -4,11 +4,14 @@ import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Ban, Copy, Pencil, Send, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { ApiError } from '@/lib/api-client';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { broadcastService } from '@/services/broadcast-service';
 import type { Broadcast } from '@/types/omnichannel';
 import { broadcastFormHref } from './paths';
+import { useActingUserName } from './use-acting-user-name';
+import { fxCancelledToast, fxDuplicatedToast, fxSendingToast } from './fx-broadcast-words';
 
 // Typed 409 reasons (plan §5.1) - `error.message` is just "Conflict" for
 // these (the backend body is `{reason: "..."}`, not a string `detail`, so
@@ -34,6 +37,11 @@ function describe(error: unknown): string {
  */
 export function useBroadcastActions(workspaceId: string | null): ResourceAction<Broadcast>[] {
   const router = useRouter();
+  // Foundryx UIUX switch only: the done toasts say what, for whom, how many
+  // and by whom. The requests never change; none of these can be reversed
+  // through the API, so none offers Undo.
+  const fx = useFx();
+  const byWhom = useActingUserName();
 
   return useMemo<ResourceAction<Broadcast>[]>(() => {
     const editable = (rows: Broadcast[]) => rows.length > 0 && rows.every((r) => r.status === 'DRAFT');
@@ -72,7 +80,8 @@ export function useBroadcastActions(workspaceId: string | null): ResourceAction<
               return;
             }
           }
-          toast.success(rows.length > 1 ? `Sending ${rows.length} broadcasts.` : 'Sending broadcast.');
+          if (fx) toast.fxDone(fxSendingToast(rows, byWhom));
+          else toast.success(rows.length > 1 ? `Sending ${rows.length} broadcasts.` : 'Sending broadcast.');
           rt.reload();
         },
       },
@@ -105,7 +114,8 @@ export function useBroadcastActions(workspaceId: string | null): ResourceAction<
               return;
             }
           }
-          toast.success(rows.length > 1 ? `Cancelled ${rows.length} broadcasts.` : 'Broadcast cancelled.');
+          if (fx) toast.fxDone(fxCancelledToast(rows, byWhom));
+          else toast.success(rows.length > 1 ? `Cancelled ${rows.length} broadcasts.` : 'Broadcast cancelled.');
           rt.reload();
         },
       },
@@ -119,7 +129,8 @@ export function useBroadcastActions(workspaceId: string | null): ResourceAction<
         run: async ([row], rt) => {
           if (!workspaceId || !row) return;
           const copy = await broadcastService.duplicate(workspaceId, row.id);
-          toast.success(`Duplicated as "${copy.name}".`);
+          if (fx) toast.fxDone(fxDuplicatedToast(row, copy, byWhom));
+          else toast.success(`Duplicated as "${copy.name}".`);
           rt.reload();
           router.push(broadcastFormHref(copy.id, { edit: true }));
         },
@@ -137,8 +148,13 @@ export function useBroadcastActions(workspaceId: string | null): ResourceAction<
         // handler commits it server-side once the countdown lapses, same
         // shape as every other destructive verb in this module (channel
         // delete, segment delete, quick-reply delete, …).
-        deferred: { actionKey: 'broadcasts.delete', entityType: 'broadcast' },
+        deferred: {
+          actionKey: 'broadcasts.delete',
+          entityType: 'broadcast',
+          // Foundryx UIUX switch only: "Deleting November promo in 10 s".
+          fxName: (rows) => (rows.length === 1 ? rows[0]?.name : undefined),
+        },
       },
     ];
-  }, [router, workspaceId]);
+  }, [router, workspaceId, fx, byWhom]);
 }

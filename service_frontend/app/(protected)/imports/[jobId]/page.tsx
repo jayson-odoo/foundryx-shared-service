@@ -19,6 +19,8 @@ import type { Offering } from '@/types/registration';
 import type { Client } from '@/types/ems';
 import { ArrowRight, Download } from 'lucide-react';
 import { ImportErrorsTable } from './import-errors-table';
+import { useFx } from '@/hooks/use-fx';
+import { FxImportPage } from './fx-import-page';
 
 const DONT_IMPORT = '__none__';
 const IN_FLIGHT = new Set(['pending', 'validating', 'importing']);
@@ -41,7 +43,13 @@ const TICKET_MODE_OPTIONS: { value: TicketMode; label: string }[] = [
  * page. A successful import redirects back to where the upload began; the job is
  * trackable in the Imports drawer.
  */
-export default function ImportPage({ params }: { params: Promise<{ jobId: string }> }) {
+export default function ImportPage(props: { params: Promise<{ jobId: string }> }) {
+  // Foundryx UIUX: steps 2 to 4 of the import wizard (match, check, import),
+  // with the same requests; Import waits for a check of the current columns.
+  return useFx() ? <FxImportPage {...props} /> : <ImportPageLegacy {...props} />;
+}
+
+function ImportPageLegacy({ params }: { params: Promise<{ jobId: string }> }) {
   const { jobId } = use(params);
   const router = useRouter();
   const searchParams = useSearchParams();

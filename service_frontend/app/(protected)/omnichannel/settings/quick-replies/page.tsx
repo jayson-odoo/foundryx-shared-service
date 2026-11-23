@@ -14,6 +14,9 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { ResourceList } from '@/components/platform/resource-list';
 import { QuickReplyDialog } from './quick-reply-dialog';
 import { useQuickRepliesListConfig } from './use-quick-replies-list-config';
+import { useFx } from '@/hooks/use-fx';
+import { useFxUserName } from '../workspaces/components/use-fx-user-name';
+import { fxQuickReplyName } from './quick-reply-fx';
 
 /**
  * Quick-replies settings (plan sprint-3/12) - canned responses the inbox
@@ -91,14 +94,40 @@ function QuickRepliesView() {
   );
 
   const config = useQuickRepliesListConfig(items, handlers);
+  const fx = useFx();
+  const byWhom = useFxUserName();
 
   const handleCreate = async (input: QuickReplyCreateInput) => {
-    await create(input);
-    toast.success('Quick reply created.');
+    const created = await create(input);
+    if (!fx) {
+      toast.success('Quick reply created.');
+      return;
+    }
+    // Undo removes the reply just created (the same delete the API offers).
+    toast.fxDone({
+      what: `Quick reply ${fxQuickReplyName(created)} created`,
+      byWhom,
+      undo: () => void remove(created.id).catch(() => toast.error("Couldn't undo. The quick reply is still there.")),
+    });
   };
   const handleUpdate = async (id: string, input: QuickReplyUpdateInput) => {
-    await update(id, input);
-    toast.success('Quick reply saved.');
+    const before = items.find((i) => i.id === id);
+    const updated = await update(id, input);
+    if (!fx) {
+      toast.success('Quick reply saved.');
+      return;
+    }
+    // Undo writes the reply back as it was.
+    toast.fxDone({
+      what: `Quick reply ${fxQuickReplyName(updated)} saved`,
+      byWhom,
+      undo: before
+        ? () =>
+            void update(id, { shortcut: before.shortcut, body: before.body }).catch(() =>
+              toast.error("Couldn't undo. The quick reply keeps its new words."),
+            )
+        : undefined,
+    });
   };
 
   if (!resolving && !workspaceId) {

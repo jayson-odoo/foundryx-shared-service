@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import { ChevronDown, ChevronUp, LogOut, UserCog } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useImpersonation } from '@/hooks/use-impersonation';
+import { useFx } from '@/hooks/use-fx';
+import { FxImpersonationBanner } from '@/components/fx/banners/fx-impersonation-banner';
 
 const COLLAPSE_KEY = 'foundryx.impersonation.collapsed';
 
@@ -13,8 +15,15 @@ const COLLAPSE_KEY = 'foundryx.impersonation.collapsed';
  * Top banner shown while impersonating (plan 03 §13). Collapsible (collapses to a
  * small pill so it never blocks controls); offers Exit. Records created while
  * impersonating stay attributed to the real admin (enforced server-side).
+ *
+ * Foundryx UIUX switch on: a system banner in the bar above the top bar
+ * (components/fx/banners/fx-impersonation-banner.tsx); off: today's banner.
  */
 export function ImpersonationBanner() {
+  return useFx() ? <FxImpersonationBanner /> : <ImpersonationBannerLegacy />;
+}
+
+function ImpersonationBannerLegacy() {
   const { session, stop, hydrate, pending } = useImpersonation();
   const router = useRouter();
   const bannerRef = useRef<HTMLDivElement>(null);

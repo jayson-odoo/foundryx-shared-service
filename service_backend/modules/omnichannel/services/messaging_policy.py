@@ -270,7 +270,29 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _whatsapp_window_open(contact: Contact, now: datetime) -> bool:
+def _whatsapp_window_open(
+    db: Session, contact: Contact, channel: Channel, now: datetime
+) -> bool:
+    """The WhatsApp free-form window - the ONE place that decides it.
+
+    Default (today, every workspace that has not opted in): the CONTACT-level
+    `contacts.csw_expires_at`, which an inbound on ANY of the workspace's
+    WhatsApp numbers refreshes.
+
+    S12 (decision D3, opt-in per workspace via
+    `omnichannel_settings.strict_number_window`): the window of the TARGET
+    number only - `contact_channel_identities.window_expires_at` for
+    (contact, channel), stamped by `stamp_inbound_window` on every inbound to
+    that number. Meta's window is per business number, so a customer who wrote
+    to number A has no open window on number B; without this a free-form send
+    on B is accepted and later fails at Meta (131047). No identity on the
+    target number = closed."""
+    from .media_settings_service import MediaSettingsService
+
+    if MediaSettingsService(db).strict_number_window(contact.tenant_id, contact.workspace_id):
+        identity = _identity_for(db, contact, channel)
+        expires = _aware(identity.window_expires_at) if identity is not None else None
+        return expires is not None and expires > now
     expires = _aware(contact.csw_expires_at)
     return expires is not None and expires > now
 
@@ -308,7 +330,7 @@ def window_open(
         # must never bail out on a web chat send.
         return True
     if policy.reengage_mode == "template":
-        return _whatsapp_window_open(contact, now)
+        return _whatsapp_window_open(db, contact, channel, now)
     identity = _identity_for(db, contact, channel)
     if identity is None:
         return False
@@ -358,7 +380,7 @@ def authorize(
     if policy.reengage_mode == "template":
         if (kind or "").upper() == "TEMPLATE":
             return SendDecision()
-        if _whatsapp_window_open(contact, now):
+        if _whatsapp_window_open(db, contact, channel, now):
             return SendDecision()
         raise PolicyRejected("csw_window_closed", CSW_CLOSED_MESSAGE)
 
@@ -391,3 +413,61 @@ def authorize(
         raise PolicyRejected("automation_outside_window", AUTOMATION_OUTSIDE_WINDOW_MESSAGE)
 
     raise PolicyRejected("messaging_window_closed", MESSAGING_WINDOW_CLOSED_MESSAGE)
+
+
+# ── Window state for consumers (payload version 2, Track A S1) ──────────────
+
+SEND_ANY = "ANY"
+SEND_TEMPLATE = "TEMPLATE"
+
+WINDOW_OPEN = "OPEN"
+WINDOW_CLOSED = "CLOSED"
+WINDOW_HUMAN_AGENT_ONLY = "HUMAN_AGENT_ONLY"
+WINDOW_NONE = "NO_WINDOW"
+
+
+@dataclass(frozen=True)
+class WindowState:
+    """What a sender may send on ONE contact-channel identity right now.
+
+    `window_open` = the channel's standard window is open (always true for
+    web chat, which has none); `allowed_send_types` = `["ANY"]` (free-form and
+    templates), `["TEMPLATE"]` (WhatsApp outside its window) or `[]` (nothing
+    this sender can send); `reason` = OPEN | CLOSED | HUMAN_AGENT_ONLY |
+    NO_WINDOW."""
+
+    window_open: bool
+    allowed_send_types: tuple
+    reason: str
+    window_expires_at: Optional[datetime]
+    human_agent_expires_at: Optional[datetime]
+
+
+def window_state(
+    identity: Optional[ContactChannelIdentity],
+    channel_type: str,
+    *,
+    actor_is_human: bool,
+    now: Optional[datetime] = None,
+) -> WindowState:
+    """The read-side twin of `authorize`, per identity: the same window rules,
+    answered as data instead of a refusal. WhatsApp reads the identity's OWN
+    `window_expires_at` (the per-number truth), never `contacts.csw_expires_at`.
+    Messenger/Instagram inside only the 7-day human-agent window allow
+    free-form for a human actor and nothing for automation (an API key, a
+    workflow, a broadcast), exactly like `authorize` (D-A7-6)."""
+    now = now or datetime.now(timezone.utc)
+    policy = POLICIES.get(channel_type, POLICIES["WHATSAPP"])
+    expires = _aware(identity.window_expires_at) if identity is not None else None
+    human_expires = _aware(identity.human_agent_expires_at) if identity is not None else None
+
+    if policy.reengage_mode == "none":
+        return WindowState(True, (SEND_ANY,), WINDOW_NONE, expires, human_expires)
+    if expires is not None and expires > now:
+        return WindowState(True, (SEND_ANY,), WINDOW_OPEN, expires, human_expires)
+    if policy.reengage_mode == "template":
+        return WindowState(False, (SEND_TEMPLATE,), WINDOW_CLOSED, expires, human_expires)
+    if policy.human_agent_hours and human_expires is not None and human_expires > now:
+        allowed = (SEND_ANY,) if actor_is_human else ()
+        return WindowState(False, allowed, WINDOW_HUMAN_AGENT_ONLY, expires, human_expires)
+    return WindowState(False, (), WINDOW_CLOSED, expires, human_expires)

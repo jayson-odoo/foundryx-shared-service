@@ -9,6 +9,10 @@ import { importService } from '@/services/import-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { ImportJob } from '@/types/import';
+import { useFx } from '@/hooks/use-fx';
+import { FxJobChip } from '@/components/platform/jobs-drawer/fx-job-chip';
+import { fmtCount, humanizeKey, importItem } from '@/components/platform/jobs-drawer/fx-job-items';
+import { MODE_LABELS } from '@/components/platform/import-wizard/import-modal';
 
 const STATUS_TONE: Record<string, 'success' | 'destructive' | 'secondary' | 'primary'> = {
   done: 'success',
@@ -25,6 +29,9 @@ const STATUS_TONE: Record<string, 'success' | 'destructive' | 'secondary' | 'pri
  */
 export function useImportsListConfig(): ResourceListConfig<ImportJob> {
   const { formatDateTime } = useDatetime();
+  // Foundryx UIUX: the cells read in words (entity, mode, status chip,
+  // "10 of 12"); the data and requests are the same.
+  const fx = useFx();
 
   return useMemo<ResourceListConfig<ImportJob>>(() => {
     const columns: ColumnDef<ImportJob>[] = [
@@ -33,7 +40,11 @@ export function useImportsListConfig(): ResourceListConfig<ImportJob> {
         accessorFn: (row) => row.entityType,
         meta: { headerTitle: 'Entity' },
         header: ({ column }) => <DataGridColumnHeader title="Entity" column={column} />,
-        cell: ({ row }) => <span className="text-foreground text-sm font-medium">{row.original.entityType}</span>,
+        cell: ({ row }) => (
+          <span className="text-foreground text-sm font-medium">
+            {fx ? humanizeKey(row.original.entityType) : row.original.entityType}
+          </span>
+        ),
         size: 160,
         enableSorting: false,
       },
@@ -42,7 +53,11 @@ export function useImportsListConfig(): ResourceListConfig<ImportJob> {
         accessorFn: (row) => row.mode,
         meta: { headerTitle: 'Mode' },
         header: ({ column }) => <DataGridColumnHeader title="Mode" column={column} />,
-        cell: ({ row }) => <span className="text-muted-foreground text-sm">{row.original.mode}</span>,
+        cell: ({ row }) => (
+          <span className="text-muted-foreground text-sm">
+            {fx ? MODE_LABELS[row.original.mode] ?? row.original.mode : row.original.mode}
+          </span>
+        ),
         size: 140,
         enableSorting: false,
       },
@@ -51,11 +66,17 @@ export function useImportsListConfig(): ResourceListConfig<ImportJob> {
         accessorFn: (row) => row.status,
         meta: { headerTitle: 'Status' },
         header: ({ column }) => <DataGridColumnHeader title="Status" column={column} />,
-        cell: ({ row }) => (
-          <Badge variant={STATUS_TONE[row.original.status] ?? 'secondary'} appearance="light">
-            {row.original.status}
-          </Badge>
-        ),
+        cell: ({ row }) => {
+          if (fx) {
+            const item = importItem(row.original);
+            return <FxJobChip label={item.status} tone={item.tone} />;
+          }
+          return (
+            <Badge variant={STATUS_TONE[row.original.status] ?? 'secondary'} appearance="light">
+              {row.original.status}
+            </Badge>
+          );
+        },
         size: 140,
         enableSorting: false,
       },
@@ -65,7 +86,13 @@ export function useImportsListConfig(): ResourceListConfig<ImportJob> {
         header: ({ column }) => <DataGridColumnHeader title="Rows" column={column} />,
         cell: ({ row }) => (
           <span className="text-sm tabular-nums">
-            {row.original.validRows}/{row.original.totalRows}
+            {fx ? (
+              `${fmtCount(row.original.validRows)} of ${fmtCount(row.original.totalRows)}`
+            ) : (
+              <>
+                {row.original.validRows}/{row.original.totalRows}
+              </>
+            )}
           </span>
         ),
         size: 120,
@@ -98,6 +125,11 @@ export function useImportsListConfig(): ResourceListConfig<ImportJob> {
       exportColumns: [],
       actions: [],
       enableStatusViews: false,
+      fx: {
+        noun: 'imports',
+        columnKind: { status: 'status' },
+        cardLines: [['entityType', 'status'], ['mode', 'rows'], ['created']],
+      },
     };
-  }, [formatDateTime]);
+  }, [formatDateTime, fx]);
 }

@@ -20,7 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.types import JSON
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 from app.models.utc_datetime import UTCDateTime
 
 from .db import OmniBase
@@ -68,11 +68,66 @@ class Status(OmniBase):
     __table_args__ = (UniqueConstraint("tenant_id", "scope", "key", name="uq_status_scope_key"),)
 
 
+class ClientApp(OmniBase):
+    """One consuming application (for example EcoHub) inside a tenant.
+
+    Groups the tenant's workspaces and partner keys: client app -> workspaces
+    -> channels. Migration 0032 made one client app per existing workspace
+    name (same-name workspaces share one); a dashboard-created workspace gets
+    its own, a partner-created one joins the calling key's. Exactly one client
+    app per tenant ``is_default`` (the one of the tenant's default workspace):
+    the parent of a partner key that has none. A workspace can be re-pointed
+    to another client app of the same tenant. No secrets live here (keys stay
+    hashed on their own tables). ``status`` DISABLED is enforced only on the
+    partner routes. ``slug`` is left NULL (reserved for a later admin API).
+    ``allowed_return_origins`` is reserved for a later release and unused.
+    """
+
+    __tablename__ = "client_apps"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, nullable=True)
+    is_default = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    status = Column(String, nullable=False, default="ACTIVE", server_default=text("'ACTIVE'"))
+    allowed_return_origins = Column(JSON(none_as_null=True), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'DISABLED')", name="ck_client_apps_status"),
+        Index("uq_client_apps_tenant_slug", "tenant_id", "slug", unique=True),
+        # One client app per normalised name (trimmed, case-insensitive) per
+        # tenant: the backfill and the create paths find-or-create by it.
+        Index("uq_client_apps_tenant_name", "tenant_id", text("lower(trim(name))"), unique=True),
+        Index(
+            "uq_client_apps_tenant_default",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+            sqlite_where=text("is_default = 1"),
+        ),
+    )
+
+
 class Workspace(OmniBase):
     __tablename__ = "workspaces"
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String,nullable=False, index=True)
+    # The client app this workspace belongs to (migration 0032). Nullable for
+    # backward compatibility: an older running version inserts without it; a
+    # NULL is resolved by the backfill rule and persisted (`client_app_service`).
+    client_app_id = Column(
+        String,
+        ForeignKey("client_apps.id", name="fk_workspaces_client_app_id"),
+        nullable=True,
+        index=True,
+    )
     name = Column(String, nullable=False)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     is_default = Column(Boolean, nullable=False, default=False)
@@ -81,9 +136,25 @@ class Workspace(OmniBase):
     # round-robin mode's cursor (last-assigned member's user id, or NULL). No
     # separate pointer table - one workspace, one cursor.
     round_robin_cursor = Column(String, nullable=True)
+    # S7 partner path: the partner's own organisation id (`externalOrgId`).
+    # NULL for every dashboard-created workspace. Unique per client app among
+    # live rows (partial index, migration 0032; it was per tenant in 0031),
+    # which makes the partner PUT idempotent and race-safe.
+    external_ref = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_workspaces_client_app_external_ref",
+            "client_app_id",
+            "external_ref",
+            unique=True,
+            postgresql_where=text("external_ref IS NOT NULL AND is_trashed = false"),
+            sqlite_where=text("external_ref IS NOT NULL AND is_trashed = 0"),
+        ),
     )
 
 
@@ -774,6 +845,94 @@ class WorkspaceApiKey(OmniBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
+class PartnerApiKey(OmniBase):
+    """Partner API key (``fxp_live_...``), scoped to exactly ONE tenant.
+
+    Sits beside ``WorkspaceApiKey`` and never resolves through the workspace-key
+    dependency: it authenticates only ``/api/v1/omnichannel/partner/*``. Same
+    storage rules as the workspace key - the plaintext is shown once at mint,
+    only the SHA-256 ``key_hash`` and the 8-char ``key_prefix`` are stored.
+    ``allowed_return_origins`` is the exact-origin allow-list a hosted connect
+    session may return to (NULL = none allowed yet).
+    """
+
+    __tablename__ = "partner_api_keys"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    # The client app this key acts for (migration 0032). Nullable like
+    # `workspaces.client_app_id`; NULL reads as the tenant's default client app.
+    client_app_id = Column(
+        String,
+        ForeignKey("client_apps.id", name="fk_partner_api_keys_client_app_id"),
+        nullable=True,
+        index=True,
+    )
+    name = Column(String, nullable=False)
+    key_prefix = Column(String, nullable=False, index=True)  # 8 chars after "fxp_live_"
+    key_hash = Column(String, nullable=False)  # sha256 hex (64 chars)
+    allowed_return_origins = Column(JSON(none_as_null=True), nullable=True)
+    last_used_at = Column(UTCDateTime(), nullable=True)
+    revoked_at = Column(UTCDateTime(), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
+# Partner connect session lifecycle (FSS-1). OPEN -> AUTHORIZED (callback) ->
+# COMPLETED (partner /complete); CANCELLED, FAILED and EXPIRED are terminal.
+CONNECT_SESSION_STATUSES = ("OPEN", "AUTHORIZED", "COMPLETED", "FAILED", "CANCELLED", "EXPIRED")
+
+
+class PartnerConnectSession(OmniBase):
+    """A hosted WhatsApp connect started by a partner key for one workspace
+    (FSS-1, migration 0033). Scoped by ``tenant_id`` AND ``client_app_id``:
+    any active key of that client app may read, complete or cancel it.
+    ``partner_key_id`` records the key that created it (its return-origin
+    allow-list was checked at create). Only the sha256 of the single-use
+    ``state`` is stored. ``credentials_json`` holds the exchanged Meta token,
+    Fernet-encrypted, from the callback until the session ends; it is cleared
+    on every terminal status. ``return_url`` is the exact URL the callback
+    redirects to (never taken from the callback request)."""
+
+    __tablename__ = "partner_connect_sessions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    client_app_id = Column(
+        String,
+        ForeignKey("client_apps.id", name="fk_partner_connect_sessions_client_app_id"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        String,
+        ForeignKey("workspaces.id", name="fk_partner_connect_sessions_workspace_id"),
+        nullable=False,
+        index=True,
+    )
+    partner_key_id = Column(String, nullable=False)
+    state_hash = Column(String, nullable=False)
+    channel_type = Column(String, nullable=False, default="WHATSAPP")
+    return_url = Column(Text, nullable=False)
+    client_state = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="OPEN")
+    credentials_json = Column(Text, nullable=True)  # Fernet-encrypted
+    result_channel_ids = Column(JSON(none_as_null=True), nullable=True)
+    error_code = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    expires_at = Column(UTCDateTime(), nullable=False, index=True)
+    claimed_at = Column(UTCDateTime(), nullable=True)
+    completed_at = Column(UTCDateTime(), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('OPEN', 'AUTHORIZED', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED')",
+            name="ck_partner_connect_sessions_status",
+        ),
+        Index("uq_partner_connect_sessions_state_hash", "state_hash", unique=True),
+    )
+
+
 class WebhookEndpoint(OmniBase):
     """A consumer's webhook subscription (plan sprint-1/01 Slice 4, AC-01-22).
 
@@ -806,6 +965,9 @@ class WebhookEndpoint(OmniBase):
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # Payload version of this endpoint's deliveries; NULL = version 1, the
+    # payloads as they were before versioning (services/payload_version.py).
+    payload_version = Column(Integer, nullable=True)
 
 
 class WorkflowOwner(OmniBase):
@@ -854,6 +1016,10 @@ class WebhookDelivery(OmniBase):
 
     __table_args__ = (
         Index("ix_webhook_deliveries_due", "status", "next_attempt_at"),
+        # Delivery history newest first for one endpoint (the key-callable
+        # `GET /api/v1/omnichannel/webhooks/{id}/deliveries`). Built
+        # CONCURRENTLY by `0030_omni_delivery_history_ix`.
+        Index("ix_webhook_deliveries_endpoint_created", "endpoint_id", "created_at"),
     )
 
 
@@ -898,6 +1064,13 @@ class OmnichannelSettings(OmniBase):
     # rationale). Shape: `{"mon": [{"from": "09:00", "to": "18:00"}], ...}`.
     business_hours_json = Column(JSON(none_as_null=True), nullable=True)
     business_timezone = Column(String, nullable=True)
+    # S12 (2026-11-18, decision D3) - per-number WhatsApp window enforcement,
+    # opt-in. True: free-form on a WhatsApp number needs THAT number's open
+    # window (`contact_channel_identities.window_expires_at`). NULL/False:
+    # today's contact-level `contacts.csw_expires_at`. A workspace row's NULL
+    # falls back to the tenant default row (`workspace_id` NULL). Read only by
+    # `messaging_policy` (via `MediaSettingsService.strict_number_window`).
+    strict_number_window = Column(Boolean, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False

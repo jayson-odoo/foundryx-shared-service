@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import type { UseFormReturn } from 'react-hook-form';
 import { FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
@@ -7,6 +8,11 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { FormRow } from '@/components/platform/resource-form';
 import { SecretInput } from '@/components/platform/secret-input';
+import { FxSavedSecret } from '@/components/fx/fields/fx-secret';
+import { FX_FIELD_BOX } from '@/components/fx/fields/classes';
+import { Button } from '@/components/ui/button';
+import { useFx } from '@/hooks/use-fx';
+import { cn } from '@/lib/utils';
 import type {
   ConnectorProductField,
   ConnectorProductSettings,
@@ -130,7 +136,11 @@ const SECRET_ROWS: { slot: ConnectorSecretSlot; name: 'ssToProductSecret' | 'pro
 
 const STATE_LABEL = { set: 'Set', missing: 'Missing', unreadable: 'Unreadable - re-enter' } as const;
 
-export function SecretsTab({ form, editing, creating, settings }: ProductFieldsProps) {
+export function SecretsTab(props: ProductFieldsProps) {
+  return useFx() ? <FxSecretsTab {...props} /> : <SecretsTabLegacy {...props} />;
+}
+
+function SecretsTabLegacy({ form, editing, creating, settings }: ProductFieldsProps) {
   const clear = form.watch('clearSecrets');
   return (
     <div className="flex flex-col">
@@ -198,5 +208,129 @@ export function SecretsTab({ form, editing, creating, settings }: ProductFieldsP
         );
       })}
     </div>
+  );
+}
+
+/** "****a91c" from the API, as its last characters ("a91c"); '' when none. */
+export function hintEnding(hint: string | null | undefined): string {
+  return (hint ?? '').replace(/^\*+/, '');
+}
+
+/**
+ * Foundryx UIUX switch only (gap audit 11 "Secrets shown once"): a saved
+ * secret comes back as "Saved · ending a91c" with Replace, never filled in;
+ * Replace opens the same write-only field as today. Leaving it blank keeps
+ * the saved secret, exactly as today, so the same input sends the same
+ * request.
+ */
+function FxSecretsTab({ form, editing, creating, settings }: ProductFieldsProps) {
+  const clear = form.watch('clearSecrets');
+  return (
+    <div className="flex flex-col">
+      {SECRET_ROWS.map(({ slot, name, label }) => {
+        const s = settings?.secrets[slot];
+        const ending = hintEnding(s?.hint);
+        const state = s && (
+          <div className="flex flex-wrap items-center gap-2">
+            {s.state === 'set' ? (
+              <span className="text-sm text-(--fx-ink-2)" data-testid={`hint-${slot}`}>
+                Saved{ending ? ` · ending ${ending}` : ''}
+              </span>
+            ) : (
+              <Badge variant="destructive" appearance="light" size="sm">
+                {s.state === 'missing' ? 'Not set' : 'Unreadable, enter it again'}
+              </Badge>
+            )}
+            {s.state !== 'missing' && <SourceBadge source={s.source} />}
+          </div>
+        );
+        if (!editing) {
+          return (
+            <FormRow key={slot} label={label}>
+              {state ?? '-'}
+            </FormRow>
+          );
+        }
+        const canClear = !creating && (s?.source === 'database' || s?.source === 'unreadable');
+        return (
+          <FormRow key={slot} label={label} required={creating}>
+            <div className="flex max-w-xl flex-col gap-2">
+              <FxSecretField
+                form={form}
+                name={name}
+                label={label}
+                saved={!creating && s?.state === 'set'}
+                ending={ending}
+                source={s && s.state === 'set' ? s.source : undefined}
+              />
+              {canClear && (
+                <label className="flex items-center gap-2 text-sm text-(--fx-ink-2)">
+                  <Checkbox
+                    checked={clear.includes(slot)}
+                    onCheckedChange={(on) =>
+                      form.setValue(
+                        'clearSecrets',
+                        on ? [...clear, slot] : clear.filter((x) => x !== slot),
+                        { shouldDirty: true },
+                      )
+                    }
+                  />
+                  Remove the saved secret
+                </label>
+              )}
+            </div>
+          </FormRow>
+        );
+      })}
+    </div>
+  );
+}
+
+function FxSecretField({
+  form,
+  name,
+  label,
+  saved,
+  ending,
+  source,
+}: {
+  form: UseFormReturn<ProductFormValues>;
+  name: 'ssToProductSecret' | 'productToSsSecret';
+  label: string;
+  saved: boolean;
+  ending: string;
+  source?: ConnectorProductSettings['secrets'][ConnectorSecretSlot]['source'];
+}) {
+  const [replacing, setReplacing] = useState(false);
+  if (saved && !replacing) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        {ending ? (
+          <FxSavedSecret ending={ending} onReplace={() => setReplacing(true)} className="min-w-64 flex-1" />
+        ) : (
+          <div className={cn(FX_FIELD_BOX, 'h-8.5 min-w-64 flex-1 justify-between gap-2 ps-3 pe-1 text-sm')}>
+            <span className="text-(--fx-ink-2)">Saved</span>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setReplacing(true)}>
+              Replace
+            </Button>
+          </div>
+        )}
+        {source && <SourceBadge source={source} />}
+      </div>
+    );
+  }
+  return (
+    <FormField
+      control={form.control}
+      name={name}
+      render={({ field }) => (
+        <FormItem>
+          <FormControl>
+            <SecretInput {...field} aria-label={label} autoComplete="new-password" autoFocus={replacing} />
+          </FormControl>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
   );
 }

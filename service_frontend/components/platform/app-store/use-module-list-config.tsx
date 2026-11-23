@@ -3,6 +3,8 @@
 import { useMemo } from 'react';
 import { useSession } from 'next-auth/react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
+import type { FxIconRef } from '@/components/fx/icons';
 import type { ColumnDef } from '@tanstack/react-table';
 import { ArrowUpCircle, Download, Power, RotateCw, Trash2 } from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
@@ -26,6 +28,37 @@ import { ModuleCardBody, ModuleIcon, MODULE_BADGES } from './module-card-body';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
+/** Other Action icons under the Foundryx UIUX switch (one icon per meaning);
+ *  the other lifecycle actions keep their own drawn icons. */
+export const MODULE_FX_ICONS: Record<string, FxIconRef> = {
+  uninstall: 'trash',
+};
+
+/**
+ * What the Foundryx UIUX uninstall confirm asks to type (owner decision: the
+ * record's name or number replaces the press and hold): one module types its
+ * name, several type how many there are. With the switch off the confirm
+ * keeps `expected` (the name, or UNINSTALL for several).
+ */
+export function fxUninstallExpected(rows: Pick<StoreModule, 'name'>[]): string {
+  return rows.length === 1 ? rows[0].name : String(rows.length);
+}
+
+/** Foundryx UIUX switch only: the look the actions are built for, and who
+ *  acts (for the done toast). */
+export interface ModuleActionsFx {
+  on: boolean;
+  byWhom?: string;
+}
+
+const FX_DONE_VERB: Record<StoreAction | 'uninstall', string> = {
+  install: 'installed',
+  update: 'updated',
+  deactivate: 'deactivated',
+  reactivate: 'reactivated',
+  uninstall: 'uninstalled',
+};
+
 /**
  * The module lifecycle actions (install/update/deactivate/reactivate/uninstall)
  * shared by the list (row + bulk "…"), the card chrome, and the detail/form
@@ -35,6 +68,7 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
 export function buildModuleActions(
   tenantId: string | undefined,
   update: () => Promise<unknown>,
+  fx: ModuleActionsFx = { on: false },
 ): ResourceAction<StoreModule>[] {
   const permFor = (a: StoreAction | 'uninstall'): string =>
     tenantId
@@ -50,6 +84,7 @@ export function buildModuleActions(
     action: StoreAction | 'uninstall',
     runtime: ResourceActionRuntime,
   ) => {
+    const done: StoreModule[] = [];
     for (const m of rows) {
       try {
         if (action === 'uninstall') {
@@ -61,11 +96,23 @@ export function buildModuleActions(
             ? appStoreService.actForTenant(tenantId, m.name, action)
             : appStoreService.act(m.name, action));
         }
+        done.push(m);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : `Could not ${action} ${m.title}.`);
       }
     }
     if (!tenantId) await Promise.all([invalidateInstalledModules(), update()]);
+    // Foundryx UIUX switch only: what was done, by whom. No Undo: the API
+    // has no reverse of an install or uninstall (an uninstall wipes data).
+    if (fx.on && done.length > 0) {
+      toast.fxDone({
+        what:
+          done.length === 1
+            ? `${done[0].title} ${FX_DONE_VERB[action]}`
+            : `${done.length} modules ${FX_DONE_VERB[action]}`,
+        byWhom: fx.byWhom,
+      });
+    }
     runtime.reload();
   };
 
@@ -111,6 +158,7 @@ export function buildModuleActions(
             description:
               'Its pages and API stop working until reactivated. All data is kept and permission assignments preserved.',
             confirmLabel: 'Deactivate',
+            fxKeepLabel: (rows) => (rows.length === 1 ? 'Keep module on' : 'Keep modules on'),
           },
           run: (rows, rt) => runAction(rows, 'deactivate', rt),
         }
@@ -121,7 +169,12 @@ export function buildModuleActions(
           surfaces: { row: true, bulk: true, form: true },
           permission: permFor('deactivate'),
           isVisible: (rows) => rows.length > 0 && rows.every((m) => m.status === 'ACTIVE'),
-          deferred: { actionKey: 'tenant_modules.deactivate', entityType: 'tenant_module' },
+          deferred: {
+            actionKey: 'tenant_modules.deactivate',
+            entityType: 'tenant_module',
+            // Foundryx UIUX switch only: the one-module countdown names it.
+            fxName: (rows) => (rows.length === 1 ? rows[0].title : undefined),
+          },
         },
     {
       id: 'reactivate',
@@ -141,11 +194,22 @@ export function buildModuleActions(
       permission: permFor('uninstall'),
       isVisible: (rows) => rows.length > 0 && rows.every((m) => m.status !== null),
       confirm: {
-        title: 'Uninstall module?',
-        description:
-          'This permanently wipes the module data for this workspace and removes its permissions from every role. This cannot be undone.',
-        confirmLabel: 'Uninstall',
+        // Foundryx UIUX switch: the question names its object, one line says
+        // what does not come back, the action is verb + object. Off keeps
+        // today's words.
+        title: fx.on
+          ? (rows) =>
+              rows.length === 1 ? `Uninstall ${rows[0].title}?` : `Uninstall ${rows.length} modules?`
+          : 'Uninstall module?',
+        description: fx.on
+          ? 'Its data in this workspace and its permissions on every role are erased and do not come back.'
+          : 'This permanently wipes the module data for this workspace and removes its permissions from every role. This cannot be undone.',
+        confirmLabel: fx.on
+          ? (rows) => (rows.length === 1 ? 'Uninstall module' : `Uninstall ${rows.length} modules`)
+          : 'Uninstall',
+        fxKeepLabel: (rows) => (rows.length === 1 ? 'Keep module' : 'Keep modules'),
         input: {
+          fxExpected: fxUninstallExpected,
           expected: (rows) => (rows.length === 1 ? rows[0].name : 'UNINSTALL'),
           hint: (rows) =>
             rows.length === 1
@@ -165,10 +229,12 @@ export function buildModuleActions(
  * tenant); omit it for the caller's own tenant storefront.
  */
 export function useModuleListConfig(tenantId?: string): ResourceListConfig<StoreModule> {
-  const { update } = useSession();
+  const { update, data } = useSession();
+  const fxOn = useFx();
+  const byWhom = data?.user?.name ?? undefined;
 
   return useMemo<ResourceListConfig<StoreModule>>(() => {
-    const actions = buildModuleActions(tenantId, update);
+    const actions = buildModuleActions(tenantId, update, { on: fxOn, byWhom });
 
     const columns: ColumnDef<StoreModule>[] = [
       {
@@ -312,6 +378,17 @@ export function useModuleListConfig(tenantId?: string): ResourceListConfig<Store
         { id: 'status', label: 'Status' },
       ],
       actions,
+      // Foundryx UIUX switch only (slice W3-PLATFORM); ignored while off.
+      // The storefront has no Create, so no red action; the tenant record's
+      // Modules tab shows the smaller states.
+      fx: {
+        noun: 'modules',
+        iconFor: MODULE_FX_ICONS,
+        moreActionIds: ['uninstall'],
+        columnKind: { status: 'status' },
+        cardLines: [['module', 'status'], ['version']],
+        compactStates: Boolean(tenantId),
+      },
     };
-  }, [tenantId, update]);
+  }, [tenantId, update, fxOn, byWhom]);
 }

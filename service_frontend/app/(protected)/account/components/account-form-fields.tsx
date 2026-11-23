@@ -21,7 +21,9 @@ import {
 import { FormRow } from '@/components/platform/resource-form';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import type { UseEmailChangeResult } from '@/hooks/use-email-change';
+import { useFx } from '@/hooks/use-fx';
 import type { AccountFormValues } from './use-account-form';
+import { FxAccountProfileTab } from './fx-account-profile-tab';
 
 export interface AccountProfileTabProps {
   form: UseFormReturn<AccountFormValues>;
@@ -37,7 +39,11 @@ export interface AccountProfileTabProps {
  * changing it = the "…" → Change email action (plan-04 ceremony), explained
  * by the info tooltip. An outstanding ceremony shows as the banner up top.
  */
-export function AccountProfileTab({
+export function AccountProfileTab(props: AccountProfileTabProps) {
+  return useFx() ? <FxAccountProfileTab {...props} /> : <AccountProfileTabLegacy {...props} />;
+}
+
+function AccountProfileTabLegacy({
   form,
   editing,
   name,

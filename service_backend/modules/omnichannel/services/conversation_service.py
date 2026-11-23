@@ -6,6 +6,7 @@ PATCH operations (assign / lifecycle / priority).
 """
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -16,15 +17,17 @@ from ..adapters.meta_graph import sanitise_stored_pricing
 from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
+    ChannelWindowItem,
     ContactLifecycleSummary,
     ContactTagRefItem,
     MessageItem,
+    MessageSenderItem,
     ReplyRefItem,
     ThreadDetailItem,
     ThreadItem,
     VisitorProfile,
 )
-from . import event_service, realtime, statuses, team_assignment_service, team_directory
+from . import event_service, messaging_policy, realtime, statuses, team_assignment_service, team_directory
 from .contact_tag_service import ContactTagService
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 from .lifecycle_service import fireable_moves as _lifecycle_fireable_moves
@@ -86,6 +89,63 @@ def _visitor_profile(identity) -> Optional[VisitorProfile]:
     if not fields:
         return None
     return VisitorProfile(**fields)
+
+
+def _window_state(identity, channel_type: str, now: datetime) -> "messaging_policy.WindowState":
+    """Window state as an API-key consumer sees it: version 2 fields only reach
+    API-key responses and webhooks, and the gateway is automation, never a
+    human actor (D-A7-6), so `actor_is_human=False`."""
+    return messaging_policy.window_state(identity, channel_type, actor_is_human=False, now=now)
+
+
+def _window_items(identities, now: datetime) -> List[ChannelWindowItem]:
+    """`windows[]` of a version 2 `ThreadItem`: one entry per identity on a
+    live channel, ordered by channel type then channel id."""
+    items = []
+    for identity, channel_type in sorted(identities, key=lambda p: (p[1], p[0].channel_id)):
+        state = _window_state(identity, channel_type, now)
+        items.append(
+            ChannelWindowItem(
+                channelId=identity.channel_id,
+                channelType=channel_type,
+                windowOpen=state.window_open,
+                windowExpiresAt=state.window_expires_at,
+                humanAgentExpiresAt=state.human_agent_expires_at,
+                allowedSendTypes=list(state.allowed_send_types),
+            )
+        )
+    return items
+
+
+def _message_sender(m: ConversationMessage, meta: dict, agent, user_name: Optional[str]) -> MessageSenderItem:
+    """Payload version 2 `MessageItem.sender`. Same discrimination as
+    `MessageService._outbound_source` (broadcast marker, federated agent,
+    `apikey:` attribution, no sender = workflow); an API send shows the
+    consumer's own `senderAttribution` when it sent one."""
+    if m.sender_type == "CONTACT":
+        return MessageSenderItem(type="CUSTOMER")
+    if m.sender_type == "SYSTEM":
+        return MessageSenderItem(type="SYSTEM")
+    if meta.get("broadcast"):
+        return MessageSenderItem(type="BROADCAST")
+    if m.sender_external_agent_id:
+        return MessageSenderItem(
+            type="AGENT",
+            displayName=agent.name if agent is not None else None,
+            avatarUrl=agent.avatar_url if agent is not None else None,
+        )
+    if m.sender_id is None:
+        return MessageSenderItem(type="WORKFLOW")
+    if str(m.sender_id).startswith("apikey:"):
+        attribution = meta.get("senderAttribution")
+        attribution = attribution if isinstance(attribution, dict) else {}
+        return MessageSenderItem(
+            type="API",
+            externalId=attribution.get("externalId"),
+            displayName=attribution.get("displayName"),
+            avatarUrl=attribution.get("avatarUrl"),
+        )
+    return MessageSenderItem(type="AGENT", displayName=user_name, userId=m.sender_id)
 
 
 def contact_display_name(c: Contact) -> str:
@@ -210,7 +270,11 @@ class ConversationService:
         return {ws_id: {f.key for f in fields} for ws_id, fields in grouped.items()}
 
     # ── Mapping ──────────────────────────────────────────────────────────────
-    def _thread_items(self, contacts: List[Contact], tenant_id: str) -> List[ThreadItem]:
+    def _thread_items(
+        self, contacts: List[Contact], tenant_id: str, *, with_windows: bool = True
+    ) -> List[ThreadItem]:
+        """``with_windows=False`` skips the version 2 ``windows[]`` list (left
+        null) for a staff-only caller that never serializes above version 1."""
         if not contacts:
             return []
         ids = [c.id for c in contacts]
@@ -226,12 +290,26 @@ class ConversationService:
         )
         # Plan 32 / A7a (D-A7-5) - the per-identity messaging window, batched
         # for the whole page by (contact_id, channel_id) pair.
-        identity_pairs = [
+        # One query for every identity of the page's contacts: the thread's
+        # own (contact, current channel) identity, and the payload version 2
+        # `windows[]` list (identities on live channels).
+        identity_pairs = {
             (c.id, previews[c.id].channel_id)
             for c in contacts
             if c.id in previews and previews[c.id].channel_id
-        ]
-        identity_windows = self.repo.identity_windows_for(identity_pairs, tenant_id)
+        }
+        identity_windows = {}
+        all_identities: Dict[str, list] = {}
+        if with_windows:
+            for identity, channel_type, is_trashed in self.repo.identities_with_channel_types(ids, tenant_id):
+                pair = (identity.contact_id, identity.channel_id)
+                if pair in identity_pairs:
+                    identity_windows[pair] = identity
+                if not is_trashed:
+                    all_identities.setdefault(identity.contact_id, []).append((identity, channel_type))
+        else:
+            identity_windows = self.repo.identity_windows_for(list(identity_pairs), tenant_id)
+        now = datetime.now(timezone.utc)
         tag_refs = ContactTagService(self.db).refs_for_contacts(ids, tenant_id)
         lifecycle_map = self._lifecycle_map(contacts, tenant_id)
         field_registry = self._field_registry(contacts, tenant_id)
@@ -262,6 +340,10 @@ class ConversationService:
             identity = (
                 identity_windows.get((c.id, channel_id)) if channel_id else None
             )
+            current_type = channel_types.get(channel_id, "WHATSAPP")
+            current_window = (
+                _window_state(identity, current_type, now) if channel_id else None
+            )
             items.append(
                 ThreadItem(
                     id=c.id,
@@ -284,7 +366,7 @@ class ConversationService:
                     status=status_keys.get(c.status_id, "OPEN"),
                     priority=c.priority or "MEDIUM",
                     channelId=channel_id,
-                    channelType=channel_types.get(channel_id, "WHATSAPP"),
+                    channelType=current_type,
                     cswExpiresAt=c.csw_expires_at,
                     windowExpiresAt=identity.window_expires_at if identity else None,
                     humanAgentExpiresAt=identity.human_agent_expires_at if identity else None,
@@ -306,6 +388,12 @@ class ConversationService:
                         else None
                     ),
                     createdAt=c.created_at,
+                    windowOpen=current_window.window_open if current_window else None,
+                    allowedSendTypes=(
+                        list(current_window.allowed_send_types) if current_window else None
+                    ),
+                    windowReason=current_window.reason if current_window else None,
+                    windows=_window_items(all_identities.get(c.id, []), now) if with_windows else None,
                 )
             )
         return items
@@ -378,6 +466,9 @@ class ConversationService:
                     pricing=sanitise_stored_pricing(pricing),
                     replyTo=ReplyRefItem(**reply) if reply else None,
                     createdAt=m.created_at,
+                    sender=_message_sender(
+                        m, meta, agent, names.get(m.sender_id) if m.sender_id else None
+                    ),
                 )
             )
         return items
@@ -531,7 +622,10 @@ class ConversationService:
             # retry-dedup semantics are unaffected.
             event_suffix = uuid.uuid4().hex[:8]
             event_id = f"{c.id}:{int(c.updated_at.timestamp())}:{event_suffix}"
-            data = {"contact": item.model_dump(mode="json")}
+
+            def data():  # built per endpoint payload version, see `_fan_out`
+                return {"contact": item.model_dump(mode="json")}
+
             if channel is not None:
                 enqueue_event(self.db, channel, "contact.updated", event_id, data)
             else:

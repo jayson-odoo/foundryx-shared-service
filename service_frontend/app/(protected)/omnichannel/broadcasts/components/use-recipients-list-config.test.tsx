@@ -57,6 +57,55 @@ describe('useRecipientsListConfig', () => {
     });
   });
 
+  it('sends several states ("is any of") as one comma-separated value', async () => {
+    const { result } = renderHook(() => useRecipientsListConfig('wsp-1', 'bcst-1'));
+    await act(async () => {
+      await result.current.config.fetcher({
+        page: 0,
+        pageSize: 25,
+        filter: {
+          kind: 'group',
+          combinator: 'and',
+          rules: [{ kind: 'condition', field: 'state', operator: 'in', value: ['sent', 'read'] }],
+        },
+      });
+    });
+    expect(recipientsMock).toHaveBeenLastCalledWith('wsp-1', 'bcst-1', {
+      page: 0,
+      pageSize: 25,
+      search: undefined,
+      state: 'sent,read',
+    });
+  });
+
+  it('finds the state condition one group down (the Foundryx UIUX header filter)', async () => {
+    const { result } = renderHook(() => useRecipientsListConfig('wsp-1', 'bcst-1'));
+    await act(async () => {
+      await result.current.config.fetcher({
+        page: 0,
+        pageSize: 50,
+        filter: {
+          kind: 'group',
+          combinator: 'and',
+          rules: [
+            { kind: 'group', combinator: 'and', rules: [] },
+            {
+              kind: 'group',
+              combinator: 'and',
+              rules: [{ kind: 'condition', field: 'state', operator: 'in', value: ['failed', 'skipped'] }],
+            },
+          ],
+        },
+      });
+    });
+    expect(recipientsMock).toHaveBeenLastCalledWith('wsp-1', 'bcst-1', {
+      page: 0,
+      pageSize: 50,
+      search: undefined,
+      state: 'failed,skipped',
+    });
+  });
+
   it('returns an empty result with no service call while no broadcast is open yet', async () => {
     const { result } = renderHook(() => useRecipientsListConfig('wsp-1', null));
     recipientsMock.mockClear();
