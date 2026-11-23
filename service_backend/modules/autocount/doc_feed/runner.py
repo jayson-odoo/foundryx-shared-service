@@ -199,11 +199,6 @@ def _count_month_verdict(bucket: Dict[str, int], result: Any) -> None:
 # name so a test swaps in a fake clock (no sleeps).
 _segment_clock = time.monotonic
 
-# The segment ended on its time budget, not on the last day: the row stays
-# ``running`` and the job handler queues the next segment.
-SEGMENT_BUDGET_REACHED = "segment_budget_reached"
-
-
 def segment_continues(backfill_row: AcDocFeedBackfill) -> bool:
     """True when a backfill segment ended on its time budget and the next
     segment should be queued (the row is still running with days left)."""
