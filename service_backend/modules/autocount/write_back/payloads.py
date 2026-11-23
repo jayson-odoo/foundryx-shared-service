@@ -326,6 +326,7 @@ def build_link(
     body = keep_shipping_po(_header(po), po)
     new = _normal(_resend("PO", po_row))
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
+    with_so_delivery_date(new, _day(so_row.get("DeliveryDate")))  # 16 Nov rule: the SO line's date, never the PO's
     with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
     if qty == free:
         body["Details"] = [_deleted(po_row), new]
@@ -334,6 +335,17 @@ def build_link(
     edited["Qty"] = _num(free - qty)
     body["Details"] = [edited, new]
     return body
+
+
+def with_so_delivery_date(line: Dict[str, Any], so_day: Optional[str]) -> Dict[str, Any]:
+    """PO-LINK-STUCK-RECONCILE-B (owner rule 16 Nov): a NEW tied PO row carries its SO line's delivery date,
+    never the PO row's (that is the PO issue date, the CRM's ``docDate``). No SO line date = no date sent (the
+    restore asks for none either, ``transfer_restore``). The one rule of the split link and the batches."""
+    if so_day:
+        line["DeliveryDate"] = f"{so_day}T00:00:00"
+    else:
+        line.pop("DeliveryDate", None)
+    return line
 
 
 def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref: Optional[str] = None) -> Doc:
@@ -1178,6 +1190,33 @@ def verify_row_replace(kind_name: str, before: Doc, old_key: int, line: Mapping[
     return Verdict(DONE)
 
 
+# The kept (cut) row of a link: only its quantity is sent changed; these must read back as before.
+_KEPT_ROW_FIELDS = ("ItemCode", "UOM", "Location", "UnitPrice")
+
+# PO-LINK-STUCK-RECONCILE-B s5 (prod 20 Nov, a qty move on a ~96-row PO): AutoCount recomputes the header's money
+# and tax fields and its audit stamps on every save. Those are derived, never drift; every other header field we
+# read must read back as it was.
+_DERIVED_HEADER_KEYS = frozenset({
+    "Total", "NetTotal", "LocalNetTotal", "Tax", "LocalTax", "ExTax", "LocalExTax", "TotalExTax", "TaxableAmt",
+    "LocalTaxableAmt", "FinalTotal", "RoundAdj", "TaxEntityID",
+})
+_DERIVED_HEADER_PREFIXES = ("LastModified", "Created")
+_DERIVED_HEADER_SUFFIXES = ("Total", "Tax", "ExTax", "TaxAmt", "Amt", "RoundAdj")
+
+
+def vendor_derived_header(key: str) -> bool:
+    """A header field AutoCount derives on a save (totals, tax, stamps): never judged as drift."""
+    return (key in _DERIVED_HEADER_KEYS or key.startswith(_DERIVED_HEADER_PREFIXES)
+            or key.endswith(_DERIVED_HEADER_SUFFIXES))
+
+
+def header_moved(before: Doc, after: Doc, kind_name: str) -> List[str]:
+    """Every header field read before a link that reads back otherwise (derived fields and the Remark mirror
+    aside): the one header rule of the link comparator."""
+    return [key for key in before if key != "Details" and not vendor_derived_header(key)
+            and not _same(before.get(key), after.get(key)) and not _remark_mirror(key, after, kind_name)]
+
+
 def verify_link_batch(
     kind_name: str, before: Doc, old_key: int, lines: Sequence[Mapping[str, Any]], after: Doc
 ) -> Verdict:
@@ -1200,7 +1239,9 @@ def verify_link_doc(
         if rest == 0:
             if now is not None:
                 return Verdict(MISMATCH, "LINE_NOT_DELETED")
-        elif now is None or _dec(now.get("Qty")) != rest:
+        elif now is None or _dec(now.get("Qty")) != rest or not all(
+            _same(old.get(k), now.get(k)) for k in _KEPT_ROW_FIELDS if k in old
+        ):  # PO-LINK-STUCK-RECONCILE-B: the kept row is as sent (its rest), never moved or repriced
             return Verdict(MISMATCH, "ROW_MISMATCH")
         total.extend(lines)
     known = {r.get("DtlKey") for r in before.get("Details") or []}
@@ -1215,7 +1256,7 @@ def verify_link_doc(
         if match is None:
             return Verdict(MISMATCH, "LINK_MISMATCH")
         left.remove(match)
-    if _drifted(before, after, (), [k for k, _ in groups], kind_name):
+    if _drifted(before, after, (), [k for k, _ in groups], kind_name) or header_moved(before, after, kind_name):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 
