@@ -155,6 +155,26 @@ def test_service_link_readback_flipped_to_spo_is_not_done(db, session_factory):
     assert h.sink_calls == []
 
 
+def test_service_split_second_write_flipped_to_spo_is_not_done(db, session_factory):
+    """The split's restore PUT is checked too: a flip there is not a quiet ``done``."""
+    from tests.test_autocount_write_back_service import Harness
+
+    h = Harness(db, session_factory)
+    real_apply = h.ac._apply
+
+    def flip_on_second(body):
+        real_apply(body)
+        if len(h.ac.put_bodies) == 2:
+            doc = next(d for d in h.ac.docs["purchaseorderbydocdate"] if d["DocKey"] == body["DocKey"])
+            doc["ShippingPO"] = "T"
+
+    h.ac._apply = flip_on_second
+    res = h.link_split()
+    assert len(h.ac.put_bodies) == 2 and all(b.get("ShippingPO") == "F" for b in h.ac.put_bodies)
+    assert res.outcome == "mismatch"
+    assert res.error_code == P.SHIPPING_PO_CHANGED
+
+
 def test_service_link_sends_shipping_po_and_stays_done(db, session_factory):
     from tests.test_autocount_write_back_service import Harness
 

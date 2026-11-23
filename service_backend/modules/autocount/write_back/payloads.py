@@ -135,6 +135,36 @@ def _is_spo(doc: Doc) -> bool:
     return doc.get("ShippingPO") == "T"
 
 
+SHIPPING_PO = "ShippingPO"
+SHIPPING_PO_CHANGED = "SHIPPING_PO_CHANGED"
+SHIPPING_PO_CHANGED_MESSAGE = "AutoCount changed Shipping Order on this PO"
+
+
+def keep_shipping_po(body: Doc, doc: Doc) -> Doc:
+    """SS-SHIPPINGPO-PRESERVE: an edit body carries ``ShippingPO`` exactly as SS just read
+    it ("F" stays "F", "T" stays "T"), so the vendor never has to default a missing one.
+    Copied, never computed: a read without the field sends none."""
+    value = doc.get(SHIPPING_PO)
+    if value in ("T", "F"):
+        body[SHIPPING_PO] = value
+    return body
+
+
+def _shipping_value(doc: Doc) -> str:
+    return "T" if _is_spo(doc) else "F"
+
+
+def shipping_po_changed(before: Doc, after: Doc) -> bool:
+    """True when the read-back's Shipping Order flag differs from the pre-write one (a
+    missing flag reads as "F", like every other PO / SPO check here)."""
+    return _is_spo(before) != _is_spo(after)
+
+
+def shipping_po_values(before: Doc, after: Doc) -> Tuple[str, str]:
+    """``(before, after)`` flags for the log line of a ``SHIPPING_PO_CHANGED``."""
+    return _shipping_value(before), _shipping_value(after)
+
+
 def _check_doc(doc: Doc, want_spo: bool) -> None:
     if _is_spo(doc) != want_spo:
         raise WriteRefusal("DOC_KIND_MISMATCH", "wrong document kind")
@@ -246,7 +276,7 @@ def build_link(
         "FromDocDtlKey": so_dtl_key,
         "Location": location or so_row.get("Location"),
     }
-    body = _header(po)
+    body = keep_shipping_po(_header(po), po)
     new = _normal(_row_fields(po_row))
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
     with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
@@ -273,7 +303,7 @@ def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref
         raise WriteRefusal("ROW_ALREADY_AT_LOCATION", "row is already at that location")
     moved = _normal(_row_fields(row))
     moved["Location"] = location
-    body = _header(po)
+    body = keep_shipping_po(_header(po), po)
     body["Details"] = [moved]
     return body
 
@@ -453,9 +483,7 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
         raise WriteRefusal("NO_CHANGE", "nothing to restore")
     row = _normal(_row_fields(_find_row(po, dtl_key)))
     row.update(values)
-    body = _header(po)
-    if _is_spo(po):
-        body["ShippingPO"] = "T"
+    body = keep_shipping_po(_header(po), po)
     body["Details"] = [row]
     return body
 
@@ -596,9 +624,11 @@ def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None, kind: s
 
 
 def _doc_header(kind: DocKind, doc: Doc) -> Doc:
+    """The edit header: the document's own header fields; a PO / SPO also carries its
+    ``ShippingPO`` as read (``_check_kind_doc`` already held it to the kind)."""
     body = _pick_header(doc, ("DocKey",) + CREATE_HEADER_KEYS)
-    if kind.name == "SPO":
-        body["ShippingPO"] = "T"
+    if kind.name in ("PO", "SPO"):
+        keep_shipping_po(body, doc)
     return body
 
 
