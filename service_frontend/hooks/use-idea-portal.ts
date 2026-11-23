@@ -600,7 +600,11 @@ export interface UseSharePhoneStep {
 
 function stepError(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.status === 429) return 'Too many attempts. Try again later.';
+    if (err.status === 429) {
+      if (err.message) return err.message;
+      const minutes = Math.max(1, Math.ceil((err.retryAfterSeconds ?? 900) / 60));
+      return `Too many tries. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+    }
     return err.message || 'Something went wrong. Try again.';
   }
   // Same words as the CRM sign-in code step (lane FEEDBACK-SHARE-SS-HOST).
