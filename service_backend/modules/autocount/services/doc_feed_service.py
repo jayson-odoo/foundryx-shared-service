@@ -4,7 +4,7 @@ history for the DO/GRN HTTP source.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
@@ -486,9 +486,7 @@ class DocFeedService:
 
         if (
             not dry_run and feed == FEED_PROJECT_REGISTRATIONS
-            and self.backfills.done_dry_run_covering(
-                tenant_id, row.id, from_day_value, to_day_value
-            ) is None
+            and not self._dry_runs_cover(tenant_id, row.id, from_day_value, to_day_value)
         ):
             # Plan 72 - the dry-run pass (counts by month) runs first.
             raise DocFeedConflictError(
@@ -539,11 +537,34 @@ class DocFeedService:
         self.db.refresh(backfill)
         return backfill
 
+    def _dry_runs_cover(self, tenant_id: str, feed_id: str, from_day: date, to_day: date) -> bool:
+        """SS-BACKFILL-CHUNKED (AC-BFC-4) - the finished dry runs of this feed
+        cover every day of ``from_day..to_day`` TOGETHER (pieces count; one
+        dry run over the whole range still does). A gap of one day refuses."""
+        covered_to = from_day - timedelta(days=1)
+        for dry in self.backfills.done_dry_runs_overlapping(tenant_id, feed_id, from_day, to_day):
+            if dry.from_day > covered_to + timedelta(days=1):
+                return False  # a gap before this piece
+            if dry.to_day > covered_to:
+                covered_to = dry.to_day
+            if covered_to >= to_day:
+                return True
+        return covered_to >= to_day
+
+    def _reap_feed(self, tenant_id: str, feed_id: str) -> None:
+        """SS-BACKFILL-CHUNKED (AC-BFC-3) - before Stop / Resume / Discard,
+        stop this feed's backfill if its job has ended, so the action works
+        at once instead of waiting for the next beat."""
+        from ..doc_feed.scheduler import reap_stale_backfills
+
+        reap_stale_backfills(self.db, tenant_id=tenant_id, feed_id=feed_id)
+
     def _open_backfill_or_404(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
         self._company(tenant_id, company_id)
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
+        self._reap_feed(tenant_id, row.id)
         backfill = self.backfills.open_for_feed(tenant_id, row.id)
         if backfill is None:
             raise DocFeedValidationError("feed", "There is no open backfill for this feed.")
@@ -554,7 +575,14 @@ class DocFeedService:
         if backfill.status == DOC_FEED_BACKFILL_RUNNING:
             from ..models import DOC_FEED_BACKFILL_STOPPING
 
-            backfill.status = DOC_FEED_BACKFILL_STOPPING
+            if self.backfills.abort_pending_job(
+                tenant_id, backfill.job_id, now=datetime.now(timezone.utc)
+            ):
+                # SS-BACKFILL-CHUNKED - the next segment is still queued (no
+                # worker has it): nothing will close `stopping`, so stop now.
+                backfill.status = DOC_FEED_BACKFILL_STOPPED
+            else:
+                backfill.status = DOC_FEED_BACKFILL_STOPPING
             self.db.commit()
         return backfill
 
@@ -566,6 +594,7 @@ class DocFeedService:
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
+        self._reap_feed(tenant_id, row.id)
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
             raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
@@ -608,6 +637,7 @@ class DocFeedService:
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
+        self._reap_feed(tenant_id, row.id)
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
             raise DocFeedValidationError("feed", "There is no stopped backfill to discard.")

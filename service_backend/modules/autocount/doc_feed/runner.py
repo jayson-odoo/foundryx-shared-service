@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from celery.exceptions import SoftTimeLimitExceeded
 from cryptography.fernet import InvalidToken
 
 from app.database import release_read_transactions
@@ -191,6 +192,25 @@ def _count_month_verdict(bucket: Dict[str, int], result: Any) -> None:
     else:
         key = "retryable"
     bucket[key] = bucket.get(key, 0) + 1
+
+
+# SS-BACKFILL-CHUNKED - the clock a backfill segment measures its time
+# budget on (``autocount_doc_feed_backfill_segment_seconds``). A module-level
+# name so a test swaps in a fake clock (no sleeps).
+_segment_clock = time.monotonic
+
+# The segment ended on its time budget, not on the last day: the row stays
+# ``running`` and the job handler queues the next segment.
+SEGMENT_BUDGET_REACHED = "segment_budget_reached"
+
+
+def segment_continues(backfill_row: AcDocFeedBackfill) -> bool:
+    """True when a backfill segment ended on its time budget and the next
+    segment should be queued (the row is still running with days left)."""
+    return (
+        backfill_row.status == DOC_FEED_BACKFILL_RUNNING
+        and backfill_row.next_day <= backfill_row.to_day
+    )
 
 
 def _day_pause(seconds: float) -> None:
@@ -1001,6 +1021,13 @@ def run_backfill(
     requests_count = 0
     fetched_count = 0
     stop_reason: Optional[Dict[str, str]] = None
+    # SS-BACKFILL-CHUNKED - one segment reads for at most this long (wall
+    # clock, per job), then hands the rest of the range to the next job.
+    from app.config import settings as _settings
+
+    segment_budget = float(_settings.autocount_doc_feed_backfill_segment_seconds or 0)
+    segment_started = _segment_clock()
+    budget_reached = False
 
     while day <= backfill_row.to_day:
         db.refresh(backfill_row)
@@ -1123,6 +1150,10 @@ def run_backfill(
                 release_read_transactions()  # plan 34 - not across the wait
                 time.sleep(exc.retry_after)
                 continue
+            except SoftTimeLimitExceeded:
+                # SS-BACKFILL-CHUNKED - the job's time limit is not a sink
+                # failure: the job handler closes the row `stopped`.
+                raise
             except Exception as exc:  # noqa: BLE001
                 day_error = exc
                 break
@@ -1155,10 +1186,16 @@ def run_backfill(
         backfill_row.summary_json = json.loads(json.dumps(aggregate_summary))
         db.commit()
         day = backfill_row.next_day
+        if (
+            day <= backfill_row.to_day and segment_budget > 0
+            and _segment_clock() - segment_started >= segment_budget
+        ):
+            # SS-BACKFILL-CHUNKED - this job's share is done; `next_day` is
+            # saved, the next segment continues from it.
+            budget_reached = True
+            break
         if feed_row.feed in PROJNO_FEEDS and day <= backfill_row.to_day:
-            from app.config import settings
-
-            _day_pause(float(settings.autocount_project_registrations_day_pause_seconds or 0))
+            _day_pause(float(_settings.autocount_project_registrations_day_pause_seconds or 0))
 
     _record_vendor_activity(
         db, resolved.vendor_client,
@@ -1192,6 +1229,16 @@ def run_backfill(
         if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
             backfill_row.status = DOC_FEED_BACKFILL_STOPPED
             db.commit()
+        _new_run_for_backfill(
+            db, backfill_row, feed_row, now, outcome=RUN_SUCCESS,
+            summary=aggregate_summary, requests=requests_count, fetched_count=fetched_count,
+            segment_start=segment_start,
+        )
+        return backfill_row
+
+    if budget_reached:
+        # SS-BACKFILL-CHUNKED - the row stays `running`; the job handler
+        # queues the next segment (`segment_continues`).
         _new_run_for_backfill(
             db, backfill_row, feed_row, now, outcome=RUN_SUCCESS,
             summary=aggregate_summary, requests=requests_count, fetched_count=fetched_count,
