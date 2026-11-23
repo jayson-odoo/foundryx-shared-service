@@ -165,6 +165,22 @@ while the previous job is still live and re-checks the Push rule. The orphan hoo
 `running|stopping` backfills to `stopped` (never a `done` one) and closes any open run row by
 `job_id` for both job types.
 
+**Chained segments (SS-BACKFILL-CHUNKED).** One backfill is many jobs. A job reads days for at
+most `AUTOCOUNT_DOC_FEED_BACKFILL_SEGMENT_SECONDS` (default 1800, far under `jobs.run`'s 7200 s
+soft limit), saves `next_day`, writes its segment's run row, then creates the next
+`autocount_doc_feed_backfill` job, points `backfill.job_id` at it in one commit, finishes itself
+and enqueues the next (`doc_feed/jobs.py`). The row stays `running` and `days_done` keeps
+counting across jobs; between segments the shared `jobs` slots serve other AutoCount jobs. A job
+that is no longer `backfill.job_id` (a stale queued segment) reads nothing. A soft time limit or
+crash ANYWHERE in the loop (vendor call, sink write, day pause) ends the row `stopped` with
+`TIME_LIMIT` / `CRASHED` and the day it was on still unread. **Reaper:**
+`reap_stale_backfills` (on every doc-feed beat tick, and before Stop / Resume / Discard) moves a
+`running|stopping` row to `stopped` (`JOB_ENDED`) when its job is missing or ended, and fails a
+running job with no heartbeat for 15 minutes through core's orphan sweep; a pending (queued)
+segment is left alone. Stop on a row whose next segment is still queued aborts that job and stops
+at once. **Dry run first** (registrations): finished, non-discarded dry runs that together cover
+every day of the live range satisfy the gate (pieces count; one gap day refuses).
+
 ## 6. Failure text
 
 A sink failure is stored on `run.error` / `backfill.error` through
