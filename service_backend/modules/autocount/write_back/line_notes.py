@@ -34,7 +34,11 @@ logger = logging.getLogger("foundryx.autocount")
 Doc = Dict[str, Any]
 NOTES_KINDS = ("PO", "SPO")
 LINE_NOTES_TIMEOUT_SECONDS = 20
-_SELECT = sa.text("SELECT DtlKey, FurtherDescription FROM PODTL WHERE DocKey = :k")
+# Joined to the header and bound to the DocNo the document was read under, so the rows are those of THIS document.
+_SELECT = sa.text(
+    "SELECT d.DtlKey, d.FurtherDescription FROM PODTL d JOIN PO h ON h.DocKey = d.DocKey "
+    "WHERE d.DocKey = :k AND h.DocNo = :n"
+)
 
 
 class LineNotesSource(Protocol):
@@ -56,7 +60,7 @@ class HapiLineNotes:
 
 
 class SqlLineNotes:
-    """``SELECT DtlKey, FurtherDescription FROM PODTL WHERE DocKey = :k`` through a ``sql_database``
+    """``SELECT ... FROM PODTL JOIN PO WHERE DocKey = :k AND DocNo = :n`` through a ``sql_database``
     connection (resolved WITH tenant_id by the caller), read-only and time-boxed. Any error, a row the
     query did not return or an undecryptable credential is unknown (None)."""
 
@@ -76,15 +80,15 @@ class SqlLineNotes:
                 self._connection.id, self._connection.config_json or {}, credentials,
                 timeout_s=LINE_NOTES_TIMEOUT_SECONDS,
             ) as conn:
-                found = {r[0]: _text(r[1]) for r in conn.execute(_SELECT, {"k": doc["DocKey"]}).fetchall()}
+                found = {r[0]: _text(r[1]) for r in conn.execute(_SELECT, {"k": doc["DocKey"], "n": doc.get("DocNo")}).fetchall()}
         except InvalidToken:
             logger.warning("autocount line notes: the connection credentials cannot be decrypted")
             return None
         except Exception as exc:  # noqa: BLE001 - never the driver text: it can hold a host or a value
             logger.warning("autocount line notes read failed (%s)", type(exc).__name__)
             return None
-        if any(key not in found for key in keys):
-            return None  # a row the database does not know: unknown, never a guessed blank
+        if set(found) != set(keys):
+            return None  # a row the database does not know, or one the document read does not have: unknown
         return {key: found[key] for key in keys}
 
 

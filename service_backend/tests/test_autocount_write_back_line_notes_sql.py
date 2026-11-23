@@ -29,6 +29,9 @@ def _engine(rows):
     engine = sa.create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     with engine.begin() as conn:
         conn.execute(sa.text("CREATE TABLE PODTL (DtlKey INTEGER, DocKey INTEGER, FurtherDescription TEXT)"))
+        conn.execute(sa.text("CREATE TABLE PO (DocKey INTEGER, DocNo TEXT)"))
+        for dock in {r[1] for r in rows}:
+            conn.execute(sa.text("INSERT INTO PO VALUES (:a, :b)"), {"a": dock, "b": f"PO-{dock}"})
         for dtl, dock, fd in rows:
             conn.execute(sa.text("INSERT INTO PODTL VALUES (:a, :b, :c)"), {"a": dtl, "b": dock, "c": fd})
     return engine
@@ -42,7 +45,7 @@ def _source(rows=(), engine=None, conn_id="c1"):
 
 
 def _doc(*keys, dock=7001):
-    return {"DocKey": dock, "Details": [{"DtlKey": k} for k in keys]}
+    return {"DocKey": dock, "DocNo": f"PO-{dock}", "Details": [{"DtlKey": k} for k in keys]}
 
 
 def test_sql_notes_reads_every_row_of_the_document_only():
@@ -148,3 +151,16 @@ def test_setter_refuses_another_tenants_company(h):
     with pytest.raises(WriteConnectionError) as exc:
         set_line_notes_connection(h.db, tenant_id=OTHER_TENANT, company_id=h.company.id, connection_id=conn.id)
     assert exc.value.code == "CONNECTION_NOT_FOUND"
+
+
+# ---- fix round 1 F3: the rows are tied to the document read ---------------------------------------
+
+def test_sql_notes_a_docno_that_is_not_the_documents_is_unknown():
+    src = _source([(1, 7001, "x")])
+    doc = _doc(1)
+    doc["DocNo"] = "PO-OTHER"
+    assert src.notes("PO", doc) is None
+
+
+def test_sql_notes_an_extra_row_in_the_database_is_unknown():
+    assert _source([(1, 7001, "x"), (2, 7001, "y")]).notes("PO", _doc(1)) is None
