@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.models.background_job import JOB_ABORTED, JOB_PENDING, JOB_RUNNING, BackgroundJob
 
 from ..models import (
+    DOC_FEED_BACKFILL_STOPPED,
     DOC_FEED_KEYS,
     AcDocFeed,
     AcDocFeedBackfill,
@@ -577,6 +578,35 @@ class DocFeedBackfillRepository:
                     BackgroundJob.status: JOB_ABORTED,
                     BackgroundJob.error: "Stopped before it started.",
                     BackgroundJob.finished_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        return count > 0
+
+    def stop_if_job_unchanged(
+        self, tenant_id: str, backfill_id: str, seen_job_id: Optional[str],
+        *, error: str, error_code: str,
+    ) -> bool:
+        """SS-BACKFILL-CHUNKED reaper - ``running|stopping -> stopped`` only
+        while the row still points at ``seen_job_id``. No commit."""
+        job_match = (
+            AcDocFeedBackfill.job_id.is_(None) if seen_job_id is None
+            else AcDocFeedBackfill.job_id == seen_job_id
+        )
+        count = (
+            self.db.query(AcDocFeedBackfill)
+            .filter(
+                AcDocFeedBackfill.tenant_id == tenant_id,
+                AcDocFeedBackfill.id == backfill_id,
+                AcDocFeedBackfill.status.in_((DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING)),
+                job_match,
+            )
+            .update(
+                {
+                    AcDocFeedBackfill.status: DOC_FEED_BACKFILL_STOPPED,
+                    AcDocFeedBackfill.error: error,
+                    AcDocFeedBackfill.error_code: error_code,
                 },
                 synchronize_session=False,
             )

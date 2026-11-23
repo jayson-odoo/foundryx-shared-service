@@ -140,7 +140,13 @@ def reap_stale_backfills(
 
 
 def _reap_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: datetime, threshold: timedelta) -> bool:
-    job = repo.job_for(backfill.tenant_id, backfill.job_id)
+    # Review round 1 - judge a FRESH row: the pass loaded every row up front,
+    # and a healthy chain may have moved `job_id` to its next segment since.
+    db.refresh(backfill)
+    if backfill.status not in (DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING):
+        return False
+    seen_job_id = backfill.job_id
+    job = repo.job_for(backfill.tenant_id, seen_job_id)
     if job is not None and job.status == JOB_PENDING:
         return False
     if job is not None and job.status == JOB_RUNNING:
@@ -154,11 +160,19 @@ def _reap_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: datetime, 
         if backfill.status not in (DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING):
             logger.error("doc-feed backfill %s: job %s went quiet; stopped", backfill.id, job.id)
             return True
-        # The hook did not close it (no hook discovered): stop it here.
-    backfill.status = DOC_FEED_BACKFILL_STOPPED
+        logger.warning(
+            "doc-feed backfill %s: the orphan sweep did not close job %s; stopping the row here",
+            backfill.id, job.id,
+        )
+        db.refresh(job)
     detail = getattr(job, "error", None) if job is not None else None
-    backfill.error = (BACKFILL_JOB_ENDED_MESSAGE + (f" Last error: {detail}" if detail else ""))[:4000]
-    backfill.error_code = BACKFILL_JOB_ENDED_CODE
+    error = (BACKFILL_JOB_ENDED_MESSAGE + (f" Last error: {detail}" if detail else ""))[:4000]
+    # A guarded write on the job id this pass judged: a chain that moved on
+    # (or a Stop / Resume that landed meanwhile) is never stopped by mistake.
+    if not repo.stop_if_job_unchanged(backfill.tenant_id, backfill.id, seen_job_id,
+                                      error=error, error_code=BACKFILL_JOB_ENDED_CODE):
+        db.rollback()
+        return False
     db.commit()
     logger.error("doc-feed backfill %s: its job had ended; stopped", backfill.id)
     return True

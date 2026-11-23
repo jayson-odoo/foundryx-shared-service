@@ -524,3 +524,139 @@ def test_bfc3_kill_proof_a_hard_killed_segment_is_reaped_and_resume_reads_only_t
     db.refresh(resumed)
     assert vendor.seen == ["20260928", "20260929"]
     assert resumed.status == "done" and resumed.days_done == 4
+
+
+# ── review round 1 ──────────────────────────────────────────────────────────
+
+
+def test_r1_the_reaper_never_stops_a_chain_that_moved_to_its_next_segment(db, monkeypatch):
+    """The pass loads rows up front; segment A then hands over to B and
+    finishes. The reaper must judge the FRESH row (job B, pending), not A."""
+    from modules.autocount.doc_feed import scheduler
+    from modules.autocount.repositories.doc_feed_repository import DocFeedBackfillRepository
+
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    seg_a = _job(db, co.tenant_id, status="running", heartbeat_at=NOW)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), job_id=seg_a.id)
+
+    real_in_flight = DocFeedBackfillRepository.in_flight
+
+    def in_flight_then_hand_over(self, **kw):
+        rows = real_in_flight(self, **kw)
+        seg_b = _job(db, co.tenant_id, status="pending")
+        with db.get_bind().begin() as conn:
+            conn.execute(AcDocFeedBackfill.__table__.update().values(job_id=seg_b.id))
+            conn.execute(BackgroundJob.__table__.update()
+                         .where(BackgroundJob.__table__.c.id == seg_a.id).values(status="done"))
+        return rows
+
+    monkeypatch.setattr(DocFeedBackfillRepository, "in_flight", in_flight_then_hand_over)
+    assert scheduler.reap_stale_backfills(db, now=NOW) == 0
+    db.refresh(bf)
+    assert bf.status == "running"
+
+
+def test_r1_the_guarded_stop_refuses_when_the_job_id_changed(db):
+    from modules.autocount.repositories.doc_feed_repository import DocFeedBackfillRepository
+
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), job_id="job-new")
+    repo = DocFeedBackfillRepository(db)
+    assert not repo.stop_if_job_unchanged(co.tenant_id, bf.id, "job-old", error="x", error_code="JOB_ENDED")
+    assert repo.stop_if_job_unchanged(co.tenant_id, bf.id, "job-new", error="x", error_code="JOB_ENDED")
+    db.commit()
+    db.refresh(bf)
+    assert bf.status == "stopped"
+
+
+def test_r1_start_creates_the_row_running_with_its_job_in_one_step(db, monkeypatch):
+    co, ac_conn, _ = wired_company(db)
+    _feed(db, co, ac_conn)
+    service = DocFeedService(db)
+    monkeypatch.setattr(service, "_dispatch", lambda *a, **k: None)
+    bf = service.start_backfill(co.tenant_id, co.id, DO, dry_run=True,
+                                from_day=date(2026, 9, 1), to_day=date(2026, 9, 29))
+    assert bf.job_id
+    job = db.get(BackgroundJob, bf.job_id)
+    assert job.status == "pending" and job.payload_json == {"backfillId": bf.id}
+    # The beat right after Start (job still queued) leaves it running.
+    from modules.autocount.doc_feed.scheduler import reap_stale_backfills
+    assert reap_stale_backfills(db, now=NOW) == 0
+
+
+def test_r1_an_old_segment_orphaned_late_never_stops_a_newer_live_segment(db):
+    from modules.autocount.bootstrap import on_job_orphaned
+
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    old = _job(db, co.tenant_id, status="failed")
+    new = _job(db, co.tenant_id, status="running", heartbeat_at=NOW)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), job_id=new.id)
+    old.payload_json = {"backfillId": bf.id}
+    db.commit()
+    on_job_orphaned(db, old, now=NOW)
+    db.commit()
+    db.refresh(bf)
+    assert bf.status == "running"
+    # ... while the job the row points at still stops it.
+    new.payload_json = {"backfillId": bf.id}
+    on_job_orphaned(db, new, now=NOW)
+    db.commit()
+    db.refresh(bf)
+    assert bf.status == "stopped"
+
+
+def test_r1_stop_while_the_next_segment_is_still_queued_stops_at_once(db):
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    queued = _job(db, co.tenant_id, status="pending")
+    bf = _backfill(db, feed, from_day=date(2026, 9, 28), to_day=date(2026, 9, 29), job_id=queued.id)
+
+    stopped = DocFeedService(db).stop_backfill(co.tenant_id, co.id, DO)
+    assert stopped.status == "stopped"
+    db.refresh(queued)
+    assert queued.status == "aborted"
+
+    vendor = _Vendor()
+    resumed = DocFeedService(db).resume_backfill(co.tenant_id, co.id, DO,
+                                                 transport=_Transport(vendor).transport)
+    db.refresh(resumed)
+    assert resumed.status == "done" and vendor.seen == ["20260928", "20260929"]
+
+
+def test_r1_stop_while_a_segment_is_reading_asks_it_to_stop(db):
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    reading = _job(db, co.tenant_id, status="running", heartbeat_at=datetime.now(timezone.utc))
+    _backfill(db, feed, from_day=date(2026, 9, 28), to_day=date(2026, 9, 29), job_id=reading.id)
+    assert DocFeedService(db).stop_backfill(co.tenant_id, co.id, DO).status == "stopping"
+
+
+def test_r1_resume_reaps_a_stuck_stopping_row_first(db):
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    job = _job(db, co.tenant_id, status="failed")
+    _backfill(db, feed, from_day=date(2026, 9, 28), to_day=date(2026, 9, 29),
+              job_id=job.id, status="stopping")
+    vendor = _Vendor()
+    resumed = DocFeedService(db).resume_backfill(co.tenant_id, co.id, DO,
+                                                 transport=_Transport(vendor).transport)
+    db.refresh(resumed)
+    assert resumed.status == "done" and vendor.seen == ["20260928", "20260929"]
+
+
+def test_r1_resume_aborts_a_stopped_rows_never_started_old_segment(db):
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    stale = _job(db, co.tenant_id, status="pending")
+    _backfill(db, feed, from_day=date(2026, 9, 28), to_day=date(2026, 9, 29),
+              job_id=stale.id, status="stopped")
+    vendor = _Vendor()
+    resumed = DocFeedService(db).resume_backfill(co.tenant_id, co.id, DO,
+                                                 transport=_Transport(vendor).transport)
+    db.refresh(resumed)
+    db.refresh(stale)
+    assert stale.status == "aborted"
+    assert resumed.status == "done"

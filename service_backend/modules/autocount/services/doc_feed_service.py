@@ -4,6 +4,7 @@ history for the DO/GRN HTTP source.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -508,10 +509,19 @@ class DocFeedService:
                     "BACKFILL_ALREADY_DONE", "The full-history backfill has already completed."
                 )
 
+        # SS-BACKFILL-CHUNKED (review round 1) - the job exists BEFORE the
+        # row, and the row is born `running` WITH its job id in one commit:
+        # the stale-row reaper never sees a running row with no live job.
+        backfill_id = str(uuid.uuid4())
+        job = JobService(self.db).create(
+            type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            payload={"backfillId": backfill_id},
+        )
         backfill = AcDocFeedBackfill(
+            id=backfill_id,
             tenant_id=tenant_id, company_id=company_id, feed_id=row.id, feed=feed,
             book=row.book, dry_run=dry_run, from_day=from_day_value, to_day=to_day_value,
-            next_day=from_day_value, status=DOC_FEED_BACKFILL_RUNNING,
+            next_day=from_day_value, status=DOC_FEED_BACKFILL_RUNNING, job_id=job.id,
             days_total=(to_day_value - from_day_value).days + 1, days_done=0,
             started_by=actor_user_id, started_at=now,
         )
@@ -521,18 +531,14 @@ class DocFeedService:
         except IntegrityError:
             # N5 - two concurrent Starts both passed `open_for_feed`; the
             # partial unique index (one open backfill per feed) refuses the
-            # loser.
+            # loser (its never-dispatched job is aborted).
             self.db.rollback()
+            self.backfills.abort_pending_job(tenant_id, job.id, now=datetime.now(timezone.utc))
+            self.db.commit()
             raise DocFeedConflictError(
                 "BACKFILL_OPEN", "A backfill is already open for this feed."
             )
 
-        job = JobService(self.db).create(
-            type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
-            payload={"backfillId": backfill.id},
-        )
-        backfill.job_id = job.id
-        self.db.commit()
         self._dispatch(job, run_doc_feed_backfill_job, transport=transport)
         self.db.refresh(backfill)
         return backfill
@@ -598,6 +604,11 @@ class DocFeedService:
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
             raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
+        # SS-BACKFILL-CHUNKED (review round 1) - a stopped row's old segment
+        # that is still only QUEUED would never read anything (it no-ops on
+        # `stopped`); abort it so Resume is not refused for it.
+        if self.backfills.abort_pending_job(tenant_id, backfill.job_id, now=datetime.now(timezone.utc)):
+            self.db.commit()
         if self.backfills.job_is_live(tenant_id, backfill.job_id):
             raise DocFeedConflictError(
                 "BACKFILL_JOB_LIVE",
@@ -620,12 +631,13 @@ class DocFeedService:
             raise DocFeedConflictError(
                 "BOOK_BUSY", "Another backfill is already reading this book."
             )
-        backfill.status = DOC_FEED_BACKFILL_RUNNING
-        self.db.commit()
+        # Review round 1 - job first, then `running` + its job id in ONE
+        # commit (the reaper never sees running under the old ended job).
         job = JobService(self.db).create(
             type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
             payload={"backfillId": backfill.id},
         )
+        backfill.status = DOC_FEED_BACKFILL_RUNNING
         backfill.job_id = job.id
         self.db.commit()
         self._dispatch(job, run_doc_feed_backfill_job, transport=transport)

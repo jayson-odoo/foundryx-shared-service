@@ -499,6 +499,11 @@ def on_job_orphaned(
         # RS3 - only an in-flight backfill flips; a `done` one (the worker
         # crashed after committing DONE, before the job row finished) and an
         # already-`stopped` one stay exactly as they are.
+        # SS-BACKFILL-CHUNKED (review round 1) - a backfill is many jobs now:
+        # only the job the row currently points at may stop it (an old
+        # segment failed late must never stop a newer, live one).
+        if backfill is not None and backfill.job_id not in (None, job.id):
+            backfill = None
         if backfill is not None and backfill.status in (
             DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING,
         ):

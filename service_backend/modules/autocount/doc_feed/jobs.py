@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.jobs.registry import JobHandlerDef, register_job_handler
 from app.jobs.crash_text import crash_text
 from app.jobs.service import JobService
-from app.models.background_job import JOB_DONE, JOB_FAILED, BackgroundJob
+from app.models.background_job import JOB_DONE, JOB_FAILED, JOB_TERMINAL_STATUSES, BackgroundJob
 
 from ..models import (
     DOC_FEED_BACKFILL_RUNNING,
@@ -218,7 +218,9 @@ def _dispatch_segment(db: Session, next_job: BackgroundJob, *, transport: Any) -
             run_doc_feed_backfill_job(db, next_job, transport=transport)
         except Exception as exc:  # noqa: BLE001 - mirrors _run_eager_with_transport
             db.rollback()
-            jobs.finish(next_job, status=JOB_FAILED, error=crash_text(exc))
+            fresh = jobs.repo.get_unscoped(next_job.id)
+            if fresh is not None and fresh.status not in JOB_TERMINAL_STATUSES:
+                jobs.finish(fresh, status=JOB_FAILED, error=crash_text(exc))
         return
     try:
         JobService(db).enqueue(next_job.id)
