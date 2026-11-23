@@ -485,6 +485,9 @@ def autocount_rtf(text: str) -> str:
     return _RTF_HEAD + "".join(_rtf_char(ch) for ch in text) + _RTF_TAIL
 
 
+_RTF_PAD = " \r\n\t\x00"  # bytes that may follow the closing brace of a stored FD
+
+
 def _bare_note(value: Any) -> Optional[str]:
     """The escaped note text of a value that is exactly ``autocount_rtf(note)``, else None."""
     if isinstance(value, str) and value.startswith(_RTF_HEAD) and value.endswith(_RTF_TAIL):
@@ -502,11 +505,11 @@ def _merge_bare_note(out: Doc, row: Mapping[str, Any], values: Mapping[str, Any]
 
 def _ends_with_note(fd: str, escaped: str) -> bool:
     """True when ``fd`` already ends with the note (its trailing ``\\par``, blanks and braces ignored)."""
-    tail = fd.rstrip()
+    tail = fd.rstrip(_RTF_PAD)
     while True:
         if tail.endswith("}") or tail.endswith("\\par"):
             tail = tail[:-1] if tail.endswith("}") else tail[:-4]
-            tail = tail.rstrip()
+            tail = tail.rstrip(_RTF_PAD)
             continue
         return tail.endswith(escaped)
 
@@ -520,7 +523,10 @@ def _append_escaped(fd: Any, escaped: str) -> str:
     if text.lstrip().startswith("{\\rtf"):
         if _ends_with_note(text, escaped):
             return text
-        return text[:-1] + "\\par " + escaped + "}" if text.rstrip().endswith("}") else text + "\\par " + escaped
+        close = text.rstrip(_RTF_PAD).rfind("}")  # the group's last brace; trailing CR LF / NUL / blanks stay after it
+        if close < 0:
+            return text + "\\par " + escaped
+        return text[:close] + "\\par " + escaped + text[close:]
     return text
 
 
