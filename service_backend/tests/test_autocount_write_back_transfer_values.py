@@ -27,6 +27,7 @@ from tests.test_autocount_write_back_vendor_caps import (  # noqa: F401
     _so_with_dates,
     db,
 )
+from tests.write_back_clock import use_fake_clock
 from tests.write_back_host_pin import pin_test_write_host  # noqa: F401
 
 SRC_PRICE = 100.0
@@ -123,8 +124,9 @@ def test_vendor_ignoring_price_on_the_restore_edit_is_a_mismatch(h):
 def test_deadline_before_the_restore_write_is_a_mismatch(h, monkeypatch):
     from modules.autocount.write_back import service as service_mod
 
+    clock = use_fake_clock(monkeypatch)
     monkeypatch.setattr(service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
-    _slow_readback_after_first_put(h)
+    _slow_readback_after_first_put(h, clock)
     res = h.link_split()
     assert res.outcome == "mismatch" and res.error_code == "ROW_VALUES_NOT_KEPT"
     assert len(h.ac.put_calls) == 1

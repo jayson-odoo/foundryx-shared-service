@@ -68,6 +68,16 @@ function newOAuthState(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * True for a `state` minted by `newOAuthState` (32 lowercase hex characters).
+ * The callback page uses it to tell this popup's answer from a partner connect
+ * session, whose server-issued state (`secrets.token_urlsafe(32)`, always 43
+ * characters) can never have this shape. Keep it in step with `newOAuthState`.
+ */
+export function isPopupOAuthState(state: string | null | undefined): state is string {
+  return typeof state === 'string' && /^[0-9a-f]{32}$/.test(state);
+}
+
 /** Meta's Embedded Signup session-info message - identifies the EXACT number the
  *  user selected/registered, so we don't have to guess it from the token. */
 interface WaSessionInfo {

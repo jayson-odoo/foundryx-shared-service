@@ -122,7 +122,10 @@ describe('useBroadcastActions - Delete is a deferred action (review round 1, S1)
   it('Delete has no immediate `run` - it registers the grace-window `broadcasts.delete` handler', () => {
     const actions = actionsFor();
     const del = find(actions, 'delete');
-    expect(del.deferred).toEqual({ actionKey: 'broadcasts.delete', entityType: 'broadcast' });
+    // Same handler and target as before; the Foundryx UIUX switch only adds
+    // the record's name for its countdown words (`fxName`), never a payload.
+    expect(del.deferred).toMatchObject({ actionKey: 'broadcasts.delete', entityType: 'broadcast' });
+    expect(del.deferred?.payload).toBeUndefined();
     expect(del.run).toBeUndefined();
     expect(del.confirm).toBeUndefined();
   });

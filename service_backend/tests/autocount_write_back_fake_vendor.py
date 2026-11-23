@@ -87,8 +87,8 @@ def new_doc(kind: str, doc_key: int, doc_no: str, party: str, rows: List[Dict[st
     }
     if kind == "QT":
         doc.update({"ToDocType": "", "ToDocKey": 0, "ToDtlKey": 0})
-    if kind == "SPO":
-        doc["ShippingPO"] = "T"
+    if kind in ("PO", "SPO"):  # a real PO / SPO read always carries the flag (prod GETs)
+        doc["ShippingPO"] = "T" if kind == "SPO" else "F"
     doc.update(header)
     doc["Details"] = []
     for index, row in enumerate(rows):

@@ -200,7 +200,7 @@ def test_ac_57_30_link_row_moves_the_new_row_to_the_so_rows_location(h, w_far):
     assert new_row["DtlKey"] == 0 and new_row["FromDocType"] == "SO" and new_row["FromDocDtlKey"] == w.so_a
     for field, value in (("ItemCode", "ITEM-A"), ("UOM", "UNIT"), ("Qty", 4), ("UnitPrice", 5.0),
                          ("Discount", "5%"), ("TaxCode", "SR"), ("Description", "d"),
-                         ("DeliveryDate", "2026-12-01T00:00:00")):
+                         ("DeliveryDate", "2026-11-04T00:00:00")):  # 16 Nov rule: the SO row's date, never the PO row's
         assert new_row[field] == value, field
     (old_key, new_key), = res.replaced_lines
     assert old_key == w.p_free and new_key != old_key

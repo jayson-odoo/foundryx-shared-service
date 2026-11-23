@@ -15,6 +15,8 @@ import {
   vendorValueText,
 } from '@/lib/autocount-doc-lookup';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { formatMoneyFx } from '@/lib/money';
 import {
   Alert,
   AlertDescription,
@@ -71,6 +73,7 @@ function money(n: number): string {
 /** A found document: re-date warning, current facts, and the four tabs. */
 export function DocResult({ result, stored, typeLabel }: DocResultProps) {
   const { formatDateTime } = useDatetime();
+  const fx = useFx();
   const current = result.current;
   if (!current) return null;
   const snapshots = stored?.snapshots ?? [];
@@ -80,7 +83,8 @@ export function DocResult({ result, stored, typeLabel }: DocResultProps) {
     ? sumOf(current.lines, 'SubTotal')
     : null;
   const headerEntries = Object.entries(current.header);
-  const curated = curatedFields(current.header);
+  const curated = curatedFields(current.header, fx);
+  const currencyCode = vendorValueText(current.header.CurrencyCode);
 
   return (
     <div className="flex flex-col gap-4" data-testid="ac-find-result">
@@ -211,7 +215,11 @@ export function DocResult({ result, stored, typeLabel }: DocResultProps) {
                   data-testid="ac-find-lines-total"
                 >
                   <span>Total</span>
-                  <span className="tabular-nums">{money(subTotal)}</span>
+                  <span className="tabular-nums">
+                    {fx && currencyCode && currencyCode !== '-'
+                      ? formatMoneyFx(subTotal, currencyCode, 2)
+                      : money(subTotal)}
+                  </span>
                 </div>
               )}
             </TabsContent>

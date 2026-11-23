@@ -1,0 +1,1 @@
+{"id":"<id1>:SENT","type":"message.status","workspaceId":"<id2>","channelId":"<id3>","occurredAt":"<ts>","data":{"messageId":"<id1>","externalMessageId":"<wamid>","contactId":"<id4>","deliveryStatus":"SENT","errorCode":null,"errorMessage":null,"pricing":null}}

@@ -10,6 +10,8 @@ import { Input } from '@/components/ui/input';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { validateEmbedOrigin } from '@/lib/embed-origin';
 import { cn } from '@/lib/utils';
+import { useFx } from '@/hooks/use-fx';
+import { FxOriginsEditor } from './fx-origins-editor';
 
 export interface OriginsEditorProps {
   origins: string[];
@@ -47,7 +49,19 @@ export interface OriginsEditorProps {
  * controlled/staged (`onChange`, the plan 34 connect wizard - no origins to
  * persist until the channel itself is created).
  */
-export function OriginsEditor({ origins, onSave, onChange, bare, readOnly }: OriginsEditorProps) {
+export function OriginsEditor(props: OriginsEditorProps) {
+  // Foundryx UIUX switch: only the Embed access page's own self-save list
+  // takes the new look here; the connect wizard's staged and read-only modes
+  // render as before.
+  const fx = useFx();
+  const { onSave, onChange, bare, readOnly } = props;
+  if (fx && onSave && !onChange && !bare && !readOnly) {
+    return <FxOriginsEditor origins={props.origins} onSave={onSave} />;
+  }
+  return <OriginsEditorLegacy {...props} />;
+}
+
+function OriginsEditorLegacy({ origins, onSave, onChange, bare, readOnly }: OriginsEditorProps) {
   const [list, setList] = useState<string[]>(origins);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);

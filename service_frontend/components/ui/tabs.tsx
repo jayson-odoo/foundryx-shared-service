@@ -6,6 +6,8 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { Tabs as TabsPrimitive } from 'radix-ui';
 import { useHorizontalOverflow } from '@/hooks/use-horizontal-overflow';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { useFx } from '@/hooks/use-fx';
+import { FxTabsContent, FxTabsList, FxTabsTrigger } from '@/components/fx/fields/fx-tabs';
 
 // Variants for TabsList
 const tabsListVariants = cva(
@@ -168,7 +170,12 @@ function Tabs({ className, ...props }: React.ComponentProps<typeof TabsPrimitive
   return <TabsPrimitive.Root data-slot="tabs" className={cn('', className)} {...props} />;
 }
 
-function TabsList({
+// Foundryx UIUX switch: the playbook segmented tabs while on; today's while off.
+function TabsList(props: React.ComponentProps<typeof TabsPrimitive.List> & VariantProps<typeof tabsListVariants>) {
+  return useFx() ? <FxTabsList {...props} /> : <TabsListLegacy {...props} />;
+}
+
+function TabsListLegacy({
   className,
   variant = 'line',
   shape = 'default',
@@ -213,7 +220,12 @@ function TabsList({
   );
 }
 
-function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
+// Foundryx UIUX switch: the playbook segmented tabs while on; today's while off.
+function TabsTrigger(props: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
+  return useFx() ? <FxTabsTrigger {...props} /> : <TabsTriggerLegacy {...props} />;
+}
+
+function TabsTriggerLegacy({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
   const { variant, size } = React.useContext(TabsContext);
 
   return (
@@ -225,7 +237,12 @@ function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPr
   );
 }
 
-function TabsContent({
+// Foundryx UIUX switch: the playbook segmented tabs while on; today's while off.
+function TabsContent(props: React.ComponentProps<typeof TabsPrimitive.Content> & VariantProps<typeof tabsContentVariants>) {
+  return useFx() ? <FxTabsContent {...props} /> : <TabsContentLegacy {...props} />;
+}
+
+function TabsContentLegacy({
   className,
   variant,
   ...props

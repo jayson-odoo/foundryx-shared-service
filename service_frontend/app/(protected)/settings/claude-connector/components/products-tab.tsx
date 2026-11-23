@@ -1,6 +1,8 @@
 'use client';
 
+import { useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Check, Copy, LoaderCircleIcon, Pencil, Plus, RefreshCw, TriangleAlert } from 'lucide-react';
 import { Alert, AlertContent, AlertDescription, AlertIcon } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -9,9 +11,15 @@ import { Card, CardContent, CardHeader, CardTitle, CardToolbar } from '@/compone
 import { useCan } from '@/hooks/use-can';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import {
+  useRegisterMainAction,
+  type FxMainActionSpec,
+} from '@/components/fx/actions/page-actions-context';
 import type { ConnectorProduct, ConnectorSecretState } from '@/types/connector';
 import { useConnectorProducts } from './use-connector-products';
 import { productPath } from './use-connector-product-form';
+import { FxProductCard } from './fx-product-card';
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -30,7 +38,19 @@ function SecretBadge({ state }: { state: ConnectorSecretState }) {
   );
 }
 
-function ProductCard({
+interface ProductCardProps {
+  product: ConnectorProduct;
+  canManage: boolean;
+  canEdit: boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
+}
+
+function ProductCard(props: ProductCardProps) {
+  return useFx() ? <FxProductCard {...props} /> : <ProductCardLegacy {...props} />;
+}
+
+function ProductCardLegacy({
   product,
   canManage,
   canEdit,
@@ -136,6 +156,23 @@ function ProductCard({
 export function ProductsTab() {
   const { can } = useCan();
   const { products, isLoading, refreshingKey, refresh } = useConnectorProducts();
+  // Foundryx UIUX switch only: Add product is the page's red action while
+  // this tab shows (same link, same permission).
+  const fx = useFx();
+  const router = useRouter();
+  const canAdd = can('connector.settings');
+  const fxMain = useMemo<FxMainActionSpec | null>(
+    () =>
+      fx && canAdd
+        ? {
+            id: 'add-product',
+            label: 'Add product',
+            onClick: () => router.push('/settings/claude-connector/products/new'),
+          }
+        : null,
+    [fx, canAdd, router],
+  );
+  useRegisterMainAction(fxMain);
 
   if (isLoading) {
     return (
@@ -148,7 +185,7 @@ export function ProductsTab() {
   const canEdit = can('connector.settings');
   return (
     <div className="flex flex-col gap-4">
-      {canEdit && (
+      {canEdit && !fx && (
         <div className="flex justify-end">
           <Button type="button" size="sm" asChild>
             <Link href="/settings/claude-connector/products/new">

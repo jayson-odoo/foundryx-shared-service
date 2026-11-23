@@ -1,19 +1,29 @@
 'use client';
 
 import { useMemo } from 'react';
+import { Ban } from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { StatusBadge } from '@/components/platform/status-badge';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { FxListMoment } from '@/components/fx/pages/w3-logs/fx-log-parts';
 import { emailLogService, EMAIL_LOG_SEGMENTS } from '@/services/email-log-service';
 import type { EmailLogListItem } from '@/types/templates';
 import { EMAIL_STATUS_REGISTRY, emailLogDetailPath } from './email-status';
 import { useEmailLogActions } from './use-email-log-actions';
 
+/** Other Action icons under the Foundryx UIUX switch (one icon per meaning). */
+export const EMAIL_LOG_FX_ICONS = {
+  retry: 'refresh' as const,
+  cancel: <Ban aria-hidden="true" className="size-[18px]" />,
+};
+
 export function useEmailLogListConfig(): ResourceListConfig<EmailLogListItem> {
   const actions = useEmailLogActions();
   const { formatDateTime } = useDatetime();
+  const fx = useFx();
 
   return useMemo<ResourceListConfig<EmailLogListItem>>(
     () => ({
@@ -86,11 +96,14 @@ export function useEmailLogListConfig(): ResourceListConfig<EmailLogListItem> {
           accessorFn: (row) => row.createdAt,
           meta: { headerTitle: 'Created' },
           header: ({ column }) => <DataGridColumnHeader title="Created" column={column} />,
-          cell: ({ row }) => (
-            <span className="text-sm text-muted-foreground">
-              {formatDateTime(row.original.createdAt)}
-            </span>
-          ),
+          cell: ({ row }) =>
+            fx ? (
+              <FxListMoment iso={row.original.createdAt} className="text-sm text-(--fx-ink-2)" />
+            ) : (
+              <span className="text-sm text-muted-foreground">
+                {formatDateTime(row.original.createdAt)}
+              </span>
+            ),
           size: 160,
           enableSorting: true,
         },
@@ -99,11 +112,14 @@ export function useEmailLogListConfig(): ResourceListConfig<EmailLogListItem> {
           accessorFn: (row) => row.sentAt,
           meta: { headerTitle: 'Sent' },
           header: ({ column }) => <DataGridColumnHeader title="Sent" column={column} />,
-          cell: ({ row }) => (
-            <span className="text-sm text-muted-foreground">
-              {row.original.sentAt ? formatDateTime(row.original.sentAt) : '-'}
-            </span>
-          ),
+          cell: ({ row }) =>
+            fx ? (
+              <FxListMoment iso={row.original.sentAt} className="text-sm text-(--fx-ink-2)" />
+            ) : (
+              <span className="text-sm text-muted-foreground">
+                {row.original.sentAt ? formatDateTime(row.original.sentAt) : '-'}
+              </span>
+            ),
           size: 160,
           enableSorting: true,
         },
@@ -132,7 +148,17 @@ export function useEmailLogListConfig(): ResourceListConfig<EmailLogListItem> {
         { id: 'sentAt', label: 'Sent' },
       ],
       actions,
+      // Foundryx UIUX switch only. Hold to Copy on the template key alone:
+      // recipients and subjects are personal data and never copy.
+      fx: {
+        noun: 'emails',
+        copyable: ['templateKey'],
+        phoneHidden: ['attempts', 'sentAt'],
+        columnKind: { status: 'status' },
+        cardLines: [['subject'], ['toEmail'], ['templateKey', 'createdAt']],
+        iconFor: EMAIL_LOG_FX_ICONS,
+      },
     }),
-    [actions, formatDateTime],
+    [actions, formatDateTime, fx],
   );
 }

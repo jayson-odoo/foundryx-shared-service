@@ -188,6 +188,26 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
     expect(screen.getByTestId('doc-feed-window-recheck-days')).toHaveValue(45);
   });
 
+  it('plan 72 - project registrations are read by date only: no Read by choice, the days stay', async () => {
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="project_registrations"
+        current={{
+          connectionId: 'conn-3', mode: 'push', contractGate: null,
+          window: { pollBasis: 'doc_date', pollLookbackDays: 1, recheckDays: 45 },
+        }}
+        eligibleConnections={[eligibleConnection({ id: 'conn-3', book: 'db3' })]}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('doc-feed-window-basis-last_modified')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('doc-feed-window-basis-doc_date')).not.toBeInTheDocument();
+    expect(screen.getByTestId('doc-feed-window-lookback-days')).toHaveValue(1);
+    expect(screen.getByTestId('doc-feed-window-recheck-days')).toHaveValue(45);
+  });
+
   it('saves an edited window with the rest of the feed', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');

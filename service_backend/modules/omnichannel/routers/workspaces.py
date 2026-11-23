@@ -30,6 +30,7 @@ from ..schemas import (
 from ..services.business_hours import BusinessHoursService, BusinessHoursValidationError
 from ..services.workspace_service import (
     DefaultWorkspaceProtected,
+    WorkspaceExternalRefInUse,
     WorkspaceNotFound,
     WorkspaceService,
 )
@@ -96,7 +97,17 @@ def restore_workspaces(
     current_user: User = Depends(require_permission("workspaces.manage")),
     db: Session = Depends(get_db),
 ) -> Response:
-    WorkspaceService(db).restore(body.ids, current_user.tenant_id)
+    try:
+        WorkspaceService(db).restore(body.ids, current_user.tenant_id)
+    except WorkspaceExternalRefInUse as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "code": "workspace_external_ref_in_use",
+                "message": "Another live workspace already uses this partner organisation id.",
+                "workspaceId": exc.workspace_id,
+            },
+        )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

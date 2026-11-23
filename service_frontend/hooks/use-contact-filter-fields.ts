@@ -97,6 +97,8 @@ export function useContactFilterFields({
         label: f.label,
         type: customContactFieldFilterType(f),
         options: f.type === 'list' ? (f.options ?? []).map((o) => ({ label: o, value: o })) : undefined,
+        // A custom date field holds a calendar day, compared as typed by the API.
+        ...(f.type === 'date' ? { calendarDate: true } : {}),
       }));
     return [...system, ...custom];
   }, [members, channelTypeOptions, stages, tags, fields]);

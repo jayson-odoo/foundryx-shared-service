@@ -6,6 +6,9 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { Pencil, Trash2 } from 'lucide-react';
 import type { AttachmentTypeRow } from '@/types/documents';
 import { documentService } from '@/services/document-service';
+import { useFx } from '@/hooks/use-fx';
+import { toast } from '@/lib/toast';
+import { useFxActorName } from '@/components/platform/document-drive/fx-drive-words';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
@@ -42,6 +45,9 @@ export default function DocumentTypesPage() {
   const editId = params.get('edit');
 
   const [reloadToken, setReloadToken] = useState(0);
+  // Foundryx UIUX (slice W3-DOCS): a done toast after a save. Off: today's.
+  const fx = useFx();
+  const byWhom = useFxActorName();
 
   const openEditor = useCallback(
     (id: string | 'new') => router.push(`${TYPES_PATH}?edit=${id}`),
@@ -69,7 +75,11 @@ export default function DocumentTypesPage() {
         // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
         // 15) - no confirm, no `run` (the registered `document_types.delete`
         // handler commits it server-side).
-        deferred: { actionKey: 'document_types.delete', entityType: 'document_type' },
+        deferred: {
+          actionKey: 'document_types.delete',
+          entityType: 'document_type',
+          fxName: (rows) => (rows.length === 1 ? rows[0].name : undefined),
+        },
       },
     ],
     [openEditor],
@@ -216,6 +226,13 @@ export default function DocumentTypesPage() {
         { id: 'fileCount', label: 'Files' },
       ],
       actions,
+      fx: {
+        mainActionId: 'create',
+        fullLabel: () => 'Add a document type',
+        noun: 'document types',
+        phoneHidden: ['fileCount'],
+        cardLines: [['name'], ['allowedExts', 'maxMb']],
+      },
     };
   }, [actions, openEditor]);
 
@@ -229,9 +246,17 @@ export default function DocumentTypesPage() {
           <TypeFormDialog
             typeId={editId === 'new' ? null : editId}
             onClose={closeEditor}
-            onSaved={() => {
+            onSaved={(saved) => {
               setReloadToken((t) => t + 1);
               closeEditor();
+              // No Undo: a new type is removed only through Delete's own
+              // countdown; an edit's Undo is not offered in this slice.
+              if (fx && saved) {
+                toast.fxDone({
+                  what: saved.created ? `Document type ${saved.name} added` : `Document type ${saved.name} saved`,
+                  byWhom,
+                });
+              }
             }}
           />
         )}
@@ -249,8 +274,9 @@ function TypeFormDialog({
 }: {
   typeId: string | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (saved?: { name: string; created: boolean }) => void;
 }) {
+  const fx = useFx();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [exts, setExts] = useState('');
@@ -287,7 +313,7 @@ function TypeFormDialog({
     try {
       if (typeId) await documentService.updateType(typeId, payload);
       else await documentService.createType(payload);
-      onSaved();
+      onSaved({ name: payload.name, created: !typeId });
     } finally {
       setBusy(false);
     }
@@ -352,10 +378,11 @@ function TypeFormDialog({
           </div>
         )}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={busy}>
+          <Button variant={fx ? 'fx-quiet' : 'outline'} onClick={onClose} disabled={busy}>
             Cancel
           </Button>
           <Button
+            variant={fx ? 'fx-main' : undefined}
             onClick={() => void save()}
             disabled={!name.trim() || busy || loading}
           >

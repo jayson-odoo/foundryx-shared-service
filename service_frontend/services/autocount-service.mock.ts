@@ -2265,7 +2265,7 @@ function mockPreviewJobClaimChange(input: AutocountPreviewJobStartInput) {
 // clears it.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
+const DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes', 'project_registrations'];
 
 /** D4 - the consumer contract version every doc feed gate checks against. */
 const DOC_FEED_GATE_REQUIRED_VERSION = 2.7;
@@ -2316,6 +2316,7 @@ function docFeedsFor(companyId: string): Record<DocFeedKey, MockDocFeedState> {
     existing = {
       delivery_orders: defaultDocFeedState(),
       goods_receive_notes: defaultDocFeedState(),
+      project_registrations: { ...defaultDocFeedState(), window: { ...DEFAULT_DOC_FEED_WINDOW, pollBasis: 'doc_date' } },
     };
     docFeeds.set(companyId, existing);
   }

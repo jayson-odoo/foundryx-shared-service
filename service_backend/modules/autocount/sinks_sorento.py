@@ -85,6 +85,7 @@ from .canonical.masters import (
 from .models import (
     DOC_FEED_DELIVERY_ORDERS,
     DOC_FEED_GOODS_RECEIVE_NOTES,
+    DOC_FEED_PROJECT_REGISTRATIONS,
 )
 from .sinks import WriteResult
 
@@ -148,6 +149,9 @@ _ENTITY_PATH: Dict[str, str] = {
     # key, no path at all - it keeps routing to the logging sink).
     DOC_FEED_DELIVERY_ORDERS: DOC_FEED_DELIVERY_ORDERS,
     DOC_FEED_GOODS_RECEIVE_NOTES: DOC_FEED_GOODS_RECEIVE_NOTES,
+    # Plan 72 (contract 2.15) - `POST /external/ingest/project_registrations`;
+    # gated below like the other doc feeds.
+    DOC_FEED_PROJECT_REGISTRATIONS: DOC_FEED_PROJECT_REGISTRATIONS,
     # sprint-5/14 section 11 (D26) - branches are the regular `branch` master
     # entity now (NOT a doc-feed key): same door (`/ingest/branches`), same
     # 2.7 gate, keyed by the singular entity type like every other master.
@@ -377,6 +381,22 @@ REPLACES_LINE_REF_CONTRACT_VERSION = ContractVersion(*REPLACES_LINE_REF_MIN_CONT
 # 2.13); sent only when the CRM ADVERTISES at least this (``extra="forbid"``).
 PACKAGE_LINES_CONTRACT_VERSION = ContractVersion(*PACKAGE_LINES_MIN_CONTRACT)
 
+# Plan 72 (sorento-crm #2676, contract 2.15) - the project registrations doc
+# feed: >= 2.15 AND `project_registrations` advertised.
+PROJECT_REGISTRATIONS_CONTRACT_VERSION = ContractVersion(2, 15)
+
+# The contract each doc feed's mode gate and run-time CONTRACT_GATE need.
+DOC_FEED_CONTRACT_VERSIONS: Dict[str, float] = {
+    DOC_FEED_DELIVERY_ORDERS: DOC_FEED_CONTRACT_VERSION,
+    DOC_FEED_GOODS_RECEIVE_NOTES: DOC_FEED_CONTRACT_VERSION,
+    DOC_FEED_PROJECT_REGISTRATIONS: PROJECT_REGISTRATIONS_CONTRACT_VERSION,
+}
+
+
+def doc_feed_contract_version(feed: str) -> float:
+    return DOC_FEED_CONTRACT_VERSIONS.get(feed, DOC_FEED_CONTRACT_VERSION)
+
+
 # plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
 # is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
 # advertised contract to be at least this version AND to list this entity
@@ -393,6 +413,9 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
     # name.
     DOC_FEED_DELIVERY_ORDERS: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_DELIVERY_ORDERS),
     DOC_FEED_GOODS_RECEIVE_NOTES: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_GOODS_RECEIVE_NOTES),
+    DOC_FEED_PROJECT_REGISTRATIONS: (
+        PROJECT_REGISTRATIONS_CONTRACT_VERSION, DOC_FEED_PROJECT_REGISTRATIONS,
+    ),
     # sprint-5/14 section 11 (D26) - `branch` rides the same 2.7 door as the
     # doc feed; the consumer must advertise `branches`.
     ENTITY_BRANCH: (DOC_FEED_CONTRACT_VERSION, "branches"),
@@ -1707,6 +1730,15 @@ class SorentoSink:
                     ),
                     errors=verdict.get("errors") or None,
                 )
+            if self.entity_type == DOC_FEED_PROJECT_REGISTRATIONS:
+                # Plan 72 (contract 2.15 section 4) - a transient CRM-side
+                # condition: re-sent from the held issue row next run.
+                return WriteResult(
+                    ok=False, sink=self.name, external_id=None, delivered=False,
+                    outcome=outcome,
+                    message=f"Sorento reported '{ref}' retryable; it is sent again on the next run.",
+                    errors=verdict.get("errors") or None,
+                )
             # Must not happen for masters with no dependency reference
             # (AC-14-24). Loud, not re-queued.
             return WriteResult(
@@ -1718,6 +1750,34 @@ class SorentoSink:
                     "investigate rather than retry."
                 ),
                 errors=verdict.get("errors") or None,
+            )
+        if self.entity_type == DOC_FEED_PROJECT_REGISTRATIONS and outcome in (
+            "skipped", "failed",
+        ):
+            # Plan 72 (contract 2.15 section 4) - `skipped` is a final CRM
+            # verdict here (listed for a person there, never retried), and
+            # its `code` matters: `switched_off` holds the backfill cursor.
+            # A `failed` keeps its code too (`needs_review`).
+            errors = verdict.get("errors")
+            errors = dict(errors) if isinstance(errors, dict) else {}
+            code = verdict.get("code") or errors.get("code")
+            if not code:
+                # The CRM as built (S1) names the reason as an `errors` KEY:
+                # `{"switched_off": "..."}` / `{"needs_review": "..."}`.
+                code = next((k for k in ("switched_off", "needs_review") if k in errors), None)
+            if not code:
+                # The contract names the code but not its field: a warning
+                # word counts too, so a switched-off answer can never be
+                # mistaken for a final skip (which would move the cursor on).
+                words = {str(w) for w in (verdict.get("warnings") or ())}
+                code = next((w for w in ("switched_off", "needs_review") if w in words), None)
+            if code:
+                errors["code"] = str(code)
+            return WriteResult(
+                ok=False, sink=self.name, external_id=None, delivered=False,
+                outcome=outcome,
+                message=f"Sorento {outcome} '{ref}'" + (f": {code}" if code else ""),
+                errors=errors or None,
             )
         if outcome == "failed":
             errors = verdict.get("errors") or {}

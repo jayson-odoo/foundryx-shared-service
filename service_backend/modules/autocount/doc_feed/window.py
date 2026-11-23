@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from .constants import SWEEP_WINDOW_DAYS
+from .constants import DATE_ONLY_FEEDS, SWEEP_WINDOW_DAYS
 
 POLL_BASIS_LAST_MODIFIED = "last_modified"
 POLL_BASIS_DOC_DATE = "doc_date"
@@ -34,13 +34,17 @@ DEFAULT_DOC_FEED_WINDOW: Dict[str, Any] = {
 }
 
 
-def resolve_window(stored: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """The feed's effective window: each stored key, else its default."""
+def resolve_window(stored: Optional[Dict[str, Any]], feed: Optional[str] = None) -> Dict[str, Any]:
+    """The feed's effective window: each stored key, else its default. A feed
+    with only a by-date door (plan 72: project registrations) always reads
+    by date, whatever is stored."""
     out = dict(DEFAULT_DOC_FEED_WINDOW)
     for key in WINDOW_KEYS:
         value = (stored or {}).get(key)
         if value is not None:
             out[key] = value
+    if feed in DATE_ONLY_FEEDS:
+        out["pollBasis"] = POLL_BASIS_DOC_DATE
     return out
 
 

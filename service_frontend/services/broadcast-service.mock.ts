@@ -737,7 +737,8 @@ export const mockBroadcastService: BroadcastService = {
     tickAll();
     findOrThrow(id);
     let recs = recipientsStore.get(id) ?? [];
-    if (query.state) recs = recs.filter((r) => r.state === query.state);
+    const states = (query.state ?? '').split(',').filter(Boolean);
+    if (states.length > 0) recs = recs.filter((r) => states.includes(r.state));
     if (query.search?.trim()) {
       const q = query.search.trim().toLowerCase();
       recs = recs.filter(

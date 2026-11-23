@@ -19,6 +19,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { useFx } from '@/hooks/use-fx';
+import { FxMultiSelect } from '@/components/fx/fields/fx-multi-select';
 
 export interface MultiSelectOption {
   label: string;
@@ -42,6 +44,13 @@ export interface MultiSelectProps {
    * instead of forking a parallel multi-select component.
    */
   onQueryChange?: (query: string) => void;
+  /**
+   * Foundryx UIUX switch only (FX-19): the field's accessible name. Pass
+   * `id` instead when a visible `<Label htmlFor>` names it. Ignored with
+   * the switch off.
+   */
+  ariaLabel?: string;
+  id?: string;
 }
 
 /**
@@ -49,7 +58,12 @@ export interface MultiSelectProps {
  * pills. System-wide control for any "pick many from a growing list" field
  * (roles now; reused by future entities + the filter builder). Plan 02 review.
  */
-export function MultiSelect({
+export function MultiSelect(props: MultiSelectProps) {
+  // Foundryx UIUX switch: the playbook dropdown while on; today's while off.
+  return useFx() ? <FxMultiSelect {...props} /> : <MultiSelectLegacy {...props} />;
+}
+
+function MultiSelectLegacy({
   options,
   value,
   onChange,

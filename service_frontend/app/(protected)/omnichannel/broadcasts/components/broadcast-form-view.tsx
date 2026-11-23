@@ -7,7 +7,7 @@
  * the same sections read/edit (Overview tab, editable only while DRAFT) plus
  * an embedded Recipients `ResourceList` tab.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { LoaderCircleIcon, ListChecks, LayoutList } from 'lucide-react';
 import { useWatch } from 'react-hook-form';
@@ -28,29 +28,14 @@ import { useAudiencePreview } from './use-audience-preview';
 import { useRecipientsListConfig } from './use-recipients-list-config';
 import { broadcastFormSchema } from './broadcast-schema';
 import { broadcastsListPath } from './paths';
+import { bindingSlotErrors } from './binding-slot-errors';
+import { useFx } from '@/hooks/use-fx';
+import { FxBroadcastFormView } from './fx-broadcast-form';
+import { FxBroadcastDetailView } from './fx-broadcast-detail';
 
-/** Tester O-4: pull the server-mapped 422 message for one binding slot
- *  (`bindings.<group>.<index>.text|fallback|field`) out of RHF's nested
- *  error tree. `TemplateBinding` is a discriminated union (static | contact
- *  field), so a slot's error could land on `.text`, `.fallback` or `.field`
- *  depending on which variant is selected - read defensively via `unknown`
- *  rather than fighting RHF's union-narrowed `FieldErrors` typing. */
-export function bindingSlotErrors(
-  errors: unknown,
-  group: 'header' | 'body' | 'buttons',
-  count: number,
-): (string | undefined)[] {
-  const bindingsErrors = (errors as { bindings?: Record<string, unknown> } | undefined)?.bindings;
-  const groupErrors = bindingsErrors?.[group] as
-    | Array<Record<string, { message?: string }> | undefined>
-    | undefined;
-  return Array.from({ length: count }, (_, i) => {
-    const row = groupErrors?.[i];
-    return row?.text?.message ?? row?.fallback?.message ?? row?.field?.message;
-  });
-}
+export { bindingSlotErrors };
 
-function BuilderSections({
+export function BuilderSections({
   workspaceId,
   editing,
   form,
@@ -59,6 +44,8 @@ function BuilderSections({
   ensureDraftId,
   sendOrSchedule,
   sending,
+  fxStatus,
+  fxTestInHeader,
 }: {
   workspaceId: string | null;
   editing: boolean;
@@ -68,6 +55,11 @@ function BuilderSections({
   ensureDraftId: () => Promise<string | null>;
   sendOrSchedule: () => Promise<void>;
   sending: boolean;
+  /** Foundryx UIUX switch only: replaces the status card (live counts roll). */
+  fxStatus?: ReactNode;
+  /** Foundryx UIUX switch only: Send test message is a header icon action, so
+   *  the in-page button is not repeated. */
+  fxTestInHeader?: boolean;
 }) {
   const { control, setValue, formState } = form;
   const { can } = useCan();
@@ -107,7 +99,7 @@ function BuilderSections({
 
   return (
     <div className="flex flex-col gap-4">
-      {!creating && broadcast && <StatusSummary broadcast={broadcast} />}
+      {!creating && broadcast && (fxStatus ?? <StatusSummary broadcast={broadcast} />)}
 
       <DetailsSection
         name={name}
@@ -236,7 +228,7 @@ function BuilderSections({
         </>
       )}
 
-      {!creating && broadcast && broadcast.status !== 'DRAFT' && canSend && (
+      {!creating && broadcast && broadcast.status !== 'DRAFT' && canSend && !fxTestInHeader && (
         <>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="outline" onClick={() => setTestOpen(true)}>
@@ -261,7 +253,28 @@ export interface BroadcastFormViewProps {
   initialEditing: boolean;
 }
 
-export function BroadcastFormView({ workspaceId, broadcastId, initialEditing }: BroadcastFormViewProps) {
+/**
+ * Foundryx UIUX switch (playbook-uiux.md): a NEW broadcast gets the fx long
+ * form with one red action; the broadcast page (an existing record) gets the
+ * fx record page (red action and icon actions in the header, counts that
+ * roll). Off renders the legacy body below, unchanged.
+ */
+export function BroadcastFormView(props: BroadcastFormViewProps) {
+  const fx = useFx();
+  if (fx && !props.broadcastId) return <FxBroadcastFormView workspaceId={props.workspaceId} />;
+  if (fx && props.broadcastId) {
+    return (
+      <FxBroadcastDetailView
+        workspaceId={props.workspaceId}
+        broadcastId={props.broadcastId}
+        initialEditing={props.initialEditing}
+      />
+    );
+  }
+  return <BroadcastFormViewLegacy {...props} />;
+}
+
+function BroadcastFormViewLegacy({ workspaceId, broadcastId, initialEditing }: BroadcastFormViewProps) {
   const {
     config,
     form,

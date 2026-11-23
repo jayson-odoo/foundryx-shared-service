@@ -47,7 +47,8 @@ def test_feed_keys_are_the_two_left_after_branches_became_an_entity():
     assert doc_feed_constants.FEED_DELIVERY_ORDERS == "delivery_orders"
     assert doc_feed_constants.FEED_GOODS_RECEIVE_NOTES == "goods_receive_notes"
     assert not hasattr(doc_feed_constants, "FEED_BRANCHES")
-    assert doc_feed_constants.ALL_FEEDS == ("delivery_orders", "goods_receive_notes")
+    # Plan 72 added project registrations; branches stay gone.
+    assert doc_feed_constants.ALL_FEEDS == ("delivery_orders", "goods_receive_notes", "project_registrations")
 
 
 # ── MYT clock (D6, AC-14-11/30/31) ───────────────────────────────────────────
