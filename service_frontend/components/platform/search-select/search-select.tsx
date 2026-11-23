@@ -17,10 +17,15 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { useFx } from '@/hooks/use-fx';
+import { FxSearchSelect } from '@/components/fx/fields/fx-search-select';
 
 export interface SearchSelectOption {
   label: string;
   value: string;
+  /** Foundryx UIUX only: one muted second line (a code, a size, a price),
+   *  also matched by the search. Ignored with the switch off. */
+  description?: string;
 }
 
 export interface SearchSelectGroup {
@@ -42,6 +47,12 @@ export interface SearchSelectProps {
   /** Accessible name for the combobox trigger. */
   ariaLabel?: string;
   /**
+   * Foundryx UIUX switch only (ignored with the switch off): the trigger's
+   * id, for a visible `<label htmlFor>` that names it. Inside a labelled
+   * `FxField` the field's own id and label are used without it.
+   */
+  id?: string;
+  /**
    * Allow committing the typed search text as the value when it matches no
    * option (a combobox with create - e.g. a free dotted mapping source path
    * `Data.0.X`). The listed options stay the discoverable set; a custom value is
@@ -57,6 +68,14 @@ export interface SearchSelectProps {
    * instead of forking a parallel searchable-select component.
    */
   onQueryChange?: (query: string) => void;
+  /** Foundryx UIUX only (ignored with the switch off): the caller is fetching
+   *  new results, so the list keeps its last ones, dimmed. */
+  loading?: boolean;
+  /** Foundryx UIUX only: how many results match in all, when the caller
+   *  fetched only a page ("Keep typing to narrow 1,240 results"). */
+  total?: number;
+  /** Foundryx UIUX only: the plural noun for "No products match "oak"". */
+  noun?: string;
 }
 
 /**
@@ -65,7 +84,12 @@ export interface SearchSelectProps {
  * like the user/role pickers. Sibling of `MultiSelect` (which additionally
  * does select-all); fixed 2-3-option micro-enums may stay plain Select.
  */
-export function SearchSelect({
+export function SearchSelect(props: SearchSelectProps) {
+  // Foundryx UIUX switch: the playbook dropdown while on; today's while off.
+  return useFx() ? <FxSearchSelect {...props} /> : <SearchSelectLegacy {...props} />;
+}
+
+function SearchSelectLegacy({
   options,
   groups,
   value,

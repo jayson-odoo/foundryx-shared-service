@@ -8,12 +8,16 @@ import type { ResourceAction } from '@/components/platform/resource-list';
 import { templateEngineService } from '@/services/template-service';
 import type { TemplateListItem } from '@/types/templates';
 import { templatePath } from './paths';
+import { useFx } from '@/hooks/use-fx';
+import { useFxActor } from '@/components/fx/pages/w4-templates/use-fx-actor';
 
 /** ONE action registry - row `…`, bulk dropdown and form `…` all share it. */
 export function useTemplateActions(): ResourceAction<TemplateListItem>[] {
   const router = useRouter();
+  const fx = useFx();
+  const byWhom = useFxActor();
 
-  return useMemo<ResourceAction<TemplateListItem>[]>(
+  const actions = useMemo<ResourceAction<TemplateListItem>[]>(
     () => [
       {
         id: 'edit',
@@ -76,4 +80,47 @@ export function useTemplateActions(): ResourceAction<TemplateListItem>[] {
     ],
     [router],
   );
+
+  // Foundryx UIUX switch only: the same actions and the same requests; only
+  // what is said afterwards changes (toasts name what, for whom and by whom;
+  // the countdown names the template).
+  return useMemo(
+    () => (fx ? actions.map((a) => fxTemplateAction(a, byWhom)) : actions),
+    [fx, actions, byWhom],
+  );
+}
+
+function fxTemplateAction(
+  action: ResourceAction<TemplateListItem>,
+  byWhom: string | undefined,
+): ResourceAction<TemplateListItem> {
+  if (action.id === 'duplicate') {
+    return {
+      ...action,
+      run: async ([template], runtime) => {
+        const copy = await templateEngineService.duplicateTemplate(template.id);
+        toast.fxDone({ what: `${template.name} duplicated as ${copy.name}`, byWhom });
+        runtime.reload();
+      },
+    } as ResourceAction<TemplateListItem>;
+  }
+  if (action.id === 'test-send') {
+    return {
+      ...action,
+      run: async ([template]) => {
+        const { toEmail } = await templateEngineService.testSend(template.id);
+        toast.fxDone({ what: `Test of ${template.name} queued`, forWhom: `to ${toEmail}`, byWhom });
+      },
+    } as ResourceAction<TemplateListItem>;
+  }
+  if (action.deferred) {
+    return {
+      ...action,
+      deferred: {
+        ...action.deferred,
+        fxName: (rows: TemplateListItem[]) => (rows.length === 1 ? rows[0].name : undefined),
+      },
+    };
+  }
+  return action;
 }

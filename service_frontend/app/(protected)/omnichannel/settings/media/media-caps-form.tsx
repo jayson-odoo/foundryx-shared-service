@@ -10,6 +10,8 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatMb, mbToBytes } from '@/lib/media-size';
 import { useOmnichannelSettings } from '@/hooks/use-omnichannel-settings';
+import { useFx } from '@/hooks/use-fx';
+import { FxMediaCapsForm } from './fx-media-caps-form';
 import type {
   MediaKind,
   OmnichannelSettings,
@@ -17,7 +19,7 @@ import type {
   OmnichannelSettingsUpdate,
 } from '@/services/omnichannel-settings-service';
 
-interface CapConfig {
+export interface CapConfig {
   overrideKey: keyof OmnichannelSettingsOverrides;
   effectiveKind: MediaKind;
   label: string;
@@ -25,7 +27,7 @@ interface CapConfig {
 
 // The 5 editable caps. Audio's cap also governs voice notes (they share the
 // backend column), so its accepted-mimes come from the AUDIO effective entry.
-const CAPS: CapConfig[] = [
+export const CAPS: CapConfig[] = [
   { overrideKey: 'imageMaxBytes', effectiveKind: 'IMAGE', label: 'Image' },
   { overrideKey: 'videoMaxBytes', effectiveKind: 'VIDEO', label: 'Video' },
   { overrideKey: 'audioMaxBytes', effectiveKind: 'AUDIO', label: 'Audio & voice notes' },
@@ -48,17 +50,22 @@ const MIME_LABELS: Record<string, string> = {
   'application/msword': 'Word (legacy)',
 };
 
-function mimeLabel(mime: string): string {
+export function mimeLabel(mime: string): string {
   if (MIME_LABELS[mime]) return MIME_LABELS[mime];
   // image/jpeg, video/mp4, audio/ogg → jpeg / mp4 / ogg (subtype only).
   const sub = mime.split('/')[1] ?? mime;
   return sub.length <= 12 ? sub.toUpperCase() : mime;
 }
 
-type CapValues = Record<keyof OmnichannelSettingsOverrides, string>;
+export type CapValues = Record<keyof OmnichannelSettingsOverrides, string>;
+
+/** A typed size above the Meta ceiling: what the page says instead of saving. */
+export function mediaCapTooLargeMessage(label: string, ceilingMb: string): string {
+  return `${label} can be at most ${ceilingMb} MB.`;
+}
 
 /** Seed the MB-string inputs from the stored byte overrides (null → blank). */
-function seedValues(settings: OmnichannelSettings): CapValues {
+export function seedValues(settings: OmnichannelSettings): CapValues {
   const seed = {} as CapValues;
   for (const cap of CAPS) {
     const bytes = settings.overrides[cap.overrideKey];
@@ -67,7 +74,7 @@ function seedValues(settings: OmnichannelSettings): CapValues {
   return seed;
 }
 
-function LoadingSkeleton() {
+export function LoadingSkeleton() {
   return (
     <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
       {CAPS.map((c) => (
@@ -83,6 +90,10 @@ function LoadingSkeleton() {
  * accepted MIME types read-only. A blank input = "use Meta default".
  */
 export function MediaCapsForm() {
+  return useFx() ? <FxMediaCapsForm /> : <MediaCapsFormLegacy />;
+}
+
+function MediaCapsFormLegacy() {
   const { settings, loading, error, saving, save, reload } = useOmnichannelSettings();
   const [values, setValues] = useState<CapValues | null>(null);
 
@@ -127,7 +138,15 @@ export function MediaCapsForm() {
         return;
       }
       const ceiling = settings.effective[cap.effectiveKind].ceilingBytes;
-      payload[cap.overrideKey] = Math.min(mbToBytes(mb), ceiling);
+      const bytes = mbToBytes(mb);
+      // Above the most allowed: say so and save nothing, never a smaller
+      // number than the one typed. The ceiling as shown ("0.49" for 500 KB)
+      // is the ceiling itself.
+      if (bytes > ceiling && formatMb(bytes) !== formatMb(ceiling)) {
+        toast.error(mediaCapTooLargeMessage(cap.label, formatMb(ceiling)));
+        return;
+      }
+      payload[cap.overrideKey] = Math.min(bytes, ceiling);
     }
     try {
       await save(payload);

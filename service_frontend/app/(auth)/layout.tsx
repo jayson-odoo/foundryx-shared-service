@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { getRequestBranding } from '@/lib/branding-ssr';
+import { FxComponentsOff } from '@/components/fx/fx-components-off';
 import { BrandedLayout } from './layouts/branded';
 
 /**
@@ -10,5 +11,9 @@ import { BrandedLayout } from './layouts/branded';
  */
 export default async function Layout({ children }: { children: ReactNode }) {
   const { branding } = await getRequestBranding();
-  return <BrandedLayout initialBranding={branding}>{children}</BrandedLayout>;
+  return (
+    <FxComponentsOff>
+      <BrandedLayout initialBranding={branding}>{children}</BrandedLayout>
+    </FxComponentsOff>
+  );
 }

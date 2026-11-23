@@ -211,6 +211,12 @@ class Settings(BaseSettings):
     # registrations feed (contract 2.15 section 2: one call in flight per book
     # with a pause between days), so a 20-year walk never hammers the book.
     autocount_project_registrations_day_pause_seconds: float = 1.0
+    # SS-BACKFILL-CHUNKED - one doc-feed backfill JOB reads days for at most
+    # this long, then saves `next_day` and queues the next segment, so a
+    # multi-year backfill never meets `jobs.run`'s soft time limit
+    # (`background_job_soft_time_limit_seconds`, 7200). 30 minutes also frees
+    # the shared `jobs` slot between segments for the other AutoCount jobs.
+    autocount_doc_feed_backfill_segment_seconds: int = 1800
 
     # AutoCount project registration (plan 71): the admin switch of the four
     # /api/v1/autocount/project-registrations routes. OFF = every route refuses
@@ -417,6 +423,18 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_graph_version: str = "v19.0"
     meta_es_config_id: str = ""
+    # Partner connect sessions (FSS-1). All empty = the feature is off and its
+    # routes answer 503 connect_not_configured; nothing else reads them.
+    # The redirect URI registered in the Meta app for the partner flow (the
+    # existing /wa-callback page); the code exchange always sends this value,
+    # never one from a request. Required in every mode.
+    omni_partner_wa_redirect_uri: str = ""
+    # Graph version used in the Embedded Signup dialog URL the server builds
+    # (separate from meta_graph_version, which the Graph calls keep using).
+    # Required only when the Meta app is configured.
+    meta_es_dialog_version: str = ""
+    # How long a partner connect session stays usable, in minutes.
+    partner_connect_session_ttl_minutes: int = 30
     # Lead Capture: Facebook Login for Business configuration id for the hosted
     # connect wizard (plan 64 AC-64-20). Unset with META_APP_ID set = the
     # Facebook channel is not offered (AC-64-13); META_APP_ID unset = simulated.

@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Blocks, Building2, Palette } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { TenantDetail, TenantListItem } from '@/types/tenant-admin';
 import { tenantAdminService } from '@/services/tenant-admin-service';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
@@ -17,7 +19,7 @@ import {
   tenantUpdateSchema,
   type TenantFormValues,
 } from './tenant-schema';
-import { useTenantActions } from './use-tenant-actions';
+import { TENANT_FX_ICONS, useTenantActions } from './use-tenant-actions';
 
 function toFormValues(tenant: TenantDetail | null): TenantFormValues {
   return {
@@ -49,6 +51,8 @@ export function useTenantForm(
 ): UseTenantFormResult {
   const router = useRouter();
   const actions = useTenantActions();
+  const fx = useFx();
+  const byWhom = useSession().data?.user?.name ?? undefined;
   const creating = !tenantId;
 
   const [tenant, setTenant] = useState<TenantDetail | null>(null);
@@ -103,6 +107,9 @@ export function useTenantForm(
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<TenantListItem> | null>(() => {
     if (isLoading || notFound) return null;
 
@@ -121,7 +128,8 @@ export function useTenantForm(
               adminEmail: values.adminEmail,
               adminPassword: values.adminPassword,
             });
-            toast.success('Tenant provisioned.');
+            if (fx) toast.fxDone({ what: `Tenant ${created.name} created`, byWhom });
+            else toast.success('Tenant provisioned.');
             router.push(tenantFormPath(created.id));
           } else {
             const updated = await tenantAdminService.update(tenantId, {
@@ -133,7 +141,8 @@ export function useTenantForm(
             });
             setTenant(updated);
             form.reset(toFormValues(updated));
-            toast.success('Tenant updated.');
+            if (fx) toast.fxDone({ what: `Tenant ${updated.name} saved`, byWhom });
+            else toast.success('Tenant updated.');
           }
           ok = true;
         } catch (e) {
@@ -197,14 +206,25 @@ export function useTenantForm(
       editable: !creating,
       editPermission: 'tenants.update',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: creating
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (slice W3-PLATFORM); ignored while off.
+      // Save (Create on a new tenant) is the red action while editing, Edit
+      // at rest; Open tenant sits beside it.
+      fx: {
+        mainActionId: 'save',
+        iconFor: TENANT_FX_ICONS,
+        discardName: creating ? 'the new tenant' : tenant?.name,
+      },
     };
   }, [
+    fx,
+    byWhom,
+    formDirty,
     isLoading,
     notFound,
     creating,

@@ -19,8 +19,10 @@ import type {
   QuickReplyCreateInput,
   QuickReplyUpdateInput,
 } from '@/services/quick-reply-service';
+import { useFx } from '@/hooks/use-fx';
+import { FxQuickReplyDialog } from './fx-quick-reply-dialog';
 
-interface QuickReplyDialogProps {
+export interface QuickReplyDialogProps {
   /** The row being edited, or `null` when creating. */
   item: QuickReply | null;
   onClose: () => void;
@@ -33,7 +35,11 @@ interface QuickReplyDialogProps {
  * not a detail page. `body` required; `shortcut` optional (a `/xyz` the composer
  * matches). All mutations go through the parent's hook - no direct service call.
  */
-export function QuickReplyDialog({ item, onClose, onCreate, onUpdate }: QuickReplyDialogProps) {
+export function QuickReplyDialog(props: QuickReplyDialogProps) {
+  return useFx() ? <FxQuickReplyDialog {...props} /> : <QuickReplyDialogLegacy {...props} />;
+}
+
+function QuickReplyDialogLegacy({ item, onClose, onCreate, onUpdate }: QuickReplyDialogProps) {
   const editing = item !== null;
   const [shortcut, setShortcut] = useState(item?.shortcut ?? '');
   const [body, setBody] = useState(item?.body ?? '');

@@ -9,6 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useCan } from '@/hooks/use-can';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import { aiService } from '@/services/ai-service';
 import type { AiSkillVersion } from '@/types/ai';
 
@@ -30,6 +31,11 @@ export function SkillVersionsTab({ skillId, reloadToken, onRolledBack }: SkillVe
   const { formatDateTime } = useDatetime();
   const { can } = useCan();
   const canManage = can('ai_agents.manage');
+  // Foundryx UIUX switch only: the done toast names the version and offers
+  // Undo, which makes the version that was active before active again (the
+  // same rollback request; a rollback is a label move, so it really
+  // reverses).
+  const fx = useFx();
 
   const load = useCallback(() => {
     let cancelled = false;
@@ -54,9 +60,31 @@ export function SkillVersionsTab({ skillId, reloadToken, onRolledBack }: SkillVe
 
   const rollback = async (versionId: string) => {
     setBusyId(versionId);
+    const before = versions.find((v) => v.isActive);
+    const target = versions.find((v) => v.id === versionId);
     try {
       await aiService.rollbackSkill(skillId, versionId);
-      toast.success('Rolled back - this version is now active.');
+      if (fx) {
+        toast.fxDone({
+          what: target ? `Version ${target.version} is now active` : 'Version is now active',
+          byWhom: 'you',
+          undo: before
+            ? () => {
+                void aiService
+                  .rollbackSkill(skillId, before.id)
+                  .then(() => {
+                    onRolledBack();
+                    load();
+                  })
+                  .catch((e: unknown) => {
+                    toast.error(e instanceof Error ? e.message : 'Rollback failed.');
+                  });
+              }
+            : undefined,
+        });
+      } else {
+        toast.success('Rolled back - this version is now active.');
+      }
       onRolledBack();
       load();
     } catch (e) {

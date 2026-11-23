@@ -43,6 +43,7 @@ import {
   entityLabel,
   sourceKindLabel,
 } from '../../components/autocount-meta';
+import { useAcDone } from './use-ac-done';
 import { AddEntityControl } from './add-entity-control';
 import { DetailRow } from './detail-row';
 import { DocFeedsTab } from './doc-feeds-tab';
@@ -67,6 +68,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const { can } = useCan();
   const { formatDateTime } = useDatetime();
   const router = useRouter();
+  const done = useAcDone();
   const form = useForm({ mode: 'onTouched' });
   const runsConfig = useAutocountRunsListConfig(companyId);
   const [syncing, setSyncing] = useState<string | null>(null);
@@ -125,7 +127,10 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         sinkConnectionId: sinkImpl === 'sorento' ? sinkConnectionId : null,
         sorentoCompanyCode: sinkImpl === 'sorento' ? companyCode.trim() : null,
       });
-      toast.success('Push target updated.');
+      done('Push target updated.', {
+        what: 'Push target updated',
+        forWhom: loadedCompany?.name,
+      });
       reload();
       return true;
     } catch (error) {
@@ -134,7 +139,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       );
       return false;
     }
-  }, [companyCode, companyId, sinkConnectionId, sinkImpl, reload]);
+  }, [companyCode, companyId, done, loadedCompany?.name, sinkConnectionId, sinkImpl, reload]);
 
   const onCancelPushTarget = useCallback(() => {
     setSinkImpl(persistedSink);
@@ -151,7 +156,11 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         // A batch to review routes the operator to the review surface. A batch
         // with nothing in it must NOT pretend there is something to review.
         if (job.status === 'needs_review') {
-          toast.success('Sync finished - the batch is awaiting approval.');
+          done('Sync finished - the batch is awaiting approval.', {
+            what: `${entityLabel(entityType)} sync finished`,
+            forWhom: detail?.company.name,
+            howMany: 'batch awaiting approval',
+          });
           router.push(acReviewHref(job.id, acCompanyHref(companyId)));
           return;
         }
@@ -197,7 +206,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         setSyncing(null);
       }
     },
-    [companyId, reload, router],
+    [companyId, detail?.company.name, done, reload, router],
   );
 
   const onEditLookback = useCallback((entity: AutocountEntityConfig) => {
@@ -238,7 +247,10 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     async (entity: AutocountEntityConfig) => {
       try {
         await autocountService.refetchHistory(companyId, entity.entityType);
-        toast.success('History re-fetch scheduled - the next sync re-reads the window.');
+        done('History re-fetch scheduled - the next sync re-reads the window.', {
+          what: `${entityLabel(entity.entityType)} history re-fetch scheduled`,
+          forWhom: detail?.company.name,
+        });
         reload();
       } catch (error) {
         toast.error(
@@ -248,7 +260,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         );
       }
     },
-    [companyId, reload],
+    [companyId, detail?.company.name, done, reload],
   );
 
   const onSaveLookback = useCallback(
@@ -257,7 +269,10 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         await autocountService.updateEntityConfig(companyId, entityType, {
           initialLookbackDays: days,
         });
-        toast.success('First-run window updated.');
+        done('First-run window updated.', {
+          what: `${entityLabel(entityType)} first-run window set to ${days} days`,
+          forWhom: detail?.company.name,
+        });
         setEditing(null);
         reload();
       } catch (error) {
@@ -268,7 +283,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         );
       }
     },
-    [companyId, reload],
+    [companyId, detail?.company.name, done, reload],
   );
 
   const entitiesConfig = useAutocountEntitiesListConfig({
@@ -429,6 +444,10 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       isDirty: sinkDirty,
       onSave: onSavePushTarget,
       onCancel: onCancelPushTarget,
+      // Foundryx UIUX switch only (slice W5-AC-SETUP); ignored while off.
+      // Edit at rest, Save push target's one save while editing; the sink
+      // target is the only editable part of this record.
+      fx: { mainActionId: 'save', discardName: company.name },
     };
   }, [
     can,

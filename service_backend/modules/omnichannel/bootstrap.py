@@ -202,6 +202,80 @@ def register_engine_entities() -> None:
     register_migration_job_handler()
 
 
+def _client_app_fk(table: str) -> str:
+    name = f"fk_{table}_client_app_id"
+    return (
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+        f"WHERE conname = '{name}' AND connamespace = '{OMNI_SCHEMA}'::regnamespace) THEN "
+        f'ALTER TABLE "{OMNI_SCHEMA}".{table} ADD CONSTRAINT {name} '
+        f'FOREIGN KEY (client_app_id) REFERENCES "{OMNI_SCHEMA}".client_apps (id) NOT VALID; '
+        "END IF; END $$"
+    )
+
+
+def _client_app_statements() -> list:
+    """Module Alembic 0032's statements after the table create, verbatim."""
+    s = OMNI_SCHEMA
+    return [
+        f'ALTER TABLE "{s}".workspaces ADD COLUMN IF NOT EXISTS client_app_id VARCHAR',
+        f'ALTER TABLE "{s}".partner_api_keys ADD COLUMN IF NOT EXISTS client_app_id VARCHAR',
+        # 3a. one client app per normalised workspace name per tenant
+        f'INSERT INTO "{s}".client_apps '
+        "(id, tenant_id, name, is_default, status, created_by, created_at, updated_at) "
+        "SELECT gen_random_uuid()::text, g.tenant_id, g.name, false, 'ACTIVE', 'backfill', now(), now() "
+        "FROM (SELECT DISTINCT ON (w.tenant_id, lower(trim(w.name))) "
+        "w.tenant_id, trim(w.name) AS name, lower(trim(w.name)) AS norm "
+        f'FROM "{s}".workspaces w '
+        "WHERE w.client_app_id IS NULL AND w.external_ref IS NULL "
+        "ORDER BY w.tenant_id, lower(trim(w.name)), w.is_trashed ASC, w.created_at ASC, w.id ASC) g "
+        f'WHERE NOT EXISTS (SELECT 1 FROM "{s}".client_apps c '
+        "WHERE c.tenant_id = g.tenant_id AND lower(trim(c.name)) = g.norm)",
+        # 3b. attach each workspace to its name group's client app
+        f'UPDATE "{s}".workspaces w SET client_app_id = c.id '
+        f'FROM "{s}".client_apps c '
+        "WHERE w.client_app_id IS NULL AND w.external_ref IS NULL "
+        "AND c.tenant_id = w.tenant_id AND lower(trim(c.name)) = lower(trim(w.name))",
+        # 3c. exactly one default per tenant: the default workspace's client app, else the oldest
+        f'UPDATE "{s}".client_apps SET is_default = true '
+        "WHERE id IN (SELECT DISTINCT ON (a.tenant_id) a.id "
+        f'FROM "{s}".client_apps a '
+        f'LEFT JOIN "{s}".workspaces dw ON dw.client_app_id = a.id AND dw.is_default = true '
+        f'WHERE NOT EXISTS (SELECT 1 FROM "{s}".client_apps d '
+        "WHERE d.tenant_id = a.tenant_id AND d.is_default = true) "
+        "ORDER BY a.tenant_id, (dw.id IS NULL) ASC, dw.is_trashed ASC, dw.created_at ASC, "
+        "a.created_at ASC, "
+        f'(SELECT min(x.created_at) FROM "{s}".workspaces x WHERE x.client_app_id = a.id) ASC NULLS LAST, '
+        "a.id ASC)",
+        # 3d. partner-made workspaces (external_ref) join the tenant's default client app
+        f'UPDATE "{s}".workspaces w SET client_app_id = c.id '
+        f'FROM "{s}".client_apps c '
+        "WHERE c.tenant_id = w.tenant_id AND c.is_default = true "
+        "AND w.client_app_id IS NULL AND w.external_ref IS NOT NULL "
+        "AND (w.is_trashed = true OR NOT EXISTS ("
+        f'SELECT 1 FROM "{s}".workspaces d WHERE d.tenant_id = w.tenant_id '
+        "AND d.id <> w.id AND d.external_ref = w.external_ref AND d.is_trashed = false))",
+        # 3e. partner keys join the tenant's default client app
+        f'UPDATE "{s}".partner_api_keys k SET client_app_id = c.id '
+        f'FROM "{s}".client_apps c '
+        "WHERE c.tenant_id = k.tenant_id AND c.is_default = true AND k.client_app_id IS NULL",
+        # 4. foreign keys (NOT VALID then VALIDATE) and indexes
+        _client_app_fk("workspaces"),
+        _client_app_fk("partner_api_keys"),
+        f'ALTER TABLE "{s}".workspaces VALIDATE CONSTRAINT fk_workspaces_client_app_id',
+        f'ALTER TABLE "{s}".partner_api_keys VALIDATE CONSTRAINT fk_partner_api_keys_client_app_id',
+        "CREATE INDEX IF NOT EXISTS ix_app_omnichannel_workspaces_client_app_id "
+        f'ON "{s}".workspaces (client_app_id)',
+        "CREATE INDEX IF NOT EXISTS ix_app_omnichannel_partner_api_keys_client_app_id "
+        f'ON "{s}".partner_api_keys (client_app_id)',
+        # 5. external_ref unique per client app instead of per tenant
+        f'DROP INDEX IF EXISTS "{s}".uq_workspaces_tenant_external_ref',
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_client_app_external_ref "
+        f'ON "{s}".workspaces (client_app_id, external_ref) '
+        "WHERE external_ref IS NOT NULL AND is_trashed = false",
+    ]
+
+
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
     if engine.dialect.name == "postgresql":
@@ -563,6 +637,15 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS business_timezone VARCHAR"
                 )
             )
+            # S12 (2026-11-18) - per-number WhatsApp window opt-in, nullable
+            # (NULL = today). Module Alembic 0029 is the real fix for a
+            # Postgres-tracked deploy; this covers the `create_all` path.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS strict_number_window BOOLEAN"
+                )
+            )
             # Plan 33 S2 (respond.io migration, D-A6-3) - `migrated_from`
             # descriptive markers. `migration_refs` itself is a brand-new
             # table already created by `create_all` above (per-module Alembic
@@ -688,6 +771,35 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS visitor_profile_json JSON"
                 )
             )
+            # S7 partner workspaces (module Alembic
+            # 0031_omni_workspace_external_ref): the partner's
+            # organisation id. New, NULL on every existing row (no backfill:
+            # no workspace ever had a partner id), plus its partial unique index.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".workspaces '
+                    "ADD COLUMN IF NOT EXISTS external_ref VARCHAR"
+                )
+            )
+            # Its partial unique index is per client app since module Alembic
+            # 0032; the per-tenant one from 0031 is dropped in the block below.
+            #
+            # Client apps (module Alembic 0032): `client_apps` itself comes
+            # from create_all above; these are the migration's remaining
+            # statements, verbatim (pinned by
+            # tests/test_omnichannel_client_apps.py): the two nullable parent
+            # columns, the idempotent backfill (one default client app per
+            # tenant, NULL rows attached, so rows an older running version
+            # wrote during a deploy are attached on the next boot), the
+            # foreign keys, the indexes, and the external_ref index move.
+            for statement in _client_app_statements():
+                conn.execute(text(statement))
+            # Partner connect sessions (module Alembic 0033): a brand-new
+            # table, so `create_all` above already created it with every
+            # column, index, check and foreign key the migration creates
+            # (the two are compared by tests/test_omnichannel_connect_sessions.py).
+            # No existing table changes and nothing to backfill, so there is
+            # no ALTER to mirror here.
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -704,15 +816,36 @@ def install(engine: Engine, db: Session) -> None:
     if ERASE_PERMISSION in created:
         sweep_erase_grant(db)
         db.commit()
+    # Same one-shot shape for the partner-key permission (S6): an existing
+    # tenant's system Admin role that already holds api_keys.manage gets
+    # partner_keys.manage once, when this sync created the key.
+    if PARTNER_KEYS_PERMISSION in created:
+        sweep_partner_keys_grant(db)
+        db.commit()
 
 
 ERASE_PERMISSION = "contacts.erase"
 MANAGE_PERMISSION = "contacts.manage"
+PARTNER_KEYS_PERMISSION = "partner_keys.manage"
+API_KEYS_MANAGE_PERMISSION = "api_keys.manage"
 
 
 def sweep_erase_grant(db: Session) -> None:
     """Grant ``contacts.erase`` to every tenant's system Admin role that holds
     ``contacts.manage``. Idempotent; each row carries the role's own tenant_id.
+    No commit: the caller owns the transaction."""
+    _sweep_admin_grant(db, MANAGE_PERMISSION, ERASE_PERMISSION)
+
+
+def sweep_partner_keys_grant(db: Session) -> None:
+    """Grant ``partner_keys.manage`` to every tenant's system Admin role that
+    holds ``api_keys.manage``. Idempotent; no commit."""
+    _sweep_admin_grant(db, API_KEYS_MANAGE_PERMISSION, PARTNER_KEYS_PERMISSION)
+
+
+def _sweep_admin_grant(db: Session, holder_key: str, new_key: str) -> None:
+    """Grant ``new_key`` to every tenant's system Admin role that holds
+    ``holder_key``. Idempotent; each row carries the role's own tenant_id.
     No commit: the caller owns the transaction."""
     from sqlalchemy import select
 
@@ -722,29 +855,29 @@ def sweep_erase_grant(db: Session) -> None:
     ids = dict(
         db.execute(
             select(Permission.key, Permission.id).where(
-                Permission.key.in_([MANAGE_PERMISSION, ERASE_PERMISSION])
+                Permission.key.in_([holder_key, new_key])
             )
         ).all()
     )
-    manage_id, erase_id = ids.get(MANAGE_PERMISSION), ids.get(ERASE_PERMISSION)
-    if manage_id is None or erase_id is None:
+    holder_id, new_id = ids.get(holder_key), ids.get(new_key)
+    if holder_id is None or new_id is None:
         return
     holders = db.execute(
         select(Role.id, Role.tenant_id)
         .join(role_permissions, role_permissions.c.role_id == Role.id)
         .where(
-            role_permissions.c.permission_id == manage_id,
+            role_permissions.c.permission_id == holder_id,
             Role.name == "Admin",
             Role.is_system.is_(True),
         )
     ).all()
     already = set(
         db.execute(
-            select(role_permissions.c.role_id).where(role_permissions.c.permission_id == erase_id)
+            select(role_permissions.c.role_id).where(role_permissions.c.permission_id == new_id)
         ).scalars()
     )
     new = [
-        {"role_id": rid, "permission_id": erase_id, "tenant_id": tid}
+        {"role_id": rid, "permission_id": new_id, "tenant_id": tid}
         for rid, tid in holders
         if rid not in already
     ]
@@ -768,8 +901,15 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     before returning makes `install_tenant` self-healing on every call,
     including this one. `event_service.backfill_tenant` is the same
     self-healing shape for `conversation_events`/`last_agent_message_at` - a
-    no-op on a tenant with zero contacts (the fresh-workspace branch)."""
+    no-op on a tenant with zero contacts (the fresh-workspace branch).
+
+    Client apps (module Alembic 0032): a new tenant's "General" gets its own
+    "General" client app (find-or-create by name), which becomes the tenant's
+    default, same unit of work; the already-installed branch runs
+    `client_app_service.backfill_tenant` (idempotent), which also attaches rows
+    an older running version wrote without a parent."""
     from .services import close_reason_service, event_service, lifecycle_service
+    from .services.client_app_service import ClientAppService
 
     statuses.ensure_statuses(db, tenant_id)
     exists = (
@@ -781,9 +921,13 @@ def install_tenant(db: Session, tenant_id: str) -> None:
         lifecycle_service.backfill_tenant(db, tenant_id)
         event_service.backfill_tenant(db, tenant_id)
         close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
+        ClientAppService(db).backfill_tenant(tenant_id)
         return
+    apps = ClientAppService(db)
+    client_app = apps.find_or_create_by_name(tenant_id, "General", created_by="install")
     ws = Workspace(
         tenant_id=tenant_id,
+        client_app_id=client_app.id,
         name="General",
         status_id=statuses.status_id_for(db, tenant_id, "WORKSPACE", "ACTIVE"),
         is_default=True,
@@ -791,6 +935,7 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     )
     db.add(ws)
     db.flush()
+    apps.ensure_default(tenant_id)
     lifecycle_service.materialize_for_workspace(db, ws)
     # Plan 27 A3, S2 (AC-IVE-27): the seeded close reasons for a NEW workspace,
     # same unit of work as its create.
@@ -916,8 +1061,11 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service, messaging_policy
+    from .services.client_app_service import ClientAppService
 
     statuses.ensure_statuses(db, tenant_id)
+    # Client apps (module Alembic 0032): idempotent, no version bump needed.
+    ClientAppService(db).backfill_tenant(tenant_id)
     lifecycle_service.backfill_tenant(db, tenant_id)
     event_service.backfill_tenant(db, tenant_id)
     close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)

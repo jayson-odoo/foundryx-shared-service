@@ -2,7 +2,9 @@
 
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useFx } from '@/hooks/use-fx';
 import { useRecordNav, type UseRecordNavOptions } from '@/hooks/use-record-nav';
+import { FxRecordNav } from '@/components/fx/list/fx-record-nav';
 
 export type RecordNavProps = UseRecordNavOptions & {
   /**
@@ -13,8 +15,16 @@ export type RecordNavProps = UseRecordNavOptions & {
   guard?: (proceed: () => void) => void;
 };
 
+/**
+ * The record pager shown top-right of a form. With the Foundryx UIUX switch
+ * on: ‹ › icon buttons with "3 of 120", greyed at the first and last.
+ */
+export function RecordNav(props: RecordNavProps) {
+  return useFx() ? <FxRecordNav {...props} /> : <RecordNavLegacy {...props} />;
+}
+
 /** The circular "‹ 1 / N ›" record pager shown top-right of a form (plan 02 §3b). */
-export function RecordNav({ guard, ...options }: RecordNavProps) {
+function RecordNavLegacy({ guard, ...options }: RecordNavProps) {
   const nav = useRecordNav(options);
   if (!nav.available) return null;
 

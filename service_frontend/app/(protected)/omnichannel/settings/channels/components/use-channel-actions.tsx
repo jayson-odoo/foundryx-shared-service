@@ -1,13 +1,16 @@
 'use client';
 
+import { useFxActor } from './use-fx-actor';
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { KeyRound, PlugZap, Pencil, PowerOff, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import type { Channel } from '@/types/omnichannel';
 import { channelFormHref } from './paths';
+import { setChannelTestResult, setChannelTesting, type ChannelTestResult } from './channel-test-results';
 
 /**
  * The Channel action registry - one set surfaced in the row "…" menu, the bulk
@@ -21,8 +24,10 @@ export interface UseChannelActionsOptions {
 
 export function useChannelActions({ onReplaceToken }: UseChannelActionsOptions = {}): ResourceAction<Channel>[] {
   const router = useRouter();
+  const fx = useFx();
+  const byWhom = useFxActor();
 
-  return useMemo<ResourceAction<Channel>[]>(() => {
+  const actions = useMemo<ResourceAction<Channel>[]>(() => {
     const ids = (rows: Channel[]) => rows.map((r) => r.id);
 
     return [
@@ -108,4 +113,62 @@ export function useChannelActions({ onReplaceToken }: UseChannelActionsOptions =
       },
     ];
   }, [router, onReplaceToken]);
+
+  // Foundryx UIUX switch only: the same actions and the same requests; only
+  // what is said afterwards changes (the test result sits next to the
+  // channel, toasts name what happened and by whom, the countdown names the
+  // channel).
+  return useMemo(
+    () => (fx ? actions.map((a) => fxChannelAction(a, byWhom)) : actions),
+    [fx, actions, byWhom],
+  );
+}
+
+/** Runs Test connection for one channel and keeps the result beside it.
+ *  Resolves with the result (null when the request failed). */
+export async function fxTestConnection(channel: Channel): Promise<ChannelTestResult | null> {
+  setChannelTesting(channel.id);
+  try {
+    const res = await channelService.testConnection(channel.id);
+    setChannelTestResult(channel.id, res);
+    return res;
+  } catch {
+    setChannelTestResult(channel.id, {
+      ok: false,
+      message: "Couldn't run the test. Try again.",
+      checkedAt: new Date().toISOString(),
+    });
+    return null;
+  }
+}
+
+function fxChannelAction(action: ResourceAction<Channel>, byWhom: string | undefined): ResourceAction<Channel> {
+  if (action.id === 'test-connection') {
+    return {
+      ...action,
+      run: async ([channel]) => {
+        if (channel) await fxTestConnection(channel);
+      },
+    } as ResourceAction<Channel>;
+  }
+  if (action.id === 'restore') {
+    return {
+      ...action,
+      run: async (rows, rt) => {
+        await channelService.restore(rows.map((r) => r.id));
+        toast.fxDone({
+          what: rows.length === 1 ? `${rows[0].name} restored` : `${rows.length} channels restored`,
+          byWhom,
+        });
+        rt.reload();
+      },
+    } as ResourceAction<Channel>;
+  }
+  if (action.deferred) {
+    return {
+      ...action,
+      deferred: { ...action.deferred, fxName: (rows: Channel[]) => (rows.length === 1 ? rows[0].name : undefined) },
+    };
+  }
+  return action;
 }

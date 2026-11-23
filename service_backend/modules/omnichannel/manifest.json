@@ -122,6 +122,24 @@
       "prefix": "/omnichannel"
     },
     {
+      "name": "partner_keys",
+      "prefix": "/omnichannel/partner-keys"
+    },
+    {
+      "name": "client_apps",
+      "prefix": "/omnichannel/client-apps"
+    },
+    {
+      "name": "partner_v1",
+      "prefix": "/api/v1/omnichannel/partner",
+      "public": true
+    },
+    {
+      "name": "connect_public",
+      "prefix": "/api/v1/omnichannel/connect",
+      "public": true
+    },
+    {
       "name": "api_v1",
       "prefix": "/api/v1/omnichannel",
       "public": true

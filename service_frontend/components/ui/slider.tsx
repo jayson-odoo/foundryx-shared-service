@@ -3,8 +3,15 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { Slider as SliderPrimitive } from 'radix-ui';
+import { useFx } from '@/hooks/use-fx';
+import { FxSlider, FxSliderThumb } from '@/components/fx/fields/fx-slider';
 
-function Slider({ className, children, ...props }: React.ComponentProps<typeof SliderPrimitive.Root>) {
+// Foundryx UIUX switch: the playbook slider while on; today's while off.
+function Slider(props: React.ComponentProps<typeof SliderPrimitive.Root>) {
+  return useFx() ? <FxSlider {...props} /> : <SliderLegacy {...props} />;
+}
+
+function SliderLegacy({ className, children, ...props }: React.ComponentProps<typeof SliderPrimitive.Root>) {
   return (
     <SliderPrimitive.Root
       data-slot="slider"
@@ -19,7 +26,12 @@ function Slider({ className, children, ...props }: React.ComponentProps<typeof S
   );
 }
 
-function SliderThumb({ className, ...props }: React.ComponentProps<typeof SliderPrimitive.Thumb>) {
+// Foundryx UIUX switch: the playbook slider while on; today's while off.
+function SliderThumb(props: React.ComponentProps<typeof SliderPrimitive.Thumb>) {
+  return useFx() ? <FxSliderThumb {...props} /> : <SliderThumbLegacy {...props} />;
+}
+
+function SliderThumbLegacy({ className, ...props }: React.ComponentProps<typeof SliderPrimitive.Thumb>) {
   return (
     <SliderPrimitive.Thumb
       data-slot="slider-thumb"

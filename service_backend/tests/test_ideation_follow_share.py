@@ -883,3 +883,56 @@ def test_cp1_verified_session_is_the_items_product_link(setup, product):
     body = _prove(s, product, token, "+60123450002")
     assert body["principal"]["productId"] == s["product_id"]
     assert f"/board/{body['boardUrl'].split('/board/')[1].split('/')[0]}" in body["boardUrl"]
+
+
+# Lane FEEDBACK-COMMENT-PHONE-LIKE-PORTAL: the phone step's messages read like
+# the CRM sign-in (codes unchanged). Every number here is made up.
+def test_wrong_code_counts_down_the_tries_left_like_the_crm(setup, product):
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 590)
+    _send(s, token, "+60123450002")
+    good = product["codes"][0]
+    bad = "000000" if good != "000000" else "111111"
+    msgs = [_verify(s, token, "+60123450002", bad).json()["error"]["message"] for _ in range(5)]
+    assert msgs == [
+        "That code is not right. 4 tries left.",
+        "That code is not right. 3 tries left.",
+        "That code is not right. 2 tries left.",
+        "That code is not right. 1 try left.",
+        "That code is not right.",
+    ]
+
+
+def test_expired_code_reads_like_the_crm(setup, product):
+    from datetime import datetime, timedelta, timezone
+
+    from modules.ideation.models import IdeaPhoneCode
+
+    s = setup
+    _product_connection(s)
+    _iid, token = _shared_item(s, 591)
+    _send(s, token, "+60123450002")
+    db = s["factory"]()
+    try:
+        db.query(IdeaPhoneCode).one().expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+    finally:
+        db.close()
+    res = _verify(s, token, "+60123450002", product["codes"][0])
+    assert res.json()["error"] == {"code": "code_expired", "message": "That code has expired. Send a new one."}
+
+
+def test_throttled_phone_step_names_the_minutes_like_the_crm(setup, product, monkeypatch):
+    from app.config import settings
+
+    s = setup
+    _product_connection(s)
+    monkeypatch.setattr(settings, "throttle_idea_follow_phone_max", 1)
+    _iid, token = _shared_item(s, 592)
+    assert _send(s, token, "+60123450002").status_code == 200
+    res = _send(s, token, "+60123450002")
+    assert res.status_code == 429
+    # 429 wire unchanged: {detail} + Retry-After; only the words follow the CRM.
+    minutes = -(-int(res.headers["Retry-After"]) // 60)
+    assert res.json()["detail"] == f"Too many tries. Try again in {minutes} minute{'' if minutes == 1 else 's'}."

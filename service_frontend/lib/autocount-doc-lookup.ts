@@ -8,6 +8,7 @@
  * snapshot's `createdAt`) go through `useDatetime` in the viewer's zone.
  */
 import { formatDate, formatDateTime } from '@/lib/datetime';
+import { formatMoneyFx } from '@/lib/money';
 import type {
   DocLookupDoor,
   DocLookupStep,
@@ -85,7 +86,12 @@ export interface CuratedField {
 }
 
 /** The header facts shown above "All fields" - only the ones present. */
-export function curatedFields(header: DocLookupVendorRecord): CuratedField[] {
+export function curatedFields(
+  header: DocLookupVendorRecord,
+  /** Foundryx UIUX switch on: the net total reads "RM 1,250.00" (RM only for
+   *  MYR, the ISO code otherwise). The number is the same, two decimals. */
+  fxMoney = false,
+): CuratedField[] {
   const out: CuratedField[] = [];
   const has = (key: string) => header[key] !== undefined && header[key] !== null && header[key] !== '';
   if (has('DebtorCode') || has('DebtorName')) {
@@ -105,7 +111,11 @@ export function curatedFields(header: DocLookupVendorRecord): CuratedField[] {
     const text = Number.isFinite(amount)
       ? amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
       : vendorValueText(header.NetTotal);
-    out.push({ label: 'Net total', value: has('CurrencyCode') ? `${vendorValueText(header.CurrencyCode)} ${text}` : text });
+    if (fxMoney && Number.isFinite(amount) && has('CurrencyCode')) {
+      out.push({ label: 'Net total', value: formatMoneyFx(amount, vendorValueText(header.CurrencyCode), 2) });
+    } else {
+      out.push({ label: 'Net total', value: has('CurrencyCode') ? `${vendorValueText(header.CurrencyCode)} ${text}` : text });
+    }
   }
   return out;
 }

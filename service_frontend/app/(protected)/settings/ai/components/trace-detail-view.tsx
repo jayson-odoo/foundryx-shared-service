@@ -8,6 +8,9 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { PageHeader } from '@/components/platform/page-header';
+import { FxHoldToCopy } from '@/components/fx/copy/hold-to-copy';
 import { aiService } from '@/services/ai-service';
 import type { AiSpan, AiTraceDetail } from '@/types/ai';
 import { AI_TRACES_PATH } from './paths';
@@ -77,6 +80,110 @@ function SpanRow({ span, index }: { span: AiSpan; index: number }) {
   );
 }
 
+/** One fact on the trace summary card under the Foundryx UIUX switch. */
+function FxFact({ label, copy, children }: { label: string; copy?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span className="text-xs text-(--fx-ink-3)">{label}</span>
+      {copy ? (
+        <FxHoldToCopy text={copy}>
+          <span className="break-all text-sm text-(--fx-ink)">{children}</span>
+        </FxHoldToCopy>
+      ) : (
+        <span className="text-sm text-(--fx-ink)">{children}</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One trace with the Foundryx UIUX switch on: the page header with its trail
+ * back to the traces, the summary as plain text with Hold to Copy on the
+ * agent, model, prompt key and time only, and the steps unchanged (their
+ * input and output blocks are an SS difference and never copy).
+ */
+function FxTraceDetail({ trace }: { trace: AiTraceDetail }) {
+  const { formatDateTime } = useDatetime();
+  const title = trace.agentName || 'Trace';
+  const prompt = trace.skillKey ? `${trace.skillKey}${trace.promptVersion ? ` v${trace.promptVersion}` : ''}` : null;
+  const when = trace.createdAt ? formatDateTime(trace.createdAt) : null;
+  return (
+    <Container width="fluid">
+      <PageHeader
+        title={title}
+        crumbs={[{ label: 'Settings' }, { label: 'AI traces', href: AI_TRACES_PATH }, { label: title }]}
+      />
+      <div className="flex flex-col gap-5 pb-5">
+        <Card>
+          <CardContent className="grid gap-4 py-5 sm:grid-cols-2 lg:grid-cols-4">
+            <FxFact label="Agent" copy={trace.agentName || undefined}>
+              {trace.agentName || '-'}
+            </FxFact>
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-xs text-(--fx-ink-3)">Model</span>
+              {trace.model ? (
+                <FxHoldToCopy text={trace.model}>
+                  <span className="break-all text-sm text-(--fx-ink)">{trace.model}</span>
+                </FxHoldToCopy>
+              ) : (
+                <span className="text-sm text-(--fx-ink)">-</span>
+              )}
+              <span className="text-xs text-(--fx-ink-3)">{trace.provider}</span>
+            </div>
+            <FxFact label="Tokens">
+              <span className="tabular-nums">
+                {trace.tokensIn} in / {trace.tokensOut} out
+              </span>
+            </FxFact>
+            <FxFact label="Latency">
+              <span className="tabular-nums">{trace.latencyMs} ms</span>
+            </FxFact>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-(--fx-ink-3)">Status</span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant={trace.status === 'ok' ? 'success' : 'destructive'} appearance="light" size="sm">
+                  {trace.status === 'ok' ? 'OK' : 'Error'}
+                </Badge>
+                {trace.flagged && (
+                  <Badge variant="warning" appearance="light" size="sm">
+                    Flagged
+                  </Badge>
+                )}
+              </div>
+            </div>
+            <FxFact label="Prompt" copy={prompt ?? undefined}>
+              {prompt ?? '-'}
+            </FxFact>
+            <FxFact label="When" copy={when ?? undefined}>
+              {when ?? '-'}
+            </FxFact>
+            <FxFact label="Steps">
+              <span className="tabular-nums">{trace.spanCount}</span>
+            </FxFact>
+          </CardContent>
+        </Card>
+
+        {trace.error && (
+          <Card>
+            <CardContent className="py-4">
+              <p className="text-sm text-destructive">{trace.error}</p>
+            </CardContent>
+          </Card>
+        )}
+
+        <div className="flex flex-col gap-3">
+          {trace.spans.map((span, index) => (
+            <SpanRow key={span.id} span={span} index={index} />
+          ))}
+          {trace.spans.length === 0 && (
+            <p className="py-12 text-center text-sm text-(--fx-ink-3)">No steps recorded.</p>
+          )}
+        </div>
+      </div>
+    </Container>
+  );
+}
+
 export interface TraceDetailViewProps {
   traceId: string;
 }
@@ -93,6 +200,7 @@ export function TraceDetailView({ traceId }: TraceDetailViewProps) {
   const [trace, setTrace] = useState<AiTraceDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const { formatDateTime } = useDatetime();
+  const fx = useFx();
 
   useEffect(() => {
     let cancelled = false;
@@ -131,6 +239,8 @@ export function TraceDetailView({ traceId }: TraceDetailViewProps) {
       </Container>
     );
   }
+
+  if (fx) return <FxTraceDetail trace={trace} />;
 
   return (
     <Container width="fluid">

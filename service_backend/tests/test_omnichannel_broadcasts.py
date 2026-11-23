@@ -964,3 +964,41 @@ def test_channel_template_segment_hard_delete_not_blocked_by_broadcast(client, s
     assert survivor.template_id == template_id
     assert survivor.audience_segment_id == segment_id
     db.close()
+
+
+# ── Recipients list: one state or several (comma-separated) ─────────────────
+def test_recipients_state_filter_one_or_several(client, session_factory):
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    states = ["queued", "sent", "delivered", "read", "failed"]
+    contact_ids = [contact_id] + [
+        _seed_contact(session_factory, ws, first=f"R{i}", last="State", phone=f"+60 12-000 30{i:02d}")
+        for i in range(1, len(states))
+    ]
+    created = client.post(_broadcasts_base(ws), headers=h, json=_create_payload(
+        channel_id, template_id, audience={"kind": "contacts", "contactIds": contact_ids})).json()
+
+    db = session_factory()
+    for cid, state in zip(contact_ids, states):
+        db.add(BroadcastRecipient(
+            tenant_id=DEFAULT_TENANT_ID, broadcast_id=created["id"], contact_id=cid, state=state))
+    db.commit()
+    db.close()
+
+    url = f"{_broadcasts_base(ws)}/{created['id']}/recipients"
+
+    def got(params):
+        res = client.get(url, headers=h, params=params)
+        assert res.status_code == 200
+        body = res.json()
+        assert body["total"] == len(body["data"])
+        return sorted(r["state"] for r in body["data"])
+
+    assert got({}) == sorted(states)
+    # the single-value form keeps working
+    assert got({"state": "failed"}) == ["failed"]
+    # several states, the form the Recipients tab sends
+    assert got({"state": "sent,read"}) == ["read", "sent"]
+    assert got({"state": "sent, read ,"}) == ["read", "sent"]
+    # an unknown state matches nothing; mixed with a known one it is ignored
+    assert got({"state": "nope"}) == []
+    assert got({"state": "nope,queued"}) == ["queued"]

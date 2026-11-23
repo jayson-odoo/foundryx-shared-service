@@ -14,6 +14,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
+import { FxDateField } from '@/components/fx/fields';
 import { cn } from '@/lib/utils';
 import type {
   FormAddressAnswer,
@@ -40,6 +41,10 @@ export interface FieldInputProps {
   computed?: number | null;
   id: string;
   disabled?: boolean;
+  /** Foundryx UIUX date field for `date` answers. Only the signed-in fill
+   * page sets it; every other caller (public forms, preview) keeps the
+   * native date input. The answer is the same "YYYY-MM-DD" either way. */
+  fxFields?: boolean;
 }
 
 export function FieldInput({
@@ -51,6 +56,7 @@ export function FieldInput({
   computed,
   id,
   disabled,
+  fxFields = false,
 }: FieldInputProps) {
   const choiceOptions = (field.options?.items ?? []).map((o) => ({ value: o.value, label: o.label }));
 
@@ -195,6 +201,16 @@ export function FieldInput({
     }
 
     case 'date':
+      if (fxFields) {
+        return (
+          <FxDateField
+            id={id}
+            value={typeof value === 'string' && value ? value : null}
+            disabled={disabled}
+            onChange={(day) => onChange(day ?? '')}
+          />
+        );
+      }
       return (
         <Input
           id={id}

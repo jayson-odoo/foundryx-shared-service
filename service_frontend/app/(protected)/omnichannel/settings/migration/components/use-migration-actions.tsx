@@ -5,6 +5,9 @@ import { CircleStop } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import type { ResourceAction } from '@/components/platform/resource-list';
+import type { FxIconRef } from '@/components/fx/icons';
+import { useFx } from '@/hooks/use-fx';
+import { useFxUserName } from '../../workspaces/components/use-fx-user-name';
 import { respondioMigrationService } from '@/services/respondio-migration-service';
 import { MIGRATION_JOB_IN_FLIGHT, type MigrationJob } from '@/types/respondio-migration';
 
@@ -33,7 +36,14 @@ const MIGRATION_MANAGE = 'omnichannel_migration.manage';
  * dedicated route is a direct commit with no undo, so a grace-window
  * `DeferredActionButton` would falsely promise one.
  */
+/** Other Action icons under the Foundryx UIUX switch. */
+export const MIGRATION_FX_ICONS: Record<string, FxIconRef> = {
+  abort: <CircleStop aria-hidden="true" className="size-[18px]" />,
+};
+
 export function useMigrationActions(): ResourceAction<MigrationJob>[] {
+  const fx = useFx();
+  const byWhom = useFxUserName();
   return useMemo<ResourceAction<MigrationJob>[]>(
     () => [
       {
@@ -47,7 +57,8 @@ export function useMigrationActions(): ResourceAction<MigrationJob>[] {
         run: async ([job], rt) => {
           try {
             await respondioMigrationService.cancelJob(job.id);
-            toast.success('Migration aborted.');
+            if (fx) toast.fxDone({ what: `Migration from ${job.spaceLabel} aborted`, forWhom: job.workspaceName, byWhom });
+            else toast.success('Migration aborted.');
             rt.reload();
           } catch (error) {
             const reason = error instanceof ApiError ? (error.detail as { reason?: string } | null)?.reason : null;
@@ -60,6 +71,6 @@ export function useMigrationActions(): ResourceAction<MigrationJob>[] {
         },
       },
     ],
-    [],
+    [fx, byWhom],
   );
 }
