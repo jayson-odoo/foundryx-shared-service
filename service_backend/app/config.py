@@ -410,6 +410,13 @@ class Settings(BaseSettings):
     # (separate from meta_graph_version, which the Graph calls keep using).
     # Required only when the Meta app is configured.
     meta_es_dialog_version: str = ""
+    # Facebook Login for Business configuration id for the partner Page connect
+    # (channelType FACEBOOK: Messenger + the linked Instagram account). Its
+    # permissions: pages_show_list, pages_manage_metadata, pages_messaging,
+    # pages_read_engagement, business_management, instagram_basic,
+    # instagram_manage_messages. Required for FACEBOOK sessions only when the
+    # Meta app is configured; WhatsApp sessions never read it.
+    omni_partner_meta_config_id: str = ""
     # How long a partner connect session stays usable, in minutes.
     partner_connect_session_ttl_minutes: int = 30
     # Lead Capture: Facebook Login for Business configuration id for the hosted
