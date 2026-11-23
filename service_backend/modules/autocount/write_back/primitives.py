@@ -519,7 +519,7 @@ class PrimitiveService(WriteFrame):
         finally:
             self.db.rollback()
         try:
-            payloads._check_kind_doc(kind_def, doc, cancelled_ok=True)
+            payloads._check_kind_doc(kind_def, doc, cancelled_ok=True, write=False)
         except WriteRefusal as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
         return PrimitiveResult(

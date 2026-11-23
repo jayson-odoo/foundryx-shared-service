@@ -7,6 +7,7 @@ rows appear in ``Details``. Quantities are computed in ``Decimal``.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -16,6 +17,7 @@ from modules.autocount.write_back import capabilities
 from modules.autocount.write_back.doc_kinds import DocKind, kind_of
 
 Doc = Dict[str, Any]
+logger = logging.getLogger("foundryx.autocount")
 
 HEADER_KEYS = (
     "DocKey", "DocNo", "DocDate", "CreditorCode", "CreditorName", "Ref", "Description",
@@ -138,34 +140,47 @@ def _is_spo(doc: Doc) -> bool:
 SHIPPING_PO = "ShippingPO"
 SHIPPING_PO_CHANGED = "SHIPPING_PO_CHANGED"
 SHIPPING_PO_CHANGED_MESSAGE = "AutoCount changed Shipping Order on this PO"
+SHIPPING_PO_UNKNOWN = "SHIPPING_PO_UNKNOWN"
+SHIPPING_PO_UNKNOWN_MESSAGE = (
+    "Shipping Order on this PO is not set to yes or no in AutoCount, so the change was not made. "
+    "Set Shipping Order on the PO in AutoCount, then try again."
+)
+_SHIPPING_FLAGS = ("T", "F")
+
+
+def _require_known_shipping(doc: Doc) -> None:
+    """SS-SHIPPINGPO-PRESERVE (prod proof, PO 202607-S0083): a read whose ``ShippingPO`` is
+    not exactly "T" or "F" ("\u0000", "", null, missing) is unknown. SS never guesses it and
+    never sends it back: the edit is refused before any write."""
+    value = doc.get(SHIPPING_PO)
+    if value not in _SHIPPING_FLAGS:
+        logger.warning("autocount edit refused: ShippingPO reads %r (DocKey %s, DocNo %s)",
+                       value, doc.get("DocKey"), doc.get("DocNo"))
+        raise WriteRefusal(SHIPPING_PO_UNKNOWN, SHIPPING_PO_UNKNOWN_MESSAGE, plain=True)
 
 
 def keep_shipping_po(body: Doc, doc: Doc) -> Doc:
-    """SS-SHIPPINGPO-PRESERVE: an edit body carries ``ShippingPO`` exactly as SS just read
-    it ("F" stays "F", "T" stays "T"), so the vendor never has to default a missing one.
-    Copied, never computed: a read without the field sends none."""
-    value = doc.get(SHIPPING_PO)
-    if value in ("T", "F"):
-        body[SHIPPING_PO] = value
+    """SS-SHIPPINGPO-PRESERVE: a PO / SPO edit body carries ``ShippingPO`` exactly as SS just
+    read it ("F" stays "F", "T" stays "T"); omitted, the vendor edit writes NUL, which
+    AutoCount shows as ticked (prod 20 Nov). Copied, never computed; unknown is refused."""
+    _require_known_shipping(doc)
+    body[SHIPPING_PO] = doc[SHIPPING_PO]
     return body
 
 
-def _shipping_value(doc: Doc) -> str:
-    return "T" if _is_spo(doc) else "F"
-
-
 def shipping_po_changed(before: Doc, after: Doc) -> bool:
-    """True when the read-back's Shipping Order flag differs from the pre-write one (a
-    missing flag reads as "F", like every other PO / SPO check here)."""
-    return _is_spo(before) != _is_spo(after)
+    """True when the read-back's ``ShippingPO`` is not exactly the pre-write value (a NUL,
+    blank or missing read-back after "F" is a change)."""
+    return before.get(SHIPPING_PO) != after.get(SHIPPING_PO)
 
 
 def shipping_po_values(before: Doc, after: Doc) -> Tuple[str, str]:
-    """``(before, after)`` flags for the log line of a ``SHIPPING_PO_CHANGED``."""
-    return _shipping_value(before), _shipping_value(after)
+    """``(before, after)`` as printable text for the log line of a ``SHIPPING_PO_CHANGED``."""
+    return repr(before.get(SHIPPING_PO)), repr(after.get(SHIPPING_PO))
 
 
 def _check_doc(doc: Doc, want_spo: bool) -> None:
+    _require_known_shipping(doc)
     if _is_spo(doc) != want_spo:
         raise WriteRefusal("DOC_KIND_MISMATCH", "wrong document kind")
     if doc.get("Cancelled") == "T":
@@ -586,7 +601,10 @@ def _same(a: Any, b: Any) -> bool:
     return a == b
 
 
-def _check_kind_doc(kind: DocKind, doc: Doc, *, cancelled_ok: bool = False) -> None:
+def _check_kind_doc(kind: DocKind, doc: Doc, *, cancelled_ok: bool = False, write: bool = True) -> None:
+    """``write`` False = a plain read (``get_doc``): an unknown ``ShippingPO`` is still readable."""
+    if write and kind.name in ("PO", "SPO"):
+        _require_known_shipping(doc)
     if kind.name in ("PO", "SPO") and _is_spo(doc) != (kind.name == "SPO"):
         raise WriteRefusal("DOC_KIND_MISMATCH", "wrong document kind")
     if not cancelled_ok and doc.get("Cancelled") == "T":

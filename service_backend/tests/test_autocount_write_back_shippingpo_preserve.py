@@ -103,15 +103,52 @@ def test_every_spo_edit_body_carries_shipping_po_t_as_read(spo):
         assert body.get("ShippingPO") == "T", f"{name}: {body.get('ShippingPO')!r}"
 
 
-def test_shipping_po_is_copied_never_invented(po):
-    """A read without the field sends none (SS never computes it); QT / SO never carry it."""
-    bare = copy.deepcopy(po)
-    del bare["ShippingPO"]
-    key = _free_keys(bare)[0]
-    assert "ShippingPO" not in P.build_edit("PO", bare, {}, [{"DtlKey": key, "Qty": 1}]).body
-    assert "ShippingPO" not in P.build_relocate(bare, _linked_key(bare), "ELSEWHERE")
+UNKNOWN_FLAGS = ["\u0000", "", None, " ", "Y", "MISSING"]
+
+
+def _with_flag(doc, value):
+    out = copy.deepcopy(doc)
+    if value == "MISSING":
+        out.pop("ShippingPO", None)
+    else:
+        out["ShippingPO"] = value
+    return out
+
+
+@pytest.mark.parametrize("value", UNKNOWN_FLAGS)
+def test_unknown_shipping_po_on_read_refuses_every_edit(po, so, value):
+    """Prod proof (PO 202607-S0083): a NUL ShippingPO read is unknown: never copied back,
+    never guessed; every edit builder refuses before any write."""
+    bad = _with_flag(po, value)
+    builders = {
+        "build_link": lambda: _po_bodies(bad, so)["build_link"],
+    }
+    free, other_free = _free_keys(bad)[:2]
+    linked = _linked_key(bad)
+    free_row = next(r for r in bad["Details"] if r["DtlKey"] == free)
+    builders.update({
+        "build_relocate": lambda: P.build_relocate(bad, linked, "ELSEWHERE"),
+        "build_restore_transfer_row": lambda: P.build_restore_transfer_row(bad, free, {"UnitPrice": 1}),
+        "build_unlink_row": lambda: P.build_unlink_row(bad, linked),
+        "build_edit": lambda: P.build_edit("PO", bad, {}, [{"DtlKey": free, "Qty": 1}]),
+        "build_add_line": lambda: P.build_add_line("PO", bad, _line_of(free_row, Qty=1)),
+        "build_delete_line": lambda: P.build_delete_line("PO", bad, free),
+        "build_row_replace": lambda: P.build_row_replace("PO", bad, {"DtlKey": free}, _line_of(free_row)),
+        "build_link_batch": lambda: P.build_link_batch("PO", bad, free, [_line_of(free_row, Qty=1)]),
+        "build_unlink_merge": lambda: P.build_unlink_merge("PO", bad, linked, other_free),
+        "check_row": lambda: P.check_row("PO", bad, free),
+        "build_edit SPO": lambda: P.build_edit("SPO", bad, {}, [{"DtlKey": free, "Qty": 1}]),
+    })
+    for name, fn in builders.items():
+        with pytest.raises(P.WriteRefusal) as ei:
+            fn()
+        assert ei.value.code == P.SHIPPING_PO_UNKNOWN, name
+        assert "Shipping Order" in str(ei.value), name
+
+
+def test_qt_and_so_edits_never_carry_shipping_po():
     so_doc = _load("so_SO389293.json")
-    so_doc["ShippingPO"] = "T"  # noise on a non-PO kind is never copied
+    so_doc["ShippingPO"] = "T"  # noise on a non-PO kind is never copied, never checked
     so_key = so_doc["Details"][0]["DtlKey"]
     assert "ShippingPO" not in P.build_edit("SO", so_doc, {}, [{"DtlKey": so_key, "Qty": 1}]).body
 
@@ -125,7 +162,8 @@ def test_header_of_template_is_unchanged(po):
 
 @pytest.mark.parametrize("before,after,changed", [
     ("F", "F", False), ("T", "T", False), ("F", "T", True), ("T", "F", True),
-    ("T", None, True), (None, "T", True), (None, None, False), (None, "F", False),
+    ("F", "\u0000", True), ("T", "\u0000", True), ("F", "", True), ("F", None, True),
+    ("T", None, True),
 ])
 def test_shipping_po_changed(before, after, changed):
     b = {} if before is None else {"ShippingPO": before}
@@ -135,7 +173,8 @@ def test_shipping_po_changed(before, after, changed):
 
 # ---- 2b. the legacy link / unlink / relocate path (service.py) -----------------------
 
-def test_service_link_readback_flipped_to_spo_is_not_done(db, session_factory):
+@pytest.mark.parametrize("flipped", ["T", "\u0000"])
+def test_service_link_readback_flipped_to_spo_is_not_done(db, session_factory, flipped):
     from tests.test_autocount_write_back_service import Harness
 
     h = Harness(db, session_factory)
@@ -145,7 +184,7 @@ def test_service_link_readback_flipped_to_spo_is_not_done(db, session_factory):
         assert body.get("ShippingPO") == "F"  # SS sent the value it read
         real_apply(body)
         doc = next(d for d in h.ac.docs["purchaseorderbydocdate"] if d["DocKey"] == body["DocKey"])
-        doc["ShippingPO"] = "T"  # AutoCount turned the PO into an SPO
+        doc["ShippingPO"] = flipped  # AutoCount turned the PO into an SPO (NUL shows ticked)
 
     h.ac._apply = flipping_apply
     res = h.link_split()
@@ -186,7 +225,8 @@ def test_service_link_sends_shipping_po_and_stays_done(db, session_factory):
 
 # ---- 2c. the primitive path every operation runs through (primitives.py) -------------
 
-def test_primitive_edit_readback_flipped_to_spo_is_not_done(db, session_factory, monkeypatch):
+@pytest.mark.parametrize("flipped", ["T", "\u0000"])
+def test_primitive_edit_readback_flipped_to_spo_is_not_done(db, session_factory, monkeypatch, flipped):
     from tests.test_autocount_write_back_primitives import Harness, _line
 
     h = Harness(db, session_factory, monkeypatch)
@@ -197,7 +237,7 @@ def test_primitive_edit_readback_flipped_to_spo_is_not_done(db, session_factory,
     def flipping_edit(kind, body):
         assert body.get("ShippingPO") == "F"
         answer = real_edit(kind, body)
-        h.vendor.find(kind, body["DocKey"])["ShippingPO"] = "T"
+        h.vendor.find(kind, body["DocKey"])["ShippingPO"] = flipped
         return answer
 
     monkeypatch.setattr(h.vendor, "_edit", flipping_edit)
@@ -206,6 +246,18 @@ def test_primitive_edit_readback_flipped_to_spo_is_not_done(db, session_factory,
     assert res.error_code == P.SHIPPING_PO_CHANGED
     assert "Shipping Order" in (res.message or "")
     assert h.action(res).outcome == "mismatch"
+
+
+@pytest.mark.parametrize("value", ["\u0000", ""])
+def test_primitive_edit_on_unknown_shipping_po_is_refused_with_no_write(db, session_factory, monkeypatch, value):
+    from tests.test_autocount_write_back_primitives import Harness, _line
+
+    h = Harness(db, session_factory, monkeypatch)
+    doc = h.seed_doc("PO", 7003, [_line("A", 10, 5.0)], ShippingPO=value)
+    res = h.edit("PO", 7003, {}, [{"DtlKey": doc["Details"][0]["DtlKey"], "Qty": 8}])
+    assert res.outcome == "refused"
+    assert res.error_code == P.SHIPPING_PO_UNKNOWN
+    assert h.vendor.writes() == []
 
 
 def test_primitive_edit_keeps_shipping_po_and_stays_done(db, session_factory, monkeypatch):
