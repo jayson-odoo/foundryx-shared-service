@@ -92,7 +92,7 @@ def test_ac_66_05_only_the_new_linked_row_carries_a_note(h, rig):
         for row in call.body["Details"]:
             if row.get("DtlKey"):
                 is_restore_of_new = row["DtlKey"] == rig.new_key(rig.so_dated)
-                assert is_restore_of_new or "FurtherDescription" not in row, row
+                assert is_restore_of_new or not row.get("FurtherDescription"), row  # plan 73: an empty FD is re-sent as read
 
 
 def test_ac_66_06_control_unlink_puts_no_note_on_the_plain_row(h, rig):
@@ -104,7 +104,7 @@ def test_ac_66_06_control_unlink_puts_no_note_on_the_plain_row(h, rig):
     res = h.run("unlink_row", dict(doc_key=PO_KEY, dtl_key=linked), key="n-u")
     assert res.outcome == "done", (res.outcome, res.error_code, res.warnings)
     assert puts(h), "unlink sent no PUT"
-    assert not any("FurtherDescription" in r for c in puts(h) for r in c.body["Details"])
+    assert not any(r.get("FurtherDescription") for c in puts(h) for r in c.body["Details"])  # plan 73: as read (empty)
 
 
 def test_ac_66_07_control_the_public_add_line_door_still_refuses_or_drops_a_note(h, rig):

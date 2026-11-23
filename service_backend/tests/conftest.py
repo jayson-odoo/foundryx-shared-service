@@ -904,3 +904,21 @@ def key_limit_redis(monkeypatch):
     monkeypatch.setattr(key_limits, "get_redis", lambda: fake, raising=False)
     yield fake
     _reset_key_limit_state(key_limits)
+
+
+class _KnownEmptyLineNotes:
+    """Plan 73 test default: every PO / SPO row's Further Description is known and empty (the fake vendor's
+    GET never carries the key, like hapi). A test that cares patches ``WriteFrame._line_notes_source``."""
+
+    def notes(self, kind, doc):
+        return {row.get("DtlKey"): "" for row in doc.get("Details") or []}
+
+
+@pytest.fixture(autouse=True)
+def _default_line_notes_source(monkeypatch):
+    if "modules.autocount.write_back.frame" not in __import__("sys").modules:
+        # not loaded yet: patch lazily once a test imports it (most autocount tests import it at collection)
+        return
+    from modules.autocount.write_back.frame import WriteFrame
+
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _KnownEmptyLineNotes(), raising=False)
