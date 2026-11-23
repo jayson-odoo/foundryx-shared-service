@@ -10,6 +10,8 @@ import type { FilterFieldDef, ListQuery, ListResult } from '@/types/resource';
 import type { IntegrationLogItem } from '@/types/integration-logs';
 import { integrationLogService } from '@/services/integration-log-service';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
+import { FxListMoment } from '@/components/fx/pages/w3-logs/fx-log-parts';
 import {
   LOG_SOURCE_REGISTRY,
   LOG_STATUS_REGISTRY,
@@ -23,6 +25,7 @@ import {
  */
 export function useIntegrationLogsListConfig(): ResourceListConfig<IntegrationLogItem> {
   const { formatDateTime } = useDatetime();
+  const fx = useFx();
 
   const filterFields = useMemo<FilterFieldDef[]>(
     () => [
@@ -137,11 +140,14 @@ export function useIntegrationLogsListConfig(): ResourceListConfig<IntegrationLo
         accessorFn: (row) => row.createdAt,
         meta: { headerTitle: 'Time' },
         header: ({ column }) => <DataGridColumnHeader title="Time" column={column} />,
-        cell: ({ row }) => (
-          <span className="text-muted-foreground text-sm">
-            {formatDateTime(row.original.createdAt)}
-          </span>
-        ),
+        cell: ({ row }) =>
+          fx ? (
+            <FxListMoment iso={row.original.createdAt} className="text-sm text-(--fx-ink-2)" />
+          ) : (
+            <span className="text-muted-foreground text-sm">
+              {formatDateTime(row.original.createdAt)}
+            </span>
+          ),
         size: 190,
         enableSorting: true,
       },
@@ -171,6 +177,18 @@ export function useIntegrationLogsListConfig(): ResourceListConfig<IntegrationLo
       enableStatusViews: false,
       exportFilename: 'developer-logs',
       searchPlaceholder: 'Search operation, trace or reference…',
+      // Foundryx UIUX switch only. Hold to Copy on identifiers alone (the
+      // operation and the workspace id); payloads never show in the list.
+      fx: {
+        noun: 'logs',
+        copyable: ['operation', 'workspace'],
+        phoneHidden: ['workspace'],
+        // A phone card's status is the first status column, so Source is
+        // declared plain to leave that place to the outcome (Status). Source
+        // keeps its filter in the Filters panel.
+        columnKind: { source: 'text', status: 'status' },
+        cardLines: [['source', 'latencyMs', 'createdAt']],
+      },
     };
-  }, [filterFields, formatDateTime]);
+  }, [filterFields, formatDateTime, fx]);
 }

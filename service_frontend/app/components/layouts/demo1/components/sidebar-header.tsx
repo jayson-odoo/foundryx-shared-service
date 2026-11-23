@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { ChevronFirst } from 'lucide-react';
-import { toAbsoluteUrl } from '@/lib/helpers';
+import { AppLogo } from '@/components/platform/branding/app-logo';
 import { cn } from '@/lib/utils';
 import { useTenantBranding } from '@/hooks/use-branding';
 import { useSettings } from '@/providers/settings-provider';
@@ -51,31 +51,15 @@ export function SidebarHeader() {
             </span>
           </>
         ) : (
+          // No tenant logo: the tenant's name (branded) or the inline
+          // wordmark (unbranded) - no static file that can 404.
           <>
-            <div className="dark:hidden">
-              <img
-                src={toAbsoluteUrl('/media/app/default-logo.svg')}
-                className="default-logo h-[22px] max-w-none"
-                alt="Default Logo"
-              />
-              <img
-                src={toAbsoluteUrl('/media/app/mini-logo.svg')}
-                className="small-logo h-[22px] max-w-none"
-                alt="Mini Logo"
-              />
-            </div>
-            <div className="hidden dark:block">
-              <img
-                src={toAbsoluteUrl('/media/app/default-logo-dark.svg')}
-                className="default-logo h-[22px] max-w-none"
-                alt="Default Dark Logo"
-              />
-              <img
-                src={toAbsoluteUrl('/media/app/mini-logo.svg')}
-                className="small-logo h-[22px] max-w-none"
-                alt="Mini Logo"
-              />
-            </div>
+            <span className="default-logo">
+              <AppLogo branding={branding} />
+            </span>
+            <span className="small-logo">
+              <AppLogo branding={branding} variant="mini" />
+            </span>
           </>
         )}
       </Link>

@@ -9,10 +9,12 @@
  */
 import { Fragment, useMemo } from 'react';
 
+import { useFx } from '@/hooks/use-fx';
 import { dateKey, parseUtc } from '@/lib/datetime';
 import type { ConversationEvent, ConversationMessage } from '@/types/omnichannel';
 
 import { dayLabel } from './conversation-drawer';
+import { FxActivityFeed } from './fx/fx-activity-feed';
 import { MessageBubble } from './message-bubble';
 
 export interface ActivityFeedProps {
@@ -24,13 +26,13 @@ export interface ActivityFeedProps {
   timeZone?: string | null;
 }
 
-type FeedRow =
+export type FeedRow =
   | { kind: 'note'; createdAt: string; message: ConversationMessage }
   | { kind: 'event'; createdAt: string; event: ConversationEvent };
 
 /** Human, tenant-facing sentence for one event line (no "Foundryx" copy, no
  *  how-to text - just what happened). */
-function eventLine(event: ConversationEvent): string {
+export function eventLine(event: ConversationEvent): string {
   const actor = event.actorName ?? 'System';
   switch (event.eventType) {
     case 'opened':
@@ -63,24 +65,31 @@ function eventLine(event: ConversationEvent): string {
   }
 }
 
-export function ActivityFeed({ messages, events, contactName, formatTime, timeZone }: ActivityFeedProps) {
-  const rows = useMemo<FeedRow[]>(() => {
-    const notes: FeedRow[] = messages
-      .filter((m) => m.senderType === 'SYSTEM')
-      .map((message) => ({ kind: 'note', createdAt: message.createdAt, message }));
-    const eventRows: FeedRow[] = events
-      .filter((e) => e.eventType !== 'comment_added')
-      .map((event) => ({ kind: 'event', createdAt: event.createdAt, event }));
-    // F7 (round-3 codex triage) - a lexicographic string sort misorders ISO
-    // timestamps with different fractional-second precision (e.g. Python's
-    // `isoformat()` drops the fractional part entirely at exactly-zero
-    // microseconds: `"...:00Z"` vs `"...:00.500000Z"` - the '.' (0x2E) sorts
-    // BEFORE 'Z' (0x5A) character-by-character, so the LATER (.5s) timestamp
-    // would sort FIRST). Compare the actual numeric epoch instead
-    // (`parseUtc` - unparsable/missing sorts last, never crashes the feed).
-    const epoch = (iso: string): number => parseUtc(iso)?.getTime() ?? Number.POSITIVE_INFINITY;
-    return [...notes, ...eventRows].sort((a, b) => epoch(a.createdAt) - epoch(b.createdAt));
-  }, [messages, events]);
+/** The merged feed rows, oldest first (shared by both looks). */
+export function buildFeedRows(messages: ConversationMessage[], events: ConversationEvent[]): FeedRow[] {
+  const notes: FeedRow[] = messages
+    .filter((m) => m.senderType === 'SYSTEM')
+    .map((message) => ({ kind: 'note', createdAt: message.createdAt, message }));
+  const eventRows: FeedRow[] = events
+    .filter((e) => e.eventType !== 'comment_added')
+    .map((event) => ({ kind: 'event', createdAt: event.createdAt, event }));
+  // F7 (round-3 codex triage) - a lexicographic string sort misorders ISO
+  // timestamps with different fractional-second precision (e.g. Python's
+  // `isoformat()` drops the fractional part entirely at exactly-zero
+  // microseconds: `"...:00Z"` vs `"...:00.500000Z"` - the '.' (0x2E) sorts
+  // BEFORE 'Z' (0x5A) character-by-character, so the LATER (.5s) timestamp
+  // would sort FIRST). Compare the actual numeric epoch instead
+  // (`parseUtc` - unparsable/missing sorts last, never crashes the feed).
+  const epoch = (iso: string): number => parseUtc(iso)?.getTime() ?? Number.POSITIVE_INFINITY;
+  return [...notes, ...eventRows].sort((a, b) => epoch(a.createdAt) - epoch(b.createdAt));
+}
+
+export function ActivityFeed(props: ActivityFeedProps) {
+  return useFx() ? <FxActivityFeed {...props} /> : <ActivityFeedLegacy {...props} />;
+}
+
+function ActivityFeedLegacy({ messages, events, contactName, formatTime, timeZone }: ActivityFeedProps) {
+  const rows = useMemo<FeedRow[]>(() => buildFeedRows(messages, events), [messages, events]);
 
   if (rows.length === 0) {
     return <p className="py-8 text-center text-sm text-muted-foreground">No activity yet.</p>;

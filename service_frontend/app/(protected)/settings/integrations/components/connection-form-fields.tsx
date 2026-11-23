@@ -27,8 +27,15 @@ import { SecretInput } from '@/components/platform/secret-input';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { integrationService } from '@/services/integration-service';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import type { Connection, IntegrationProvider, ProviderField } from '@/types/integration';
 import { CONNECTION_STATUS_REGISTRY } from './connection-status';
+import { FxSavedSecretField, fxSavedSecretWord } from './fx-saved-secret-field';
+import {
+  FxConnectionChip,
+  FxTestResultLine,
+} from '@/components/fx/pages/w4-templates/fx-connection-bits';
+import { fxRunConnectionTest, targetedKey, useConnectionTestResult } from './connection-test-results';
 import {
   dependentDefault,
   isFieldVisible,
@@ -87,6 +94,7 @@ function ProviderFieldRow({
   creating: boolean;
   connection: Connection | null;
 }) {
+  const fx = useFx();
   if (!editing) {
     // Same resolution as the edit prefill (`storedOrEffective`): a legacy
     // Sorento connection reads "1 (legacy)" here too, never "-".
@@ -94,7 +102,15 @@ function ProviderFieldRow({
     return (
       <FormRow label={f.label}>
         {f.secret ? (
-          <span className="text-muted-foreground">••••••••</span>
+          fx ? (
+            // Write-only (gap audit 11): never a value, never a mask that
+            // looks like one. The API returns no ending to show.
+            <span className="text-(--fx-ink-2)" data-fx-saved-secret={f.key}>
+              {fxSavedSecretWord(f)}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">••••••••</span>
+          )
         ) : f.type === 'select' ? (
           (f.options?.find((o) => o.value === value)?.label ?? (value || '-'))
         ) : (
@@ -112,7 +128,16 @@ function ProviderFieldRow({
         render={({ field }) => (
           <FormItem className="max-w-sm">
             <FormControl>
-              {f.secret ? (
+              {f.secret && fx && !creating ? (
+                <FxSavedSecretField
+                  field={f}
+                  value={field.value ?? ''}
+                  onChange={field.onChange}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  inputRef={field.ref}
+                />
+              ) : f.secret ? (
                 <SecretInput
                   placeholder={creating ? f.placeholder : '•••••••• (leave blank to keep)'}
                   {...field}
@@ -310,7 +335,87 @@ export interface HealthCardProps {
  * real email - needs an input, so it lives here rather than in the action
  * registry). The plain connection check is the registry's Test action.
  */
-export function HealthCard({ connection, provider, canManage, onChanged }: HealthCardProps) {
+export function HealthCard(props: HealthCardProps) {
+  // Foundryx UIUX switch: the status chip and test results beside the
+  // tests while on; today's card while off.
+  return useFx() ? <FxHealthCard {...props} /> : <HealthCardLegacy {...props} />;
+}
+
+/**
+ * Foundryx UIUX switch only: the same card and the same requests; the status
+ * is the playbook chip, and each test's result sits under the test that ran
+ * it (the record's Test connection under the status, the targeted test under
+ * its button) instead of a toast.
+ */
+function FxHealthCard({ connection, provider, canManage, onChanged }: HealthCardProps) {
+  const [target, setTarget] = useState('');
+  const { formatDateTime } = useDatetime();
+  const plain = useConnectionTestResult(connection.id);
+  const targeted = useConnectionTestResult(targetedKey(connection.id));
+  const busy = targeted === 'testing';
+
+  const runTargeted = async () => {
+    if (!target.trim()) return;
+    await fxRunConnectionTest(connection.id, target.trim());
+    try {
+      onChanged(await integrationService.get(connection.id));
+    } catch {
+      // The result line already says what happened.
+    }
+  };
+
+  return (
+    <Card className="mt-5">
+      <CardContent className="py-1">
+        <FormRow label="Status">
+          <div className="flex flex-col gap-1">
+            <FxConnectionChip status={connection.status} className="w-fit" />
+            {/* Its reason already sits in Last error below; never twice. */}
+            {!(plain && plain !== 'testing' && !plain.ok && plain.message === connection.lastError) && (
+              <FxTestResultLine result={plain} />
+            )}
+          </div>
+        </FormRow>
+        <FormRow label="Last tested">
+          {connection.lastTestedAt ? formatDateTime(connection.lastTestedAt) : 'Never'}
+        </FormRow>
+        {connection.lastError && (
+          <FormRow label="Last error">
+            <span className="text-(--fx-warn-ink) [overflow-wrap:anywhere]">{connection.lastError}</span>
+          </FormRow>
+        )}
+        {canManage && provider?.testTarget && (
+          <FormRow label={provider.testTarget.label}>
+            <div className="flex max-w-sm flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={target}
+                  placeholder={provider.testTarget.placeholder}
+                  aria-label={provider.testTarget.label}
+                  onChange={(e) => setTarget(e.target.value)}
+                  disabled={busy}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void runTargeted()}
+                  disabled={busy || !target.trim()}
+                >
+                  {busy ? <LoaderCircleIcon className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                  {provider.testLabel}
+                </Button>
+              </div>
+              {targeted !== 'testing' && <FxTestResultLine result={targeted} />}
+            </div>
+          </FormRow>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function HealthCardLegacy({ connection, provider, canManage, onChanged }: HealthCardProps) {
   const [target, setTarget] = useState('');
   const [busy, setBusy] = useState(false);
   // Session-tz formatter (plan sprint-2/05) - never the tz-blind lib/format.

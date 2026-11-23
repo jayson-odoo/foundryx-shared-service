@@ -37,5 +37,8 @@ export function embeddedListConfig<T extends object>(opts: {
     createLabel: opts.createLabel,
     onCreate: opts.onCreate,
     createPermission: opts.createPermission,
+    // Foundryx UIUX switch only: a related list inside a record's tab keeps
+    // the smaller empty-state words (FX-17). Ignored while off.
+    fx: { compactStates: true },
   };
 }

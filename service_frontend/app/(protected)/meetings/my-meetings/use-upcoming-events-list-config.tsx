@@ -14,7 +14,7 @@ import type { ResourceListConfig } from '@/components/platform/resource-list';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { MeetingAttendee, MeetingsEvent, MeetingPlatform } from '@/types/meetings';
 import { toCsv } from '@/lib/csv';
-import { formatDateTime, formatTime } from '@/lib/datetime';
+import { formatDateTime, formatFxDateTime, formatFxTime, formatTime } from '@/lib/datetime';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -68,17 +68,21 @@ export function useUpcomingEventsListConfig(
     timeZone: string | null;
     saving: boolean;
     onToggleCapture: (event: MeetingsEvent, capture: boolean) => void;
+    /** Foundryx UIUX switch on: 12-hour times and the list's `fx` choices. */
+    fx?: boolean;
   },
 ): ResourceListConfig<MeetingsEvent> {
   const pathname = usePathname();
-  const { timeZone, saving, onToggleCapture } = handlers;
+  const { timeZone, saving, onToggleCapture, fx = false } = handlers;
 
   return useMemo<ResourceListConfig<MeetingsEvent>>(() => {
-    const when = (iso: string | null): string => formatDateTime(iso, { timeZone });
+    const when = (iso: string | null): string =>
+      fx ? formatFxDateTime(iso, { timeZone }) : formatDateTime(iso, { timeZone });
     const whenRange = (row: MeetingsEvent): string => {
       const start = when(row.startsAt);
       // An all-day or open-ended event has no end to append.
       if (!row.endsAt) return start;
+      if (fx) return `${start} to ${formatFxTime(row.endsAt, { timeZone })}`;
       return `${start}-${formatTime(row.endsAt, { timeZone })}`;
     };
 
@@ -194,7 +198,9 @@ export function useUpcomingEventsListConfig(
       },
       {
         id: 'capture',
-        meta: { headerTitle: 'Capture', reorderable: false },
+        meta: fx
+          ? { headerTitle: 'Capture', reorderable: false, fxAlign: 'end' }
+          : { headerTitle: 'Capture', reorderable: false },
         header: ({ column }) => <DataGridColumnHeader title="Capture" column={column} />,
         cell: ({ row }) => (
           <div onClick={stop} className="flex justify-end">
@@ -337,6 +343,19 @@ export function useUpcomingEventsListConfig(
         { id: 'capture', label: 'Capture' },
       ],
       actions: [],
+      // Foundryx UIUX switch only: the status column takes a phone card's
+      // status slot, the capture switch closes the card's last line, and the
+      // empty and nothing-matches words name meetings.
+      ...(fx
+        ? {
+            fx: {
+              noun: 'meetings',
+              columnKind: { status: 'status' as const },
+              cardLines: [['when'], ['organiser'], ['attendees'], ['platform', 'capture']],
+              copyable: ['organiser'],
+            },
+          }
+        : {}),
     };
-  }, [items, pathname, saving, timeZone, onToggleCapture]);
+  }, [items, pathname, saving, timeZone, onToggleCapture, fx]);
 }

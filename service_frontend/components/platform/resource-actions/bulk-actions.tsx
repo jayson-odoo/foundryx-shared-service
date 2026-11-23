@@ -23,6 +23,7 @@ import type {
 } from '@/components/platform/resource-list/types';
 import { ConfirmActionDialog } from './confirm-action-dialog';
 import { deferredToast, dismissDeferredToast } from './deferred-toast';
+import { runResourceAction } from './run-action';
 
 export interface BulkActionsProps<T> {
   actions: ResourceAction<T>[];
@@ -45,103 +46,11 @@ function defaultEntityId<T>(row: T): string {
  * destructive/reversible bulk action parks ONE deferred row per selected
  * record behind a SINGLE countdown naming the count (D13, AC-DLA-45).
  */
-export function BulkActions<T>({
-  actions,
-  rows,
-  runtime,
-  getEntityId = defaultEntityId,
-  onDeferredCommitted,
-}: BulkActionsProps<T>) {
+export function BulkActions<T>(props: BulkActionsProps<T>) {
   const [open, setOpen] = useState(false);
-  const [pending, setPending] = useState<ResourceAction<T> | null>(null);
-  const { can } = useCan();
-
-  const activeRef = useRef<{
-    ids: string[];
-    toastId: string | number;
-    label: string;
-    entityType: string;
-  } | null>(null);
-  const settleActive = () => {
-    const active = activeRef.current;
-    if (active) {
-      untrackPendingEntities(active.ids);
-      dismissDeferredToast(active.toastId);
-    }
-    activeRef.current = null;
-    return active;
-  };
-  const deferred = useDeferredAction({
-    onCommitted: () => {
-      const active = settleActive();
-      toast.success(
-        active ? deferredDoneMessage(active.label, active.entityType, active.ids.length) : 'Done.',
-      );
-      runtime.reload();
-      if (active) onDeferredCommitted?.(active.ids);
-    },
-    onFailed: (error) => {
-      settleActive();
-      toast.error(error || 'The action failed.');
-    },
-    onCancelledElsewhere: () => {
-      settleActive();
-    },
-  });
-
-  const visible = actions.filter(
-    (a) =>
-      a.surfaces.bulk &&
-      (!a.permission || can(a.permission)) &&
-      (a.isVisible ? a.isVisible(rows) : true),
-  );
+  const { visible, run, pending, setPending } = useBulkActionRunner(props);
+  const { rows } = props;
   if (!visible.length) return null;
-
-  async function run(action: ResourceAction<T>) {
-    if (action.deferred) {
-      const entityIds = rows.map(getEntityId);
-      const label = typeof action.label === 'function' ? action.label(rows) : action.label;
-      const entityType = action.deferred.entityType;
-      trackPendingEntities(entityIds);
-      try {
-        const { commitAt, windowSeconds, failedCount, parkedEntityIds: parkedIds } =
-          await deferred.start(
-            action.deferred.actionKey,
-            entityIds.map((id) => ({ entityType, entityId: id })),
-            action.deferred.payload?.(rows),
-          );
-        untrackPendingEntities(entityIds.filter((id) => !parkedIds.includes(id)));
-        const toastId = `pending-action-bulk-${Date.now()}`;
-        activeRef.current = { ids: parkedIds, toastId, label, entityType };
-        deferredToast({
-          id: toastId,
-          verb: presentContinuous(label),
-          commitAt,
-          windowSeconds,
-          count: parkedIds.length > 1 ? parkedIds.length : undefined,
-          noun: entityNoun(entityType, parkedIds.length),
-          onCancel: () => {
-            void deferred.cancel();
-            untrackPendingEntities(parkedIds);
-            dismissDeferredToast(toastId);
-            activeRef.current = null;
-          },
-        });
-        if (failedCount > 0) {
-          // Fix round 1 item 3: `start()` used `Promise.allSettled` - the
-          // rows that DID park stay tracked above; ONE toast names the rest.
-          toast.error(
-            `Could not start "${label}" on ${failedCount} of ${entityIds.length} - another action may already be pending on ${failedCount === 1 ? 'it' : 'them'}.`,
-          );
-        }
-      } catch (error) {
-        untrackPendingEntities(entityIds);
-        toast.error(error instanceof Error ? error.message : 'Could not start that action.');
-      }
-      return;
-    }
-    await action.run(rows, runtime);
-  }
 
   return (
     <>
@@ -189,4 +98,113 @@ export function BulkActions<T>({
       />
     </>
   );
+}
+
+/**
+ * What a bulk action does when chosen, shared by the bulk menu above and the
+ * Foundryx UIUX selection bar (`components/fx/list/fx-selection-bar.tsx`), so
+ * the two presentations cannot drift in behaviour: the visible actions for
+ * these rows, `run` (deferred park with one countdown, or the action's own
+ * `run`), and the confirm dialog's pending action.
+ */
+export function useBulkActionRunner<T>({
+  actions,
+  rows,
+  runtime,
+  getEntityId = defaultEntityId,
+  onDeferredCommitted,
+}: BulkActionsProps<T>) {
+  const [pending, setPending] = useState<ResourceAction<T> | null>(null);
+  const { can } = useCan();
+
+  const activeRef = useRef<{
+    ids: string[];
+    toastId: string | number;
+    label: string;
+    entityType: string;
+  } | null>(null);
+  const settleActive = () => {
+    const active = activeRef.current;
+    if (active) {
+      untrackPendingEntities(active.ids);
+      dismissDeferredToast(active.toastId);
+    }
+    activeRef.current = null;
+    return active;
+  };
+  const deferred = useDeferredAction({
+    onCommitted: () => {
+      const active = settleActive();
+      toast.success(
+        active ? deferredDoneMessage(active.label, active.entityType, active.ids.length) : 'Done.',
+      );
+      runtime.reload();
+      if (active) onDeferredCommitted?.(active.ids);
+    },
+    onFailed: (error) => {
+      settleActive();
+      toast.error(error || 'The action failed.');
+    },
+    onCancelledElsewhere: () => {
+      settleActive();
+    },
+  });
+
+  const visible = actions.filter(
+    (a) =>
+      a.surfaces.bulk &&
+      (!a.permission || can(a.permission)) &&
+      (a.isVisible ? a.isVisible(rows) : true),
+  );
+  async function run(action: ResourceAction<T>) {
+    if (action.deferred) {
+      const entityIds = rows.map(getEntityId);
+      const label = typeof action.label === 'function' ? action.label(rows) : action.label;
+      const entityType = action.deferred.entityType;
+      trackPendingEntities(entityIds);
+      try {
+        const { commitAt, windowSeconds, failedCount, parkedEntityIds: parkedIds } =
+          await deferred.start(
+            action.deferred.actionKey,
+            entityIds.map((id) => ({ entityType, entityId: id })),
+            action.deferred.payload?.(rows),
+          );
+        untrackPendingEntities(entityIds.filter((id) => !parkedIds.includes(id)));
+        const toastId = `pending-action-bulk-${Date.now()}`;
+        activeRef.current = { ids: parkedIds, toastId, label, entityType };
+        deferredToast({
+          id: toastId,
+          verb: presentContinuous(label),
+          commitAt,
+          windowSeconds,
+          count: parkedIds.length > 1 ? parkedIds.length : undefined,
+          noun: entityNoun(entityType, parkedIds.length),
+          fxName:
+            parkedIds.length === 1
+              ? action.deferred.fxName?.(rows.filter((_, i) => parkedIds.includes(entityIds[i])))
+              : undefined,
+          onCancel: () => {
+            void deferred.cancel();
+            untrackPendingEntities(parkedIds);
+            dismissDeferredToast(toastId);
+            activeRef.current = null;
+          },
+        });
+        if (failedCount > 0) {
+          // Fix round 1 item 3: `start()` used `Promise.allSettled` - the
+          // rows that DID park stay tracked above; ONE toast names the rest.
+          toast.error(
+            `Could not start "${label}" on ${failedCount} of ${entityIds.length} - another action may already be pending on ${failedCount === 1 ? 'it' : 'them'}.`,
+          );
+        }
+      } catch (error) {
+        untrackPendingEntities(entityIds);
+        toast.error(error instanceof Error ? error.message : 'Could not start that action.');
+      }
+      return;
+    }
+    await runResourceAction(action, rows, runtime);
+  }
+
+  return { visible, run, pending, setPending };
 }

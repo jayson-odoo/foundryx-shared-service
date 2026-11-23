@@ -2,11 +2,19 @@
 
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { useFx } from '@/hooks/use-fx';
 import { useSettings } from '@/providers/settings-provider';
+import { FxSidebar } from './fx-sidebar';
 import { SidebarHeader } from './sidebar-header';
 import { SidebarMenu } from './sidebar-menu';
 
+/** The side panel: the Foundryx UIUX icon rail while the switch is on
+ *  (fx-sidebar.tsx), else today's panel, unchanged. */
 export function Sidebar() {
+  return useFx() ? <FxSidebar /> : <SidebarLegacy />;
+}
+
+function SidebarLegacy() {
   const { settings } = useSettings();
   const pathname = usePathname();
 

@@ -3,6 +3,8 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
+import { useFx } from '@/hooks/use-fx';
+import { FxTextarea } from '@/components/fx/fields/fx-input';
 
 // Define input size variants
 const textareaVariants = cva(
@@ -26,7 +28,12 @@ const textareaVariants = cva(
   },
 );
 
-function Textarea({
+// Foundryx UIUX switch: the playbook field while on; today's text area while off.
+function Textarea(props: React.ComponentProps<'textarea'> & VariantProps<typeof textareaVariants>) {
+  return useFx() ? <FxTextarea {...props} /> : <TextareaLegacy {...props} />;
+}
+
+function TextareaLegacy({
   className,
   variant,
   ...props

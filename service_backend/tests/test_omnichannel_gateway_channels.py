@@ -39,6 +39,18 @@ ITEM_KEYS = {
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
+def _changelog_rows(text):
+    """The table rows of the guide's changelog: the `> **Changelog**` quote block."""
+    lines = text.splitlines()
+    start = lines.index("> **Changelog**")
+    block = []
+    for ln in lines[start + 1 :]:
+        if not ln.startswith(">"):
+            break
+        block.append(ln)
+    return [ln for ln in block if ln.startswith("> |")]
+
+
 @pytest.fixture(autouse=True)
 def _memory_idempotency():
     idempotency.set_store(idempotency.MemoryIdempotencyStore())
@@ -257,7 +269,7 @@ def test_ac_38_26_guide_documents_the_route_is_default_and_changelog():
     text = GUIDE.read_text()
     assert "GET /api/v1/omnichannel/channels" in text or "GET /channels" in text
     assert "isDefault" in text
-    changelog = [ln for ln in text.splitlines()[:40] if ln.startswith("> |")]
+    changelog = _changelog_rows(text)
     assert any("/channels" in ln for ln in changelog), "changelog needs a row for GET /channels"
     assert "without `channelId`" in text or "omit" in text.lower()
 
@@ -393,5 +405,5 @@ def test_ac_38_26_guide_reaction_media_refusal_and_changelog_wording():
     section = text[start : text.index("\n### ", start + 10)]
     assert "403" in section and "detail" in section, section[:400]
     # the changelog row does not call the change only additive without the key rule
-    row = next(ln for ln in text.splitlines()[:40] if ln.startswith("> |") and "/channels" in ln)
+    row = next(ln for ln in _changelog_rows(text) if "GET /api/v1/omnichannel/channels" in ln)
     assert "suspended" in row.lower() and "trashed" in row.lower(), row

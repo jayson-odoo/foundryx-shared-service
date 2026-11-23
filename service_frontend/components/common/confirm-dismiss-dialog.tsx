@@ -8,15 +8,44 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { useFx } from '@/hooks/use-fx';
+import { FxDiscardDialog } from '@/components/fx/actions/confirm-dialog';
 
 interface ConfirmDismissDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
+  /** Foundryx UIUX switch only: the record named in "Discard changes to
+   *  <name>?". Ignored with the switch off. */
+  name?: string;
 }
 
-export const ConfirmDismissDialog = ({
+/**
+ * Foundryx UIUX switch on (playbook-uiux.md): "Discard changes to <name>?"
+ * with "Keep editing" and a red single-click "Discard changes". Off: the
+ * original dialog, markup unchanged.
+ */
+export const ConfirmDismissDialog = (props: ConfirmDismissDialogProps) => {
+  return useFx() ? (
+    <FxDiscardDialog
+      open={props.open}
+      name={props.name}
+      onKeep={() => {
+        props.onCancel();
+        props.onOpenChange(false);
+      }}
+      onDiscard={() => {
+        props.onConfirm();
+        props.onOpenChange(false);
+      }}
+    />
+  ) : (
+    <ConfirmDismissDialogLegacy {...props} />
+  );
+};
+
+const ConfirmDismissDialogLegacy = ({
   open,
   onOpenChange,
   onConfirm,

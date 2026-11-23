@@ -706,7 +706,7 @@ def test_ac_38_77_guide_error_table_lists_reply_channel_mismatch_with_422():
 
 
 def test_ac_38_77_guide_changelog_has_a_row_for_the_field():
-    lines = [ln for ln in _GUIDE.read_text().splitlines()[:40] if ln.startswith("> |")]
+    lines = [ln for ln in _GUIDE.read_text().split("\n## ", 1)[0].splitlines() if ln.startswith("> |")]
     assert any("replyToMessageId" in ln for ln in lines), "changelog needs a row naming replyToMessageId"
 
 

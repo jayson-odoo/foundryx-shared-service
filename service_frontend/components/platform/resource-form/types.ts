@@ -2,6 +2,30 @@ import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import type { ListQuery } from '@/types/resource';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
+import type { FxIconRef } from '@/components/fx/icons';
+
+/**
+ * Foundryx UIUX switch only (playbook-uiux.md, build plan 1.3): the page-level
+ * choices a record page makes under the switch. Every field is optional and
+ * ignored with the switch off.
+ */
+export interface FxFormConfig<T> {
+  /** The action that becomes the page's red action: an `actions` id, or
+   *  `'save'` for the form's own Save/Create button. */
+  mainActionId?: string;
+  /** The red action's full label on hover and focus, from the record. */
+  fullLabel?: (rows: T[]) => string;
+  /** The icon each Other Action shows, by action id (one icon per meaning):
+   *  a meaning's name, or a drawn icon node. */
+  iconFor?: Record<string, FxIconRef>;
+  /** Action ids that always sit in the More menu. */
+  moreActionIds?: string[];
+  /** Field ids whose values Hold to Copy copies (F3b). */
+  copyable?: string[];
+  /** The record's name for "Discard changes to <name>?". Default: the
+   *  title when it is plain text. */
+  discardName?: string;
+}
 
 export interface FormTab {
   id: string;
@@ -146,4 +170,6 @@ export interface ResourceFormConfig<T> {
     onPrev: () => void;
     onNext: () => void;
   };
+  /** Foundryx UIUX switch choices for this record page (ignored while off). */
+  fx?: FxFormConfig<T>;
 }

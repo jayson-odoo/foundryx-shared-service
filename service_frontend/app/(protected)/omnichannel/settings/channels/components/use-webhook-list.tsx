@@ -1,5 +1,6 @@
 'use client';
 
+import { useFxActor } from './use-fx-actor';
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Pencil, RefreshCw, Play, Pause, ListChecks, Trash2, Webhook } from 'lucide-react';
@@ -13,6 +14,7 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceListConfig, ResourceAction } from '@/components/platform/resource-list';
 import type { ListQuery, ListResult, FilterGroup, FilterRule } from '@/types/resource';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import { whatsappWebhookService } from '@/services/whatsapp-webhook-service';
 import type { WebhookEndpoint } from '@/types/whatsapp-webhook';
 import { toCsv } from '@/lib/csv';
@@ -75,6 +77,15 @@ function sortItems(rows: WebhookEndpoint[], sort: ListQuery['sort']): WebhookEnd
   return sort.desc ? sorted.reverse() : sorted;
 }
 
+const FX_WEBHOOK_ICONS = {
+  edit: 'edit',
+  rotate: 'refresh',
+  enable: <Play aria-hidden="true" className="size-[18px]" />,
+  disable: <Pause aria-hidden="true" className="size-[18px]" />,
+  deliveries: <ListChecks aria-hidden="true" className="size-[18px]" />,
+  delete: 'trash',
+} as const;
+
 const loadChannelList = (channelId: string) => whatsappWebhookService.list(channelId);
 
 export interface UseWebhookListResult {
@@ -96,6 +107,8 @@ export function useWebhookList(
   loadList: (scopeId: string) => Promise<WebhookEndpoint[]> = loadChannelList,
 ): UseWebhookListResult {
   const { formatDateTime } = useDatetime();
+  const fx = useFx();
+  const byWhom = useFxActor();
   const { onCreate, onEdit, onRotate, onViewDeliveries } = callbacks;
 
   const actions = useMemo<ResourceAction<WebhookEndpoint>[]>(
@@ -130,7 +143,8 @@ export function useWebhookList(
           if (!e) return;
           try {
             await whatsappWebhookService.enable(e.id);
-            toast.success('Endpoint enabled.');
+            if (fx) toast.fxDone({ what: `${e.name} enabled`, byWhom });
+            else toast.success('Endpoint enabled.');
             rt.reload();
           } catch {
             toast.error('Could not enable the endpoint. Please retry.');
@@ -153,6 +167,7 @@ export function useWebhookList(
           actionKey: 'webhooks.set_active',
           entityType: 'webhook_endpoint',
           payload: () => ({ active: false }),
+          fxName: (rows) => rows[0]?.name,
         },
       },
       {
@@ -174,10 +189,14 @@ export function useWebhookList(
         isVisible: (rows) => rows.length === 1,
         // Grace-window deferred action - no confirm, no `run` (the
         // registered `webhooks.delete` handler commits it server-side).
-        deferred: { actionKey: 'webhooks.delete', entityType: 'webhook_endpoint' },
+        deferred: {
+          actionKey: 'webhooks.delete',
+          entityType: 'webhook_endpoint',
+          fxName: (rows) => rows[0]?.name,
+        },
       },
     ],
-    [onEdit, onRotate, onViewDeliveries],
+    [onEdit, onRotate, onViewDeliveries, fx, byWhom],
   );
 
   const config = useMemo<ResourceListConfig<WebhookEndpoint>>(() => {
@@ -379,6 +398,8 @@ export function useWebhookList(
       defaultSort: { id: 'name', desc: false },
       exportFilename: 'webhook-endpoints',
       enableStatusViews: false,
+      // Foundryx UIUX switch only (ignored with it off).
+      fx: { noun: 'endpoints', compactStates: true, iconFor: FX_WEBHOOK_ICONS },
       ...(onCreate
         ? { createLabel: 'Add endpoint', createPermission: 'webhooks.manage', onCreate }
         : {}),

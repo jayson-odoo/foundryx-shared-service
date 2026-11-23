@@ -45,7 +45,12 @@ export function useSkillActions(): ResourceAction<AiSkill>[] {
         isVisible: (rows) => rows.length > 0 && rows.every((s) => !s.isPlatform && !s.isSystem),
         // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
         // no `run` (the registered `ai_skills.delete` handler commits it).
-        deferred: { actionKey: 'ai_skills.delete', entityType: 'ai_skill' },
+        deferred: {
+          actionKey: 'ai_skills.delete',
+          entityType: 'ai_skill',
+          // Switch on only: the one-skill countdown names it (never the prompt).
+          fxName: (rows) => rows[0]?.name || undefined,
+        },
       },
     ],
     [router],
@@ -207,6 +212,16 @@ export function useSkillsListConfig(): ResourceListConfig<AiSkill> {
         { id: 'versionCount', label: 'Versions' },
       ],
       actions,
+      // Foundryx UIUX switch only (ignored while off). Header search only on
+      // the columns the API filters (name, key); Hold to Copy on the key,
+      // never on the prompt (the list does not show it).
+      fx: {
+        noun: 'skills',
+        iconFor: { edit: 'edit', delete: 'trash' },
+        columnKind: { name: 'text', key: 'text' },
+        copyable: ['key'],
+        phoneHidden: ['updatedAt'],
+      },
     };
   }, [actions, router, formatDateTime]);
 }

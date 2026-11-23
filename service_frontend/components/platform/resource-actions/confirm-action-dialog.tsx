@@ -53,6 +53,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import type { ResourceAction } from '@/components/platform/resource-list/types';
+import { useFx } from '@/hooks/use-fx';
+import { FxConfirmDialog } from '@/components/fx/actions/confirm-dialog';
 
 export interface ConfirmActionDialogProps<T> {
   /** The action awaiting confirmation - null renders the dialog closed. */
@@ -62,7 +64,62 @@ export interface ConfirmActionDialogProps<T> {
   onConfirm: (action: ResourceAction<T>) => void;
 }
 
-export function ConfirmActionDialog<T>({
+/**
+ * Foundryx UIUX switch (playbook-uiux.md): with it on, the same confirmation
+ * in the playbook's words and look, with the press and hold (or, for a typed
+ * carve-out, the typed name instead of the hold). Which actions confirm never
+ * changes. Off renders the legacy body below, unchanged.
+ */
+export function ConfirmActionDialog<T>(props: ConfirmActionDialogProps<T>) {
+  return useFx() ? (
+    <FxConfirmActionDialog {...props} />
+  ) : (
+    <ConfirmActionDialogLegacy {...props} />
+  );
+}
+
+/** The safe button's words: "Keep <object>" from the action's verb + object
+ *  label ("Purge tenant" keeps the tenant), or "Go back" with no object. */
+export function fxKeepLabel(actionLabel: string): string {
+  const words = actionLabel.trim().split(/\s+/);
+  return words.length > 1 ? `Keep ${words.slice(1).join(' ').toLowerCase()}` : 'Go back';
+}
+
+function FxConfirmActionDialog<T>({
+  pending,
+  rows,
+  onClose,
+  onConfirm,
+}: ConfirmActionDialogProps<T>) {
+  const resolve = (v: string | ((rows: T[]) => string) | undefined): string | undefined =>
+    typeof v === 'function' ? v(rows) : v;
+  const confirm = pending?.confirm;
+  const actionLabel =
+    resolve(confirm?.confirmLabel) ??
+    (pending ? resolve(pending.label) : undefined) ??
+    'Confirm';
+  const input = confirm?.input;
+  return (
+    <FxConfirmDialog
+      open={Boolean(pending)}
+      title={resolve(confirm?.title) ?? ''}
+      line={resolve(confirm?.description)}
+      keepLabel={resolve(confirm?.fxKeepLabel) ?? fxKeepLabel(actionLabel)}
+      actionLabel={actionLabel}
+      destructive={pending?.tone === 'destructive'}
+      typed={
+        input ? { expected: input.fxExpected?.(rows) ?? input.expected(rows) } : undefined
+      }
+      onKeep={onClose}
+      onConfirm={() => {
+        if (pending) onConfirm(pending);
+        onClose();
+      }}
+    />
+  );
+}
+
+function ConfirmActionDialogLegacy<T>({
   pending,
   rows,
   onClose,

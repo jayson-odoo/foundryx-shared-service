@@ -65,6 +65,9 @@ export interface UseConversationsResult {
   filters: ConversationFilters;
   setFilters: (patch: Partial<ConversationFilters>) => void;
   reload: () => void;
+  /** Whether the live feed is connected (true until it reports a drop). Read
+   *  only by the Foundryx UIUX lost-connection banner. */
+  isConnected: boolean;
 }
 
 export const DEFAULT_FILTERS: ConversationFilters = {
@@ -107,6 +110,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     ...readInitialFilters(),
   }));
   const fetchSeq = useRef(0);
+  const [isConnected, setIsConnected] = useState(true);
 
   // F10 (round-3 codex triage) - EVERY view-rail dimension carried in
   // `filters` (lifecycleStageIds/tagIds/channelIds/viewId) is scoped to the
@@ -240,7 +244,8 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     },
     [isFiltered, load, workspaceId],
   );
-  useConversationSocket(workspaceId, onEvent);
+  // Back after a drop: fetch the list again for whatever arrived meanwhile.
+  useConversationSocket(workspaceId, onEvent, setIsConnected, load);
 
   const setFilters = useCallback((patch: Partial<ConversationFilters>) => {
     setFiltersState((prev) => ({ ...prev, ...patch }));
@@ -249,5 +254,5 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
   // Server-filtered + server-sorted (AC-IVE-15/16, plan 28 AC-TEM-30) -
   // `rawThreads` is already the exact page the backend computed for the
   // current `query`, `teamId` included.
-  return { threads: rawThreads, isLoading, error, filters, setFilters, reload: load };
+  return { threads: rawThreads, isLoading, error, filters, setFilters, reload: load, isConnected };
 }

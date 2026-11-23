@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment } from 'react';
+import { Fragment, useMemo } from 'react';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ResourceList } from '@/components/platform/resource-list';
@@ -13,7 +13,21 @@ import { useStatusEntitiesListConfig } from '@/components/platform/status-engine
  * platform-owned and hidden here.
  */
 export default function TenantStatusesPage() {
-  const config = useStatusEntitiesListConfig('/settings/statuses');
+  const base = useStatusEntitiesListConfig('/settings/statuses');
+  // Foundryx UIUX switch only (slice W4-SETTINGS); ignored while off. The
+  // shared config is left as it is (the platform Status Engine uses it too).
+  const config = useMemo(
+    () => ({
+      ...base,
+      fx: {
+        noun: 'entities',
+        copyable: ['entity'],
+        cardLines: [['entity', 'source'], ['module']],
+        phoneHidden: ['statuses', 'transitions'],
+      },
+    }),
+    [base],
+  );
 
   return (
     <RequirePermission permission="statuses.read">

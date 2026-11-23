@@ -16,9 +16,11 @@ import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
 import type { NumberCatalogItem, NumberReset } from '@/types/numbering';
 import { NUMBER_RESET_OPTIONS } from '@/types/numbering';
+import { useFx } from '@/hooks/use-fx';
+import { FxNumberEditDialog } from './fx-number-edit-dialog';
 
 /** Live token substitution for the dialog preview - mirrors the backend tokens. */
-function previewNumber(prefix: string, pattern: string, seq: number): string {
+export function previewNumber(prefix: string, pattern: string, seq: number): string {
   const now = new Date();
   const yyyy = String(now.getFullYear());
   return pattern
@@ -36,7 +38,22 @@ function previewNumber(prefix: string, pattern: string, seq: number): string {
  * Format must contain a running-number token ({NNNN}) - the boundary validates
  * too; here Save is blocked so the user can't submit an always-colliding format.
  */
-export function NumberEditDialog({
+export interface NumberEditDialogProps {
+  item: NumberCatalogItem;
+  onClose: () => void;
+  onSave: (
+    docType: string,
+    body: { prefix: string; formatPattern: string; reset: NumberReset },
+    nextVal: number,
+    nextValChanged: boolean,
+  ) => Promise<void>;
+}
+
+export function NumberEditDialog(props: NumberEditDialogProps) {
+  return useFx() ? <FxNumberEditDialog {...props} /> : <NumberEditDialogLegacy {...props} />;
+}
+
+function NumberEditDialogLegacy({
   item,
   onClose,
   onSave,

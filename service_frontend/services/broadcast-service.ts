@@ -32,6 +32,7 @@ import { realBroadcastService } from './broadcast-service.real';
 export interface RecipientQuery {
   page: number;
   pageSize: number;
+  /** One delivery state, or several comma-separated ("sent,read"). */
   state?: string;
   search?: string;
 }

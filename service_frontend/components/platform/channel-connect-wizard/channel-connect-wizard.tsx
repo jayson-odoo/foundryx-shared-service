@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { CheckCircle2, Inbox, Loader2, TriangleAlert } from 'lucide-react';
 import {
   Dialog,
@@ -14,18 +13,16 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SearchSelect } from '@/components/platform/search-select';
-import { useConnectChannel } from '@/hooks/use-connect-channel';
-import { useDatetime } from '@/hooks/use-datetime';
-import { tokenWarnings } from '@/lib/channel-token-warnings';
-import { workspaceService } from '@/services/workspace-service';
+import { useFx } from '@/hooks/use-fx';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
-import { isEmbeddedSignupConfigured, launchEmbeddedSignup } from '@/lib/embedded-signup';
 import { CHANNEL_CAPABILITIES, CHANNEL_TYPES } from '@/lib/channel-capabilities';
 import { cn } from '@/lib/utils';
-import type { Channel, ChannelType, Workspace } from '@/types/omnichannel';
+import type { Channel, ChannelType } from '@/types/omnichannel';
 import { OriginsEditor } from '@/app/(protected)/omnichannel/settings/embed/origins-editor';
 import { CopyField } from '@/app/(protected)/omnichannel/settings/embed/copy-field';
 import { MockEmbeddedSignupDialog } from './mock-embedded-signup-dialog';
+import { FxChannelConnectWizard } from './fx-channel-connect-wizard';
+import { useChannelConnectWizard } from './use-channel-connect-wizard';
 
 export interface ChannelConnectWizardProps {
   open: boolean;
@@ -33,6 +30,9 @@ export interface ChannelConnectWizardProps {
   /** Fix the target workspace (e.g. launched from a workspace page); otherwise the
    *  wizard offers a workspace picker. */
   workspaceId?: string;
+  /** The channel type picked when the wizard opens (default WhatsApp). The
+   *  type stays changeable. */
+  initialType?: ChannelType;
   /** Called when a channel is successfully provisioned (e.g. to reload a list). */
   onConnected?: (channel: Channel) => void;
 }
@@ -51,142 +51,52 @@ const TYPE_OPTIONS = CHANNEL_TYPES.map((t) => ({ value: t, label: CHANNEL_CAPABI
  * simulated popup so local dev + tests work without a Meta app - for all
  * three channel types (AC-CHN-03), never a parallel dialog.
  */
-export function ChannelConnectWizard({
+export function ChannelConnectWizard(props: ChannelConnectWizardProps) {
+  return useFx() ? <FxChannelConnectWizard {...props} /> : <ChannelConnectWizardLegacy {...props} />;
+}
+
+function ChannelConnectWizardLegacy({
   open,
   onOpenChange,
   workspaceId,
+  initialType,
   onConnected,
 }: ChannelConnectWizardProps) {
-  const [channelType, setChannelType] = useState<ChannelType>('WHATSAPP');
-  const [selectedPageId, setSelectedPageId] = useState<string>('');
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [chosenWorkspace, setChosenWorkspace] = useState<string>(workspaceId ?? '');
-  const [manualMode, setManualMode] = useState(false);
-  const [manual, setManual] = useState({ accessToken: '', phoneNumberId: '', wabaId: '', phoneNumber: '' });
-  // Web chat (plan 34 / A7b, AC-WEB-01/02) - no OAuth, no page selection; just
-  // a name + at least one allowed origin, staged in the origins editor's
-  // controlled mode until "Connect" submits everything together.
-  const [webchatName, setWebchatName] = useState('');
-  const [webchatOrigins, setWebchatOrigins] = useState<string[]>([]);
   const {
+    channelType,
+    setChannelType,
+    selectedPageId,
+    setSelectedPageId,
+    workspaces,
+    chosenWorkspace,
+    setChosenWorkspace,
+    manualMode,
+    setManualMode,
+    manual,
+    setManual,
+    webchatName,
+    setWebchatName,
+    webchatOrigins,
+    setWebchatOrigins,
     state,
     channel,
     error,
-    pages,
     webchatSecret,
-    start,
     cancel,
     authorize,
-    completeWithResult,
-    connectManual,
-    setExchanging,
-    fail,
-    reset,
-    startMetaAuth,
-    authorizeMetaCode,
-    selectMetaPage,
-    connectWebchat,
-  } = useConnectChannel(chosenWorkspace);
-  const configured = isEmbeddedSignupConfigured();
-  const capabilities = CHANNEL_CAPABILITIES[channelType];
-  const isWhatsApp = channelType === 'WHATSAPP';
-  const isWebchat = channelType === 'WEBCHAT';
-  const manualValid = manual.accessToken.trim().length > 0 && manual.phoneNumberId.trim().length > 0;
-  const webchatValid = webchatName.trim().length > 0 && webchatOrigins.length > 0;
-  const { formatDate } = useDatetime();
-  const warnings = channel ? tokenWarnings({ tokenExpiresAt: channel.tokenExpiresAt }, formatDate) : [];
-  const availablePages = pages.filter((p) => !p.connected);
-  const selectedPage = availablePages.find((p) => p.id === selectedPageId) ?? null;
-
-  // "Continue" - real SDK/OAuth when configured, else the simulated popup.
-  const handleConnect = async () => {
-    if (isWebchat) {
-      if (!webchatValid) return;
-      void connectWebchat({
-        name: webchatName.trim(),
-        workspaceId: chosenWorkspace,
-        allowedOrigins: webchatOrigins,
-      });
-      return;
-    }
-    if (isWhatsApp) {
-      if (!configured) {
-        start();
-        return;
-      }
-      setExchanging();
-      try {
-        const result = await launchEmbeddedSignup('WHATSAPP');
-        await completeWithResult(result);
-      } catch (e) {
-        fail(e instanceof Error ? e.message : 'Signup failed. Please try again.');
-      }
-      return;
-    }
-    startMetaAuth();
-    if (!configured) {
-      // Simulated authorize (dev / no Meta app configured, AC-CHN-03) - the
-      // dev-safe backend adapter ignores the code and returns the SAME
-      // canned sandbox pages for any value, so this reuses the real two-call
-      // flow (`listMetaPages` -> pick -> `connectMetaChannel`) instead of a
-      // parallel mock data source. The "picking a page" step right after IS
-      // the simulated popup's job here (no separate mock dialog for Meta
-      // types, matching the WhatsApp mock's "pick, then authorize" shape).
-      await authorizeMetaCode(channelType, `simulated-${Date.now()}`);
-      return;
-    }
-    try {
-      const result = await launchEmbeddedSignup(channelType);
-      await authorizeMetaCode(channelType, result.code, result.redirectUri);
-    } catch (e) {
-      fail(e instanceof Error ? e.message : 'Authorization failed. Please try again.');
-    }
-  };
-
-  // Load workspaces for the picker (only when no fixed workspace).
-  useEffect(() => {
-    if (workspaceId) return;
-    workspaceService
-      .list({ page: 0, pageSize: 100, statusView: 'active' })
-      .then((r) => {
-        setWorkspaces(r.data);
-        setChosenWorkspace((prev) => prev || r.data.find((w) => w.isDefault)?.id || r.data[0]?.id || '');
-      })
-      .catch(() => setWorkspaces([]));
-  }, [workspaceId]);
-
-  // Reset the flow whenever the wizard is (re)opened.
-  useEffect(() => {
-    if (open) {
-      reset();
-      setChannelType('WHATSAPP');
-      setSelectedPageId('');
-      setManualMode(false);
-      setManual({ accessToken: '', phoneNumberId: '', wabaId: '', phoneNumber: '' });
-      setWebchatName('');
-      setWebchatOrigins([]);
-    }
-  }, [open, reset]);
-
-  // Picking a different type mid-flow drops any in-progress page selection
-  // or staged web chat fields (a stale name/origin list must not survive a
-  // switch away from and back to Web chat).
-  useEffect(() => {
-    setSelectedPageId('');
-    setWebchatName('');
-    setWebchatOrigins([]);
-  }, [channelType]);
-
-  const submitManual = () => {
-    if (!manualValid || !chosenWorkspace) return;
-    void connectManual({
-      workspaceId: chosenWorkspace,
-      accessToken: manual.accessToken.trim(),
-      phoneNumberId: manual.phoneNumberId.trim(),
-      wabaId: manual.wabaId.trim() || undefined,
-      phoneNumber: manual.phoneNumber.trim() || undefined,
-    });
-  };
+    configured,
+    capabilities,
+    isWhatsApp,
+    isWebchat,
+    manualValid,
+    webchatValid,
+    warnings,
+    availablePages,
+    selectedPage,
+    handleConnect,
+    submitManual,
+    submitPage,
+  } = useChannelConnectWizard({ open, workspaceId, initialType });
 
   const close = () => {
     onOpenChange(false);
@@ -194,11 +104,6 @@ export function ChannelConnectWizard({
 
   const handleConnected = (c: Channel) => {
     onConnected?.(c);
-  };
-
-  const submitPage = () => {
-    if (!selectedPage) return;
-    void selectMetaPage(channelType, chosenWorkspace, selectedPage);
   };
 
   // Simulated WhatsApp popup (dev / no Meta app) - picking a WABA number IS

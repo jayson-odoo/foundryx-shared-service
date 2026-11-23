@@ -5,6 +5,8 @@ import { cn } from '@/lib/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Switch as SwitchPrimitive } from 'radix-ui';
 import { COARSE_HIT_TARGET_CLASS, PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { useFx } from '@/hooks/use-fx';
+import { FxSwitch } from '@/components/fx/fields/fx-switch';
 
 // Define a context for `permanent` state
 const SwitchContext = React.createContext<{ permanent: boolean }>({
@@ -143,7 +145,15 @@ function SwitchWrapper({
   );
 }
 
-function Switch({
+// Foundryx UIUX switch: the playbook on/off switch while on; today's while off.
+function Switch(
+  props: React.ComponentProps<typeof SwitchPrimitive.Root> &
+    VariantProps<typeof switchVariants> & { thumbClassName?: string },
+) {
+  return useFx() ? <FxSwitch {...props} /> : <SwitchLegacy {...props} />;
+}
+
+function SwitchLegacy({
   className,
   thumbClassName = '',
   shape,
