@@ -211,6 +211,12 @@ class Settings(BaseSettings):
     # registrations feed (contract 2.15 section 2: one call in flight per book
     # with a pause between days), so a 20-year walk never hammers the book.
     autocount_project_registrations_day_pause_seconds: float = 1.0
+    # SS-BACKFILL-CHUNKED - one doc-feed backfill JOB reads days for at most
+    # this long, then saves `next_day` and queues the next segment, so a
+    # multi-year backfill never meets `jobs.run`'s soft time limit
+    # (`background_job_soft_time_limit_seconds`, 7200). 30 minutes also frees
+    # the shared `jobs` slot between segments for the other AutoCount jobs.
+    autocount_doc_feed_backfill_segment_seconds: int = 1800
 
     # AutoCount project registration (plan 71): the admin switch of the four
     # /api/v1/autocount/project-registrations routes. OFF = every route refuses

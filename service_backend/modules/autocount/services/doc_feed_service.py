@@ -4,7 +4,8 @@ history for the DO/GRN HTTP source.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
@@ -486,9 +487,7 @@ class DocFeedService:
 
         if (
             not dry_run and feed == FEED_PROJECT_REGISTRATIONS
-            and self.backfills.done_dry_run_covering(
-                tenant_id, row.id, from_day_value, to_day_value
-            ) is None
+            and not self._dry_runs_cover(tenant_id, row.id, from_day_value, to_day_value)
         ):
             # Plan 72 - the dry-run pass (counts by month) runs first.
             raise DocFeedConflictError(
@@ -510,10 +509,19 @@ class DocFeedService:
                     "BACKFILL_ALREADY_DONE", "The full-history backfill has already completed."
                 )
 
+        # SS-BACKFILL-CHUNKED (review round 1) - the job exists BEFORE the
+        # row, and the row is born `running` WITH its job id in one commit:
+        # the stale-row reaper never sees a running row with no live job.
+        backfill_id = str(uuid.uuid4())
+        job = JobService(self.db).create(
+            type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            payload={"backfillId": backfill_id},
+        )
         backfill = AcDocFeedBackfill(
+            id=backfill_id,
             tenant_id=tenant_id, company_id=company_id, feed_id=row.id, feed=feed,
             book=row.book, dry_run=dry_run, from_day=from_day_value, to_day=to_day_value,
-            next_day=from_day_value, status=DOC_FEED_BACKFILL_RUNNING,
+            next_day=from_day_value, status=DOC_FEED_BACKFILL_RUNNING, job_id=job.id,
             days_total=(to_day_value - from_day_value).days + 1, days_done=0,
             started_by=actor_user_id, started_at=now,
         )
@@ -523,27 +531,46 @@ class DocFeedService:
         except IntegrityError:
             # N5 - two concurrent Starts both passed `open_for_feed`; the
             # partial unique index (one open backfill per feed) refuses the
-            # loser.
+            # loser (its never-dispatched job is aborted).
             self.db.rollback()
+            self.backfills.abort_pending_job(tenant_id, job.id, now=datetime.now(timezone.utc))
+            self.db.commit()
             raise DocFeedConflictError(
                 "BACKFILL_OPEN", "A backfill is already open for this feed."
             )
 
-        job = JobService(self.db).create(
-            type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
-            payload={"backfillId": backfill.id},
-        )
-        backfill.job_id = job.id
-        self.db.commit()
         self._dispatch(job, run_doc_feed_backfill_job, transport=transport)
         self.db.refresh(backfill)
         return backfill
+
+    def _dry_runs_cover(self, tenant_id: str, feed_id: str, from_day: date, to_day: date) -> bool:
+        """SS-BACKFILL-CHUNKED (AC-BFC-4) - the finished dry runs of this feed
+        cover every day of ``from_day..to_day`` TOGETHER (pieces count; one
+        dry run over the whole range still does). A gap of one day refuses."""
+        covered_to = from_day - timedelta(days=1)
+        for dry in self.backfills.done_dry_runs_overlapping(tenant_id, feed_id, from_day, to_day):
+            if dry.from_day > covered_to + timedelta(days=1):
+                return False  # a gap before this piece
+            if dry.to_day > covered_to:
+                covered_to = dry.to_day
+            if covered_to >= to_day:
+                return True
+        return covered_to >= to_day
+
+    def _reap_feed(self, tenant_id: str, feed_id: str) -> None:
+        """SS-BACKFILL-CHUNKED (AC-BFC-3) - before Stop / Resume / Discard,
+        stop this feed's backfill if its job has ended, so the action works
+        at once instead of waiting for the next beat."""
+        from ..doc_feed.scheduler import reap_stale_backfills
+
+        reap_stale_backfills(self.db, tenant_id=tenant_id, feed_id=feed_id)
 
     def _open_backfill_or_404(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
         self._company(tenant_id, company_id)
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
+        self._reap_feed(tenant_id, row.id)
         backfill = self.backfills.open_for_feed(tenant_id, row.id)
         if backfill is None:
             raise DocFeedValidationError("feed", "There is no open backfill for this feed.")
@@ -554,7 +581,14 @@ class DocFeedService:
         if backfill.status == DOC_FEED_BACKFILL_RUNNING:
             from ..models import DOC_FEED_BACKFILL_STOPPING
 
-            backfill.status = DOC_FEED_BACKFILL_STOPPING
+            if self.backfills.abort_pending_job(
+                tenant_id, backfill.job_id, now=datetime.now(timezone.utc)
+            ):
+                # SS-BACKFILL-CHUNKED - the next segment is still queued (no
+                # worker has it): nothing will close `stopping`, so stop now.
+                backfill.status = DOC_FEED_BACKFILL_STOPPED
+            else:
+                backfill.status = DOC_FEED_BACKFILL_STOPPING
             self.db.commit()
         return backfill
 
@@ -566,9 +600,15 @@ class DocFeedService:
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
+        self._reap_feed(tenant_id, row.id)
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
             raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
+        # SS-BACKFILL-CHUNKED (review round 1) - a stopped row's old segment
+        # that is still only QUEUED would never read anything (it no-ops on
+        # `stopped`); abort it so Resume is not refused for it.
+        if self.backfills.abort_pending_job(tenant_id, backfill.job_id, now=datetime.now(timezone.utc)):
+            self.db.commit()
         if self.backfills.job_is_live(tenant_id, backfill.job_id):
             raise DocFeedConflictError(
                 "BACKFILL_JOB_LIVE",
@@ -591,12 +631,13 @@ class DocFeedService:
             raise DocFeedConflictError(
                 "BOOK_BUSY", "Another backfill is already reading this book."
             )
-        backfill.status = DOC_FEED_BACKFILL_RUNNING
-        self.db.commit()
+        # Review round 1 - job first, then `running` + its job id in ONE
+        # commit (the reaper never sees running under the old ended job).
         job = JobService(self.db).create(
             type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
             payload={"backfillId": backfill.id},
         )
+        backfill.status = DOC_FEED_BACKFILL_RUNNING
         backfill.job_id = job.id
         self.db.commit()
         self._dispatch(job, run_doc_feed_backfill_job, transport=transport)
@@ -608,6 +649,7 @@ class DocFeedService:
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
+        self._reap_feed(tenant_id, row.id)
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
             raise DocFeedValidationError("feed", "There is no stopped backfill to discard.")

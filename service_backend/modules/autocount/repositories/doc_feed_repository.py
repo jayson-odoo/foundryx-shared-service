@@ -13,9 +13,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.models.background_job import JOB_PENDING, JOB_RUNNING, BackgroundJob
+from app.models.background_job import JOB_ABORTED, JOB_PENDING, JOB_RUNNING, BackgroundJob
 
 from ..models import (
+    DOC_FEED_BACKFILL_STOPPED,
     DOC_FEED_KEYS,
     AcDocFeed,
     AcDocFeedBackfill,
@@ -506,29 +507,6 @@ class DocFeedBackfillRepository:
             .first()
         )
 
-    def done_dry_run_covering(
-        self, tenant_id: str, feed_id: str, from_day: date, to_day: date
-    ) -> Optional[AcDocFeedBackfill]:
-        """Plan 72 - a finished dry-run backfill of this feed covering every
-        day of ``from_day..to_day`` (the live pass runs only after it)."""
-        return (
-            self.db.query(AcDocFeedBackfill)
-            .filter(
-                AcDocFeedBackfill.tenant_id == tenant_id,
-                AcDocFeedBackfill.feed_id == feed_id,
-                AcDocFeedBackfill.dry_run.is_(True),
-                AcDocFeedBackfill.status == DOC_FEED_BACKFILL_DONE,
-                # A discarded dry run closed as `done` without its counts.
-                or_(
-                    AcDocFeedBackfill.error_code.is_(None),
-                    AcDocFeedBackfill.error_code != BACKFILL_DISCARDED_CODE,
-                ),
-                AcDocFeedBackfill.from_day <= from_day,
-                AcDocFeedBackfill.to_day >= to_day,
-            )
-            .first()
-        )
-
     def latest_for_feed(self, tenant_id: str, feed_id: str) -> Optional[AcDocFeedBackfill]:
         return (
             self.db.query(AcDocFeedBackfill)
@@ -556,6 +534,107 @@ class DocFeedBackfillRepository:
                 ),
             )
             .scalar()
+        )
+
+    def in_flight(
+        self, *, tenant_id: Optional[str] = None, feed_id: Optional[str] = None
+    ) -> List[AcDocFeedBackfill]:
+        """SS-BACKFILL-CHUNKED - every backfill still marked as reading
+        (running or stopping), for the stale-row reaper. ``tenant_id=None``
+        is the beat's cross-tenant pass; the service narrows to one feed."""
+        query = self.db.query(AcDocFeedBackfill).filter(
+            AcDocFeedBackfill.status.in_((DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING))
+        )
+        if tenant_id is not None:
+            query = query.filter(AcDocFeedBackfill.tenant_id == tenant_id)
+        if feed_id is not None:
+            query = query.filter(AcDocFeedBackfill.feed_id == feed_id)
+        return query.all()
+
+    def job_for(self, tenant_id: str, job_id: Optional[str]) -> Optional[BackgroundJob]:
+        if not job_id:
+            return None
+        return (
+            self.db.query(BackgroundJob)
+            .filter(BackgroundJob.tenant_id == tenant_id, BackgroundJob.id == job_id)
+            .first()
+        )
+
+    def abort_pending_job(self, tenant_id: str, job_id: Optional[str], *, now: datetime) -> bool:
+        """Guarded ``pending -> aborted`` (a queued segment no worker has
+        claimed yet). False when a worker already claimed it - the caller
+        then falls back to the cooperative ``stopping``."""
+        if not job_id:
+            return False
+        count = (
+            self.db.query(BackgroundJob)
+            .filter(
+                BackgroundJob.tenant_id == tenant_id,
+                BackgroundJob.id == job_id,
+                BackgroundJob.status == JOB_PENDING,
+            )
+            .update(
+                {
+                    BackgroundJob.status: JOB_ABORTED,
+                    BackgroundJob.error: "Stopped before it started.",
+                    BackgroundJob.finished_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        return count > 0
+
+    def stop_if_job_unchanged(
+        self, tenant_id: str, backfill_id: str, seen_job_id: Optional[str],
+        *, error: str, error_code: str,
+    ) -> bool:
+        """SS-BACKFILL-CHUNKED reaper - ``running|stopping -> stopped`` only
+        while the row still points at ``seen_job_id``. No commit."""
+        job_match = (
+            AcDocFeedBackfill.job_id.is_(None) if seen_job_id is None
+            else AcDocFeedBackfill.job_id == seen_job_id
+        )
+        count = (
+            self.db.query(AcDocFeedBackfill)
+            .filter(
+                AcDocFeedBackfill.tenant_id == tenant_id,
+                AcDocFeedBackfill.id == backfill_id,
+                AcDocFeedBackfill.status.in_((DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING)),
+                job_match,
+            )
+            .update(
+                {
+                    AcDocFeedBackfill.status: DOC_FEED_BACKFILL_STOPPED,
+                    AcDocFeedBackfill.error: error,
+                    AcDocFeedBackfill.error_code: error_code,
+                },
+                synchronize_session=False,
+            )
+        )
+        return count > 0
+
+    def done_dry_runs_overlapping(
+        self, tenant_id: str, feed_id: str, from_day: date, to_day: date
+    ) -> List[AcDocFeedBackfill]:
+        """SS-BACKFILL-CHUNKED (AC-BFC-4) - every finished (never discarded)
+        dry run of this feed that touches ``from_day..to_day``, oldest first;
+        the service checks they cover the range together."""
+        return (
+            self.db.query(AcDocFeedBackfill)
+            .filter(
+                AcDocFeedBackfill.tenant_id == tenant_id,
+                AcDocFeedBackfill.feed_id == feed_id,
+                AcDocFeedBackfill.dry_run.is_(True),
+                AcDocFeedBackfill.status == DOC_FEED_BACKFILL_DONE,
+                or_(
+                    AcDocFeedBackfill.error_code.is_(None),
+                    AcDocFeedBackfill.error_code != BACKFILL_DISCARDED_CODE,
+                ),
+                AcDocFeedBackfill.from_day <= to_day,
+                AcDocFeedBackfill.to_day >= from_day,
+            )
+            .order_by(AcDocFeedBackfill.from_day)
+            .all()
         )
 
     def add(self, backfill: AcDocFeedBackfill) -> AcDocFeedBackfill:
