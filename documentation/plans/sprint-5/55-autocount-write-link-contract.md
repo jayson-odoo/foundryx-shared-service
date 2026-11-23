@@ -127,6 +127,9 @@ resend does:
 | `refused` (any code), or `vendor_error` with `errorCode` `VENDOR_REFUSED` (AutoCount itself said no) | Nothing reached AutoCount, so the key is released: the resend runs fresh, with the same or a corrected body |
 | `recovered`, any `errorCode` (the PO is back as it was: a resume found the write never landed, or a failed write was undone; plan 65 B3) | The key is released, like the first row: the resend runs fresh |
 | `pending_verification` and the same body | Reconciles: the server re-reads the document. If the first call landed, it is finished and answered (`done`); if it provably never landed, the key is released and the resend runs fresh. Never a second write |
+| a split link (`po-links`, part of a row) that is `pending_verification` or `needs_attention`, same body (PO-LINK-STUCK-RECONCILE-B) | Re-verified like a Resume (section 4.0a): `done` when the tied row stands, `refused` `OPERATION_NOT_APPLIED` when nothing of it is in AutoCount (key released; the NEXT resend runs fresh), else `needs_attention`. The resend itself never writes the link again |
+| `vendor_error` `VENDOR_TIMEOUT`, or `needs_attention` `VENDOR_TIMEOUT`, same body (PO-LINK-STUCK-RECONCILE-B) | AutoCount's own SQL timeout: unknown. The resend reads the PO: landed = `done`; nothing yet and the save may still be running (under 7 minutes since the write) = `vendor_error` `VENDOR_TIMEOUT` again, keep the key and look again; nothing after that = `refused` `OPERATION_NOT_APPLIED` (key released); unreadable = `needs_attention` `VENDOR_TIMEOUT`. Never a second write from a look-up |
+| `refused` `SUPERSEDED` (an operator closed it, section 4.0a) | The stored answer is replayed under the same key, nothing is written. A new press uses a new key |
 | `done` | Locked: the stored answer is replayed (same `operationId`), nothing is written again |
 | `mismatch`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
 | any stored outcome, but a DIFFERENT body or route | `409 IDEMPOTENCY_CONFLICT` (`outcome` `refused`) unless the stored outcome released the key (first two rows) |
@@ -145,7 +148,24 @@ expected quantity (or gone when the links took all of it) and one new row per li
 SO rows; if the stored link write still reads back as a mismatch, or the PO is not in that shape, it stays
 `needs_attention` and nothing is sent. For a `link_row` or `relink_row` whose link write landed it reads the
 current PO and the SO row (an operation stored before plan 65 re-reads the SO). It then sends ONE restore write on
-the new rows only and verifies it; the operation ends `done`. The single part-row link (split) is not resumable.
+the new rows only and verifies it; the operation ends `done`.
+
+The single part-row link (split) is resumable since PO-LINK-STUCK-RECONCILE-B. Resume re-verifies it against
+AutoCount now, never re-sending the link write: the tied row stands as the split made it (its SO row, item, unit
+and quantity; the cut row at its rest; nothing else moved; judged by the same comparator as the batch link) ->
+`done` with `document` (and ONE restore write first, only when the tied row's location, unit price or delivery
+date is not as asked; a value AutoCount already set, e.g. the delivery date and note taken from the SO line, needs
+none); nothing of it in AutoCount -> `refused` `OPERATION_NOT_APPLIED` (key released: the hold can go), but only
+once the write had time to finish saving (about 7 minutes; before that it stays as it was); anything else ->
+`needs_attention` with a plain `message`, nothing sent.
+
+`POST /write-operations/{id}/close-superseded` (body `{companyCode}`, scope `write_back`; PO-LINK-STUCK-RECONCILE-B):
+an operator closes a parked operation (`pending_verification`, `needs_attention`, or a `VENDOR_TIMEOUT`
+`vendor_error`) after fixing the document by hand. It becomes a final `refused` / `SUPERSEDED` (HTTP 200), nothing is
+sent to AutoCount, and the CRM's next look-up with the same key gets that answer back. While the operation's write
+may still be saving (under about 7 minutes since it was sent) it is not closed: the answer is the operation as it
+stands, with a "not confirmed yet" message; close again later. A final or running operation is answered as it stands
+(unchanged). Unknown id: `404 UNKNOWN_OPERATION`.
 Before it claims the operation, Resume clears a stale run on the same PO: an operation left `in_progress` for longer
 than the busy window (600 s, a request that died mid-way) becomes `pending_verification`, so it no longer holds the
 PO; a Resume of that stale operation itself is then answered like any `pending_verification` one. An operation
@@ -235,7 +255,8 @@ the write (`vendor_error`, `VENDOR_REFUSED`) is still the whole request: nothing
 the lines skipped before the write, and the key is released.
 
 **Two writes.** The first write is ONE edit of the PO: the PO row is kept with the quantity
-that is left (or removed when the links take all of it) and one new linked row is added per linked line. AutoCount
+that is left (or removed when the links take all of it) and one new linked row is added per linked line (it is sent
+with the SO ROW's delivery date, never the PO's date; PO-LINK-STUCK-RECONCILE-B, the same for the split). AutoCount
 accepts or rejects that edit as a whole, so either every valid line is linked or none is. Each new row arrives at
 the default location (HQ), unit price 0, no delivery date and no discount; a second write (always sent: the
 note cannot be read back) restores all the new rows in one edit with the values of section 4.1 (the SO row's
@@ -451,7 +472,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 
 | outcome | HTTP | errorCode | Meaning |
 |---|---|---|---|
-| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged. `LOCATION_NOT_MOVED` only on the single part-row link |
+| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged. `LOCATION_NOT_MOVED` only on the single part-row link. The header money and tax fields and stamps AutoCount recomputes on a save (totals, tax, `TaxEntityID`, `LastModified`) are not judged |
 | `needs_attention` | 502 | `RESTORE_NOT_LANDED` | Batch link, whole-row link or relink: the links stand but the restore of the new rows (location, unit price, delivery date, discount, note) did not land. Resumable (section 4.0a) |
 | `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` | The write may or may not have happened; the server could not confirm it |
 | `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
@@ -462,6 +483,10 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `mismatch` | 502 | `ROW_VALUES_NOT_KEPT` | Split link: the link landed, but the new row's unit price or delivery date could not be put back to the PO row's values (section 5) |
 | `vendor_error` | 502 | `VENDOR_ERROR` | AutoCount answered the write with an error; nothing is assumed written |
 | `vendor_error` | 502 | `VENDOR_REFUSED` | AutoCount refused the write by its own rules; nothing was written and the key is released (section 4.0) |
+| `vendor_error` | 502 | `VENDOR_TIMEOUT` | AutoCount's SQL command timed out ("Timeout expired", "The wait operation timed out"). The write may still be saved: unknown, the key is kept; a same-key look-up or Resume reads the PO and decides (section 4.0). A lock wait ("Lock request time out period exceeded") rolls back and stays `VENDOR_REFUSED` |
+| `needs_attention` | 502 | `VENDOR_TIMEOUT` | AutoCount timed out and the PO could not be read back: a person checks; Resume reads again |
+| `refused` | 409 | `ROW_ALREADY_LINKED` | Split link or batch line: SS already tied this quantity of this PO row to this SO row and that tied row still stands (a Change whose unlink did not free it, or a resend); nothing written |
+| `refused` | 200 (close) / replay | `SUPERSEDED` | Closed by an operator (`close-superseded`); nothing was written by the close |
 
 `refused` 409 codes (nothing was changed in AutoCount):
 
