@@ -42,7 +42,12 @@ export function useRoleActions(): ResourceAction<RoleListItem>[] {
         // server-side); the form surface's commit navigates via
         // ResourceForm's own `backHref`-aware handler (AC-DLA-30), row/bulk
         // stay put + reload.
-        deferred: { actionKey: 'roles.delete', entityType: 'role' },
+        // Switch on only: the one-role countdown names it.
+        deferred: {
+          actionKey: 'roles.delete',
+          entityType: 'role',
+          fxName: (rows) => rows[0]?.name || undefined,
+        },
       },
     ];
   }, [router]);

@@ -520,7 +520,10 @@ def test_inbound_publishes_ws_and_webhook_media_fields(session_factory, monkeypa
     monkeypatch.setattr(
         webhook_delivery,
         "enqueue_event",
-        lambda db, channel, event_type, event_id, data: captured.__setitem__(event_type, data),
+        # The data is built per endpoint payload version, so it may be a callable.
+        lambda db, channel, event_type, event_id, data: captured.__setitem__(
+            event_type, data() if callable(data) else data
+        ),
     )
 
     db = session_factory()

@@ -13,6 +13,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import { useFx } from '@/hooks/use-fx';
+import { FxRevokeApiKeyDialog } from './fx-revoke-api-key-dialog';
 
 export interface RevokeApiKeyDialogProps {
   /** The key being revoked; null while closed. */
@@ -26,7 +28,11 @@ export interface RevokeApiKeyDialogProps {
  * Revoke choice for a key that registered webhook endpoints: pause them too
  * (on by default) or leave them running, e.g. during a key rotation.
  */
-export function RevokeApiKeyDialog({
+export function RevokeApiKeyDialog(props: RevokeApiKeyDialogProps) {
+  return useFx() ? <FxRevokeApiKeyDialog {...props} /> : <RevokeApiKeyDialogLegacy {...props} />;
+}
+
+function RevokeApiKeyDialogLegacy({
   keyName,
   endpointCount,
   onConfirm,

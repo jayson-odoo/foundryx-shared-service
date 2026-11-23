@@ -1040,4 +1040,10 @@ export {
   DataGridTableRowSpacer,
   firstDataColumnIndex,
   shouldShowSkeletonRows,
+  // Shared with the Foundryx UIUX list table (components/fx/list).
+  fromOwnRowControl,
+  hasRowHref,
+  PrimaryCellLink,
+  useRestoreReturnedRow,
+  useRowPendingDim,
 };

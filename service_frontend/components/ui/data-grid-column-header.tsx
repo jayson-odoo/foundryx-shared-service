@@ -1,5 +1,8 @@
 import { HTMLAttributes, ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { useFx } from '@/hooks/use-fx';
+import { useFxListHeader } from '@/components/fx/list/header-context';
+import { FxColumnHeader } from '@/components/fx/list/fx-column-header';
 import { Button } from '@/components/ui/button';
 import { useDataGrid } from '@/components/ui/data-grid';
 import {
@@ -39,7 +42,22 @@ interface DataGridColumnHeaderProps<TData, TValue> extends HTMLAttributes<HTMLDi
   visibility?: boolean;
 }
 
-function DataGridColumnHeader<TData, TValue>({
+/**
+ * Inside a Foundryx UIUX list with the switch on, the header searches,
+ * filters and sorts its column (`FxColumnHeader`); everywhere else it is the
+ * legacy header, unchanged.
+ */
+function DataGridColumnHeader<TData, TValue>(props: DataGridColumnHeaderProps<TData, TValue>) {
+  const fx = useFx();
+  const fxList = useFxListHeader();
+  return fx && fxList ? (
+    <FxColumnHeader column={props.column} title={props.title} />
+  ) : (
+    <DataGridColumnHeaderLegacy {...props} />
+  );
+}
+
+function DataGridColumnHeaderLegacy<TData, TValue>({
   column,
   title = '',
   icon,

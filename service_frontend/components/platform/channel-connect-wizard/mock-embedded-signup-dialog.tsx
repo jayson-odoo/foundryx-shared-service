@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { cn } from '@/lib/utils';
-import { isValidPhone, normalizePhone } from '@/lib/phone';
+import { PhoneInput } from '@/components/platform/phone-input/phone-input';
 import type { MockWabaOption } from '@/types/omnichannel';
 import { MOCK_WABA_OPTIONS } from '@/services/onboarding-service.mock';
 
@@ -51,11 +51,11 @@ export function MockEmbeddedSignupDialog({
   const [mode, setMode] = useState<'pick' | 'register'>('pick');
   const [selectedId, setSelectedId] = useState<string>(MOCK_WABA_OPTIONS[0]?.wabaId ?? '');
   const [businessName, setBusinessName] = useState('');
+  /** E.164 from the shared phone input. */
   const [phone, setPhone] = useState('');
+  const [phoneValid, setPhoneValid] = useState(false);
 
   const selectedWaba = MOCK_WABA_OPTIONS.find((o) => o.wabaId === selectedId);
-  const phoneValid = isValidPhone(phone);
-  const showPhoneError = phone.trim().length > 0 && !phoneValid;
   const registerValid = businessName.trim().length > 0 && phoneValid;
 
   function authorizePicked() {
@@ -64,7 +64,7 @@ export function MockEmbeddedSignupDialog({
 
   function authorizeRegistered() {
     if (!registerValid) return;
-    const normalized = normalizePhone(phone);
+    const normalized = phone;
     const id = `new-${normalized.replace(/\D/g, '')}`;
     onAuthorizeWaba({
       wabaId: `waba-${id}`,
@@ -154,26 +154,28 @@ export function MockEmbeddedSignupDialog({
                 Meta&apos;s popup; here it&apos;s simulated.)
               </p>
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm text-muted-foreground">Business display name</label>
+                <label htmlFor="mock-signup-business" className="text-sm text-muted-foreground">
+                  Business display name
+                </label>
                 <Input
+                  id="mock-signup-business"
                   placeholder="e.g. Foundryx VIP Desk"
                   value={businessName}
                   onChange={(e) => setBusinessName(e.target.value)}
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm text-muted-foreground">Phone number</label>
-                <Input
-                  placeholder="e.g. +65 8000 0000"
+                <label htmlFor="mock-signup-phone" className="text-sm text-muted-foreground">
+                  Phone number
+                </label>
+                <PhoneInput
+                  id="mock-signup-phone"
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  aria-invalid={showPhoneError}
+                  onChange={(e164, meta) => {
+                    setPhone(e164);
+                    setPhoneValid(meta.valid);
+                  }}
                 />
-                {showPhoneError && (
-                  <span className="text-xs text-destructive">
-                    Enter a valid phone number in international format (e.g. +65 8000 0000).
-                  </span>
-                )}
               </div>
             </DialogBody>
 

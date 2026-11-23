@@ -70,6 +70,14 @@ DOC_DATE_REQUIRED = "DOC_DATE_REQUIRED"
 DOC_KIND_UNKNOWN = "DOC_KIND_UNKNOWN"
 VENDOR_ERROR = "VENDOR_ERROR"
 VENDOR_REFUSED = "VENDOR_REFUSED"
+# PO-LINK-STUCK-RECONCILE-B (prod 19/20 Nov): AutoCount's own SQL command timeout. The write may still commit
+# AFTER hapi answered (it did on 20 Nov), so it is an UNKNOWN outcome, never a refusal, until a read shows it.
+VENDOR_TIMEOUT = "VENDOR_TIMEOUT"
+VENDOR_TIMEOUT_MESSAGE = ("AutoCount timed out while saving this change. It may still be saved: it is being "
+                          "checked in AutoCount before anything is sent again.")
+# A command timeout reads "Timeout expired" (SqlException -2) or "The wait operation timed out" (Win32 258). A
+# lock wait ("Lock request time out period exceeded", SQL 1222) rolls the statement back: a real refusal (AC-69-11).
+_TIMEOUT_TEXT = re.compile(r"timeout expired|wait operation timed out", re.IGNORECASE)
 FIELD_IGNORED = "FIELD_IGNORED"
 ANSWER_UNPARSEABLE = "ANSWER_UNPARSEABLE"
 QTY_BELOW_TRANSFERRED = "QTY_BELOW_TRANSFERRED"
@@ -208,6 +216,15 @@ def vendor_message(body: Any, base_url: str = "") -> str:
 
 
 _GENERIC = "An error has occurred."
+
+
+def is_vendor_timeout(message: str, vendor_class: Optional[str] = None) -> bool:
+    """AutoCount answered that its SQL command timed out (``CriticalSqlException`` / ``SqlException``
+    "Timeout expired", "The wait operation timed out"): the save may have landed later. Judged on AutoCount's
+    own (redacted) message, never on the HTTP status."""
+    if vendor_class and "sql" not in vendor_class.lower():  # a business exception quoting the words is no timeout
+        return False
+    return bool(_TIMEOUT_TEXT.search(message or ""))
 
 
 def is_business_refusal(status: int, body: Any) -> bool:
@@ -521,7 +538,7 @@ class PrimitiveService(WriteFrame):
         finally:
             self.db.rollback()
         try:
-            payloads._check_kind_doc(kind_def, doc, cancelled_ok=True)
+            payloads._check_kind_doc(kind_def, doc, cancelled_ok=True, write=False)
         except WriteRefusal as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
         return PrimitiveResult(
@@ -857,13 +874,17 @@ class PrimitiveService(WriteFrame):
         as it was = a real refusal (None: the caller answers ``VENDOR_REFUSED``); changed = it landed, judged
         like a 2xx answer; cannot be read = unknown (``pending_verification``, never refused)."""
         self.db.commit()  # the vendor answer is on the row before the read
+        timeout = is_vendor_timeout(message, vendor_class)
         try:
             after = self._read_back(call, reader, None, request, before, read_date, row)
         except DocReadError:
-            return self._wrap(self._finish(row, OUTCOME_PENDING, VENDOR_REFUSED, message=message),
-                              vendor_class=vendor_class)
+            return self._wrap(self._finish(row, OUTCOME_PENDING, VENDOR_TIMEOUT if timeout else VENDOR_REFUSED,
+                                           message=message), vendor_class=vendor_class)
         if before is not None and _unchanged(before, after):
             row.after_json = after
+            if timeout:  # nothing YET: the save may still commit; the operation checks again (never released here)
+                return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_TIMEOUT, message=message),
+                                  vendor_class=vendor_class)
             return None
         logger.warning("autocount PUT answered a refusal but the document changed (action %s): judged landed",
                        row.id)
@@ -876,6 +897,12 @@ class PrimitiveService(WriteFrame):
         """A read-back in hand: verify it, finish the row, stage it."""
         row.after_json = after  # a read-back in hand is always verified
         verdict_code, message, warnings, new_key = self._verify(call, request, before, after)
+        if (call.kind in ("PO", "SPO") and before is not None
+                and payloads.shipping_po_changed(before, after)):  # SS-SHIPPINGPO-PRESERVE
+            was, now = payloads.shipping_po_values(before, after)
+            logger.error("autocount %s changed ShippingPO %s -> %s (action %s, DocKey %s)",
+                         call.primitive, was, now, row.id, after.get("DocKey"))
+            verdict_code, message = payloads.SHIPPING_PO_CHANGED, payloads.SHIPPING_PO_CHANGED_MESSAGE
         extra.update(doc_key=after.get("DocKey"), doc_no=after.get("DocNo"), new_dtl_key=new_key)
         if verdict_code:
             extra["warnings"] = warnings

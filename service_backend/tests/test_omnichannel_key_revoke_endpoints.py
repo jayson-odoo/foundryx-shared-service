@@ -1553,7 +1553,7 @@ def _doc_section(text, start, end):
 
 def _first_changelog_row():
     """The changelog row for this change, found by its words among the rows."""
-    lines = _GUIDE.read_text().splitlines()[:40]
+    lines = _GUIDE.read_text().split("\n## ", 1)[0].splitlines()
     rows = [
         ln for ln in lines
         if ln.startswith("> |") and "| Date |" not in ln and not ln.startswith("> |--")

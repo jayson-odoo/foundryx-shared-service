@@ -203,6 +203,13 @@ export function useBrListConfig(
         { id: 'status', label: 'Status' },
       ],
       actions,
+      // Foundryx UIUX switch only (ignored while off).
+      fx: {
+        noun: 'business requirements',
+        iconFor: { delete: 'trash' },
+        columnKind: { status: 'status' },
+        phoneHidden: ['product', 'ideas'],
+      },
     };
   }, [brs, onCreate, includeTest]);
 }

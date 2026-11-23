@@ -10,9 +10,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Container } from '@/components/common/container';
 import { ResourceList } from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useFx } from '@/hooks/use-fx';
 import type { AutocountCall, CallOutcome } from '@/types/autocount';
 import { AC_CALL_OUTCOME_REGISTRY } from '../../components/autocount-meta';
 import { useCallDetail } from './use-call-detail';
@@ -57,12 +59,24 @@ function CallDialogBody({ callId }: { callId: string }) {
 /** The AutoCount calls list; a row opens a centred dialog with the request and the response. */
 export function CallsView() {
   const [open, setOpen] = useState<AutocountCall | null>(null);
-  const { formatDmyDateTime } = useDatetime();
+  const { formatDmyDateTime, formatDateTime } = useDatetime();
+  // Foundryx UIUX switch on: the call's moment in the full 12-hour form.
+  const fx = useFx();
   const config = useCallsListConfig({ onOpenCall: setOpen });
+
+  // Foundryx UIUX switch on: the list sits in the page container like the
+  // other lists, so it keeps the side gutter (16px on phones).
+  const list = fx ? (
+    <Container width="fluid">
+      <ResourceList config={config} />
+    </Container>
+  ) : (
+    <ResourceList config={config} />
+  );
 
   return (
     <>
-      <ResourceList config={config} />
+      {list}
       <Dialog open={open !== null} onOpenChange={(next) => !next && setOpen(null)}>
         <DialogContent className="sm:max-w-2xl">
           {open && (
@@ -76,7 +90,9 @@ export function CallsView() {
                     size="sm"
                   />
                 </DialogTitle>
-                <DialogDescription>{formatDmyDateTime(open.createdAt)}</DialogDescription>
+                <DialogDescription>
+                  {fx ? formatDateTime(open.createdAt) : formatDmyDateTime(open.createdAt)}
+                </DialogDescription>
               </DialogHeader>
               <DialogBody>
                 <CallDialogBody callId={open.id} />

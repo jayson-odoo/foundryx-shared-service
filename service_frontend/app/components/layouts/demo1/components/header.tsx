@@ -17,8 +17,8 @@ import {
   SquareChevronRight,
 } from 'lucide-react';
 import { useSession } from 'next-auth/react';
-import { toAbsoluteUrl } from '@/lib/helpers';
 import { cn } from '@/lib/utils';
+import { useFx } from '@/hooks/use-fx';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import {
@@ -30,19 +30,30 @@ import {
   DrawerTrigger,
 } from '@/components/ui/drawer';
 import { Container } from '@/components/common/container';
+import { ThemeButton } from '@/components/fx/theme/theme-button';
 import { ActivityTriggers } from '@/components/platform/document-drive';
 import { UserAvatar } from '@/components/platform/user-avatar';
+import { FxHeader } from './fx-header';
+import { AppLogo } from '@/components/platform/branding/app-logo';
+import { useTenantBranding } from '@/hooks/use-branding';
 import { MegaMenu } from './mega-menu';
 import { MegaMenuMobile } from './mega-menu-mobile';
 import { SidebarMenu } from './sidebar-menu';
 
+/** The top bar: the Foundryx UIUX bar while the switch is on (fx-header.tsx),
+ *  else today's bar, unchanged. */
 export function Header() {
+  return useFx() ? <FxHeader /> : <HeaderLegacy />;
+}
+
+function HeaderLegacy() {
   const [isSidebarSheetOpen, setIsSidebarSheetOpen] = useState(false);
   const [isMegaMenuSheetOpen, setIsMegaMenuSheetOpen] = useState(false);
 
   const pathname = usePathname();
   const mobileMode = useIsMobile();
   const { data: session } = useSession();
+  const { branding } = useTenantBranding();
 
   // Close sheet when route changes
   useEffect(() => {
@@ -62,11 +73,7 @@ export function Header() {
         {/* HeaderLogo */}
         <div className="flex gap-1 lg:hidden items-center gap-2.5">
           <Link href="/" className="shrink-0">
-            <img
-              src={toAbsoluteUrl('/media/app/mini-logo.svg')}
-              className="h-[25px] w-[25px] object-contain"
-              alt="mini-logo"
-            />
+            <AppLogo branding={branding} variant="mini" />
           </Link>
           <div className="flex items-center">
             {mobileMode && (
@@ -163,6 +170,9 @@ export function Header() {
                 only={mobileMode ? ['uploads', 'downloads'] : undefined}
                 compact={mobileMode}
               />
+              {/* Foundryx UIUX switch entry (playbook-uiux.md); on phones
+                  it lives in the user menu instead - no room left here. */}
+              {!mobileMode && <ThemeButton />}
               <NotificationsSheet
                 trigger={
                   <Button

@@ -1,8 +1,9 @@
 """Workspace business logic - tenant-scoped. Routers stay thin; this owns rules
 (default-workspace protection, status resolution, membership)."""
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.tenant import DEFAULT_TENANT_ID
@@ -25,6 +26,12 @@ class WorkspaceNotFound(Exception):
 
 class DefaultWorkspaceProtected(Exception):
     pass
+
+
+class WorkspaceExternalRefInUse(Exception):
+    def __init__(self, workspace_id: str):
+        super().__init__(workspace_id)
+        self.workspace_id = workspace_id
 
 
 class WorkspaceService:
@@ -108,13 +115,42 @@ class WorkspaceService:
 
     # ---- writes ----
     def create(self, payload: WorkspaceCreate, tenant_id: str = DEFAULT_TENANT_ID) -> WorkspaceItem:
+        """The dashboard path: the workspace joins the client app named after
+        it (trimmed, case-insensitive), created when missing, same unit of
+        work; never the tenant's default by default."""
+        from .client_app_service import ClientAppService
+
+        apps = ClientAppService(self.db)
+        client_app = apps.find_or_create_by_name(tenant_id, payload.name, created_by="dashboard")
+        # Keep "exactly one default per tenant" for a tenant that had none.
+        apps.ensure_default(tenant_id)
+        return self._create(payload, tenant_id, None, client_app.id)
+
+    def create_with_external_ref(
+        self, payload: WorkspaceCreate, tenant_id: str, external_ref: str, client_app_id: str
+    ) -> WorkspaceItem:
+        """The partner path (S7): the same create, in the calling key's client
+        app, also stamping the partner's organisation id. A live duplicate in
+        that client app raises IntegrityError at the flush (partial unique
+        index), before anything is committed."""
+        return self._create(payload, tenant_id, external_ref, client_app_id)
+
+    def _create(
+        self,
+        payload: WorkspaceCreate,
+        tenant_id: str,
+        external_ref: Optional[str],
+        client_app_id: str,
+    ) -> WorkspaceItem:
         statuses.ensure_statuses(self.db, tenant_id)
         ws = Workspace(
             tenant_id=tenant_id,
+            client_app_id=client_app_id,
             name=payload.name.strip(),
             status_id=statuses.status_id_for(self.db, tenant_id, "WORKSPACE", payload.status),
             is_default=False,
             is_trashed=False,
+            external_ref=external_ref,
         )
         self.db.add(ws)
         self.db.flush()
@@ -154,9 +190,33 @@ class WorkspaceService:
         self.db.commit()
 
     def restore(self, ids: List[str], tenant_id: str = DEFAULT_TENANT_ID) -> None:
-        for ws in self.repo.get_many(ids, tenant_id):
+        rows = self.repo.get_many(ids, tenant_id)
+        self._assert_external_refs_free(rows, tenant_id)
+        for ws in rows:
             ws.is_trashed = False
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            self._assert_external_refs_free(rows, tenant_id)
+            raise
+
+    def _assert_external_refs_free(self, rows: List[Workspace], tenant_id: str) -> None:
+        """A trashed partner workspace can come back only while no other live
+        workspace of its client app holds its ``external_ref``."""
+        claimed: Dict[Tuple[Optional[str], str], str] = {}
+        for ws in sorted(rows, key=lambda w: w.id):
+            if not ws.is_trashed or ws.external_ref is None:
+                continue
+            key = (ws.client_app_id, ws.external_ref)
+            if key in claimed:
+                raise WorkspaceExternalRefInUse(ws.id)
+            live = self.repo.get_live_by_external_ref(
+                tenant_id, ws.external_ref, ws.client_app_id
+            )
+            if live is not None and live.id != ws.id:
+                raise WorkspaceExternalRefInUse(ws.id)
+            claimed[key] = ws.id
 
     # ---- members ----
     def members(

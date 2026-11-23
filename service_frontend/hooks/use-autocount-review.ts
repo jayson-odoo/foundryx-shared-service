@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
+import { useAcDone } from '@/app/(protected)/autocount/companies/components/use-ac-done';
 import { autocountService } from '@/services/autocount-service';
 import type { AutocountSyncJob } from '@/types/autocount';
 
@@ -54,6 +55,7 @@ export function useAutocountReview(jobId: string): UseAutocountReviewResult {
   const [notFound, setNotFound] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const done = useAcDone();
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -93,10 +95,16 @@ export function useAutocountReview(jobId: string): UseAutocountReviewResult {
       try {
         if (kind === 'approve') {
           await autocountService.approve(jobId);
-          toast.success('Batch approved.');
+          done('Batch approved.', {
+            what: 'Batch approved for push',
+            howMany: `${total} record${total === 1 ? '' : 's'}`,
+          });
         } else {
           await autocountService.discard(jobId);
-          toast.success('Batch discarded - nothing was pushed.');
+          done('Batch discarded - nothing was pushed.', {
+            what: 'Batch discarded',
+            howMany: 'nothing pushed',
+          });
         }
         setReloadKey((k) => k + 1);
       } catch (error) {
@@ -110,7 +118,7 @@ export function useAutocountReview(jobId: string): UseAutocountReviewResult {
         setIsSubmitting(false);
       }
     },
-    [jobId],
+    [jobId, done, total],
   );
 
   const approve = useCallback(() => decide('approve'), [decide]);

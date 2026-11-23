@@ -24,10 +24,12 @@ import { useEmbedConfig } from '@/hooks/use-embed-config';
 import { CopyField } from './copy-field';
 import { OriginsEditor } from './origins-editor';
 import { SnippetCard } from './snippet-card';
+import { useFx } from '@/hooks/use-fx';
+import { FxEmbedAccessPanel } from './fx-embed-access-panel';
 
 /** One labelled setting row - label + description on the left, control on the
  * right - matching the read-detail rows used across the platform (User detail). */
-function SettingRow({
+export function SettingRow({
   label,
   description,
   children,
@@ -47,7 +49,7 @@ function SettingRow({
   );
 }
 
-function LoadingSkeleton() {
+export function LoadingSkeleton() {
   return (
     <div className="flex flex-col gap-5">
       <Skeleton className="h-40 w-full rounded-lg" />
@@ -63,6 +65,10 @@ function LoadingSkeleton() {
  * rotation.
  */
 export function EmbedAccessPanel() {
+  return useFx() ? <FxEmbedAccessPanel /> : <EmbedAccessPanelLegacy />;
+}
+
+function EmbedAccessPanelLegacy() {
   const { config, loading, error, enable, rotateSecret, setOrigins, reload } = useEmbedConfig();
   const [enabling, setEnabling] = useState(false);
   const [confirmRotate, setConfirmRotate] = useState(false);

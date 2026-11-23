@@ -82,7 +82,7 @@ accepted workaround. `close` when done.
   contract doc + both sides in the same change, and say so.
 - Do NOT write, edit or delete tests - the tester owns them. Make the red ones green.
 - Commit on the lane branch with a conventional message ending in
-  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Stage only your files. Never push.
+  `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. Stage only your files. Never push.
 
 Return: files changed, what each does, which red tests now pass, live-verify evidence
 (screenshot paths), and any suspected-wrong test reported (not fixed).

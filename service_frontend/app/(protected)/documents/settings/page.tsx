@@ -14,6 +14,8 @@ import { RequirePermission } from '@/components/common/require-permission';
 import { formatBytes } from '@/components/platform/document-drive/lib';
 import { PageHeader } from '@/components/platform/page-header';
 import { SearchSelect } from '@/components/platform/search-select';
+import { useFx } from '@/hooks/use-fx';
+import { FxDocumentSettings } from './fx-document-settings';
 
 const SHARING_OPTIONS = [
   { value: 'off', label: 'Off - no public links' },
@@ -21,7 +23,15 @@ const SHARING_OPTIONS = [
   { value: 'edit', label: 'Edit - public links can also upload' },
 ];
 
+/**
+ * Foundryx UIUX (slice W3-DOCS): Save settings as the page's red action and a
+ * done toast; the same save body. Off renders the legacy body below, unchanged.
+ */
 export default function DocumentSettingsPage() {
+  return useFx() ? <FxDocumentSettings /> : <DocumentSettingsPageLegacy />;
+}
+
+function DocumentSettingsPageLegacy() {
   const [settings, setSettings] = useState<DocumentSettings | null>(null);
   const [defaultMaxFileMb, setDefaultMaxFileMb] = useState('');
   const [storageQuotaMb, setStorageQuotaMb] = useState('');

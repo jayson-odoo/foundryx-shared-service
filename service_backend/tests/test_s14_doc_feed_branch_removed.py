@@ -28,7 +28,8 @@ def test_ac_14_46_get_view_answers_exactly_two_feeds(client, session_factory):
     db = session_factory()
     co = company(db)
     body = client.get(f"/autocount/doc-feeds/{co.id}", headers=auth_headers(client)).json()
-    assert [f["feed"] for f in body["feeds"]] == ["delivery_orders", "goods_receive_notes"]
+    # Plan 72 added project registrations; still no branches feed.
+    assert [f["feed"] for f in body["feeds"]] == ["delivery_orders", "goods_receive_notes", "project_registrations"]
 
 
 def test_ac_14_46_put_branches_feed_is_404_while_a_real_feed_still_saves(client, session_factory):
@@ -97,7 +98,7 @@ def test_ac_14_46_branch_feed_symbols_are_gone():
     from modules.autocount.doc_feed.vendor import DocFeedVendor
 
     assert not hasattr(models, "DOC_FEED_BRANCHES")
-    assert models.DOC_FEED_KEYS == ("delivery_orders", "goods_receive_notes")
+    assert models.DOC_FEED_KEYS == ("delivery_orders", "goods_receive_notes", "project_registrations")
     assert not hasattr(constants, "FEED_BRANCHES")
     assert not hasattr(constants, "BRANCH_BY_PAGE_PATH")
     assert not hasattr(runner, "run_branch_pull")

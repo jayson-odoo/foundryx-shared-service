@@ -168,6 +168,12 @@ export function useRolesListConfig(): ResourceListConfig<RoleListItem> {
       createLabel: 'Add role',
       createPermission: 'roles.create',
       onCreate: () => router.push(roleNewPath),
+      // Foundryx UIUX switch only (ignored while off).
+      fx: {
+        noun: 'roles',
+        iconFor: { delete: 'delete' },
+        phoneHidden: ['created'],
+      },
     };
   }, [actions, router, formatDate]);
 }

@@ -47,8 +47,8 @@ def test_unconfigured_company_answers_two_feeds_off_with_zero_counts(client, ses
     assert response.status_code == 200, response.text
     body = response.json()
     # AC-14-46 (plan 14 section 11, D28) - branches left the doc feed: exactly
-    # two feeds, never a third row.
-    assert [f["feed"] for f in body["feeds"]] == ["delivery_orders", "goods_receive_notes"]
+    # no branches row (plan 72 added project registrations as the third feed).
+    assert [f["feed"] for f in body["feeds"]] == ["delivery_orders", "goods_receive_notes", "project_registrations"]
     for feed in ("delivery_orders", "goods_receive_notes"):
         item = _feed_item(body, feed)
         assert item["mode"] == "off"

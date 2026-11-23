@@ -50,7 +50,12 @@ export function useTeamActions(): ResourceAction<Team>[] {
         // server-side); the form surface's commit navigates via
         // ResourceForm's own `backHref`-aware handler (AC-DLA-30), row/bulk
         // stay put + reload.
-        deferred: { actionKey: 'teams.delete', entityType: 'team' },
+        // Switch on only: the one-team countdown names it.
+        deferred: {
+          actionKey: 'teams.delete',
+          entityType: 'team',
+          fxName: (rows) => rows[0]?.name || undefined,
+        },
       },
     ],
     [router],

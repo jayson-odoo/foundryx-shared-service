@@ -18,6 +18,10 @@ import { useDatetime } from '@/hooks/use-datetime';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { Job, JobStatus } from '@/types/jobs';
 import { useJobActions } from './use-job-actions';
+import { CheckCheck } from 'lucide-react';
+import { useFx } from '@/hooks/use-fx';
+import { FxJobBar, FxJobChip } from '@/components/platform/jobs-drawer/fx-job-chip';
+import { fmtCount, jobItem } from '@/components/platform/jobs-drawer/fx-job-items';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -47,6 +51,8 @@ const SEGMENTS = [
 export function useJobsListConfig(): ResourceListConfig<Job> {
   const { formatDateTime } = useDatetime();
   const actions = useJobActions();
+  // Foundryx UIUX: only the status and progress cells read differently.
+  const fx = useFx();
 
   return useMemo<ResourceListConfig<Job>>(() => {
     const columns: ColumnDef<Job>[] = [
@@ -68,11 +74,17 @@ export function useJobsListConfig(): ResourceListConfig<Job> {
         accessorFn: (row) => row.status,
         meta: { headerTitle: 'Status' },
         header: ({ column }) => <DataGridColumnHeader title="Status" column={column} />,
-        cell: ({ row }) => (
-          <Badge variant={JOB_STATUS_TONE[row.original.status]} appearance="light">
-            {JOB_STATUS_LABEL[row.original.status]}
-          </Badge>
-        ),
+        cell: ({ row }) => {
+          if (fx) {
+            const item = jobItem(row.original);
+            return <FxJobChip label={item.status} tone={item.tone} />;
+          }
+          return (
+            <Badge variant={JOB_STATUS_TONE[row.original.status]} appearance="light">
+              {JOB_STATUS_LABEL[row.original.status]}
+            </Badge>
+          );
+        },
         size: 140,
         enableSorting: false,
       },
@@ -84,6 +96,17 @@ export function useJobsListConfig(): ResourceListConfig<Job> {
           const j = row.original;
           if (j.progressTotal <= 0) {
             return <span className="text-muted-foreground text-sm">-</span>;
+          }
+          if (fx) {
+            const text = `${fmtCount(j.progressDone)} of ${fmtCount(j.progressTotal)}${
+              j.progressFailed ? ` · ${fmtCount(j.progressFailed)} failed` : ''
+            }`;
+            return (
+              <div className="flex min-w-32 flex-col gap-1">
+                <FxJobBar pct={jobProgressPct(j.progressDone, j.progressTotal)} label={text} />
+                <span className="text-xs text-(--fx-ink-2) tabular-nums">{text}</span>
+              </div>
+            );
           }
           return (
             <div className="flex min-w-32 flex-col gap-1">
@@ -154,6 +177,12 @@ export function useJobsListConfig(): ResourceListConfig<Job> {
       segments: SEGMENTS,
       defaultSegment: 'all',
       enableStatusViews: false,
+      fx: {
+        noun: 'jobs',
+        columnKind: { status: 'status' },
+        iconFor: { abort: 'close', retry: 'refresh', complete: <CheckCheck /> },
+        cardLines: [['type', 'status'], ['progress'], ['created']],
+      },
     };
-  }, [actions, formatDateTime]);
+  }, [actions, formatDateTime, fx]);
 }

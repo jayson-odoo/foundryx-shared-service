@@ -13,6 +13,8 @@ import { useMyMeetings } from '@/hooks/use-my-meetings';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { MeetingsEvent } from '@/types/meetings';
 import { useUpcomingEventsListConfig } from './use-upcoming-events-list-config';
+import { useFx } from '@/hooks/use-fx';
+import { FxMyMeetingsView } from './fx-my-meetings-view';
 
 /**
  * My meetings (S0 plan §4, AC-S0-6..9).
@@ -31,6 +33,10 @@ import { useUpcomingEventsListConfig } from './use-upcoming-events-list-config';
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export function MyMeetingsView() {
+  return useFx() ? <FxMyMeetingsView /> : <MyMeetingsViewLegacy />;
+}
+
+function MyMeetingsViewLegacy() {
   const { optIn, events, loading, saving, error, setEnabled, setCalendarEmail, setEventOptOut } =
     useMyMeetings();
   const { timeZone } = useDatetime();

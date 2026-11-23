@@ -23,7 +23,7 @@ bcrypt>=4.1.0
 
 # ---- Omnichannel message processing (plan 05 Phase B) ----
 celery>=5.4.0
-redis>=5.0.0
+redis>=5.0.0,<8.2  # 8.2.0 breaks fakeredis 2.40 (method_descriptor has no __closure__): every test errors at setup
 # ---- Workflow scheduler (plan sprint-2/09 D9) ----
 croniter>=2.0.0
 

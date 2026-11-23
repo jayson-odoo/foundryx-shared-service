@@ -11,6 +11,8 @@ import { formatDuration } from '@/lib/duration';
 import type { CloseReasonRow, DurationByUserRow, DurationStats, ReportFilters } from '@/types/omnichannel';
 import { DurationStatCard } from '../../components/duration-stat-card';
 import { ReportLoadingCard } from './report-loading-card';
+import { useFx } from '@/hooks/use-fx';
+import { FxBox } from '../../components/fx-report-parts';
 
 const REASON_COLUMNS: ColumnDef<CloseReasonRow>[] = [
   {
@@ -48,7 +50,8 @@ export interface ResolutionsReportProps {
 }
 
 export function ResolutionsReport({ workspaceId, filters, groupBy, onGroupByChange }: ResolutionsReportProps) {
-  const { report, loading, error } = useOmnichannelReport(workspaceId, 'resolutions', filters);
+  const { report, loading, error, reload } = useOmnichannelReport(workspaceId, 'resolutions', filters);
+  const fx = useFx();
 
   const grouped = groupBy === 'user';
   const reasonRows = (grouped ? undefined : (report?.rows as CloseReasonRow[] | undefined)) ?? [];
@@ -70,8 +73,39 @@ export function ResolutionsReport({ workspaceId, filters, groupBy, onGroupByChan
     [],
   );
 
+  // A failed load wins over the spinner in both looks, so it never spins forever.
+  if (error) return <ReportLoadingCard errored onRetry={reload} />;
   if (loading || !report) return <ReportLoadingCard />;
-  if (error) return <ReportLoadingCard errored />;
+
+  if (fx) {
+    return (
+      <div className="flex flex-col gap-4">
+        <DurationStatCard title="Resolution time" stats={report.totals as DurationStats} />
+        <FxBox
+          title="Resolution breakdown"
+          aside={
+            <SearchSelect
+              ariaLabel="Group by"
+              className="w-44"
+              value={groupBy ?? 'none'}
+              onChange={(v) => onGroupByChange(v === 'none' ? null : v)}
+              options={groupByOptions}
+            />
+          }
+        >
+          {grouped ? (
+            <DataGrid table={userTable} recordCount={userRows.length} emptyMessage="Nothing in this range.">
+              <DataGridTable />
+            </DataGrid>
+          ) : (
+            <DataGrid table={reasonTable} recordCount={reasonRows.length} emptyMessage="Nothing in this range.">
+              <DataGridTable />
+            </DataGrid>
+          )}
+        </FxBox>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">

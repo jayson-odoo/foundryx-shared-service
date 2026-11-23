@@ -15,7 +15,9 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
+import { useFx } from '@/hooks/use-fx';
 import { useApiKeys } from './use-api-keys';
+import { FxMintApiKeyDialog } from './fx-mint-api-key-dialog';
 
 export interface MintApiKeyDialogProps {
   workspaceId: string;
@@ -29,7 +31,11 @@ export interface MintApiKeyDialogProps {
  * Mint dialog - name the key, then reveal the full plaintext ONCE. The reveal
  * step is the only time the plaintext exists client-side; closing clears it.
  */
-export function MintApiKeyDialog({
+export function MintApiKeyDialog(props: MintApiKeyDialogProps) {
+  return useFx() ? <FxMintApiKeyDialog {...props} /> : <MintApiKeyDialogLegacy {...props} />;
+}
+
+function MintApiKeyDialogLegacy({
   workspaceId,
   open,
   onOpenChange,

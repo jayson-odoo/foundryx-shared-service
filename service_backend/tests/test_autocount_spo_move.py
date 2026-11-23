@@ -209,13 +209,21 @@ def test_partly_received_line_moves_only_its_open_qty(h):
 # ---- AC-71-06 AutoCount says no ---------------------------------------------------------------------------
 
 def test_ac_71_06_vendor_refusal_changes_nothing_and_releases_the_key(h, w):
-    h.vendor.refuse_json_next("PUT", PUT[1])
+    h.vendor.refuse_json_next("PUT", PUT[1], "refused")
     res = h.run(OP, w.params(24), key="k6")
     assert res.outcome == "vendor_error" and res.error_code == "VENDOR_REFUSED", (res.outcome, res.error_code)
     assert w.row(w.l3)["Qty"] == 60 and w.row(w.l3)["FromDocDtlKey"] == w.a1
     assert not [r for r in w.spo_rows() if r["FromDocDtlKey"] == w.b1]
     again = h.run(OP, w.params(24), key="k6")
     assert again.outcome == "done", again.error_code
+
+
+def test_ac_71_06_an_autocount_timeout_is_unknown_not_a_refusal(h, w):
+    """Main #326: an AutoCount SQL timeout may still save, so the move is never answered as refused."""
+    h.vendor.refuse_json_next("PUT", PUT[1])  # the fake's default text is "Timeout expired."
+    res = h.run(OP, w.params(24), key="k6t")
+    assert res.outcome != "vendor_error" or res.error_code != "VENDOR_REFUSED", (res.outcome, res.error_code)
+    assert res.error_code == "VENDOR_TIMEOUT", (res.outcome, res.error_code)
 
 
 # ---- AC-71-07 unknown outcome: resume reads before any retry ------------------------------------------------

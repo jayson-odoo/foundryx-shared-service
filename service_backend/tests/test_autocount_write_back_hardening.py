@@ -695,9 +695,9 @@ from types import MappingProxyType  # noqa: E402
 from app.main import app as _app  # noqa: E402,F401
 from modules.autocount.models import AcStagedRecord  # noqa: E402
 from modules.autocount.write_back import capabilities as _caps  # noqa: E402
-from modules.autocount.write_back import frame as _frame_mod  # noqa: E402
 from modules.autocount.write_back import service as _service_mod  # noqa: E402
 from tests.test_autocount_write_back_vendor_caps import VendorFake  # noqa: E402
+from tests.write_back_clock import use_fake_clock  # noqa: E402
 
 
 @pytest.fixture
@@ -715,20 +715,6 @@ def vh(db, session_factory):
     return harness
 
 
-class _FakeClock:
-    """Stands in for the ``time`` module of the write-back frame/service: a
-    ``monotonic()`` that only moves when a test moves it."""
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def monotonic(self) -> float:
-        return self.now
-
-    def __getattr__(self, name):
-        return getattr(time, name)
-
-
 def _rows_of(h, outcome=None):
     h.db.expire_all()
     q = h.db.query(AcWriteAction)
@@ -742,10 +728,13 @@ def test_deadline_is_at_most_half_the_busy_window():
 
 
 def test_deadline_first_read_past_budget_is_refused_with_no_further_call(h, monkeypatch):
+    # Fake clock: only the first read moves it past the budget, so a slow runner
+    # cannot trip the deadline before that read (zero calls instead of one).
+    clock = use_fake_clock(monkeypatch)
     monkeypatch.setattr(_service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
 
     def slow(request):
-        time.sleep(0.3)
+        clock.now += 0.3  # the first read answers after the budget
         return h.ac._on_get(request)
 
     h.ac.read_transport = httpx.MockTransport(slow)
@@ -759,9 +748,7 @@ def test_deadline_after_put_before_read_back_is_pending_verification(h, monkeypa
     # The action's clock is a fake one: only the PUT moves it past the budget, so
     # a slow runner (the PO / SO reads and DB work before the PUT taking longer
     # than the budget) can no longer turn this into a "refused before the PUT".
-    clock = _FakeClock()
-    monkeypatch.setattr(_service_mod, "time", clock)
-    monkeypatch.setattr(_frame_mod, "time", clock)
+    clock = use_fake_clock(monkeypatch)
     monkeypatch.setattr(_service_mod, "ACTION_DEADLINE_SECONDS", 0.2)
     original_get, original_put = h.ac._on_get, h.ac._on_put
 

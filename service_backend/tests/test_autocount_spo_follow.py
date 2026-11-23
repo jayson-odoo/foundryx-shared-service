@@ -169,7 +169,7 @@ def test_other_spo_lines_the_kept_po_line_cannot_hold_is_row_on_spo(h):
 # ---- the follow PUT fails: the PO link stands, the SPO line still has a PO line, Resume finishes it --------------
 
 def test_follow_refused_by_autocount_needs_attention_and_resume_finishes_it(h, w):
-    h.vendor.refuse_json_next("PUT", LEAF, after=2)  # the PO link + restore PUTs pass, the SPO PUT is refused
+    h.vendor.refuse_json_next("PUT", LEAF, "refused", after=2)  # the PO link + restore PUTs pass, the SPO PUT is refused
     res = h.run(OP, w.params(40), key="kf1")
     assert res.outcome == "needs_attention" and res.error_code == "SPO_NOT_FOLLOWED", (res.outcome, res.error_code)
     assert res.batch["links"][0]["poDtlKey"] == w.new_po_row()["DtlKey"]  # the PO link landed and is answered
@@ -200,7 +200,7 @@ def test_follow_that_landed_but_timed_out_is_confirmed_by_resume_without_a_secon
 
 
 def test_spo_line_changed_by_hand_before_the_follow_needs_a_person(h, w):
-    h.vendor.refuse_json_next("PUT", LEAF, after=2)
+    h.vendor.refuse_json_next("PUT", LEAF, "refused", after=2)
     res = h.run(OP, w.params(40), key="kf3")
     assert res.outcome == "needs_attention"
     w.spo_rows()[0]["Qty"] = 39  # edited in AutoCount meanwhile
@@ -250,7 +250,7 @@ def test_route_refusal_carries_an_empty_spo_lines(client, gw):
 # ---- review round 1 -------------------------------------------------------------------------------------------
 
 def test_review_a_second_split_cannot_take_the_spo_line_an_unfinished_one_planned(h, w):
-    h.vendor.refuse_json_next("PUT", LEAF, after=2)
+    h.vendor.refuse_json_next("PUT", LEAF, "refused", after=2)
     first = h.run(OP, w.params(40), key="r1a")
     assert first.error_code == "SPO_NOT_FOLLOWED", (first.outcome, first.error_code)
     writes = len(h.vendor.writes())
@@ -325,7 +325,7 @@ def sync_owned(h, doc_key=7203):
 def fail_follow(h, w, key, inject="refuse"):
     """The PO link and its restore land; the SPO PUT is refused (nothing applied) or answers a bare 500."""
     if inject == "refuse":
-        h.vendor.refuse_json_next("PUT", LEAF, after=2)
+        h.vendor.refuse_json_next("PUT", LEAF, "refused", after=2)
     else:
         h.vendor.fail_next("PUT", LEAF, after=2)
     res = h.run(OP, w.params(40), key=key)
@@ -524,7 +524,7 @@ def test_r2_a_relink_onto_the_new_po_line_of_an_unfinished_follow_waits(h, w):
 def test_r2_only_the_new_po_line_a_follower_waits_for_is_held(h, w):
     """A batch of 40 (its SPO line follows) + 20 (no SPO line) whose follow did not land: the 20 line's new PO line
     has nothing coming, so another SPO line may move onto it; the 40 line's new PO line waits."""
-    h.vendor.refuse_json_next("PUT", LEAF, after=2)
+    h.vendor.refuse_json_next("PUT", LEAF, "refused", after=2)
     res = h.run(OP, dict(doc_key=7201, dtl_key=w.b1, links=[
         dict(so_doc_key=7202, so_dtl_key=w.so_a, qty=Decimal(40)),
         dict(so_doc_key=7202, so_dtl_key=w.so_b, qty=Decimal(20))]), key="r2-17")
@@ -604,7 +604,7 @@ def test_r2_the_follow_checks_the_new_po_line_has_room(h, w):
 
 
 def test_r2_a_follow_that_landed_does_not_hold_the_po_line(h, w):
-    h.vendor.refuse_json_next("PUT", LEAF, after=1)  # the link lands, its restore is refused, the follow lands
+    h.vendor.refuse_json_next("PUT", LEAF, "refused", after=1)  # the link lands, its restore is refused, the follow lands
     res = h.run(OP, w.params(40), key="r2-12")
     assert res.error_code == "RESTORE_NOT_LANDED" and len(res.batch["spoLines"]) == 1, (res.outcome, res.error_code)
     again = h.run(OP, w.params(20, so_dtl=w.so_b), key="r2-12b")
@@ -657,7 +657,7 @@ def test_kill_the_follower_is_the_spo_line_of_the_links_quantity_not_the_first_o
 
 
 def test_kill_spo_line_re_pointed_by_hand_is_not_moved_by_resume(h, w):
-    h.vendor.refuse_json_next("PUT", LEAF, after=2)
+    h.vendor.refuse_json_next("PUT", LEAF, "refused", after=2)
     res = h.run(OP, w.params(40), key="k4")
     assert res.error_code == "SPO_NOT_FOLLOWED"
     w.spo_rows()[0]["FromDocDtlKey"] = 999999  # a person tied it to another PO line meanwhile (qty unchanged)

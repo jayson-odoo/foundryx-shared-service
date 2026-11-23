@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { Users as UsersIcon } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useFx } from '@/hooks/use-fx';
 import { ApiError } from '@/lib/api-client';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
@@ -29,6 +30,11 @@ function toFormValues(team: Team | null): TeamFormValues {
   };
 }
 
+/** "1 member" / "4 members", for the fx done toasts. */
+function membersCount(n: number): string {
+  return n === 1 ? '1 member' : `${n} members`;
+}
+
 function toMembersPayload(values: TeamFormValues): TeamMemberInput[] {
   return values.memberIds.map((userId) => ({
     userId,
@@ -50,6 +56,9 @@ export function useTeamForm(teamId: string | undefined, initialEditing: boolean)
   const router = useRouter();
   const actions = useTeamActions();
   const creating = !teamId;
+  // Foundryx UIUX switch only: done toasts. Every request is the same in
+  // both looks.
+  const fx = useFx();
 
   const [team, setTeam] = useState<Team | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -126,6 +135,9 @@ export function useTeamForm(teamId: string | undefined, initialEditing: boolean)
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<Team> | null>(() => {
     if (isLoading || notFound || loadError) return null;
 
@@ -141,13 +153,29 @@ export function useTeamForm(teamId: string | undefined, initialEditing: boolean)
         try {
           if (creating) {
             const created = await teamService.create(payload);
-            toast.success('Team created.');
+            if (fx) {
+              toast.fxDone({
+                what: `${created.name || payload.name} created`,
+                howMany: membersCount(payload.members.length),
+                byWhom: 'you',
+              });
+            } else {
+              toast.success('Team created.');
+            }
             router.push(teamFormPath(created.id));
           } else {
             const updated = await teamService.update(teamId, payload);
             setTeam(updated);
             form.reset(toFormValues(updated));
-            toast.success('Team updated.');
+            if (fx) {
+              toast.fxDone({
+                what: `${updated.name || payload.name} saved`,
+                howMany: membersCount(payload.members.length),
+                byWhom: 'you',
+              });
+            } else {
+              toast.success('Team updated.');
+            }
           }
           ok = true;
         } catch (e) {
@@ -205,12 +233,23 @@ export function useTeamForm(teamId: string | undefined, initialEditing: boolean)
       editable: !creating,
       editPermission: 'teams.manage',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: creating ? undefined : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Edit / Save is the red
+      // action, Delete an icon action.
+      fx: creating
+        ? { mainActionId: 'save' }
+        : {
+            mainActionId: 'save',
+            fullLabel: (rows) => (rows[0]?.name ? `Save ${rows[0].name}` : ''),
+            iconFor: { delete: 'delete' },
+          },
     };
   }, [
+    fx,
+    formDirty,
     isLoading,
     notFound,
     loadError,

@@ -8,8 +8,14 @@ import { ResourceList } from '@/components/platform/resource-list';
 import { ReplaceTokenDialog } from './components/replace-token-dialog';
 import type { Channel } from '@/types/omnichannel';
 import { useChannelsListConfig } from './components/use-channels-list-config';
+import { FxChannelsPage } from './components/fx-channels-page';
+import { useFx } from '@/hooks/use-fx';
 
 export default function ChannelsPage() {
+  return useFx() ? <FxChannelsPage /> : <ChannelsPageLegacy />;
+}
+
+function ChannelsPageLegacy() {
   const [wizardOpen, setWizardOpen] = useState(false);
   // Bumped after a successful connect to remount the list (re-fetch).
   const [reloadKey, setReloadKey] = useState(0);

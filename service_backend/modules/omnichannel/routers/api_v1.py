@@ -7,11 +7,15 @@ Bearer key. Errors use the structured `{error:{code,message}}` envelope
 JWT `require_module` gate - service-active is re-checked inside the dependency.
 """
 import json
+import re
+from datetime import datetime
 from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -30,6 +34,7 @@ from ..schemas import (
     PublicCommentRequest,
     PublicContactUpdateRequest,
     PublicSendRequest,
+    PublicSenderAttribution,
     PublicSendResponse,
     BusinessHoursUpdate,
     PublicBusinessHoursResponse,
@@ -48,6 +53,7 @@ from ..schemas import (
     PublicWorkflowUpdateRequest,
     PublicChannelListResponse,
     PublicTemplateListResponse,
+    PublicWebhookDeliveryListResponse,
     RioContactItem,
     RioContactListResponse,
     RioCursorPagination,
@@ -61,6 +67,7 @@ from ..schemas import (
     WebhookEndpointUpdateRequest,
     WebhookSecretResponse,
 )
+from ..services import payload_version
 from ..services.business_hours import BusinessHoursService
 from ..services.key_workflows import KeyWorkflowService, put_business_hours
 from ..services.media_pipeline import META_CEILINGS
@@ -72,7 +79,55 @@ from ..services.public_gateway_service import (
 )
 from ..services.webchat_visitor_service import WebchatInvalidRequest, read_capped_json
 
-router = APIRouter()
+API_VERSION_HEADER = "X-Fx-Api-Version"
+
+
+def api_version(
+    value: Optional[str] = Header(
+        default=None,
+        alias=API_VERSION_HEADER,
+        description=(
+            "Response payload version. Absent or `1` = the documented shapes as "
+            "they are today. A higher version adds the keys introduced in it."
+        ),
+    ),
+) -> int:
+    """`X-Fx-Api-Version` request header -> the response payload version. Absent
+    is version 1. An unknown value is a typed 422, never a silent fallback (same
+    rule as `?format=`). Runs on every route of this router, so a bad value is
+    refused everywhere; a route whose shapes have versioned keys also takes it
+    as a parameter and answers with `versioned`."""
+    if value is None:
+        return payload_version.V1
+    raw = value.strip()
+    if re.fullmatch(r"[1-9][0-9]{0,2}", raw) and int(raw) in payload_version.VERSIONS:
+        return int(raw)
+    known = ", ".join(str(v) for v in payload_version.VERSIONS)
+    raise ApiError(
+        422, "invalid_request",
+        f"Unknown {API_VERSION_HEADER} '{value}'. Use one of: {known}.",
+    )
+
+
+def versioned(item, version: int, status_code: int = status.HTTP_200_OK):
+    """Version 1 returns the model untouched, so FastAPI serializes it exactly as
+    before. A higher version answers the JSON dumped at that version."""
+    if version == payload_version.V1:
+        return item
+    with payload_version.serializing(version):
+        content = jsonable_encoder(item)
+    return JSONResponse(content, status_code=status_code)
+
+
+def versioned_shape(item, fmt: str, version: int, status_code: int = status.HTTP_200_OK):
+    """`versioned` for a route with two shapes: `?format=rio` is a respond.io
+    mirror and is never versioned."""
+    if fmt == FORMAT_RIO:
+        return item
+    return versioned(item, version, status_code=status_code)
+
+
+router = APIRouter(dependencies=[Depends(api_version)])
 
 # Cap on a JSON body the gateway reads itself (the send route and the workflow routes).
 _JSON_BODY_CAP = 256 * 1024
@@ -128,6 +183,7 @@ async def send_message(
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> PublicSendResponse:
     """Send a message via the public gateway (plan 12 AC-12-10). Accepts EITHER
     JSON (text/template/media-by-url) OR multipart (``file`` part + a ``payload``
@@ -164,6 +220,17 @@ async def send_message(
         reply_to = payload_obj.get("replyToMessageId")
         if reply_to is not None and not isinstance(reply_to, str):
             raise ApiError(422, "invalid_request", "replyToMessageId must be a string.")
+        sender = None
+        if payload_obj.get("sender") is not None:
+            try:
+                sender = PublicSenderAttribution.model_validate(payload_obj["sender"])
+            except ValidationError as exc:
+                if version != payload_version.V1:
+                    errors = exc.errors(include_url=False, include_context=False)
+                    for e in errors:
+                        e["loc"] = ("payload", "sender", *e.get("loc", ()))
+                    raise RequestValidationError(errors) from None
+                # Version 1: a malformed `sender` is ignored, as before it existed.
         # Cap the buffered read at this kind's Meta ceiling (memory safety).
         hard_cap = META_CEILINGS.get(str(payload_obj.get("type") or "").upper(), _MEDIA_HARD_CAP) + 1
         content = await upload.read(hard_cap)
@@ -183,6 +250,8 @@ async def send_message(
             idempotency_key=idempotency_key,
             channel_id=channel_id,
             reply_to_message_id=reply_to,
+            version=version,
+            sender=sender,
         )
     else:
         try:
@@ -193,8 +262,20 @@ async def send_message(
             raise RequestValidationError(
                 [{"type": "dict_type", "loc": ("body",), "msg": "Input should be an object", "input": None}]
             )
+        v1_sender = None
+        if version == payload_version.V1 and "sender" in body:
+            # Version 1 callers never get a new 422 from `sender`: a malformed
+            # one is dropped (the send goes through as it did before the key
+            # existed); a well-formed one is kept as attribution.
+            try:
+                v1_sender = PublicSenderAttribution.model_validate(body["sender"])
+            except ValidationError:
+                v1_sender = None
+            body = {k: v for k, v in body.items() if k != "sender"}
         try:
             payload = PublicSendRequest(**body)
+            if v1_sender is not None:
+                payload.sender = v1_sender
         except ValidationError as exc:
             errors = exc.errors(include_url=False, include_context=False)
             if any(tuple(e.get("loc", ())[:2]) == ("media", "url") for e in errors):
@@ -208,6 +289,7 @@ async def send_message(
             api_ws.key_id,
             payload,
             idempotency_key,
+            version,
         )
     # A replay is still 202 with the ORIGINAL message id (idempotent).
     return PublicSendResponse(id=message_id, status="queued", idempotencyReplay=replay)
@@ -217,9 +299,10 @@ async def send_message(
 def list_channels(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> PublicChannelListResponse:
     items = PublicGatewayService(db).list_channels(api_ws.tenant_id, api_ws.workspace_id)
-    return PublicChannelListResponse(data=items)
+    return versioned(PublicChannelListResponse(data=items), version)
 
 
 @router.get("/templates", response_model=PublicTemplateListResponse)
@@ -229,12 +312,13 @@ def list_templates(
     category: Optional[str] = Query(default=None, description="UTILITY|MARKETING|AUTHENTICATION"),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> PublicTemplateListResponse:
     items = PublicGatewayService(db).list_templates(
         api_ws.tenant_id, api_ws.workspace_id,
         channel_id=channel_id, search=search, category=category,
     )
-    return PublicTemplateListResponse(data=items)
+    return versioned(PublicTemplateListResponse(data=items), version)
 
 
 # ── Contacts (respond.io-style: {identifier} = phone:+60… | id:<uuid> | <uuid>) ──
@@ -249,27 +333,40 @@ def list_contacts(
     assignee: str = Query(default="all", description="all|unassigned"),
     priority: Optional[str] = Query(default=None, description="LOW|MEDIUM|HIGH|URGENT"),
     search: Optional[str] = Query(default=None),
+    updated_since: Optional[datetime] = Query(
+        default=None, alias="updatedSince",
+        description="ISO 8601 instant; only contacts changed or messaged after it (no offset = UTC).",
+    ),
+    channel_id: Optional[str] = Query(
+        default=None, alias="channelId",
+        description="Only contacts with an identity on this channel of your workspace.",
+    ),
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """List contacts (threads) in the workspace, filterable.
 
     Default (`?format=guide`) → `{data: ThreadItem[], total, page, pageSize}`.
-    `?format=rio` → respond.io `{items, pagination}` with cursor URLs."""
+    `?format=rio` → respond.io `{items, pagination}` with cursor URLs.
+    `updatedSince` / `channelId` (2026-11-18) are optional; absent = no filter."""
     items, total = PublicGatewayService(db).list_contacts(
         api_ws.tenant_id, api_ws.workspace_id,
         status=status, assignee=assignee, priority=priority, search=search,
+        updated_since=updated_since, channel_id=channel_id,
         page=page, page_size=page_size, fmt=fmt,
     )
     if fmt != FORMAT_RIO:
-        return PublicContactListResponse(
-            data=items, total=total, page=page, pageSize=page_size
+        return versioned(
+            PublicContactListResponse(data=items, total=total, page=page, pageSize=page_size),
+            version,
         )
     base = dict(status=status, assignee=assignee, priority=priority, search=search,
-                pageSize=page_size, format=FORMAT_RIO)
+                updatedSince=request.query_params.get("updatedSince") if updated_since else None,
+                channelId=channel_id, pageSize=page_size, format=FORMAT_RIO)
     has_next = (page + 1) * page_size < total
     pagination = RioCursorPagination(
         next=_page_url(request, **base, page=page + 1) if has_next else None,
@@ -288,12 +385,14 @@ def get_contact(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Get one contact by ``phone:+60…``, ``id:<uuid>`` or a bare id.
     `ThreadItem` by default; `RioContactItem` with `?format=rio`."""
-    return PublicGatewayService(db).get_contact(
+    item = PublicGatewayService(db).get_contact(
         api_ws.tenant_id, api_ws.workspace_id, identifier, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 @router.patch(
@@ -307,6 +406,7 @@ def update_contact(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Partial update - only sent fields change. Send ``assignedUserId`` as
     null to unassign. Send ``customFields`` as null (the whole value, not an
@@ -319,7 +419,7 @@ def update_contact(
     an unknown/foreign/inactive id is a `422 invalid_request`."""
     sent = payload.model_fields_set
     _S = ...  # sentinel = "not provided"
-    return PublicGatewayService(db).update_contact(
+    item = PublicGatewayService(db).update_contact(
         api_ws.tenant_id, api_ws.workspace_id, identifier,
         first_name=payload.firstName if "firstName" in sent else _S,
         last_name=payload.lastName if "lastName" in sent else _S,
@@ -333,6 +433,7 @@ def update_contact(
         lifecycle=payload.lifecycle if "lifecycle" in sent else _S,
         fmt=fmt,
     )
+    return versioned_shape(item, fmt, version)
 
 
 @router.get(
@@ -349,6 +450,7 @@ def list_contact_messages(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """A contact's message history - ALL types, always oldest→newest, read-only
     (never marks the thread read). Media: the default shape returns a RELATIVE,
@@ -359,7 +461,8 @@ def list_contact_messages(
     page deeper by passing `nextBefore` back as `?before=`.
     `?format=rio` → respond.io `{items, pagination}` with a two-way cursor:
     `pagination.next` for OLDER history, `pagination.previous` for NEWER."""
-    contact_id, items = PublicGatewayService(db).list_contact_messages(
+    svc = PublicGatewayService(db)
+    contact_id, items = svc.list_contact_messages(
         api_ws.tenant_id, api_ws.workspace_id, identifier,
         limit=limit, before_id=before, after_id=after, fmt=fmt,
     )
@@ -374,9 +477,12 @@ def list_contact_messages(
         next_before = (
             items[0].id if (after is None and len(items) == limit) else None
         )
-        return PublicMessageListResponse(
+        response = PublicMessageListResponse(
             contactId=contact_id, data=items, nextBefore=next_before
         )
+        if payload_version.visible("PublicMessageListResponse", "window", version):
+            response.window = svc.contact_window(api_ws.tenant_id, contact_id)
+        return versioned(response, version)
     oldest = items[0].messageId if items else None
     newest = items[-1].messageId if items else None
     next_url = _page_url(request, limit=limit, before=oldest, format=FORMAT_RIO) if len(items) == limit else None
@@ -397,12 +503,14 @@ def get_contact_message(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Get one message on a contact's thread (full fidelity, any type).
     `MessageItem` by default; `RioMessageItem` with `?format=rio`."""
-    return PublicGatewayService(db).get_contact_message(
+    item = PublicGatewayService(db).get_contact_message(
         api_ws.tenant_id, api_ws.workspace_id, identifier, message_id, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 # ── Conversation lifecycle ───────────────────────────────────────────────────
@@ -416,11 +524,13 @@ def open_conversation(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Reopen the conversation. Echoes the contact in the requested shape."""
-    return PublicGatewayService(db).set_conversation_state(
+    item = PublicGatewayService(db).set_conversation_state(
         api_ws.tenant_id, api_ws.workspace_id, identifier, open_=True, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 @router.post(
@@ -433,11 +543,13 @@ def close_conversation(
     fmt: str = Depends(wire_format),
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ):
     """Close the conversation. Echoes the contact in the requested shape."""
-    return PublicGatewayService(db).set_conversation_state(
+    item = PublicGatewayService(db).set_conversation_state(
         api_ws.tenant_id, api_ws.workspace_id, identifier, open_=False, fmt=fmt
     )
+    return versioned_shape(item, fmt, version)
 
 
 # ── Comments (internal notes - never sent to the customer) ────────────────────
@@ -447,10 +559,12 @@ def add_comment(
     payload: PublicCommentRequest,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> MessageItem:
-    return PublicGatewayService(db).add_comment(
+    item = PublicGatewayService(db).add_comment(
         api_ws.tenant_id, api_ws.workspace_id, identifier, payload.body
     )
+    return versioned(item, version, status_code=status.HTTP_201_CREATED)
 
 
 # ── Mark a contact read (resets unread; WhatsApp read receipts) ──────────────
@@ -506,13 +620,14 @@ def _wh_guard(exc: Exception):
 def list_webhooks(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointListResponse:
     """Your workspace's registered callbacks (secrets are never echoed).
 
     Workspace-scoped, matching what the per-id routes can mutate - listing by
     active channel would hide an endpoint that `PATCH`/`DELETE` still reach."""
     rows = _webhook_service(db).list_for_workspace(api_ws.tenant_id, api_ws.workspace_id)
-    return WebhookEndpointListResponse(data=[_wh_item(r) for r in rows])
+    return versioned(WebhookEndpointListResponse(data=[_wh_item(r) for r in rows]), version)
 
 
 @router.post("/webhooks", response_model=WebhookEndpointMintResponse, status_code=201)
@@ -520,6 +635,7 @@ def create_webhook(
     payload: WebhookEndpointCreateRequest,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointMintResponse:
     """Register a callback that covers every channel of your workspace. The
     signing secret is returned ONCE - store it; it is never shown again."""
@@ -538,6 +654,7 @@ def create_webhook(
             # The activity log is pruned per tenant; this row is permanent.
             created_by=f"apikey:{api_ws.key_id}",
             key_id=api_ws.key_id,
+            payload_version=payload.payloadVersion,
         )
     except WebhookNoActiveChannel as exc:
         raise ApiError(409, "no_active_channel", str(exc)) from exc
@@ -545,7 +662,11 @@ def create_webhook(
         raise _key_revoked() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
-    return WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret)
+    return versioned(
+        WebhookEndpointMintResponse(endpoint=_wh_item(row), signingSecret=secret),
+        version,
+        status_code=status.HTTP_201_CREATED,
+    )
 
 
 def _paused_by_staff() -> ApiError:
@@ -582,6 +703,7 @@ def update_webhook(
     payload: WebhookEndpointUpdateRequest,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointItem:
     from ..services.webhook_service import (
         WebhookError,
@@ -595,7 +717,7 @@ def update_webhook(
         row = _webhook_service(db).update(
             api_ws.tenant_id, endpoint_id,
             name=payload.name, url=payload.url, events=payload.events,
-            key_id=api_ws.key_id,
+            key_id=api_ws.key_id, payload_version=payload.payloadVersion,
         )
     except WebhookKeyRevoked as exc:
         raise _key_revoked() from exc
@@ -605,7 +727,7 @@ def update_webhook(
         raise _endpoint_not_found() from exc
     except WebhookError as exc:
         raise _wh_guard(exc) from exc
-    return _wh_item(row)
+    return versioned(_wh_item(row), version)
 
 
 @router.post("/webhooks/{endpoint_id}/rotate", response_model=WebhookSecretResponse)
@@ -637,6 +759,7 @@ def enable_webhook(
     endpoint_id: str,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointItem:
     """Re-enable a disabled endpoint (also clears an AUTO_DISABLED strike count)."""
     from ..services.webhook_service import WebhookKeyRevoked, WebhookNotFound, WebhookPausedByStaff
@@ -652,7 +775,7 @@ def enable_webhook(
         raise _paused_by_staff() from exc
     except WebhookNotFound as exc:
         raise _endpoint_not_found() from exc
-    return _wh_item(row)
+    return versioned(_wh_item(row), version)
 
 
 @router.post("/webhooks/{endpoint_id}/disable", response_model=WebhookEndpointItem)
@@ -660,6 +783,7 @@ def disable_webhook(
     endpoint_id: str,
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
+    version: int = Depends(api_version),
 ) -> WebhookEndpointItem:
     from ..services.webhook_service import WebhookKeyRevoked, WebhookNotFound
 
@@ -672,7 +796,7 @@ def disable_webhook(
         raise _key_revoked() from exc
     except WebhookNotFound as exc:
         raise _endpoint_not_found() from exc
-    return _wh_item(row)
+    return versioned(_wh_item(row), version)
 
 
 @router.delete("/webhooks/{endpoint_id}", status_code=204)
@@ -690,6 +814,49 @@ def delete_webhook(
         raise _paused_by_staff() from exc
     except WebhookNotFound as exc:
         raise _endpoint_not_found() from exc
+
+
+_DELIVERY_STATUSES = ("PENDING", "SUCCESS", "FAILED")
+
+
+@router.get(
+    "/webhooks/{endpoint_id}/deliveries", response_model=PublicWebhookDeliveryListResponse
+)
+def list_webhook_deliveries(
+    endpoint_id: str,
+    delivery_status: Optional[str] = Query(
+        default=None, alias="status", description="PENDING|SUCCESS|FAILED"
+    ),
+    limit: int = Query(50, ge=1, le=200),
+    before: Optional[str] = Query(
+        default=None, description="A delivery id from the previous page (`nextBefore`)."
+    ),
+    api_ws: ApiWorkspace = Depends(get_api_workspace),
+    db: Session = Depends(get_db),
+) -> PublicWebhookDeliveryListResponse:
+    """Delivery history of one of your OWN endpoints, newest first (2026-11-18).
+    Another workspace's endpoint id is the same 404 as an unknown one. Never
+    returns the event body or the signing secret."""
+    from ..services.webhook_service import WebhookError, webhook_delivery_item
+
+    wanted = delivery_status.strip().upper() if delivery_status else None
+    if wanted is not None and wanted not in _DELIVERY_STATUSES:
+        raise ApiError(
+            422, "invalid_request",
+            f"Unknown status '{delivery_status}'. Use one of: {', '.join(_DELIVERY_STATUSES)}.",
+        )
+    _own_endpoint(db, api_ws, endpoint_id)
+    try:
+        rows = _webhook_service(db).list_deliveries(
+            api_ws.tenant_id, endpoint_id, limit, status=wanted, before_id=before
+        )
+    except WebhookError as exc:
+        raise _wh_guard(exc) from exc
+    # A full page may have older rows; a short page is the last one.
+    next_before = rows[-1].id if len(rows) == limit else None
+    return PublicWebhookDeliveryListResponse(
+        data=[webhook_delivery_item(r) for r in rows], nextBefore=next_before
+    )
 
 
 # ── Workflows (plan 38 gap 7) ────────────────────────────────────────────────

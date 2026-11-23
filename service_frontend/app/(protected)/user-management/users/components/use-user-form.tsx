@@ -16,6 +16,7 @@ import type { Role, User } from '@/types/user';
 import { AvatarUpload } from '@/components/platform/avatar-upload';
 import { UserAvatar } from '@/components/platform/user-avatar';
 import { useCan } from '@/hooks/use-can';
+import { useFx } from '@/hooks/use-fx';
 import { useUserAvatar } from '@/hooks/use-avatar';
 import { ProfileTab, SecurityTab, ActivityTab } from './user-form-fields';
 import { useUserActions } from './use-user-actions';
@@ -52,6 +53,9 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
   const router = useRouter();
   const actions = useUserActions();
   const creating = !userId;
+  // Foundryx UIUX switch only: done toasts. Every request is the same in
+  // both looks.
+  const fx = useFx();
   const { data: session } = useSession();
   // Own record: email locked on this form - the /account ceremony owns it
   // (plan sprint-2/04, no self-bypass; the backend 409s it anyway).
@@ -131,6 +135,9 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
     [],
   );
 
+  // Read outside the memo and listed in its deps: read inside, the config
+  // kept the first value and the discard guard never saw typed changes.
+  const formDirty = form.formState.isDirty;
   const config = useMemo<ResourceFormConfig<User> | null>(() => {
     if (isLoading || notFound || loadError) return null;
 
@@ -144,7 +151,15 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
             roleIds: values.roleIds,
             status: values.status,
           });
-          toast.success('User created - invitation sent.');
+          if (fx) {
+            toast.fxDone({
+              what: `${created.name || values.name} invited`,
+              forWhom: created.email || values.email,
+              byWhom: 'you',
+            });
+          } else {
+            toast.success('User created - invitation sent.');
+          }
           router.push(userFormPath(created.id));
         } else {
           const updated = await userService.update(userId, {
@@ -157,7 +172,11 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
           });
           setUser(updated);
           form.reset(toFormValues(updated));
-          toast.success('User updated.');
+          if (fx) {
+            toast.fxDone({ what: `${updated.name || updated.email} saved`, byWhom: 'you' });
+          } else {
+            toast.success('User updated.');
+          }
         }
         ok = true;
       })();
@@ -251,14 +270,26 @@ export function useUserForm(userId: string | undefined, initialEditing: boolean)
       editable: !creating,
       editPermission: 'users.update',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: formDirty,
       onSave,
       onCancel,
       recordNav: creating
         ? undefined
         : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      // Foundryx UIUX switch only (ignored while off): Edit / Save user is
+      // the red action; the account actions sit in More (FX-22).
+      fx: creating
+        ? { mainActionId: 'save' }
+        : {
+            mainActionId: 'save',
+            fullLabel: (rows) => (rows[0]?.name ? `Save ${rows[0].name}` : ''),
+            iconFor: { 'send-invitation': 'send', trash: 'trash' },
+            moreActionIds: ['reset-password', 'resend-verification', 'impersonate'],
+          },
     };
   }, [
+    fx,
+    formDirty,
     isLoading,
     notFound,
     loadError,

@@ -264,7 +264,7 @@ park/observe/commit that module's actions.
 | Step 2 UAC | `find-animation-opportunities` | Read-only; capped output becomes ACs or an explicit no-motion list |
 | Step 5 Phase 1 (FE mock) | `animate` | Decision gate for any new motion added in Phase 1 |
 | Step 8 review | `emil-design-eng` | Before/After/Why table on every UI diff |
-| Step 8 review | `review-animations` | Only when the diff touches motion; runs as ONE `general-purpose` agent on Opus, never a `/code-review` fork |
+| Step 8 review | `review-animations` | Only when the diff touches motion; runs as ONE `general-purpose` agent on Opus 5.5 medium (no Fable), never a `/code-review` fork |
 | Any new FE dependency | `pick-ui-library` | First - repo picks already made: `motion`, `sonner`, `vaul`, `@dnd-kit` |
 | Periodic | `improve-animations` | - |
 
