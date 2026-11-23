@@ -81,3 +81,48 @@ def test_timeout_readback_missing_line_notes_is_still_unchanged(h, w, monkeypatc
     _notes_vanish_after_put(h, monkeypatch)
     res = _batch(h, w, "g1-to")
     assert (res.outcome, res.error_code) == ("vendor_error", "VENDOR_TIMEOUT"), (res.outcome, res.error_code)
+
+
+# ---- G2: the resume of a parked split keeps the Further Description on its restore PUT ---------------
+
+PICT = "89504e470d0a1a0a0000000d49484452"
+FD = (r"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Arial;}}\viewkind4\uc1\pard\f0\fs20 Special finish\par"
+      r"{\pict\pngblip\picw10\pich10 " + PICT + "}\\par\r\n}")
+
+
+def _po_rows_carry_fd(h, monkeypatch):
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: None)  # hapi's own FD only
+    for r in h.vendor.rows("PO", 7001):
+        r["FurtherDescription"] = FD
+
+
+def _sent_note(h):
+    (call,) = link_puts(h)
+    new = next(r for r in call.body["Details"] if not r.get("DtlKey"))
+    return new["FurtherDescription"]
+
+
+def test_resume_split_restore_carries_further_description(h, w, monkeypatch):
+    _po_rows_carry_fd(h, monkeypatch)
+    res = _parked_split(h, w)
+    sent_fd = _sent_note(h)
+    assert sent_fd.startswith(FD[:-1]) and PICT in sent_fd and sent_fd != FD  # the S/O note is appended after the FD
+    out = resume(h, res)
+    assert (out.outcome, out.error_code) == ("done", None), (out.outcome, out.error_code, out.message)
+    restore = puts(h)[-1].body["Details"]
+    assert puts(h)[-1] is not link_puts(h)[0]
+    (row,) = restore
+    assert row["FurtherDescription"] == sent_fd and PICT in row["FurtherDescription"]
+    assert row["FurtherDescription"].count(PICT) == 1
+
+
+def test_resume_split_restore_notes_unknown_sends_no_put(h, w, monkeypatch):
+    _po_rows_carry_fd(h, monkeypatch)
+    res = _parked_split(h, w)
+    for r in h.vendor.rows("PO", 7001):  # the notes can no longer be read
+        r.pop("FurtherDescription", None)
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: None)
+    before = len(puts(h))
+    out = resume(h, res)
+    assert (out.outcome, out.error_code) == ("needs_attention", "RESTORE_NOT_LANDED"), (out.outcome, out.error_code)
+    assert len(puts(h)) == before
