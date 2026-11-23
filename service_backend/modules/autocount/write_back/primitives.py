@@ -251,7 +251,13 @@ def _groups_of(call: "_Call") -> List[Tuple[int, Sequence[Dict[str, Any]]]]:
 def _unchanged(before: Doc, after: Doc) -> bool:
     """The document reads back exactly as before the PUT (its stamp and every row)."""
     return (before.get("LastModified") == after.get("LastModified")
-            and (before.get("Details") or []) == (after.get("Details") or []))
+            and _rows_as_read(before) == _rows_as_read(after))
+
+
+def _rows_as_read(doc: Doc) -> List[Doc]:
+    """The rows without the keys no read returns reliably (the Further Description comes from a second source that may
+    answer on one read and not the next: plan 73 G1)."""
+    return [{k: v for k, v in r.items() if k not in payloads.UNREADABLE_ROW_KEYS} for r in doc.get("Details") or []]
 
 
 def _vendor_refusal(primitive: str, status: int, body: Any) -> Optional[str]:
