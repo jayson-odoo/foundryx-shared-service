@@ -671,3 +671,17 @@ def test_s11_link_row_takes_the_so_line_date_when_it_has_one(h, w):
     new_rows = [r for c in link_puts(h) for r in c.body["Details"] if not r.get("DtlKey")]
     assert new_rows and all(r["DeliveryDate"][:10] == SO_DAY for r in new_rows)
     assert tied(h, w)[-1]["DeliveryDate"][:10] == SO_DAY
+
+
+def test_s11_a_failed_relink_recovers_the_old_row_with_its_own_date(h, nd):
+    """Review s11: only the NEW tied row takes the SO line's date. When a relink's replace lands wrong, the
+    recovery puts the OLD row back as it was, with its own date (never the new SO line's, here none)."""
+    from tests.test_autocount_write_back_operations import drop_new_row_once
+    so = h.vendor.find("SO", 7002)
+    so["Details"][1]["DeliveryDate"] = EMPTY  # the new SO line (so_b) has no date
+    drop_new_row_once(h)
+    res = h.run("relink_row", nd.params["relink_row"], key="s11-recover")
+    assert res.outcome == "recovered", (res.outcome, res.error_code, res.message)
+    re_add = [r for c in link_puts(h)[1:] for r in c.body["Details"] if not r.get("DtlKey")]
+    assert re_add and all(r["FromDocDtlKey"] == nd.so_a for r in re_add)
+    assert all(r.get("DeliveryDate") == PO_DAY for r in re_add), [r.get("DeliveryDate") for r in re_add]
