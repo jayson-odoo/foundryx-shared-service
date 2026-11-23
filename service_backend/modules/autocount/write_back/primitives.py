@@ -155,10 +155,12 @@ class _Call:
 
 
 def _no_note(line: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Plan 66: a line from outside an operation never carries the link note."""
-    if not line or payloads.LINK_NOTE_KEY not in line:
+    """Plan 66: a line from outside an operation never carries the link note; plan 73: nor a Further
+    Description of its own (the builders copy that from the row as read)."""
+    drop = (payloads.LINK_NOTE_KEY, payloads.FURTHER_DESC)
+    if not line or not any(k in line for k in drop):
         return line
-    return {k: v for k, v in line.items() if k != payloads.LINK_NOTE_KEY}
+    return {k: v for k, v in line.items() if k not in drop}
 
 
 # AC-57-47: what marks the start of an internal detail. The text is cut at the FIRST one:

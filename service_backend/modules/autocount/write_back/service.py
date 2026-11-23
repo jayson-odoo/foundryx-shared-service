@@ -103,7 +103,8 @@ _VERIFY_FIELDS = ("ItemCode", "Location", "UOM", "Qty")
 # B4: a sent row must also read back with the price and delivery date it was sent with.
 _VERIFY_VALUE_FIELDS = ("UnitPrice", "DeliveryDate")
 ROW_VALUES_NOT_KEPT = "ROW_VALUES_NOT_KEPT"
-_UNTOUCHED_FIELDS = payloads.ROW_KEYS + ("FromSODtlKey",)
+# plan 73: the Further Description is carried on every re-sent row but is not a read-back field (UNREADABLE_ROW_KEYS)
+_UNTOUCHED_FIELDS = tuple(k for k in payloads.ROW_KEYS if k not in payloads.UNREADABLE_ROW_KEYS) + ("FromSODtlKey",)
 _MAX_TEXT = 2000
 
 
