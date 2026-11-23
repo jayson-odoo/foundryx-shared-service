@@ -488,3 +488,39 @@ def test_bfc4_a_gap_or_a_discarded_piece_is_still_refused(db, monkeypatch, secon
     with pytest.raises(DocFeedConflictError) as exc:
         _live_start(db, co, date(2006, 1, 1), date(2006, 12, 31), monkeypatch)
     assert exc.value.code == "DRY_RUN_FIRST"
+
+
+def test_bfc3_kill_proof_a_hard_killed_segment_is_reaped_and_resume_reads_only_the_unread_days(db):
+    """A hard time limit / SIGKILL raises nothing: the job row stays RUNNING
+    and the backfill `running` after day 2 of 4 committed. The beat reaper
+    must stop it once the heartbeat is 15 minutes old, and Resume must read
+    only days 3-4 (never a committed day again)."""
+    from modules.autocount.doc_feed.scheduler import sweep_doc_feeds
+
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    killed = _job(db, co.tenant_id, status="running", started_at=NOW - timedelta(hours=2),
+                  heartbeat_at=NOW - timedelta(minutes=16))
+    bf = _backfill(db, feed, from_day=date(2026, 9, 26), to_day=date(2026, 9, 29),
+                   next_day=date(2026, 9, 28), job_id=killed.id)
+    bf.days_done = 2
+    db.commit()
+
+    # Not yet stale at 14 minutes: the reaper leaves a possibly-alive job alone.
+    assert sweep_doc_feeds(db, now=NOW - timedelta(minutes=2))["reapedBackfills"] == 0
+    db.refresh(bf)
+    assert bf.status == "running"
+
+    assert sweep_doc_feeds(db, now=NOW)["reapedBackfills"] == 1
+    db.refresh(bf)
+    db.refresh(killed)
+    assert bf.status == "stopped" and bf.error
+    assert killed.status == "failed"
+
+    vendor = _Vendor()
+    resumed = DocFeedService(db).resume_backfill(
+        co.tenant_id, co.id, DO, transport=_Transport(vendor).transport,
+    )
+    db.refresh(resumed)
+    assert vendor.seen == ["20260928", "20260929"]
+    assert resumed.status == "done" and resumed.days_done == 4
