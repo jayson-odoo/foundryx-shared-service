@@ -121,10 +121,12 @@ def test_ac_55_10_header_whitelist_and_docKey(po, so):
     body = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
     assert body["DocKey"] == 12008
     header = {k for k in body if k != "Details"}
-    assert header <= HEADER_KEYS
+    assert header <= HEADER_KEYS | {"ShippingPO"}
     for k in ("DocKey", "DocNo", "CreditorCode", "CurrencyCode", "DocDate"):
         assert body[k] == po[k]
-    for k in ("Total", "NetTotal", "Cancelled", "LastModified", "DocStatus", "ShippingPO"):
+    # SS-SHIPPINGPO-PRESERVE: the flag rides as read, never left for the vendor to default
+    assert body["ShippingPO"] == po["ShippingPO"] == "F"
+    for k in ("Total", "NetTotal", "Cancelled", "LastModified", "DocStatus"):
         assert k not in body
 
 
@@ -270,7 +272,8 @@ def test_ac_55_15_unlink_refused_when_spo_points_at_row(po):
 def test_ac_55_12_unlink_real_row_12013(po):
     body = build_unlink(po, 12013)
     assert body["DocKey"] == 12008
-    assert {k for k in body if k != "Details"} <= HEADER_KEYS
+    assert {k for k in body if k != "Details"} <= HEADER_KEYS | {"ShippingPO"}
+    assert body["ShippingPO"] == "F"  # SS-SHIPPINGPO-PRESERVE: as read
     assert [r["DtlKey"] for r in body["Details"]] == [12013, 0]  # plan 61: "D" + a new normal row
     assert _gone(body) == [12013]
     r = _new(body)

@@ -77,6 +77,7 @@ x-backend-env: &backend-env
   # Settings is an import-time singleton: a change needs the containers
   # RECREATED (`docker compose up -d`), a `restart` keeps the old environment.
   AUTOCOUNT_WRITE_ALLOWED_BOOKS: ${AUTOCOUNT_WRITE_ALLOWED_BOOKS:-db3}
+  AUTOCOUNT_PROJECT_REGISTRATIONS_FEED_BOOKS: ${AUTOCOUNT_PROJECT_REGISTRATIONS_FEED_BOOKS:-db3}
   AUTOCOUNT_SINK_BATCH_SIZE: ${AUTOCOUNT_SINK_BATCH_SIZE:-200}
   AUTOCOUNT_SINK_TIMEOUT_SECONDS: ${AUTOCOUNT_SINK_TIMEOUT_SECONDS:-300}
   # Ceiling 4; Sorento accepted 2 after measuring #710 (4 async ingest workers

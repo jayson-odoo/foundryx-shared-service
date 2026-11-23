@@ -1656,7 +1656,8 @@ export interface AutocountPullApiKeyIssued {
 // Mirrors the real backend contract (plan section 3.2,
 // `modules/autocount/routers/doc_feeds.py`).
 
-export type DocFeedKey = 'delivery_orders' | 'goods_receive_notes';
+/** Plan 72 added `project_registrations` (AutoCount project registrations, by date only). */
+export type DocFeedKey = 'delivery_orders' | 'goods_receive_notes' | 'project_registrations';
 
 export type DocFeedMode = 'off' | 'dry_run' | 'push';
 
@@ -1787,6 +1788,18 @@ export interface DocFeedRunInput {
 
 /** Summary JSON shared by runs and backfills (plan section 3.1) - every key
  * absent reads as 0. */
+/** Plan 72 (UAC S0-10) - one month of a registrations backfill run. */
+export interface DocFeedMonthCounts {
+  read?: number;
+  created?: number;
+  updated?: number;
+  unchanged?: number;
+  needsReview?: number;
+  skipped?: number;
+  failed?: number;
+  retryable?: number;
+}
+
 export interface DocFeedRunSummary {
   created?: number;
   updated?: number;
@@ -1807,6 +1820,12 @@ export interface DocFeedRunSummary {
   deleteTotal?: number;
   warnings?: Record<string, number>;
   failedRefs?: Array<{ docKey?: number | null; sourceRef?: string | null; errors?: Record<string, unknown> }>;
+  /** Plan 72 - project registrations: CRM answers the SS does not retry. */
+  needsReview?: number;
+  skipped?: number;
+  switchedOff?: number;
+  /** Plan 72 - a registrations backfill's counts per `YYYY-MM`. */
+  byMonth?: Record<string, DocFeedMonthCounts>;
 }
 
 /** `GET /autocount/doc-feeds/{companyId}/runs` row (`ac_doc_feed_run`). */
