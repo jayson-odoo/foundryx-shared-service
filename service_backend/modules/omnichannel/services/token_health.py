@@ -30,6 +30,7 @@ from ..security import decrypt_credentials, encrypt_credentials
 from . import statuses
 from .channel_guards import assert_whatsapp
 from .channel_service import ChannelNotFound, ChannelService
+from .channel_events import emit_channel_updated
 
 logger = logging.getLogger(__name__)
 
@@ -124,16 +125,21 @@ def check_channel_token(db: Session, channel_id: str) -> Optional[str]:
         if changed:
             db.refresh(channel)
             _notify_dead(db, channel)
+            emit_channel_updated(db, channel)
         return verdict
 
     if channel.status_id == error_id:
         key = "ACTIVE" if channel.is_active else "INACTIVE"
         target = statuses.status_id_for(db, tenant_id, "CHANNEL", key)
         if target is not None:
-            repo.set_status_if_credentials_unchanged(
+            if repo.set_status_if_credentials_unchanged(
                 channel, read_credentials, target, from_status_id=error_id
-            )
-            db.commit()
+            ):
+                db.commit()
+                db.refresh(channel)
+                emit_channel_updated(db, channel)
+            else:
+                db.commit()
     return verdict
 
 
@@ -226,10 +232,13 @@ def replace_token(
         raise ChannelNotFound()
     channel.credentials_json = encrypt_credentials(creds)
     error_id = statuses.status_id_for(db, tenant_id, "CHANNEL", "ERROR")
-    if error_id is not None and channel.status_id == error_id:
+    cleared_error = error_id is not None and channel.status_id == error_id
+    if cleared_error:
         key = "ACTIVE" if channel.is_active else "INACTIVE"
         channel.status_id = statuses.status_id_for(db, tenant_id, "CHANNEL", key)
     db.commit()
+    if cleared_error:
+        emit_channel_updated(db, channel)
 
     # Renew only with a token known to be this app's: an unreadable or foreign
     # app id skips the POST (`subscribed` false); no WABA id leaves it null.

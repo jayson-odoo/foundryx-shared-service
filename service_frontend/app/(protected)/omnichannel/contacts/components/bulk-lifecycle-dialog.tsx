@@ -20,6 +20,9 @@ import {
 } from '@/components/ui/dialog';
 import { SearchSelect } from '@/components/platform/search-select';
 import type { LifecycleStageOption } from '@/hooks/use-contact-lifecycle-stages';
+import { useFx } from '@/hooks/use-fx';
+import { fxBulkPanelWords } from './contacts-fx';
+import { FxBulkPanel } from './fx-bulk-panel';
 
 export interface BulkLifecycleDialogProps {
   open: boolean;
@@ -29,7 +32,7 @@ export interface BulkLifecycleDialogProps {
   onConfirm: (toStatusId: string) => Promise<unknown>;
 }
 
-export function BulkLifecycleDialog({ open, onOpenChange, stages, count, onConfirm }: BulkLifecycleDialogProps) {
+function BulkLifecycleDialogLegacy({ open, onOpenChange, stages, count, onConfirm }: BulkLifecycleDialogProps) {
   const [value, setValue] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -72,5 +75,47 @@ export function BulkLifecycleDialog({ open, onOpenChange, stages, count, onConfi
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Switch on: the playbook's bulk panel; switch off: the dialog as it was. */
+export function BulkLifecycleDialog(props: BulkLifecycleDialogProps) {
+  return useFx() ? <FxBulkLifecycleDialog {...props} /> : <BulkLifecycleDialogLegacy {...props} />;
+}
+
+function FxBulkLifecycleDialog({ open, onOpenChange, stages, count, onConfirm }: BulkLifecycleDialogProps) {
+  const [value, setValue] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const confirm = async () => {
+    if (!value) return;
+    setBusy(true);
+    try {
+      await onConfirm(value);
+      onOpenChange(false);
+      setValue(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <FxBulkPanel
+      open={open}
+      onOpenChange={onOpenChange}
+      kind="lifecycle"
+      count={count}
+      busy={busy}
+      canSubmit={Boolean(value)}
+      onSubmit={() => void confirm()}
+    >
+      <SearchSelect
+        ariaLabel={fxBulkPanelWords('lifecycle', count).field}
+        value={value}
+        onChange={setValue}
+        placeholder="Pick a stage"
+        options={stages.map((s) => ({ label: s.label, value: s.id }))}
+      />
+    </FxBulkPanel>
   );
 }

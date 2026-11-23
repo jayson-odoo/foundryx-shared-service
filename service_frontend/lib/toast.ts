@@ -11,7 +11,9 @@
  * the user closes it (`duration: Infinity` + `closeButton`) - an error the
  * user glanced past a moment too late must still be readable.
  */
+import { createElement } from 'react';
 import { toast as sonnerToast, type ExternalToast } from 'sonner';
+import { FxToast, type FxDoneInput } from '@/components/fx/toast/fx-toast';
 
 type Message = Parameters<typeof sonnerToast>[0];
 
@@ -38,4 +40,24 @@ const custom = sonnerToast.custom;
 const dismiss = sonnerToast.dismiss;
 const message = sonnerToast.message;
 
-export const toast = { success, error, info, warning, custom, dismiss, message };
+/**
+ * Foundryx UIUX switch only (playbook-uiux.md): the playbook's done toast -
+ * what, for whom, how many, by whom, Undo, a time-left bar that pauses under
+ * the pointer (6 s, setting "How long toasts stay"). The toast runs its own
+ * clock (so it can pause), hence sonner's duration is Infinity. Callers use it
+ * only on their fx path; with the switch off they keep `success`.
+ */
+function fxDone(input: FxDoneInput, options?: ExternalToast): string | number {
+  return sonnerToast.custom(
+    (id) =>
+      createElement(FxToast, {
+        ...input,
+        onClose: () => sonnerToast.dismiss(id),
+      }),
+    { ...options, duration: Infinity },
+  );
+}
+
+export type { FxDoneInput };
+
+export const toast = { success, error, info, warning, custom, dismiss, message, fxDone };

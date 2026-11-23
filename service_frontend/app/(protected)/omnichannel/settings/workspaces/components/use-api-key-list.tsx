@@ -25,6 +25,10 @@ function matchesFilter(item: ApiKeyItem, group: FilterGroup | null | undefined):
       const results = rule.rules.map(test);
       return rule.combinator === 'or' ? results.some(Boolean) : results.every(Boolean);
     }
+    if (rule.field === 'status' && rule.operator === 'in' && Array.isArray(rule.value)) {
+      // The header status ticks (Foundryx UIUX switch only; never sent while off).
+      return rule.value.map((x) => String(x).toUpperCase()).includes(item.status);
+    }
     const v = String(rule.value ?? '').toUpperCase();
     if (rule.field === 'status') {
       if (rule.operator === 'neq') return item.status !== v;
@@ -101,6 +105,7 @@ export function useApiKeyList(
         deferred: {
           actionKey: 'api_keys.revoke',
           entityType: 'api_key',
+          fxName: (rows) => (rows.length === 1 ? rows[0].name : undefined),
           intercept: (rows, park) => {
             const [key] = rows;
             if (!key || key.webhookEndpointCount === 0) return false;
@@ -277,6 +282,17 @@ export function useApiKeyList(
       createLabel: 'Mint key',
       createPermission: 'api_keys.manage',
       onCreate: onMint,
+      // Foundryx UIUX switch only (slice W2-WS); ignored while off. The list
+      // sits in a record tab, so Mint stays an icon action in the tab (the
+      // record page keeps its own red action).
+      fx: {
+        noun: 'API keys',
+        compactStates: true,
+        iconFor: { revoke: <Ban aria-hidden="true" className="size-[18px]" /> },
+        columnKind: { status: 'status' },
+        cardLines: [['name', 'status'], ['key']],
+        phoneHidden: ['lastUsed', 'endpoints', 'created'],
+      },
     };
   }, [workspaceId, actions, onMint, formatDate, formatDateTime]);
 

@@ -7,10 +7,6 @@
  * HIDDEN (not just disabled) for a caller without `inbox_views.manage`
  * (D-A3-11) - foolproof-UI, never offer a control that will 403.
  */
-import { useEffect, useState } from 'react';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
-import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -24,13 +20,11 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { ApiError } from '@/lib/api-client';
+import { useFx } from '@/hooks/use-fx';
 import type { InboxView } from '@/types/omnichannel';
-import {
-  defaultInboxViewFormValues,
-  inboxViewSchema,
-  type InboxViewFormValues,
-} from './inbox-view-schema';
+import { FxInboxViewDialog } from './fx/fx-inbox-view-dialog';
+import type { InboxViewFormValues } from './inbox-view-schema';
+import { useInboxViewForm } from './use-inbox-view-form';
 
 export interface InboxViewDialogProps {
   open: boolean;
@@ -43,49 +37,14 @@ export interface InboxViewDialogProps {
   onUpdate: (id: string, values: InboxViewFormValues) => Promise<unknown>;
 }
 
-function toValues(view: InboxView | null): InboxViewFormValues {
-  if (!view) return defaultInboxViewFormValues();
-  return { name: view.name, isShared: view.isShared };
+export function InboxViewDialog(props: InboxViewDialogProps) {
+  // Foundryx UIUX switch (playbook-uiux.md): the playbook dialog. Off renders
+  // the legacy body below, unchanged.
+  return useFx() ? <FxInboxViewDialog {...props} /> : <InboxViewDialogLegacy {...props} />;
 }
 
-export function InboxViewDialog({ open, onOpenChange, view, canShare, onCreate, onUpdate }: InboxViewDialogProps) {
-  const editing = !!view;
-  const [submitting, setSubmitting] = useState(false);
-
-  const form = useForm<InboxViewFormValues>({
-    mode: 'onTouched',
-    resolver: zodResolver(inboxViewSchema),
-    defaultValues: toValues(null),
-  });
-
-  useEffect(() => {
-    if (open) form.reset(toValues(view));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view]);
-
-  const submit = form.handleSubmit(async (values) => {
-    setSubmitting(true);
-    try {
-      if (editing) {
-        await onUpdate(view.id, values);
-        toast.success('View updated.');
-      } else {
-        await onCreate(values);
-        toast.success('View saved.');
-      }
-      onOpenChange(false);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 422) {
-        const fieldErrors = (error.detail as { fieldErrors?: Record<string, string> } | undefined)?.fieldErrors;
-        if (fieldErrors?.name) form.setError('name', { message: fieldErrors.name });
-        else toast.error(error.message);
-      } else {
-        toast.error(error instanceof Error ? error.message : 'Could not save the view.');
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  });
+function InboxViewDialogLegacy({ open, onOpenChange, view, canShare, onCreate, onUpdate }: InboxViewDialogProps) {
+  const { editing, submitting, form, submit } = useInboxViewForm({ open, onOpenChange, view, onCreate, onUpdate });
 
   return (
     <Dialog open={open} onOpenChange={(v) => !submitting && onOpenChange(v)}>

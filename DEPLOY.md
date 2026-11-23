@@ -353,6 +353,7 @@ baked into the frontend image; the script also writes it as `PUBLIC_BASE_URL`),
 `POSTGRES_USER`, `POSTGRES_DB`, `IMAGE_REPO`, `RELEASE_TAG`, `BACKEND_WORKERS`,
 `META_APP_ID`, `META_ES_CONFIG_ID`, `META_GRAPH_VERSION`, `NEXT_PUBLIC_META_*`,
 `PLATFORM_SMTP_HOST`/`_PORT`/`_SECURITY`/`_FROM_EMAIL`/`_FROM_NAME`.
+`AUTOCOUNT_PROJECT_REGISTRATIONS_FEED_BOOKS` (default `db3`; comma list of books the AutoCount project-registration feed reads, e.g. `db1`; containers must be recreated to pick it up).
 
 > Keys left unset render as empty in `.env` (fine for the optional Meta/SMTP
 > blocks - empty = dev-safe/console-log). The required ones (`${VAR:?...}` in

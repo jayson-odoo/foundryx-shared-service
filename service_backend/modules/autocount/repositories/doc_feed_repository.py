@@ -25,6 +25,8 @@ from ..models import (
     BACKFILL_DISCARDED_CODE,
     DOC_FEED_BACKFILL_DONE,
     DOC_FEED_BACKFILL_OPEN_STATUSES,
+    DOC_FEED_BACKFILL_RUNNING,
+    DOC_FEED_BACKFILL_STOPPING,
 )
 
 
@@ -43,6 +45,14 @@ def _dialect_insert(db: Session, table):
 
 
 class DocFeedRepository:
+    def list_for_tenant_feed(self, tenant_id: str, feed: str) -> List[AcDocFeed]:
+        """Plan 72 - every company's row of one feed in this tenant."""
+        return (
+            self.db.query(AcDocFeed)
+            .filter(AcDocFeed.tenant_id == tenant_id, AcDocFeed.feed == feed)
+            .all()
+        )
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -462,6 +472,59 @@ class DocFeedBackfillRepository:
                 AcDocFeedBackfill.tenant_id == tenant_id,
                 AcDocFeedBackfill.feed_id == feed_id,
                 AcDocFeedBackfill.status.in_(DOC_FEED_BACKFILL_OPEN_STATUSES),
+            )
+            .first()
+        )
+
+    def open_for_book(self, tenant_id: str, book: str) -> Optional[AcDocFeedBackfill]:
+        """Plan 72 - a backfill (any feed, any company) still reading ``book``
+        (running or stopping; a stopped one reads nothing): one backfill per
+        book at a time keeps one AutoCount call in flight."""
+        return (
+            self.db.query(AcDocFeedBackfill)
+            .filter(
+                AcDocFeedBackfill.tenant_id == tenant_id,
+                AcDocFeedBackfill.book == book,
+                AcDocFeedBackfill.status.in_(
+                    (DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING)
+                ),
+            )
+            .first()
+        )
+
+    def running_for_feed(self, tenant_id: str, feed_id: str) -> Optional[AcDocFeedBackfill]:
+        """Plan 72 - this feed's backfill that is still reading (running or stopping)."""
+        return (
+            self.db.query(AcDocFeedBackfill)
+            .filter(
+                AcDocFeedBackfill.tenant_id == tenant_id,
+                AcDocFeedBackfill.feed_id == feed_id,
+                AcDocFeedBackfill.status.in_(
+                    (DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING)
+                ),
+            )
+            .first()
+        )
+
+    def done_dry_run_covering(
+        self, tenant_id: str, feed_id: str, from_day: date, to_day: date
+    ) -> Optional[AcDocFeedBackfill]:
+        """Plan 72 - a finished dry-run backfill of this feed covering every
+        day of ``from_day..to_day`` (the live pass runs only after it)."""
+        return (
+            self.db.query(AcDocFeedBackfill)
+            .filter(
+                AcDocFeedBackfill.tenant_id == tenant_id,
+                AcDocFeedBackfill.feed_id == feed_id,
+                AcDocFeedBackfill.dry_run.is_(True),
+                AcDocFeedBackfill.status == DOC_FEED_BACKFILL_DONE,
+                # A discarded dry run closed as `done` without its counts.
+                or_(
+                    AcDocFeedBackfill.error_code.is_(None),
+                    AcDocFeedBackfill.error_code != BACKFILL_DISCARDED_CODE,
+                ),
+                AcDocFeedBackfill.from_day <= from_day,
+                AcDocFeedBackfill.to_day >= to_day,
             )
             .first()
         )

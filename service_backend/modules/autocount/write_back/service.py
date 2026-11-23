@@ -792,6 +792,9 @@ class WriteBackService(WriteFrame):
         if isinstance(after, WriteActionResult):
             return self._finish(row, OUTCOME_PENDING, after.error_code)
         row.after_json = after  # a read-back in hand is always verified, whatever the clock says
+        changed = self._shipping_po_changed(row, before, after)
+        if changed is not None:
+            return changed
         is_split = plan.action == ACTION_LINK and any(
             not r.get("DtlKey") for r in body.get("Details") or []
         )
@@ -813,6 +816,17 @@ class WriteBackService(WriteFrame):
         result = self._finish(row, OUTCOME_DONE, document=after)
         self._stage(company, plan.kind[0], after)
         return result
+
+    def _shipping_po_changed(self, row: AcWriteAction, before: Doc, after: Doc) -> Optional[WriteActionResult]:
+        """SS-SHIPPINGPO-PRESERVE: a write that turned the PO into an SPO (or back) is never
+        ``done``; both flags are logged."""
+        if not payloads.shipping_po_changed(before, after):
+            return None
+        was, now = payloads.shipping_po_values(before, after)
+        logger.error("autocount write changed ShippingPO %s -> %s (action %s, DocKey %s)",
+                     was, now, row.id, after.get("DocKey"))
+        return self._finish(row, OUTCOME_MISMATCH, payloads.SHIPPING_PO_CHANGED,
+                            message=payloads.SHIPPING_PO_CHANGED_MESSAGE)
 
     def _read_back(
         self, plan: _Plan, reader: AutoCountDocReader, before: Doc
@@ -900,6 +914,10 @@ class WriteBackService(WriteFrame):
                 after2 = self._read_back(plan, reader, before)
                 if not isinstance(after2, WriteActionResult):
                     row.after_json = [after1, after2]
+                    changed = self._shipping_po_changed(row, after1, after2)
+                    if changed is not None:
+                        self.db.commit()
+                        return changed
                     final = after2
                     verified = True
                     if verify_relocate(after1, after2, new_key, restore.get("Location"), body2, values):

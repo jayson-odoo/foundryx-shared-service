@@ -53,6 +53,7 @@ describe('useBroadcastsListConfig - row actions column (D-1)', () => {
     expect(editAction?.surfaces.row).toBe(true);
     const deleteAction = result.current.actions.find((a) => a.id === 'delete');
     expect(deleteAction?.surfaces.row).toBe(true);
-    expect(deleteAction?.deferred).toEqual({ actionKey: 'broadcasts.delete', entityType: 'broadcast' });
+    expect(deleteAction?.deferred).toMatchObject({ actionKey: 'broadcasts.delete', entityType: 'broadcast' });
+    expect(deleteAction?.deferred?.payload).toBeUndefined();
   });
 });

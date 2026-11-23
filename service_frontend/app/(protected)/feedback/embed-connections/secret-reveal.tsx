@@ -4,6 +4,8 @@ import { Check, Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
+import { useFx } from '@/hooks/use-fx';
+import { FxSecretOnce } from '@/components/fx/fields/fx-secret';
 
 /**
  * One-time signing-secret reveal (create + rotate). The plaintext exists
@@ -13,6 +15,9 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
  */
 export function SecretReveal({ secret }: { secret: string }) {
   const { isCopied, error, copyToClipboard } = useCopyToClipboard();
+  // Foundryx UIUX switch only: the shared shown-once field and its one warning line.
+  const fx = useFx();
+  if (fx) return <FxSecretOnce value={secret} label="Signing secret" />;
 
   return (
     <div className="flex flex-col gap-3">

@@ -519,7 +519,7 @@ class PrimitiveService(WriteFrame):
         finally:
             self.db.rollback()
         try:
-            payloads._check_kind_doc(kind_def, doc, cancelled_ok=True)
+            payloads._check_kind_doc(kind_def, doc, cancelled_ok=True, write=False)
         except WriteRefusal as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
         return PrimitiveResult(
@@ -874,6 +874,12 @@ class PrimitiveService(WriteFrame):
         """A read-back in hand: verify it, finish the row, stage it."""
         row.after_json = after  # a read-back in hand is always verified
         verdict_code, message, warnings, new_key = self._verify(call, request, before, after)
+        if (call.kind in ("PO", "SPO") and before is not None
+                and payloads.shipping_po_changed(before, after)):  # SS-SHIPPINGPO-PRESERVE
+            was, now = payloads.shipping_po_values(before, after)
+            logger.error("autocount %s changed ShippingPO %s -> %s (action %s, DocKey %s)",
+                         call.primitive, was, now, row.id, after.get("DocKey"))
+            verdict_code, message = payloads.SHIPPING_PO_CHANGED, payloads.SHIPPING_PO_CHANGED_MESSAGE
         extra.update(doc_key=after.get("DocKey"), doc_no=after.get("DocNo"), new_dtl_key=new_key)
         if verdict_code:
             extra["warnings"] = warnings

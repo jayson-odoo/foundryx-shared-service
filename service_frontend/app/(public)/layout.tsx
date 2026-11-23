@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { getRequestBranding } from '@/lib/branding-ssr';
+import { FxComponentsOff } from '@/components/fx/fx-components-off';
 import { PublicBrandedShell } from './public-branded-shell';
 
 /**
@@ -10,5 +11,9 @@ import { PublicBrandedShell } from './public-branded-shell';
  */
 export default async function PublicLayout({ children }: { children: ReactNode }) {
   const { branding } = await getRequestBranding();
-  return <PublicBrandedShell initialBranding={branding}>{children}</PublicBrandedShell>;
+  return (
+    <FxComponentsOff>
+      <PublicBrandedShell initialBranding={branding}>{children}</PublicBrandedShell>
+    </FxComponentsOff>
+  );
 }

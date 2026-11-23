@@ -56,6 +56,7 @@ from modules.autocount.write_back.frame import (
     _dec,
 )
 from modules.autocount.write_back.doc_kinds import KINDS, WIRE_SLUGS
+from modules.autocount.write_back.project_registration import ProjectRegistrationService
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
 from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
@@ -2225,6 +2226,8 @@ class OperationService:
         entry(LINK_BATCH, "PO", op_capable(OPS["link_row"]))
         for name, defn in OPS.items():
             entry(name, defn.kind, op_capable(defn))
+        # plan 71: project registrations, behind their own admin switch (OFF by default)
+        items.extend(ProjectRegistrationService(self.db).capabilities(off))
         return items
 
     def run_primitive(

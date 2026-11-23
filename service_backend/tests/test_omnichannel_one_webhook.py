@@ -1746,7 +1746,7 @@ def test_ac_38_100_guide_error_table_lists_channel_required_with_422():
 
 
 def test_ac_38_100_guide_changelog_has_a_breaking_row_for_channel_required():
-    lines = [ln for ln in _GUIDE.read_text().splitlines()[:40] if ln.startswith("> |")]
+    lines = [ln for ln in _GUIDE.read_text().split("\n## ", 1)[0].splitlines() if ln.startswith("> |")]
     rows = [ln for ln in lines if "channel_required" in ln and "breaking" in ln.lower()]
     assert rows, "changelog needs a row naming channel_required and saying breaking"
     # An existing test takes the first changelog row holding this text.

@@ -23,6 +23,12 @@ declare module '@tanstack/react-table' {
   interface ColumnMeta<TData extends RowData, TValue> {
     /** When false, the column can't be drag-reordered (e.g. select, actions). */
     reorderable?: boolean;
+    /**
+     * Foundryx UIUX switch only (FX-13): `'end'` right-aligns the column's
+     * header and cells together (amounts). Ignored with the switch off and on
+     * phone cards.
+     */
+    fxAlign?: 'start' | 'end';
   }
 }
 
@@ -64,6 +70,12 @@ interface ResourceActionCommon<T> {
   isVisible?: (rows: T[]) => boolean;
   /** Show but disable (e.g. "Send invitation" only for INVITED users). */
   isDisabled?: (rows: T[]) => boolean;
+  /**
+   * Foundryx UIUX switch only (F3b): why the action is greyed for these rows,
+   * shown as its tooltip in the selection bar ("2 are already sent").
+   * Ignored with the switch off.
+   */
+  fxDisabledReason?: (rows: T[]) => string | undefined;
 }
 
 /**
@@ -97,7 +109,23 @@ export type ResourceAction<T> =
          * button stays disabled until the user types `expected(rows)`
          * exactly. For irreversible actions (hard delete).
          */
-        input?: { expected: (rows: T[]) => string; hint?: (rows: T[]) => string };
+        input?: {
+          expected: (rows: T[]) => string;
+          hint?: (rows: T[]) => string;
+          /**
+           * Foundryx UIUX switch only (playbook-uiux.md, gap-audit choice
+           * "type the record name/number to delete"): what the fx confirm asks
+           * to type, the record's own name or number. Falls back to
+           * `expected`. Ignored with the switch off.
+           */
+          fxExpected?: (rows: T[]) => string;
+        };
+        /**
+         * Foundryx UIUX switch only: the safe button's words, named for what
+         * it keeps ("Keep tenant"). Default: "Keep" + the action label's
+         * object. Ignored with the switch off.
+         */
+        fxKeepLabel?: string | ((rows: T[]) => string);
       };
       deferred?: undefined;
       run: (rows: T[], runtime: ResourceActionRuntime) => void | Promise<void>;
@@ -141,9 +169,64 @@ export type ResourceAction<T> =
           rows: T[],
           park: (extraPayload?: Record<string, unknown>) => Promise<void>,
         ) => boolean;
+        /**
+         * Foundryx UIUX switch only (FX-03): the record's name for a
+         * one-record countdown, "Deleting Barcode scanner in 10 s". Without
+         * it (or when it returns nothing) the countdown keeps "Deleting in
+         * 10 s". Ignored with the switch off.
+         */
+        fxName?: (rows: T[]) => string | undefined;
       };
       run?: undefined;
     });
+
+/**
+ * Column kinds for the Foundryx UIUX header search and filter (F3a): text
+ * search, date range, number or amount range, status ticks.
+ */
+export type FxColumnKind = 'text' | 'date' | 'number' | 'amount' | 'status';
+
+/**
+ * Foundryx UIUX switch only (playbook-uiux.md, build plan 1.3): the page-level
+ * choices a list makes under the switch. Every field is optional and ignored
+ * with the switch off. The foundation adds the fields once; page slices fill
+ * them in their own config files.
+ */
+export interface FxListConfig<T> {
+  /** The action that becomes the page's red action: an `actions` id, or
+   *  `'create'` for the list's own Create button. */
+  mainActionId?: string;
+  /** The red action's full label on hover and focus, from the ticked rows
+   *  (or none): "Send 3 reminders for RM 18,200.00". */
+  fullLabel?: (rows: T[]) => string;
+  /** The icon each Other Action shows, by action id (one icon per meaning):
+   *  a meaning's name, or a drawn icon node. */
+  iconFor?: Record<string, import('@/components/fx/icons').FxIconRef>;
+  /** Action ids that always sit in the More menu. */
+  moreActionIds?: string[];
+  /** Column ids whose values Hold to Copy copies (F3b). */
+  copyable?: string[];
+  /** Column ids dropped from phone cards (F3b). */
+  phoneHidden?: string[];
+  /** Header search and filter kind per column id (F3a). A `'status'` column
+   *  also takes the phone card's top line, with or without a filter field
+   *  (FX-13). */
+  columnKind?: Record<string, FxColumnKind>;
+  /** Phone card lines (F3b): column ids per line, in order. */
+  cardLines?: string[][];
+  /** What the list holds, plural and lower case ("products"), for its
+   *  empty, nothing-matches and couldn't-load words (F3b). Default: the
+   *  page title in lower case, else "records". */
+  noun?: string;
+  /** A list rendered without its own header (`hideHeader`) hands its Create
+   *  to the page header as the red action only when this is set (FX-17).
+   *  A list with its own header always does. */
+  createInPageHeader?: boolean;
+  /** The smaller empty, nothing-matches and couldn't-load words, for a list
+   *  inside a card or a record's tab (FX-17). `embeddedListConfig` sets it;
+   *  every other list shows the full size. */
+  compactStates?: boolean;
+}
 
 export interface ExportColumn {
   id: string;
@@ -285,4 +368,6 @@ export interface ResourceListConfig<T extends object> {
     writePermission: string;
     context?: Record<string, unknown>;
   };
+  /** Foundryx UIUX switch choices for this list (ignored while off). */
+  fx?: FxListConfig<T>;
 }

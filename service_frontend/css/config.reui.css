@@ -226,3 +226,81 @@
 
   --text-xs--letter-spacing: 0.01em;
 }
+
+/**
+ * Foundryx UIUX switch - shape, motion, layer and font tokens (playbook
+ * 0.71.0 "Motion" and "Shape, icons and text"; playbook-uiux.md).
+ *
+ * Defined ONLY under `data-fx="on"` on <html>, and every name is `--fx-*`, so
+ * with the switch off (the default) nothing here applies and no existing token
+ * moves. `--fx-` keeps them clear of SS's own `--z-header` and Tailwind's
+ * `--ease-out`. Components read them through arbitrary utilities, e.g.
+ * `ease-(--fx-ease-out) duration-(--fx-t-hover) rounded-(--fx-r-m)
+ * z-(--fx-z-pop)`; the three curves live here because raw curves are allowed
+ * only in this file (AC-DLA-01).
+ *
+ * Layers, lowest to highest, mapped onto SS's named scale:
+ *   page < --fx-z-header (= --z-header 10) < --z-sidebar 20 < --fx-z-pop 40
+ *   < --fx-z-dialog (= --z-modal 50) < --z-banner 60 < --fx-z-toast 70
+ *   < --fx-z-tip 1000.
+ */
+:root[data-fx='on'] {
+  --fx-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --fx-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --fx-ease-spring: cubic-bezier(0.3, 1.6, 0.5, 1);
+
+  --fx-t-press: 0.15s;
+  --fx-t-hover: 0.2s;
+  --fx-t-open: 0.3s;
+  --fx-t-layout: 0.35s;
+  --fx-t-toggle: 0.4s;
+  --fx-t-close: 0.65s;
+  --fx-t-pulse: 1.8s;
+
+  --fx-r-s: 6px;
+  --fx-r-m: 10px;
+  --fx-r-l: 14px;
+  --fx-r-pill: 999px;
+
+  --fx-z-header: var(--z-header);
+  --fx-z-pop: 40;
+  --fx-z-dialog: var(--z-modal);
+  --fx-z-toast: 70;
+  --fx-z-tip: 1000;
+
+  /* One font token, the same fallbacks for every face (playbook "Font"). */
+  --fx-font: 'Geist', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;
+}
+
+:root[data-fx='on'][data-fx-font='jakarta'] {
+  --fx-font: 'Plus Jakarta Sans', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;
+}
+
+:root[data-fx='on'][data-fx-font='inter'] {
+  --fx-font: 'Inter', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;
+}
+
+:root[data-fx='on'][data-fx-font='manrope'] {
+  --fx-font: 'Manrope', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;
+}
+
+:root[data-fx='on'][data-fx-font='dmsans'] {
+  --fx-font: 'DM Sans', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;
+}
+
+/* Reduced motion, or the Animations setting off: decoration stops (press,
+   hover, pulse), while the motion that shows where something went (panels
+   opening and closing, layout moves, toggles) keeps its timing. */
+:root[data-fx='on'][data-fx-motion='off'] {
+  --fx-t-press: 1ms;
+  --fx-t-hover: 1ms;
+  --fx-t-pulse: 1ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-fx='on'] {
+    --fx-t-press: 1ms;
+    --fx-t-hover: 1ms;
+    --fx-t-pulse: 1ms;
+  }
+}

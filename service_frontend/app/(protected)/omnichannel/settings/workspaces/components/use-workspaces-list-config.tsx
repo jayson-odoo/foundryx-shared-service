@@ -18,7 +18,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import type { FilterFieldDef } from '@/types/resource';
 import type { Workspace } from '@/types/omnichannel';
 import { WORKSPACE_STATUS_REGISTRY } from './workspace-status';
-import { useWorkspaceActions } from './use-workspace-actions';
+import { useWorkspaceActions, WORKSPACE_FX_ICONS } from './use-workspace-actions';
 import { workspaceFormPath, workspaceNewPath } from './paths';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -179,6 +179,16 @@ export function useWorkspacesListConfig(): ResourceListConfig<Workspace> {
       createLabel: 'New workspace',
       createPermission: 'workspaces.manage',
       onCreate: () => router.push(workspaceNewPath),
+      // Foundryx UIUX switch only (slice W2-WS); ignored while off.
+      fx: {
+        noun: 'workspaces',
+        iconFor: WORKSPACE_FX_ICONS,
+        columnKind: { name: 'text', status: 'status', created: 'date' },
+        // Bare counts read as "0 0" on a card, so the phone card keeps the
+        // name and status only.
+        cardLines: [['name', 'status']],
+        phoneHidden: ['channels', 'members', 'created'],
+      },
     };
   }, [actions, router, formatDate]);
 }

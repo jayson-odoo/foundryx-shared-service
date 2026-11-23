@@ -340,12 +340,6 @@ class InboundService:
         # dedups across our retries. Failure-isolated inside enqueue_event.
         from .webhook_delivery import consumer_message_payload, enqueue_event
 
-        # The consumer (EMS) fetches media bytes from an ABSOLUTE, API-key-authed
-        # gateway URL (plan 12 AC-12-11) - override the inbox-relative mediaUrl.
-        # The consumer-facing envelope uses mimeType/filename/size (the EMS
-        # integration ticket + UAC), distinct from the internal FE naming.
-        message_payload = consumer_message_payload(item, row)
-
         # Resume a run PARKED on an Ask-a-question step for this contact
         # (plan sprint-4/31 S4, AC-WFP-45, D-A5-8/F2). This runs BEFORE the
         # `message_received` dispatch below and, when it claims the message,
@@ -415,13 +409,18 @@ class InboundService:
             except Exception:  # noqa: BLE001 - a broken workflow never drops a message
                 logger.exception("workflow trigger dispatch failed for inbound message %s", row.id)
 
+        # The consumer (EMS) fetches media bytes from an ABSOLUTE, API-key-authed
+        # gateway URL (plan 12 AC-12-11) - override the inbox-relative mediaUrl.
+        # The consumer-facing envelope uses mimeType/filename/size (the EMS
+        # integration ticket + UAC), distinct from the internal FE naming.
+        # Built per endpoint payload version (a callable), see `_fan_out`.
         enqueue_event(
             self.db,
             channel,
             "message.inbound",
             external_id,
-            {
-                "message": message_payload,
+            lambda: {
+                "message": consumer_message_payload(item, row),
                 "contact": thread.model_dump(mode="json"),
             },
         )

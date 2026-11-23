@@ -700,7 +700,7 @@ def test_ac_61_40_capability_table_on_off():
 def test_ac_61_40_write_capabilities_report_follows_the_table(client, h, gw):
     r = client.get(f"{PREFIX}/write-capabilities?companyCode=SRT", headers=_hdr(gw.plain))
     assert r.status_code == 200, r.text
-    short = {v: k for k, v in SLUG.items()}
+    short = {**{v: k for k, v in SLUG.items()}, "project-registrations": "PROJREG"}  # plan 71
     caps = {(i["op"], short[i["kind"]]): i for i in r.json()["capabilities"]}
     for key in (("unlink_row", "PO"), ("link_row", "PO"), ("relink_row", "PO"),
                 ("delete_line", "QT"), ("delete_line", "SO"), ("delete_line", "PO"),

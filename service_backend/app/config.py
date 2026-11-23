@@ -195,6 +195,29 @@ class Settings(BaseSettings):
     def autocount_write_allowed_books_list(self) -> List[str]:
         return [b.strip() for b in self.autocount_write_allowed_books.split(",") if b.strip()]
 
+    # Plan 72 (AUTOCOUNT-PROJECT-SYNC S0): comma list of books the project
+    # registrations feed may read. Default the test book only (owner: db3,
+    # never db1 / db2 while the feed is being proven); widen per environment.
+    autocount_project_registrations_feed_books: str = "db3"
+
+    @property
+    def autocount_project_registrations_feed_books_list(self) -> List[str]:
+        return [
+            b.strip() for b in self.autocount_project_registrations_feed_books.split(",")
+            if b.strip()
+        ]
+
+    # Plan 72 - the pause between two backfill days of the project
+    # registrations feed (contract 2.15 section 2: one call in flight per book
+    # with a pause between days), so a 20-year walk never hammers the book.
+    autocount_project_registrations_day_pause_seconds: float = 1.0
+
+    # AutoCount project registration (plan 71): the admin switch of the four
+    # /api/v1/autocount/project-registrations routes. OFF = every route refuses
+    # VENDOR_UNSUPPORTED with no AutoCount call, and the capability feed says so.
+    # Read per call (env AUTOCOUNT_PROJECT_REGISTRATION_ENABLED).
+    autocount_project_registration_enabled: bool = False
+
     # Environment
     environment: str = "development"
     debug: bool = False
@@ -394,6 +417,18 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_graph_version: str = "v19.0"
     meta_es_config_id: str = ""
+    # Partner connect sessions (FSS-1). All empty = the feature is off and its
+    # routes answer 503 connect_not_configured; nothing else reads them.
+    # The redirect URI registered in the Meta app for the partner flow (the
+    # existing /wa-callback page); the code exchange always sends this value,
+    # never one from a request. Required in every mode.
+    omni_partner_wa_redirect_uri: str = ""
+    # Graph version used in the Embedded Signup dialog URL the server builds
+    # (separate from meta_graph_version, which the Graph calls keep using).
+    # Required only when the Meta app is configured.
+    meta_es_dialog_version: str = ""
+    # How long a partner connect session stays usable, in minutes.
+    partner_connect_session_ttl_minutes: int = 30
     # Lead Capture: Facebook Login for Business configuration id for the hosted
     # connect wizard (plan 64 AC-64-20). Unset with META_APP_ID set = the
     # Facebook channel is not offered (AC-64-13); META_APP_ID unset = simulated.

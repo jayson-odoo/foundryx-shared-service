@@ -271,3 +271,253 @@
     --material-edge: var(--color-zinc-500);
   }
 }
+
+/**
+ * Foundryx UIUX switch - the global look (playbook 0.71.0 "Theme", "Settings";
+ * playbook-uiux.md). Every rule sits under `data-fx="on"` on <html>, so with
+ * the switch off (the default) none of it applies (css/fx-scope.inventory
+ * test pins that). Unlayered on purpose: it must win over the layered base
+ * rules above for a browser that opted in. Tokens: config.reui.css and
+ * foundryx-tokens.css.
+ *
+ * Size: the root font size is today's 16px base times the Theme panel size
+ * (`--fx-scale`, 0.9 = the playbook's "Normal (90%)"), so every rem follows.
+ */
+:root[data-fx='on'] {
+  font-size: calc(16px * var(--fx-scale, 0.9));
+}
+
+/* One font for everything (playbook "Font"): body text and the two font
+   utilities SS uses for UI and headings. */
+:root[data-fx='on'] body,
+:root[data-fx='on'] .font-sans,
+:root[data-fx='on'] .font-heading {
+  font-family: var(--fx-font);
+}
+
+/* Headings never end on one orphan word. */
+:root[data-fx='on'] :is(h1, h2, h3, h4, h5, h6) {
+  text-wrap: balance;
+}
+
+/* Focus is always visible: a 2px link-coloured ring on keyboard focus. */
+:root[data-fx='on'] :focus-visible {
+  outline: 2px solid var(--fx-link);
+  outline-offset: 2px;
+}
+
+/* Slim scrollbars (setting "Slim scrollbars", thickness `--fx-scroll-size`).
+   The universal selector reaches portalled menus and dialogs too. WebKit and
+   Blink read the pseudo-elements; Firefox only the standard properties, kept
+   in a Firefox-only block because setting them in Chromium would switch off
+   the pseudo-elements there. */
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar {
+  width: var(--fx-scroll-size, 4px);
+  height: var(--fx-scroll-size, 4px);
+}
+
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar-track,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar-track,
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar-corner,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar-thumb,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--fx-ink-3) 45%, transparent);
+  border-radius: var(--fx-r-pill);
+}
+
+:root[data-fx='on']:not([data-fx-scroll='off'])::-webkit-scrollbar-thumb:hover,
+:root[data-fx='on']:not([data-fx-scroll='off']) *::-webkit-scrollbar-thumb:hover {
+  background-color: var(--fx-ink-3);
+}
+
+@supports (-moz-appearance: none) {
+  :root[data-fx='on']:not([data-fx-scroll='off']),
+  :root[data-fx='on']:not([data-fx-scroll='off']) * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--fx-ink-3) 45%, transparent) transparent;
+  }
+}
+
+/* See-through surfaces (anything floating over content): 50% surface with a
+   light 6px blur. Used only by fx components, which render only while the
+   switch is on. */
+@utility fx-see-through {
+  background-color: color-mix(in srgb, var(--fx-surface) 50%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+/* Reduced transparency or more contrast: see-through fx surfaces turn solid
+   (this also covers the Hold to Copy tip and the right-click tool once those
+   are built on the same utility). */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root[data-fx='on'] .fx-see-through {
+    background-color: var(--fx-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Reduced motion under the switch: fx transitions and animations keep only
+   their end state, except the panel and layout moves that show where
+   something went (their tokens stay timed in config.reui.css). Components opt
+   a decorative animation in with `data-fx-decor`. */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-fx='on'] [data-fx-decor] {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Foundryx UIUX fields (slice F4). Never browser up/down arrows on a number
+   field (playbook "Fields"); the fx field also lets go of focus when the
+   wheel turns over it, so scrolling never changes a value. */
+:root[data-fx='on'] input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+:root[data-fx='on'] input[type='number']::-webkit-inner-spin-button,
+:root[data-fx='on'] input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* A segmented toggle's thumb slides from its old option to the new one
+   (playbook "Toggles", 0.4 s). Placed without motion the first time, so it
+   never grows from the left edge. The curve lives here because components
+   name only the ease-out curve. */
+:root[data-fx='on'] [data-fx-thumb-animate] {
+  transition:
+    translate var(--fx-t-toggle) var(--fx-ease-in-out),
+    width var(--fx-t-toggle) var(--fx-ease-in-out);
+}
+
+/* Attention pulse (playbook "Blocked red action"): the element a blocked
+   action waits for swells to x1.08 and settles, with a soft red glow behind
+   it shaped like the element, over 1.8 s. Set by pulseFxTarget()
+   (components/fx/actions/pulse.ts) as `data-fx-pulsing`. Reduced motion keeps
+   it on purpose (it says what to do), so it names its own 1.8 s rather than
+   the --fx-t-pulse token, which reduced motion stills. Never a box: no
+   shadow, outline or border. Inputs draw no ::after, so a field names its
+   wrapper as the target. */
+@keyframes fx-need {
+  0%,
+  100% {
+    scale: 1;
+  }
+  35% {
+    scale: 1.08;
+  }
+}
+
+@keyframes fx-need-glow {
+  0% {
+    opacity: 0;
+    scale: 0.7;
+  }
+  30% {
+    opacity: 1;
+    scale: 1;
+  }
+  100% {
+    opacity: 0;
+    scale: 1.15;
+  }
+}
+
+:root[data-fx='on'] [data-fx-pulsing] {
+  position: relative;
+  z-index: 0;
+  animation: fx-need 1.8s var(--fx-ease-in-out) 1;
+}
+
+:root[data-fx='on'] [data-fx-pulsing]::after {
+  content: '';
+  position: absolute;
+  inset: -18px -24px;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    rgba(var(--fx-act-rgb), 0.38),
+    rgba(var(--fx-act-rgb), 0)
+  );
+  filter: blur(6px);
+  pointer-events: none;
+  animation: fx-need-glow 1.8s var(--fx-ease-out) forwards;
+}
+
+/* Hold to Copy (slice F3b, components/fx/copy/hold-to-copy.tsx).
+   The Tool Background behind the copy icon and "Copied": the surface at 25%
+   (setting --fx-tool-bg) with a faint 0.75px blur (--fx-tool-blur), fading
+   out to nothing towards its rim, with no border or shadow. The icon, ring
+   and word sit at 50% (--fx-tool-ink). The ring fills clockwise in the hold
+   time (--fx-h2c-time); reduced motion keeps it, as it shows how long is
+   left. */
+:root[data-fx='on'] [data-fx-tool-bg] {
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--fx-surface) var(--fx-tool-bg, 25%), transparent) 55%,
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--fx-tool-blur, 0.75px));
+  backdrop-filter: blur(var(--fx-tool-blur, 0.75px));
+  -webkit-mask-image: radial-gradient(closest-side, #000 60%, transparent);
+  mask-image: radial-gradient(closest-side, #000 60%, transparent);
+}
+
+:root[data-fx='on'] [data-fx-tool-ink] {
+  opacity: var(--fx-tool-ink, 50%);
+}
+
+@keyframes fx-h2c-ring {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+:root[data-fx='on'] [data-fx-h2c-ring] {
+  stroke-dashoffset: 1;
+  animation: fx-h2c-ring var(--fx-h2c-time, 0.75s) linear forwards;
+}
+
+/* Reduced transparency or more contrast: the Hold to Copy tip turns solid
+   (owner choice "Hold to Copy tip and RCT solid"), its words at full
+   strength. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root[data-fx='on'] [data-fx-tool-bg] {
+    background: var(--fx-surface);
+    border-radius: var(--fx-r-m);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  :root[data-fx='on'] [data-fx-tool-ink] {
+    opacity: 1;
+  }
+}
+
+/* Coming back to a list: the row you opened is tinted in --fx-link-bg until
+   the next click (lists that keep the legacy table, such as reorderable
+   ones, mark it the same way). */
+:root[data-fx='on'] [data-slot='data-grid-scroller'] [data-returned='true'],
+:root[data-fx='on'] [data-slot='data-grid-scroller'] [data-returned='true'] > td {
+  background-color: var(--fx-link-bg);
+}
+
+/* Setting "Shimmer on loading placeholders" off: loading placeholders hold
+   still (slice F3b). */
+:root[data-fx='on'][data-fx-shimmer='off'] [data-slot='skeleton'] {
+  animation: none;
+}

@@ -193,8 +193,10 @@ class BroadcastRepository:
                 BroadcastRecipient.broadcast_id == broadcast_id,
             )
         )
-        if state:
-            q = q.filter(BroadcastRecipient.state == state)
+        # One state or a comma-separated list of states ("sent,read").
+        states = [s.strip() for s in (state or "").split(",") if s.strip()]
+        if states:
+            q = q.filter(BroadcastRecipient.state.in_(states))
         if search and search.strip():
             term = f"%{search.strip()}%"
             full_name = func.coalesce(Contact.first_name, "") + " " + func.coalesce(Contact.last_name, "")
