@@ -21,3 +21,63 @@ def test_append_note_keeps_the_note_inside_the_group_and_the_trailing_bytes_afte
 def test_append_note_a_plain_closing_brace_is_unchanged_behaviour():
     fd = BODY + "}"
     assert P.append_note(fd, NOTE) == BODY + "\\par " + NOTE + "}"
+
+
+# ---- F2: a line-notes failure AFTER a PUT landed ends as a clean outcome, never INTERNAL_ERROR ---------
+
+import json  # noqa: E402
+
+import httpx  # noqa: E402
+
+from modules.autocount.write_back.frame import WriteFrame  # noqa: E402
+from tests.test_autocount_write_back_transfer_values import h  # noqa: E402,F401
+from tests.test_autocount_write_back_vendor_caps import db  # noqa: E402,F401
+from tests.write_back_host_pin import pin_test_write_host  # noqa: E402,F401
+
+
+class _KnownThenUnknown:
+    """Known (empty) before the first PUT, unknown after it."""
+
+    def __init__(self, ac):
+        self.ac = ac
+
+    def notes(self, kind, doc):
+        if self.ac.put_calls:
+            return None
+        return {r.get("DtlKey"): "" for r in doc.get("Details") or []}
+
+
+def _strip_fd_after_put(h):
+    """The fake vendor read carries no FurtherDescription (like hapi) once a PUT landed."""
+    ac, orig = h.ac, h.ac._on_get
+
+    def on_get(request):
+        resp = orig(request)
+        if not ac.put_calls or resp.status_code != 200:
+            return resp
+        docs = json.loads(resp.content)
+        for doc in docs if isinstance(docs, list) else [docs]:
+            for r in doc.get("Details") or []:
+                r.pop("FurtherDescription", None)
+        return httpx.Response(200, json=docs)
+
+    ac.read_transport = httpx.MockTransport(on_get)
+
+
+def test_split_link_restore_uses_the_note_sent_in_put_1_when_the_readback_has_none(h, monkeypatch):
+    _strip_fd_after_put(h)
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _KnownThenUnknown(h.ac))
+    res = h.link_split()
+    assert res.error_code != "INTERNAL_ERROR" and res.outcome != "pending", (res.outcome, res.error_code)
+    assert len(h.ac.put_calls) == 2  # the restore was built from the row PUT 1 sent
+    assert "FurtherDescription" in h.ac.put_bodies[1]["Details"][0]
+
+
+def test_split_link_restore_that_cannot_be_built_is_a_clean_mismatch(h, monkeypatch):
+    def refuse(*a, **k):
+        raise P.WriteRefusal(P.LINE_NOTES_UNKNOWN, P.LINE_NOTES_UNKNOWN_MESSAGE, plain=True)
+
+    monkeypatch.setattr(P, "build_restore_transfer_row", refuse)
+    res = h.link_split()
+    assert (res.outcome, res.error_code) == ("mismatch", "ROW_VALUES_NOT_KEPT")
+    assert len(h.ac.put_calls) == 1

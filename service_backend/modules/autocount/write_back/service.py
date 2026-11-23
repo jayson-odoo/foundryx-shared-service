@@ -841,6 +841,18 @@ class WriteBackService(WriteFrame):
         except DocReadError as exc:
             return WriteActionResult(None, OUTCOME_PENDING, exc.code)
 
+    @staticmethod
+    def _with_sent_note(after: Doc, dtl_key: int, sent_row: Doc) -> Doc:
+        """Plan 73 F2: ``after`` with the Further Description of row ``dtl_key`` taken from the row PUT 1 SENT
+        (it already holds the merged note) when the read-back row lacks it. Never mutates ``after``."""
+        row = next((r for r in after.get("Details") or [] if r.get("DtlKey") == dtl_key), None)
+        if row is None or payloads.FURTHER_DESC in row or payloads.FURTHER_DESC not in sent_row:
+            return after
+        out = dict(after)
+        out["Details"] = [dict(r, **{payloads.FURTHER_DESC: sent_row[payloads.FURTHER_DESC]}) if r is row else r
+                          for r in after["Details"]]
+        return out
+
     def _finish_split(
         self,
         plan: _Plan,
@@ -884,7 +896,11 @@ class WriteBackService(WriteFrame):
         # the note is never read back (plan 65 P3): sent, never judged
         readable = {k: v for k, v in restore.items() if k not in payloads.UNREADABLE_ROW_KEYS}
         readable_values = {k: v for k, v in values.items() if k not in payloads.UNREADABLE_ROW_KEYS}
-        body2 = payloads.build_restore_transfer_row(after1, new_key, restore)
+        try:
+            body2 = payloads.build_restore_transfer_row(self._with_sent_note(after1, new_key, sent_new), new_key, restore)
+        except WriteRefusal:  # plan 73: the link landed, its read-back has no line notes and PUT 1 sent none: no restore
+            self.db.commit()
+            return self._finish(row, OUTCOME_MISMATCH, ROW_VALUES_NOT_KEPT, document=after1)
         first_status = row.response_status
         row.request_json = [body1, body2]
         row.response_json = [row.response_json, None]
