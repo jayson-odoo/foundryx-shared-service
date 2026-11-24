@@ -85,6 +85,8 @@ class WriteActionResult:
     doc_no: Optional[str] = None
     # plan 64: ``po-links`` only - the PO row the link landed on, as read back (None unless done)
     detail: Optional[Doc] = None
+    # plan 71: ``po-links/unlink`` merged back into its source row (``returnedTo``; None otherwise)
+    returned_to: Optional[Dict[str, Any]] = None
 
 
 class _Stop(Exception):

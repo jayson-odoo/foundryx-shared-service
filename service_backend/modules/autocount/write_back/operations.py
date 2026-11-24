@@ -126,6 +126,11 @@ NOT_SENT = "NOT_SENT"  # plan 69: a document batch line whose chunk was never se
 ALL_LINKS_SKIPPED = "ALL_LINKS_SKIPPED"
 RESTORE_NOT_LANDED = "RESTORE_NOT_LANDED"  # plan 65 D3: the batch's restore PUT did not land (resumable)
 FOC_ON_ROW = "FOC_ON_ROW"  # plan 65 D2a: the line would take the whole of a row carrying FOC (hapi cannot move it)
+# Plan 71 (owner 20 Nov; CRM SS contract, sorento-crm#2607): an unlink's ``return_to_dtl_key`` row could not
+# take the qty back (not found / not open / tied / another item or unit / ...). ONE warning code on a done
+# unlink (the qty went the plan 66 / plan 62 way instead), never a refusal. The precise reason is logged.
+RETURN_SOURCE_NOT_OPEN = "RETURN_SOURCE_NOT_OPEN"
+RETURN_WARNINGS = frozenset({RETURN_SOURCE_NOT_OPEN})
 # Plan 69 D2: no size refusal a real press can reach - only a body guard far above a PO's row count.
 MAX_BATCH_LINKS = 2000
 TEMPLATE_KEY = "autocount_write_needs_attention"
@@ -198,6 +203,8 @@ class OperationResult:
     requested_at: Optional[str] = None
     linked_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # plan 71: unlink merged back into its source row: {fromDtlKey, toDtlKey, qty, location} (else None)
+    returned_to: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -250,6 +257,17 @@ def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
     return value.strip() or None
 
 
+def _return_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[int]:
+    """Plan 71: the PO row an unlink returns its qty to (the caller's ``return_to_dtl_key``, the row the
+    qty was linked FROM). Other operations, or none given, keep today's behaviour."""
+    if defn.kind != "PO" or defn.mode != "unlink":
+        return None
+    value = params.get("return_to_dtl_key")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 def _requested_locations(op: str, params: Dict[str, Any]) -> List[str]:
     """Plan 70: the locations a request names (trimmed, in order): each batch line's ``location``; the one
     ``location`` of a PO link / relink / split. Every other operation ignores it (an unlink frees nothing
@@ -290,6 +308,14 @@ def _landed_at(steps: Any) -> Optional[str]:
 
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
+
+
+def _plain_number(value: Any) -> Any:
+    """Plan 71: a qty for the answer: a whole number as int (``1275``), else a float; None stays None."""
+    if value is None:
+        return None
+    d = _dec(value)
+    return int(d) if d == d.to_integral_value() else float(d)
 
 
 def _row_in(document: Optional[Doc], dtl_key: int) -> Optional[Doc]:
@@ -378,6 +404,7 @@ class OperationService:
         self._row: Optional[AcWriteOperation] = None
         self._op_deadline = 0.0
         self._pool_location: Optional[str] = None  # plan 66: the unlink's pool location (the caller's)
+        self._return_to: Optional[int] = None  # plan 71: the unlink's source row (the caller's)
         # plan 70: the caller's location for a PO link / relink / split (AutoCount's own spelling, checked)
         self._link_location: Optional[str] = None
         self._locations: Dict[str, str] = {}  # plan 70: casefold(code) -> code, every checked code of the run
@@ -460,6 +487,7 @@ class OperationService:
         self._mail_allowed = True
         self._timeout_origin = False
         self._pool_location = None  # set per run by ``_execute_unlocked`` (plan 66)
+        self._return_to = None  # set per run by ``_execute_unlocked`` (plan 71)
         self._link_location, self._locations = None, {}  # set per run by ``_check_locations`` (plan 70)
         self._row = row
         self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
@@ -510,6 +538,8 @@ class OperationService:
             self._row = row
             self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
             self._steps, self._warnings = list(row.steps_json or []), []
+            snap = row.snapshot_json if isinstance(row.snapshot_json, dict) else {}
+            self._warnings.extend(w for w in snap.get("returnWarnings") or [] if w in RETURN_WARNINGS)  # plan 71
             self._timeout_origin = row.error_code == VENDOR_TIMEOUT
             body = self._resume_split if row.op == SPLIT_LINK else self._resume
             # s2 / s3: a ``refused`` / ``NOT_APPLIED`` answer here (nothing of it in AutoCount) releases the key
@@ -699,18 +729,20 @@ class OperationService:
             row.doc_key, _doc_no(stored.get("document"), row.snapshot_json), stored.get("batch"),
             stored.get("detail"), stored.get("requestedAt") or _iso_z(row.created_at),
             stored.get("linkedAt") or _landed_at(row.steps_json), stored.get("finishedAt"),
+            stored.get("returnedTo"),
         )
 
     def _finish(self, row: AcWriteOperation, status: str, code: Optional[str] = None, *, message: str = "",
                 replaced: Optional[List[Tuple[int, int]]] = None,
                 document: Optional[Doc] = None, batch: Optional[Dict[str, Any]] = None,
-                detail: Optional[Doc] = None) -> OperationResult:
+                detail: Optional[Doc] = None, returned_to: Optional[Dict[str, Any]] = None) -> OperationResult:
         if self._timeout_origin:
             status, code, message = self._timeout_verdict(row, status, code, message)
         result = OperationResult(
             row.id, status, code, message, list(self._warnings), list(replaced or []), document,
             row.doc_key, _doc_no(document, row.snapshot_json), batch, detail if status == DONE else None,
             _iso_z(row.created_at), _landed_at(self._steps), _iso_z(datetime.now(timezone.utc)),
+            returned_to if status == DONE else None,
         )
         row.status, row.error_code = status, code
         row.steps_json = _json_safe(self._steps)
@@ -719,6 +751,7 @@ class OperationService:
             "replacedLines": [list(p) for p in result.replaced_lines], "document": document,
             "batch": batch, "detail": result.detail, "requestedAt": result.requested_at,
             "linkedAt": result.linked_at, "finishedAt": result.finished_at,
+            **({"returnedTo": result.returned_to} if result.returned_to else {}),
         })
         self.db.commit()
         return result
@@ -813,6 +846,7 @@ class OperationService:
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
         self._pool_location = _pool_of(defn, params)
+        self._return_to = _return_of(defn, params)
         self._check_not_busy(company, spec.doc_key, defn.kind)
         doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date,
                                    beside=self._target_beside(company, defn, spec))
@@ -999,6 +1033,10 @@ class OperationService:
         target: Optional[Doc] = None
         if defn.target and spec.target_doc_key is not None:
             target = self._guard_target(company, defn, spec, doc, row, link_qty)
+        if mode == "partial" and self._return_to is not None:
+            # plan 71: the tied row is partly received, so it stays (cut): today's cut + add, plus the warning
+            logger.info("unlink return-to %s not used: the tied row is partly received", self._return_to)
+            self._warn(RETURN_SOURCE_NOT_OPEN)
         merge = self._merge_target(company, defn, doc, row) if mode == "delete" else None
         merge_qty = None
         if merge is not None:  # the free row's quantity now: a pending merge is judged against it
@@ -1018,6 +1056,12 @@ class OperationService:
         own price and date, only its Qty goes up."""
         if defn.kind != "PO" or defn.mode != "unlink":
             return None
+        if self._return_to is not None:
+            why = self._return_refusal(company, doc, row, self._return_to)
+            if why is None:
+                return self._return_to
+            logger.info("unlink return-to %s not used: %s", self._return_to, why)
+            self._warn(RETURN_SOURCE_NOT_OPEN)  # plan 71: the qty goes the plan 66 / plan 62 way below
         pool = self._pool_location
         same = ("ItemCode", "UOM") if pool else ("ItemCode", "UOM", "Location")
         values: Tuple[str, ...] = () if pool else ("UnitPrice", "DeliveryDate")
@@ -1044,6 +1088,40 @@ class OperationService:
             if received is not None and received > 0:  # unknown (the vendor hides it) joins the rule of _receipt
                 continue
             return int(cand["DtlKey"])
+        return None
+
+    def _warn(self, code: str) -> None:
+        if code not in self._warnings:
+            self._warnings.append(code)
+
+    def _row_receipt(self, company: AcCompany, doc: Doc, cand: Doc) -> Optional[Decimal]:
+        """A PO row's received qty from the run's receipt source (None = unknown)."""
+        if self._receipt_reader is not None:
+            return self._receipt_reader("PO", doc, cand)
+        return self.prims._row_received(company, "PO", dict(cand, DocKey=doc.get("DocKey")))
+
+    def _return_refusal(self, company: AcCompany, doc: Doc, row: Doc, key: int) -> Optional[str]:
+        """Plan 71 (owner 20 Nov: "return to whatever line it linked from"): None when the source row can take
+        the tied row's qty in ONE merge PUT (plan 62 D7's ``unlink_merge``), else the plain reason (logged; the
+        answer carries ``RETURN_SOURCE_NOT_OPEN``).
+        The source row is matched on the same PO (it is in ``doc``), item and unit ONLY: it keeps its own
+        location, price and date (that is the point: the qty goes back WHERE it came from). Open = not fully
+        received; a partly received or unknown receipt still takes the qty (only its Qty goes up)."""
+        cand = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == key), None)
+        if cand is None:
+            return "not on this PO"
+        if key == row.get("DtlKey") or _link_of("PO", cand) or cand.get("FromDocType") not in ("", None):
+            return "tied to an SO row"
+        if any(cand.get(k) != row.get(k) for k in ("ItemCode", "UOM")):
+            return "another item or unit"
+        if self._spo_ref(company, key):
+            return "an SPO row points at it"
+        if self.prims.row_needs_attention(company, int(doc.get("DocKey") or 0), cand,
+                                          exclude_id=self._row.id if self._row else None):
+            return "an unresolved link operation covers it"  # plan 65 R1: growing a row an unresolved link covers breaks its Resume
+        received = self._row_receipt(company, doc, cand)
+        if received is not None and received >= _dec(cand.get("Qty")):
+            return "fully received"
         return None
 
     def _receipt(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Tuple[str, Optional[Decimal]]:
@@ -1128,6 +1206,11 @@ class OperationService:
             "row": row, "received": None if plan["received"] is None else str(plan["received"]),
             "newLink": new_link, "oldLink": self._old_link(company, defn, row), "mergeInto": plan.get("merge"), "mergeBeforeQty": plan.get("mergeQty"),
             "location": row.get("Location"), "companyName": company.company_name or company.name,
+            # plan 71: why the source row was not used, kept so a Resume answer still says it (review)
+            **({"returnWarnings": [w for w in self._warnings if w in RETURN_WARNINGS]} if self._return_to else {}),
+            # plan 71: the merge goes back into the source row: its key and before-image (the exact read-back)
+            **({"returnTo": plan["merge"], "returnBefore": _row_in(doc, plan["merge"])}
+               if self._return_to is not None and plan.get("merge") == self._return_to else {}),
         })
 
     @staticmethod
@@ -1228,8 +1311,19 @@ class OperationService:
             self._abort_unless_done(res)
             raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
         self.prims._stage(company, snap["kind"], res.document, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document,
-                            detail=_row_in(res.document, free_key))
+        return self._merge_done(row, snap, old_key, free_key, res.document)
+
+    def _merge_done(self, row: AcWriteOperation, snap: Doc, old_key: int, free_key: int,
+                    document: Doc) -> OperationResult:
+        """A landed merge. Plan 71 (CRM SS contract): back into the source row = ``replacedLines`` [] and
+        ``returnedTo``; a pool / same-location merge (plan 62 / 66) answers as before."""
+        detail = _row_in(document, free_key)
+        if snap.get("returnTo") == free_key:
+            returned = {"fromDtlKey": old_key, "toDtlKey": free_key, "qty": _plain_number(snap["row"].get("Qty")),
+                        "location": (detail or {}).get("Location")}
+            return self._finish(row, DONE, None, replaced=[], document=document, detail=detail,
+                                returned_to=returned)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=document, detail=detail)
 
     def _replace_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int) -> OperationResult:
         """Plan 61: ONE PUT [row "D", new row with the new link or none], then the move.
@@ -1519,11 +1613,13 @@ class OperationService:
         before = snap.get("mergeBeforeQty")
         landed = (free is not None and before is not None
                   and _dec(free.get("Qty")) == _dec(before) + _dec(snap["row"].get("Qty")))
+        if landed and snap.get("returnTo") == free_key and snap.get("returnBefore"):
+            # plan 71: the source row kept its own values (exact read-back, CRM SS contract)
+            landed = not payloads.merge_row_drift(snap["kind"], snap["returnBefore"], free)
         if not landed:
             return self._needs_attention(row, company, snap, "RESUMED")
         self.prims._stage(company, snap["kind"], doc, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc,
-                            detail=_row_in(doc, free_key))
+        return self._merge_done(row, snap, old_key, free_key, doc)
 
     def _resume_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, key: int, doc: Doc,
                      location: Optional[str]) -> Doc:
