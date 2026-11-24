@@ -7,6 +7,12 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 
 ## Changes
 
+- 2026-11-24 (plan 73): every PO / SPO write (link, unlink, relink, move, batch link, edit, add line, delete
+  line, restore) is read-modify-write from the AutoCount DB: header fields and every existing line field,
+  including `FurtherDescription`, are sent back as stored. New refusal `AUTOCOUNT_DB_UNREAD` (`refused`, 409,
+  nothing sent to AutoCount, retry-safe) with the plain `message` "The purchase order could not be read from AutoCount, so the change was not made. Try again.". A split whose restore cannot read
+  the DB ends `mismatch` `ROW_VALUES_NOT_KEPT` (resumable). The S/O note goes into `FurtherDescription` of the
+  new linked row after the source line's text. Additive.
 - 2026-11-12 (plan 63): two optional request headers, `X-Acting-User-Id` and `X-Acting-User-Name`
   (section 2a), on every write route of this contract and on the plan 55 routes; `X-Request-ID` is now
   also stored on the write action rows (new section 8). Additive: nothing changes in the answer. No
@@ -307,7 +313,7 @@ connection for the company), `WRITE_NOT_ALLOWED` (the connection is not the test
   line, delete line, cancel, and the SPO link / unlink / relink operations; delete of a whole document;
   any switch a deployment turns off).
 - Company: `WRITE_COMPANY_NOT_TEST` (the company now has SQL source data, so it is not a test book).
-- Document: `DOC_BUSY`, `DOC_STALE`, `DOC_CANCELLED`, `DOC_NOT_FOUND`, `DOC_DATE_REQUIRED`,
+- Document: `AUTOCOUNT_DB_UNREAD` (plan 73: a PO / SPO write could not read the document from the AutoCount DB; nothing sent, retry-safe), `DOC_BUSY`, `DOC_STALE`, `DOC_CANCELLED`, `DOC_NOT_FOUND`, `DOC_DATE_REQUIRED`,
   `DOC_KIND_MISMATCH`, `DOC_AMBIGUOUS`, `DOC_UNKNOWN` (the linked sales order row is not in the synced
   copy), `DOC_HAS_TRANSFERS` (also AutoCount refusing a cancel of a document transferred onward),
   `DEADLINE_EXCEEDED`, `READ_FAILED` (the document, or the debtor for a
