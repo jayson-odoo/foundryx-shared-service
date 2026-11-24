@@ -946,6 +946,7 @@ class WriteBackService(WriteFrame):
         restore = payloads.transfer_row_drift(wanted, new_row) if new_row is not None else {}
         if not restore:
             result = self._finish(row, OUTCOME_DONE, document=after1)
+            self._note_stored_changes(result, row, before, after1)
             result.detail = new_row
             self._stage(company, plan.kind[0], after1)
             return result
@@ -1005,6 +1006,7 @@ class WriteBackService(WriteFrame):
             self.db.commit()  # restored, but something else moved
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
         result = self._finish(row, OUTCOME_DONE, code, document=final)
+        self._note_stored_changes(result, row, before, final)
         result.detail = row_of(final, new_key)
         self._stage(company, plan.kind[0], final)
         return result

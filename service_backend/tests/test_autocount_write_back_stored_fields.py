@@ -52,7 +52,7 @@ def test_remark4_mirrored_by_the_vendor_is_named(h, monkeypatch, caplog):
 
 def test_a_kept_rows_changed_fd_is_named(h, monkeypatch):
     res = _run(h, monkeypatch, before_header={}, after_header={}, before_fd=FD1, after_fd=FD2)
-    assert res.outcome == "done" and CODE in res.warnings
+    assert res.outcome == "done" and CODE in res.warnings, (res.outcome, res.error_code)
 
 
 def test_nothing_changed_is_no_warning(h, monkeypatch):
@@ -81,3 +81,58 @@ def test_an_operation_carries_the_warning_and_stays_done(h, monkeypatch):
     res = h.run("link_row", world.params["link_row"])
     assert res.outcome == "done", (res.outcome, res.error_code)
     assert CODE in res.warnings
+
+
+# ---- the plan 55 service path: whole link (single PUT) and partial link (PUT 1 link + PUT 2 restore) ----------
+
+from decimal import Decimal  # noqa: E402
+
+from app.models import DEFAULT_TENANT_ID  # noqa: E402
+
+LINKED = 12011
+
+from tests.test_autocount_write_back_transfer_values import h as sv  # noqa: E402,F401
+from tests.test_autocount_write_back_vendor_caps import db as _vcdb  # noqa: E402,F401
+
+
+class _SvcDb:
+    def __init__(self, ac, before_header, after_header):
+        self.ac, self.b, self.a = ac, before_header, after_header
+
+    def read(self, kind, doc):
+        wrote = bool(self.ac.put_calls)
+        return {"header": dict(self.a if wrote else self.b),
+                "rows": {r["DtlKey"]: {"FurtherDescription": FD1} for r in doc["Details"]}}
+
+
+def _link(sv, monkeypatch, before, after, qty):
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _SvcDb(sv.ac, before, after))
+    return sv.link_split(qty=Decimal(qty))
+
+
+def test_partial_link_final_read_with_remark4_changed_warns(sv, monkeypatch, caplog):
+    with caplog.at_level(logging.WARNING, logger="foundryx.autocount"):
+        res = _link(sv, monkeypatch, {"Remark4": "L"}, {"Remark4": ""}, 10)
+    assert res.outcome == "done", (res.outcome, res.error_code)
+    assert CODE in res.warnings
+    assert any("Remark4" in r.getMessage() and "stored fields changed" in r.getMessage() for r in caplog.records)
+
+
+def test_partial_link_with_nothing_changed_has_no_warning(sv, monkeypatch):
+    res = _link(sv, monkeypatch, {"Remark4": "L"}, {"Remark4": "L"}, 10)
+    assert res.outcome == "done" and CODE not in res.warnings
+
+
+def test_single_put_relocate_hook_warns_and_stays_quiet(sv, monkeypatch):
+    from modules.autocount.write_back.reader import AutoCountDocReader
+
+    monkeypatch.setattr(AutoCountDocReader, "location_codes", lambda self: {"brw-am": "BRW-AM"})
+    for after, expect in (({"Remark4": ""}, True), ({"Remark4": "L"}, False)):
+        sv.ac.put_calls.clear()
+        sv.ac.server_row(LINKED)["Location"] = "HQ"
+        monkeypatch.setattr(WriteFrame, "_line_notes_source",
+                            lambda self, company, a=after: _SvcDb(sv.ac, {"Remark4": "L"}, a))
+        res = sv.service().relocate(tenant_id=DEFAULT_TENANT_ID, company_id=sv.company.id, po_doc_key=12008,
+                                    po_dtl_key=LINKED, location="BRW-AM")
+        assert res.outcome == "done", (res.outcome, res.error_code)
+        assert (CODE in res.warnings) is expect
