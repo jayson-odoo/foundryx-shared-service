@@ -674,7 +674,7 @@ class WriteBackService(WriteFrame):
             so_doc = self._read_fresh(_SO, plan.so_doc_key, company, row, reader, plan.so_doc_date)
             self._log_doc(plan.kind[0], plan.doc_key, doc.get("DocNo"))  # back to the written document
         body = self._build(plan, company, row, doc, so_doc)
-        row.before_json = doc
+        row.before_json = payloads.public_doc(doc)
         row.request_json = body
         self.db.commit()  # in_flight + body committed before any PUT (AC-55-27)
         return self._put_and_verify(plan, company, base_url, row, reader, doc, body, so_doc)
@@ -820,7 +820,7 @@ class WriteBackService(WriteFrame):
         after = self._read_back(plan, reader, before)
         if isinstance(after, WriteActionResult):
             return self._finish(row, OUTCOME_PENDING, after.error_code)
-        row.after_json = after  # a read-back in hand is always verified, whatever the clock says
+        row.after_json = payloads.public_doc(after)  # a read-back in hand is always verified, whatever the clock says
         changed = self._shipping_po_changed(row, before, after)
         if changed is not None:
             return changed
@@ -834,7 +834,7 @@ class WriteBackService(WriteFrame):
         elif is_split:
             # PO-LINK-STUCK-RECONCILE-B s5: the split is judged by the ONE link comparator the batches use
             ok, after = self._verify_split(plan, reader, before, body, after)
-            row.after_json = after
+            row.after_json = payloads.public_doc(after)
         else:
             ok = verify_readback(before, after, body, ignore_new_row_location=is_split)
         if not ok:
@@ -967,7 +967,7 @@ class WriteBackService(WriteFrame):
         row.request_json = [body1, body2]
         row.response_json = [row.response_json, None]
         row.response_status = [first_status, None]
-        row.after_json = [after1, None]
+        row.after_json = [payloads.public_doc(after1), None]
         self.db.commit()  # no transaction open during the second write
         final, code = after1, LOCATION_NOT_MOVED
         verified = False
@@ -992,7 +992,7 @@ class WriteBackService(WriteFrame):
                 self.db.commit()
                 after2 = self._read_back(plan, reader, before)
                 if not isinstance(after2, WriteActionResult):
-                    row.after_json = [after1, after2]
+                    row.after_json = [payloads.public_doc(after1), payloads.public_doc(after2)]
                     changed = self._shipping_po_changed(row, after1, after2)
                     if changed is not None:
                         self.db.commit()

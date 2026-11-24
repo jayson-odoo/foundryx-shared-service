@@ -3,9 +3,10 @@
 hapi's PO GET blanks stored values (Remark2-4 = Remark1, no FurtherDescription), so a body built from the bare GET
 would write "" over them. A ``DocDbSource`` reads the stored header and row values; ``attach_db_doc`` lays them over
 the GET document and ``NotesReader`` does that on every PO / SPO read of the frame, so every builder, snapshot and
-read-back sees the stored values. A read that fails (or no source) is unknown: the rows then carry no
-``FurtherDescription`` and every builder refuses (``AUTOCOUNT_DB_UNREAD``) before any PUT. A Further Description the
-vendor GET itself carries is NOT trusted alone: it is dropped when the database could not be read.
+read-back sees the stored values. A source that is set but whose read fails is unknown: the document is marked
+unread and every builder refuses (``AUTOCOUNT_DB_UNREAD``) before any PUT; a Further Description the vendor GET itself
+carries is NOT trusted then. NO source set is legacy mode (crew ruling s20): the document is marked legacy, nothing is
+refused and no Further Description is re-sent.
 
 * ``SqlDocDb``: two bound, read-only SELECTs through the company's optional line-notes connection (a same-tenant
   ``sql_database`` connection, never an entity source).

@@ -416,7 +416,7 @@ class PrimitiveService(WriteFrame):
             )
             reader = self._reader_for(base_url)
             doc, request, read_date = self._prepare(call, kind, company, row, reader)
-            row.before_json = doc
+            row.before_json = payloads.public_doc(doc)
             row.request_method, row.request_path = request.method, request.path
             row.request_json = request.body if request.params is None else {"query": dict(request.params)}
             row.outcome = OUTCOME_IN_FLIGHT
@@ -491,7 +491,7 @@ class PrimitiveService(WriteFrame):
             logger.exception("autocount look-up could not judge action %s", action.id)
             return unread
         if landed:
-            action.outcome, action.error_code, action.after_json = OUTCOME_DONE, None, after
+            action.outcome, action.error_code, action.after_json = OUTCOME_DONE, None, payloads.public_doc(after)
             self.db.commit()
             if call.kind != "QT" and call.stage:
                 self._stage(company, call.kind, after)  # as the write's own done path does
@@ -892,7 +892,7 @@ class PrimitiveService(WriteFrame):
             return self._wrap(self._finish(row, OUTCOME_PENDING, VENDOR_TIMEOUT if timeout else VENDOR_REFUSED,
                                            message=message), vendor_class=vendor_class)
         if before is not None and _unchanged(before, after):
-            row.after_json = after
+            row.after_json = payloads.public_doc(after)
             if timeout:  # nothing YET: the save may still commit; the operation checks again (never released here)
                 return self._wrap(self._finish(row, OUTCOME_VENDOR_ERROR, VENDOR_TIMEOUT, message=message),
                                   vendor_class=vendor_class)
@@ -906,7 +906,7 @@ class PrimitiveService(WriteFrame):
         before: Optional[Doc], after: Doc, extra: Dict[str, Any],
     ) -> PrimitiveResult:
         """A read-back in hand: verify it, finish the row, stage it."""
-        row.after_json = after  # a read-back in hand is always verified
+        row.after_json = payloads.public_doc(after)  # a read-back in hand is always verified
         verdict_code, message, warnings, new_key = self._verify(call, request, before, after)
         if (call.kind in ("PO", "SPO") and before is not None
                 and payloads.shipping_po_changed(before, after)):  # SS-SHIPPINGPO-PRESERVE

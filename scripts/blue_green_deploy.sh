@@ -197,8 +197,9 @@ for svc in backend frontend; do
   fi
 done
 
-# 3b. Plan 73 release guard: every write-enabled AutoCount company must have a readable line notes database. Run in
-#     the NEW backend container; on failure the new color is stopped and the old one keeps serving.
+# 3b. Plan 73 release guard: a write-enabled company whose line notes database is set must be able to read it (one with
+#     none set runs in legacy mode and only warns). Run in the NEW backend container; on failure the new color is
+#     stopped and the old one keeps serving.
 echo "==> Checking AutoCount line notes databases"
 NEW_BACKEND_CID=$(docker compose ps -q "backend_${NEW}")
 docker exec "$NEW_BACKEND_CID" python -m modules.autocount.write_back.admin check-line-notes \

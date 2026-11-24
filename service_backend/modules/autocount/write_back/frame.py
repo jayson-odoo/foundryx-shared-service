@@ -173,7 +173,7 @@ class WriteFrame:
         self._refused_base_url: Optional[str] = None
         self._write_headers: Dict[str, str] = {}
         self._read_headers: Dict[str, str] = {}
-        self._notes_extra: Optional[Any] = None  # plan 73: the company's AutoCount DB source (None = unread: every PO / SPO write refuses)
+        self._notes_extra: Optional[Any] = None  # plan 73: the company's AutoCount DB source (None = none set: legacy mode, writes go out as before)
         self.actions = WriteActionRepository(db)
         self.staged = StagedDocRepository(db)
         self.connections = ConnectionRepository(db)
@@ -274,7 +274,7 @@ class WriteFrame:
     def _line_notes_source(self, company: AcCompany) -> Optional[Any]:
         """Plan 73 R1: the company's AutoCount DB source: its explicit ``line_notes_connection_id`` when set, else
         its own source connection (``company.connection_id``); either must resolve WITH tenant_id as an ACTIVE
-        same-tenant ``sql_database`` connection, else None (unknown, every PO / SPO write refuses)."""
+        same-tenant ``sql_database`` connection, else None (none set: legacy mode, nothing refused)."""
         from modules.autocount.sql_provider import SQL_DATABASE_PROVIDER_KEY
 
         connection_id = company.line_notes_connection_id or company.connection_id

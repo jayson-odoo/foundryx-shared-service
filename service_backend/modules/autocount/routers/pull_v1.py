@@ -44,6 +44,7 @@ from ..doc_feed.clock import myt_date
 from ..models import AcPullApiKey
 from ..pull_auth import PullGatewayError, resolve_pull_key
 from ..services.pull_key_service import SCOPE_PULL, SCOPE_WRITE_BACK
+from ..write_back import payloads
 from ..write_back.call_log import (
     ACTING_USER_ID_HEADER,
     ACTING_USER_NAME_HEADER,
@@ -485,7 +486,7 @@ def _write_body(result: WriteActionResult, *, with_detail: bool = False) -> Dict
         "actionId": result.action_id,
         "outcome": result.outcome,
         "errorCode": result.error_code,
-        "document": result.document,
+        "document": payloads.public_doc(result.document),
     }
     if result.operation_id is not None:  # plan 57: an operation answered
         body.update(
