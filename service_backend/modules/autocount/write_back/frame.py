@@ -272,15 +272,15 @@ class WriteFrame:
         return conn if conn is not None and conn.is_active else None
 
     def _line_notes_source(self, company: AcCompany) -> Optional[Any]:
-        """Plan 73 R1: the company's AutoCount DB source (its same-tenant ``sql_database`` connection
-        resolved WITH tenant_id), or None when none is set or it is gone or inactive (unknown, fail closed)."""
-        if not company.line_notes_connection_id:
-            return None
+        """Plan 73 R1: the company's AutoCount DB source: its explicit ``line_notes_connection_id`` when set, else
+        its own source connection (``company.connection_id``); either must resolve WITH tenant_id as an ACTIVE
+        same-tenant ``sql_database`` connection, else None (unknown, every PO / SPO write refuses)."""
         from modules.autocount.sql_provider import SQL_DATABASE_PROVIDER_KEY
 
-        conn = self.connections.get_for_provider(
-            company.tenant_id, company.line_notes_connection_id, SQL_DATABASE_PROVIDER_KEY
-        )
+        connection_id = company.line_notes_connection_id or company.connection_id
+        if not connection_id:
+            return None
+        conn = self.connections.get_for_provider(company.tenant_id, connection_id, SQL_DATABASE_PROVIDER_KEY)
         return SqlDocDb(conn) if conn is not None and conn.is_active else None
 
     def _resolve_write_base_url(self, company: AcCompany) -> "Tuple[Optional[str], Optional[Tuple[str, str]]]":

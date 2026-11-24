@@ -24,6 +24,8 @@ never trusted alone.
   an explicit list could fail every read on a name the database lacks). Values are
   normalised to the hapi wire shape (Decimal to float, datetime to `YYYY-MM-DDTHH:MM:SS`, NULL omitted, a NULL FD is an
   empty note). Any error or mismatch is unknown (None); no value or credential is logged.
+- R1a Source choice: the explicit `line_notes_connection_id` wins; when unset the company's own source connection
+  (`connection_id`) is used if it is an active same-tenant `sql_database` connection; anything else is unread (R2).
 - R2 Fail closed: when the database cannot be read (no source, or the read answers None) NO PO / SPO PUT is sent, whatever
   its shape (a header-only edit, add line and delete line included). Code `AUTOCOUNT_DB_UNREAD`, plain reason "The purchase
   order could not be read from AutoCount, so the change was not made. Try again." The refusal is retry-safe and nothing is

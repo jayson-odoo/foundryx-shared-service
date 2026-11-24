@@ -318,6 +318,11 @@ def _plain_number(value: Any) -> Any:
     return int(d) if d == d.to_integral_value() else float(d)
 
 
+def _without_note(row: Optional[Doc]) -> Optional[Doc]:
+    """A stored copy of a row without its Further Description (never compared, and it can be about a megabyte)."""
+    return None if row is None else {k: v for k, v in row.items() if k != payloads.FURTHER_DESC}
+
+
 def _row_in(document: Optional[Doc], dtl_key: int) -> Optional[Doc]:
     """Plan 64: row ``dtl_key`` of the read-back ``document`` (the ``detail`` answer)."""
     return next((r for r in (document or {}).get("Details") or [] if r.get("DtlKey") == dtl_key), None)
@@ -1209,7 +1214,7 @@ class OperationService:
             # plan 71: why the source row was not used, kept so a Resume answer still says it (review)
             **({"returnWarnings": [w for w in self._warnings if w in RETURN_WARNINGS]} if self._return_to else {}),
             # plan 71: the merge goes back into the source row: its key and before-image (the exact read-back)
-            **({"returnTo": plan["merge"], "returnBefore": _row_in(doc, plan["merge"])}
+            **({"returnTo": plan["merge"], "returnBefore": _without_note(_row_in(doc, plan["merge"]))}
                if self._return_to is not None and plan.get("merge") == self._return_to else {}),
         })
 

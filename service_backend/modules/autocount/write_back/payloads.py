@@ -1305,7 +1305,7 @@ def merge_row_drift(kind_name: str, before_row: Mapping[str, Any], after_row: Ma
     """Plan 71 (CRM SS contract read-back): the fields of the row a merge raised that moved, other than Qty,
     compared to THAT row's own before-image (never the tied row or the request). Location, DeliveryDate, price
     and the rest of ``_COMPARE_LINE``, plus the row's link (it stays untied). ``FurtherDescription`` (the note)
-    is never returned by a read (``UNREADABLE_ROW_KEYS``) and a merge never sends it, so it is not compared."""
+    is never returned by a read (``UNREADABLE_ROW_KEYS``); a merge sends it as read and never compares it."""
     out = [k for k in _COMPARE_LINE
            if k != "Qty" and k in before_row and not _kept_value(k, before_row.get(k), after_row.get(k))]
     if _link_of_row(kind_name, dict(after_row)) != _link_of_row(kind_name, dict(before_row)):
