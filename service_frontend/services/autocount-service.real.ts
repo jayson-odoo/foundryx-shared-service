@@ -269,6 +269,16 @@ export const realAutocountService: AutocountService = {
     );
   },
 
+  updateLineNotesConnection(companyId, input) {
+    return apiFetch<AutocountCompany>(
+      `/autocount/companies/${companyId}/line-notes-connection`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ connectionId: input.connectionId }),
+      },
+    );
+  },
+
   getMapping(companyId, entityType) {
     return apiFetch<AutocountMappingView>(
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping`,

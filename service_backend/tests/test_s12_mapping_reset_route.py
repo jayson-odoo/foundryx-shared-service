@@ -285,7 +285,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
     (plan 61) ships `0044_autocount_api_call_log` (per-call API log table),
     moving it to 44, plan 62 (`0045_autocount_po_so_link`, the PO over-link index) moves it to 45, and
     AC-DB1-READY (plan 63) ships `0046_autocount_call_person` (acting person columns), moving it to 46, and
-    AUTOCOUNT-STRANDED-OPS C.d ships `0047_autocount_spo_po_link` + `0048_autocount_so_row_index` (the SPO / SO row indexes), moving it to 48; a
+    AUTOCOUNT-STRANDED-OPS C.d ships `0047_autocount_spo_po_link` + `0048_autocount_so_row_index` (the SPO / SO row indexes), moving it to 48, and
+    AC-LINE-NOTES-SETTING (plan 74) ships `0049_autocount_line_notes_conn` (ac_company.line_notes_connection_id), moving it to 49; a
     reviewer/coder adding one beyond THAT for a schema-free slice still trips
     this guard rather than the drift going unnoticed."""
     versions_dir = (
@@ -297,8 +298,8 @@ def test_ac_12_32_no_new_autocount_migration_added():
         match = re.match(r"^(\d+)_", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    assert highest <= 48, (
-        f"a new autocount migration (>0048) exists ({highest}) - AC-12-32 "
+    assert highest <= 49, (
+        f"a new autocount migration (>0049) exists ({highest}) - AC-12-32 "
         "says THIS plan ships no schema change (a later plan may legitimately "
         "move this ceiling again, as AC-CONSIGN-PULL just did from 29 to 30, and "
         "SS-INTEGRATION-ALERT (plan 33) did from 30 to 31)"

@@ -187,9 +187,17 @@ class AcCompany(AutocountBase):
     # (db3 only, enforced in code by ``write_back.guard``). NULL = writes
     # disabled; every existing row stays NULL (no backfill needed).
     write_connection_id = Column(String, nullable=True)
+    # Plan 74: core ``connections.id`` of a same-tenant ``sql_database`` connection the PO line notes are read
+    # through (set in the app). NULL = unset; existing rows stay NULL.
+    line_notes_connection_id = Column(String, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+    @property
+    def write_enabled(self) -> bool:
+        """Plan 74: the company is active and has a write connection (a flag only, never the connection)."""
+        return bool(self.is_active and self.write_connection_id)
 
 
 class AcEntityConfig(AutocountBase):
