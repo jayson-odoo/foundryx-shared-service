@@ -4,6 +4,8 @@
         --tenant-slug <slug> --company-id <uuid> --connection-id <uuid>
     python -m modules.autocount.write_back.admin set-line-notes-connection \\
         --tenant-slug <slug> --company-id <uuid> [--connection-id <uuid>]   (omit = clear)
+    python -m modules.autocount.write_back.admin check-line-notes   (release guard: exit 1 unless every write-enabled
+        company's line notes database answers a read-only probe)
 
 Prints a result code only, never a URL.
 """
@@ -13,11 +15,9 @@ from __future__ import annotations
 import argparse
 from typing import Optional, Sequence
 
-from modules.autocount.write_back.service import (
-    WriteConnectionError,
-    set_line_notes_connection,
-    set_write_connection,
-)
+from modules.autocount.services.company_service import AutocountServiceError, CompanyService
+from modules.autocount.write_back.line_notes_check import OK, check_line_notes
+from modules.autocount.write_back.service import WriteConnectionError, set_write_connection
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -31,10 +31,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     notes.add_argument("--tenant-slug", required=True)
     notes.add_argument("--company-id", required=True)
     notes.add_argument("--connection-id", default=None)
+    sub.add_parser("check-line-notes")
     args = parser.parse_args(argv)
 
     from app.database import SessionLocal
     from app.models.tenant import Tenant
+
+    if args.command == "check-line-notes":
+        with SessionLocal() as db:
+            results = check_line_notes(db)
+        for company_id, code in results:
+            print(f"{company_id} {code}")
+        return 0 if all(code == OK for _id, code in results) else 1
 
     with SessionLocal() as db:
         tenant = db.query(Tenant).filter(Tenant.slug == args.tenant_slug).first()
@@ -43,10 +51,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 2
         try:
             if args.command == "set-line-notes-connection":
-                set_line_notes_connection(
-                    db, tenant_id=tenant.id, company_id=args.company_id,
-                    connection_id=args.connection_id,
-                )
+                CompanyService(db).set_line_notes_connection(tenant.id, args.company_id, args.connection_id)
             else:
                 set_write_connection(
                     db, tenant_id=tenant.id, company_id=args.company_id,
@@ -54,6 +59,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
         except WriteConnectionError as exc:
             print(f"error: {exc.code}")
+            return 2
+        except AutocountServiceError:
+            print("error: CONNECTION_NOT_FOUND")
             return 2
     print("ok")
     return 0

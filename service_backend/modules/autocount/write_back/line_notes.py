@@ -61,6 +61,12 @@ _HEADER_SELECT = sa.text(
 _ROWS_SELECT = sa.text("SELECT * FROM PODTL WHERE DocKey = :k")
 
 
+# The release guard's probes: one row of each table, nothing read from it (SQL Server dialect, like AutoCount itself).
+_PROBE_HEADER = sa.text("SELECT TOP 1 DocKey FROM PO")
+_PROBE_ROWS = sa.text("SELECT TOP 1 DtlKey FROM PODTL")
+PROBE_TIMEOUT_SECONDS = 10
+
+
 class DocDbSource(Protocol):
     def read(self, kind: str, doc: Mapping[str, Any]) -> Optional[Dict[str, Any]]: ...
 
@@ -98,6 +104,19 @@ class SqlDocDb:
     def __init__(self, connection: Any, runtime: SqlSourceRuntime = RUNTIME) -> None:
         self._connection = connection
         self._runtime = runtime
+
+    def probe(self) -> bool:
+        """The release guard: both tables answer a one row read-only SELECT through this connection. Raises on any
+        failure (the caller reports a code, never the driver text)."""
+        credentials: Dict[str, Any] = {}
+        if self._connection.credentials_json:
+            credentials = decrypt_secret(self._connection.credentials_json)
+        with self._runtime.readonly_connection(
+            self._connection.id, self._connection.config_json or {}, credentials, timeout_s=PROBE_TIMEOUT_SECONDS,
+        ) as conn:
+            conn.execute(_PROBE_HEADER).fetchall()
+            conn.execute(_PROBE_ROWS).fetchall()
+        return True
 
     def read(self, kind: str, doc: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         if kind not in NOTES_KINDS or doc.get("DocKey") in (None, ""):

@@ -1,5 +1,5 @@
 """Plan 73: the SQL line-notes source (``SqlDocDb``), its tenant-scoped resolve from the company's
-``line_notes_connection_id`` and the ``set_line_notes_connection`` setter. No network: the engine is an
+``line_notes_connection_id`` and the ``CompanyService.set_line_notes_connection`` setter. No network: the engine is an
 in-memory SQLite injected through a private ``SqlSourceRuntime``."""
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from app.secrets import encrypt_secret
 from modules.autocount.sql_source.runtime import SqlSourceRuntime
 from modules.autocount.write_back.frame import WriteFrame
 from modules.autocount.write_back.line_notes import DB_HEADER_COLUMNS, DB_ROW_KEYS, SqlDocDb
-from modules.autocount.write_back.service import WriteConnectionError, set_line_notes_connection
+from modules.autocount.services.company_service import AutocountServiceError, CompanyService
 from tests.test_autocount_write_back_service import OTHER_TENANT, db, h  # noqa: F401
 
 REAL_SOURCE = WriteFrame._line_notes_source  # the conftest default patches the class per test
@@ -158,7 +158,7 @@ def test_company_never_resolves_a_foreign_inactive_or_non_sql_connection(h, monk
 
 def _set(h, conn_id, company=None):
     company = company or h.company
-    return set_line_notes_connection(h.db, tenant_id=company.tenant_id, company_id=company.id, connection_id=conn_id)
+    return CompanyService(h.db).set_line_notes_connection(company.tenant_id, company.id, conn_id)
 
 
 def test_setter_sets_a_same_tenant_sql_connection_and_clears_it(h):
@@ -180,18 +180,16 @@ def test_setter_refuses_and_leaves_the_company_unchanged(h, variant):
         "wrong_provider": lambda: _sql_conn(h, DEFAULT_TENANT_ID, provider="autocount").id,
         "unknown": lambda: "no-such-connection",
     }[variant]()
-    with pytest.raises(WriteConnectionError) as exc:
+    with pytest.raises(AutocountServiceError):
         _set(h, conn_id)
-    assert exc.value.code == "CONNECTION_NOT_FOUND"
     h.db.expire_all()
     assert h.company.line_notes_connection_id is None
 
 
 def test_setter_refuses_another_tenants_company(h):
     conn = _sql_conn(h, DEFAULT_TENANT_ID)
-    with pytest.raises(WriteConnectionError) as exc:
-        set_line_notes_connection(h.db, tenant_id=OTHER_TENANT, company_id=h.company.id, connection_id=conn.id)
-    assert exc.value.code == "CONNECTION_NOT_FOUND"
+    with pytest.raises(AutocountServiceError):
+        CompanyService(h.db).set_line_notes_connection(OTHER_TENANT, h.company.id, conn.id)
 
 
 

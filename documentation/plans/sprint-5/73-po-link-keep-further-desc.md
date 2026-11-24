@@ -53,7 +53,7 @@ never trusted alone.
   a landed link PUT the restore takes the new row's FD from the row PUT 1 sent when the read-back has none; a refusal
   there ends as a clean mismatch, never INTERNAL_ERROR.
 - D5 Company column `line_notes_connection_id` (module migration 0049 + crew SQL), set through the operator CLI
-  (`write_back.admin set-line-notes-connection`), same-tenant `sql_database` connection resolved WITH tenant_id.
+  in the app (plan 74, `CompanyService.set_line_notes_connection`; the operator CLI `write_back.admin set-line-notes-connection` calls the same function), same-tenant `sql_database` connection resolved WITH tenant_id.
 
 ## Tests
 Builders: stored header and FD on every body; an unread row or document refuses before any PUT; header-only edit, add
@@ -64,3 +64,13 @@ any PUT, restore after a landed PUT never INTERNAL_ERROR, resume keeps FD. Kill 
 ## Open PRs needing the same rule
 #324 (unlink returns qty to source: re-sends the source row, deletes the tied row), #325 (SPO move/split:
 FOLLOW_KEPT_FIELDS from LINE_KEYS), #326 (resume re-sends restore rows, merged here). Crew note on each after this merges.
+
+## B2 release guard
+Plan 73 refuses every PO / SPO write whose line notes database cannot be read, so a release must not go live while a
+write-enabled company has none. `python -m modules.autocount.write_back.admin check-line-notes` resolves, for every active
+company with a write connection (all tenants), the source exactly as a write does (explicit connection, else the company's
+own `sql_database` source, resolved with tenant_id) and runs one read-only probe (`SELECT TOP 1` on the PO and PODTL tables)
+through it. It prints one line per company (id and `OK`, `NO_CONNECTION` or `READ_FAILED`; never a host, database name,
+value or credential) and exits 1 unless every company is OK (0 also when no company can write). `scripts/blue_green_deploy.sh`
+runs it in the NEW backend container after the health wait and before the Caddy swap; on failure the new color is stopped and
+the old color keeps serving.
