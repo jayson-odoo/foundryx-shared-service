@@ -1039,7 +1039,7 @@ Treat the return as a hint only: always read the session from your backend befor
 
 **Scope.** Any active partner key of the same client app may read, complete or cancel a session (so a key rotation does not strand one). A session id of another tenant or another client app, or an unknown id, answers the same `404 connect_session_not_found` ("Connect session not found."). A disabled client app answers `403 client_app_disabled`, as on every partner route.
 
-**`POST /api/v1/omnichannel/connect/wa-callback`** is public and is called only by the Foundryx sign-up page (`/wa-callback`), never by your backend: body `{ "state", "code"?, "error"? }`, answer `200 { "redirect" }`. An unknown, already used or expired state, or a session whose client app is disabled or whose workspace was trashed, answers `404 connect_session_not_found`; repeated misses from one address answer `429 rate_limited` with `Retry-After`.
+**`POST /api/v1/omnichannel/connect/wa-callback`** is public and is called only by the Foundryx sign-up page (`/wa-callback`), never by your backend: body `{ "state", "code"?, "error"? }`, answer `200 { "redirect" }` (a Page session can answer `pagePicker` instead; see "Connecting a Facebook Page"). An unknown, already used or expired state, or a session whose client app is disabled or whose workspace was trashed, answers `404 connect_session_not_found`; repeated misses from one address answer `429 rate_limited` with `Retry-After`.
 
 ### Connecting a Facebook Page (Messenger and Instagram)
 
