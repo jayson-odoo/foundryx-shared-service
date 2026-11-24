@@ -135,11 +135,12 @@ def _row_fields(row: Doc) -> Doc:
 
 
 # Plan 73: the row's Further Description (RTF, may hold pictures). hapi never returns it on a PO GET, so the
-# frame's NotesReader sets it on every PO / SPO row it reads; a row without the key is "unknown".
+# frame's NotesReader lays the AutoCount database's stored values on every PO / SPO it reads; a row without the key
+# is unread.
 FURTHER_DESC = "FurtherDescription"
-LINE_NOTES_UNKNOWN = "LINE_NOTES_UNKNOWN"
-LINE_NOTES_UNKNOWN_MESSAGE = (
-    "The line notes of this purchase order could not be read, so the change was not made. Try again later."
+AUTOCOUNT_DB_UNREAD = "AUTOCOUNT_DB_UNREAD"
+AUTOCOUNT_DB_UNREAD_MESSAGE = (
+    "The purchase order could not be read from AutoCount, so the change was not made. Try again."
 )
 _NOTES_KINDS = ("PO", "SPO")
 
@@ -148,7 +149,7 @@ def require_line_notes(*rows: Mapping[str, Any]) -> None:
     """Plan 73 D3: a row we re-send or copy must carry its Further Description (as read). Missing = unknown:
     refused before any write (resending it blank could erase the note and its pictures)."""
     if any(FURTHER_DESC not in row for row in rows):
-        raise WriteRefusal(LINE_NOTES_UNKNOWN, LINE_NOTES_UNKNOWN_MESSAGE, plain=True)
+        raise WriteRefusal(AUTOCOUNT_DB_UNREAD, AUTOCOUNT_DB_UNREAD_MESSAGE, plain=True)
 
 
 def _resend(kind_name: str, row: Doc) -> Doc:

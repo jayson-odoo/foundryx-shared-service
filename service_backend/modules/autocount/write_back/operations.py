@@ -1372,7 +1372,7 @@ class OperationService:
                 # plan 73 F4: a snapshot from before the line notes were kept. The "D" already landed, so refusing
                 # would strand a deleted row: the re-add stands, without a Further Description (code only, no content).
                 logger.warning("autocount recover re-adds a row without its Further Description (%s), op %s",
-                               payloads.LINE_NOTES_UNKNOWN, row.id)
+                               payloads.AUTOCOUNT_DB_UNREAD, row.id)
             res = self.prims.add_line(
                 **self._call(row, company, snap, "recover"), line=self._line_of(snap, snap["oldLink"])
             )
