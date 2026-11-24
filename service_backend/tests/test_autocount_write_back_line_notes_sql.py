@@ -17,7 +17,7 @@ from app.models.connection import Connection
 from app.secrets import encrypt_secret
 from modules.autocount.sql_source.runtime import SqlSourceRuntime
 from modules.autocount.write_back.frame import WriteFrame
-from modules.autocount.write_back.line_notes import SqlDocDb
+from modules.autocount.write_back.line_notes import DB_HEADER_KEYS, DB_ROW_KEYS, SqlDocDb
 from modules.autocount.write_back.service import WriteConnectionError, set_line_notes_connection
 from tests.test_autocount_write_back_service import OTHER_TENANT, db, h  # noqa: F401
 
@@ -27,22 +27,24 @@ SECRET = "s3cr3t-pass-word"
 
 
 def _engine(rows, header=None):
-    """``rows``: (DtlKey, DocKey, FurtherDescription); the PO table holds one header per DocKey."""
+    """``rows``: (DtlKey, DocKey, FurtherDescription); the PO table holds one header per DocKey. Every whitelisted
+    column exists (the explicit SELECT names them all); two are created in another case (REMARK4, deliverydate) to
+    exercise the case-insensitive mapping."""
     engine = sa.create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    header_cols = ["REMARK4" if c == "Remark4" else c for c in DB_HEADER_KEYS]
+    row_cols = ["deliverydate" if c == "DeliveryDate" else c for c in DB_ROW_KEYS]
     with engine.begin() as conn:
-        conn.execute(sa.text(
-            "CREATE TABLE PODTL (DtlKey INTEGER, DocKey INTEGER, FurtherDescription TEXT, Qty NUMERIC, "
-            "Desc2 TEXT, UDF_Y TEXT, DeliveryDate TIMESTAMP)"))
-        conn.execute(sa.text(
-            "CREATE TABLE PO (DocKey INTEGER, DocNo TEXT, Remark4 TEXT, Ref TEXT, CurrencyRate NUMERIC, "
-            "DocDate TIMESTAMP, Phone1 TEXT, UDF_X TEXT)"))
+        conn.execute(sa.text("CREATE TABLE PODTL (DtlKey INTEGER, DocKey INTEGER, UDF_Y TEXT, "
+                             + ", ".join(f"[{c}]" for c in row_cols) + ")"))
+        conn.execute(sa.text("CREATE TABLE PO (DocKey INTEGER, DocNo TEXT, UDF_X TEXT, "
+                             + ", ".join(f"[{c}]" for c in header_cols) + ")"))
         for dock in {r[1] for r in rows}:
-            conn.execute(sa.text("INSERT INTO PO (DocKey, DocNo, Remark4, Ref, CurrencyRate, DocDate, Phone1, UDF_X) "
-                                 "VALUES (:a, :b, 'L', NULL, 1.5, :d, '', 'x')"),
+            conn.execute(sa.text("INSERT INTO PO (DocKey, DocNo, UDF_X, REMARK4, CurrencyRate, DocDate, Phone1) "
+                                 "VALUES (:a, :b, 'x', 'L', 1.5, :d, '')"),
                          {"a": dock, "b": f"PO-{dock}", "d": datetime(2026, 11, 4)})
         for dtl, dock, fd in rows:
-            conn.execute(sa.text("INSERT INTO PODTL (DtlKey, DocKey, FurtherDescription, Qty, Desc2, UDF_Y, DeliveryDate) "
-                                 "VALUES (:a, :b, :c, 2.5, NULL, 'y', :d)"),
+            conn.execute(sa.text("INSERT INTO PODTL (DtlKey, DocKey, FurtherDescription, UDF_Y, Qty, deliverydate) "
+                                 "VALUES (:a, :b, :c, 'y', 2.5, :d)"),
                          {"a": dtl, "b": dock, "c": fd, "d": datetime(2026, 12, 1, 9, 30)})
     return engine
 
@@ -61,10 +63,11 @@ def _doc(*keys, dock=7001):
 def test_sql_db_reads_header_and_rows_of_the_document_only_in_the_wire_shape():
     src = _source([(1, 7001, FD_A), (2, 7001, None), (3, 9999, "other doc")])
     out = src.read("PO", _doc(1, 2))
-    assert out["header"] == {"Remark4": "L", "DocKey": 7001, "DocNo": "PO-7001", "CurrencyRate": 1.5,
+    assert out["header"] == {"Remark4": "L", "CurrencyRate": 1.5,
                              "DocDate": "2026-11-04 00:00:00", "Phone1": ""}  # None omitted, str as is, "" kept
     assert out["rows"][1] == {"FurtherDescription": FD_A, "Qty": 2.5, "DeliveryDate": "2026-12-01 09:30:00"}
     assert out["rows"][2]["FurtherDescription"] == ""  # a NULL note is an empty one
+    assert "DocKey" not in out["header"] and "DocNo" not in out["header"]  # the PUT keeps the requested identity
     assert "Desc2" not in out["rows"][1] and "UDF_Y" not in out["rows"][1] and "UDF_X" not in out["header"]
 
 
@@ -189,3 +192,11 @@ def test_setter_refuses_another_tenants_company(h):
     with pytest.raises(WriteConnectionError) as exc:
         set_line_notes_connection(h.db, tenant_id=OTHER_TENANT, company_id=h.company.id, connection_id=conn.id)
     assert exc.value.code == "CONNECTION_NOT_FOUND"
+
+
+def test_the_statements_are_explicit_column_lists_never_select_star():
+    from modules.autocount.write_back import line_notes as ln
+
+    for stmt in (str(ln._HEADER_SELECT), str(ln._ROWS_SELECT)):
+        assert "*" not in stmt and stmt.count(":") <= 2 and "[" in stmt
+    assert "[DocKey]" not in str(ln._HEADER_SELECT).split("FROM")[0] and "[DocNo]" not in str(ln._HEADER_SELECT).split("FROM")[0]
