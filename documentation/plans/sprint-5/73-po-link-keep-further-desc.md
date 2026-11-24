@@ -20,7 +20,8 @@ never trusted alone.
   `SqlDocDb` runs two bound, read-only, time-boxed SELECTs on the company's optional `line_notes_connection_id` (a
   same-tenant `sql_database` connection, not an entity source, so `guard.assert_test_company` is unchanged): the PO header
   (`DocKey` and `DocNo` bound, exactly one row) and the PODTL rows (`DocKey` bound, DtlKey set equal to the document's).
-  Explicit column lists built from code constants (header whitelist without DocKey / DocNo; row whitelist + FD). Values are
+  `SELECT *`, then the columns are whitelisted after the read (header whitelist without DocKey / DocNo; row whitelist + FD;
+  an explicit list could fail every read on a name the database lacks). Values are
   normalised to the hapi wire shape (Decimal to float, datetime to `YYYY-MM-DDTHH:MM:SS`, NULL omitted, a NULL FD is an
   empty note). Any error or mismatch is unknown (None); no value or credential is logged.
 - R2 Fail closed: when the database cannot be read (no source, or the read answers None) NO PO / SPO PUT is sent, whatever

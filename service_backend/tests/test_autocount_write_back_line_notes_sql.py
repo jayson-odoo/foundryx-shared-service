@@ -193,10 +193,3 @@ def test_setter_refuses_another_tenants_company(h):
         set_line_notes_connection(h.db, tenant_id=OTHER_TENANT, company_id=h.company.id, connection_id=conn.id)
     assert exc.value.code == "CONNECTION_NOT_FOUND"
 
-
-def test_the_statements_are_explicit_column_lists_never_select_star():
-    from modules.autocount.write_back import line_notes as ln
-
-    for stmt in (str(ln._HEADER_SELECT), str(ln._ROWS_SELECT)):
-        assert "*" not in stmt and stmt.count(":") <= 2 and "[" in stmt
-    assert "[DocKey]" not in str(ln._HEADER_SELECT).split("FROM")[0] and "[DocNo]" not in str(ln._HEADER_SELECT).split("FROM")[0]
