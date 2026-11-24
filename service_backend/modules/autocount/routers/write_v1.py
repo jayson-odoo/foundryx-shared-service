@@ -126,7 +126,7 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
         "errorCode": result.error_code, "message": _camel_names(_camel_message(result.message)),
         "warnings": [_camel_names(w) for w in result.warnings], "docKey": result.doc_key or doc_key, "docNo": result.doc_no,
         "replacedLines": [{"oldDtlKey": o, "newDtlKey": n} for o, n in result.replaced_lines],
-        "document": result.document,
+        "document": payloads.public_doc(result.document),
         "requestedAt": result.requested_at, "linkedAt": result.linked_at, "finishedAt": result.finished_at,
     }
     if result.batch is not None and "lines" in result.batch:  # link_doc_batch (plan 69 D1): one result per line
@@ -138,6 +138,8 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
 
 
 def _respond(answer: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    if isinstance(answer.get("document"), dict):
+        answer = dict(answer, document=payloads.public_doc(answer["document"]))
     if answer.get("errorCode") in _FIELD_CODES:
         answer = dict(answer, message=_camel_message(str(answer.get("message") or "")))
     answer = dict(

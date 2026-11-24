@@ -148,6 +148,14 @@ _NOTES_KINDS = ("PO", "SPO")
 DB_UNREAD_MARKER = "_dbUnread"  # set on a PO / SPO the AutoCount DB could not be read for; never in any key list, never sent
 
 
+def public_doc(doc: Any) -> Any:
+    """Plan 73: ``doc`` without the internal unread marker, for anything stored or returned (the document shape of
+    contract 57 never carries it). Copies only when the marker is there; anything else is returned as is."""
+    if isinstance(doc, dict) and DB_UNREAD_MARKER in doc:
+        return {k: v for k, v in doc.items() if k != DB_UNREAD_MARKER}
+    return doc
+
+
 def require_db_read(doc: Mapping[str, Any]) -> None:
     """Plan 73 H1: a PO / SPO body (any of them, also a header-only one) is built from values read from the AutoCount
     DB; a document marked unread is refused before any write."""
