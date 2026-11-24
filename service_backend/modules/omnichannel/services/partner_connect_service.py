@@ -24,6 +24,20 @@ dev credentials are refused at callback and at completion.
 Nothing here changes ``OnboardingService`` or the adapter's existing methods;
 ``_assert_phone_available`` and ``_persist_channel`` are called as they are.
 Logs carry session ids and outcomes only, never a state, code or token.
+
+``channel_type`` ``FACEBOOK`` (wp-6) connects one Facebook Page the same way:
+the dialog is Facebook Login for Business (``omni_partner_meta_config_id``)
+and comes back to the same ``/wa-callback`` page and redirect URI. Its
+callback exchanges the code (long-lived), lists the Pages and, instead of
+redirecting, hands the hosted page the Page list and a fresh single-use pick
+token (its sha256 replaces ``state_hash``; the session stays ``OPEN``).
+``select_page`` spends that token: the chosen Page id is stored with the
+token and the session becomes ``AUTHORIZED`` (or ``CANCELLED`` when the user
+cancels), and the same redirect is answered. ``complete`` re-reads the Pages
+with the stored token and creates a ``FACEBOOK`` channel for the Page and an
+``INSTAGRAM`` channel for its linked professional account, skipping either
+when it is already live anywhere (``MetaConnectService``'s guards, called as
+they are), then subscribes the Page to the messaging fields once.
 """
 import hashlib
 import logging
@@ -36,12 +50,17 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 
+from ..adapters import get_adapter as get_channel_adapter
+from ..adapters.base import CodeExchangeError
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, PartnerConnectSession
 from ..origins import InvalidOrigin, _validate_origin
 from ..partner_auth import partner_tenant_enabled
 from ..repositories.partner_connect_session_repository import PartnerConnectSessionRepository
 from ..schemas import (
+    ConnectCallbackResponse,
+    ConnectPageOption,
+    ConnectPagePicker,
     PartnerConnectSessionCompleteResponse,
     PartnerConnectSessionCreated,
     PartnerConnectSessionItem,
@@ -51,6 +70,7 @@ from ..security import decrypt_credentials, encrypt_credentials
 from . import statuses
 from .channel_events import emit_channel_updated
 from .client_app_service import STATUS_ACTIVE
+from .meta_connect_service import ExternalAccountInUse, MetaConnectService
 from .onboarding_service import OnboardingService, PhoneNumberInUse
 from .partner_workspace_service import PartnerScope, PartnerWorkspaceService
 from .public_gateway_service import PublicGatewayService
@@ -62,6 +82,7 @@ SIM_CODE = "dev"
 MAX_RETURN_URL = 2048
 COMPLETE_LEASE = timedelta(minutes=5)
 CALLBACK_OUTCOMES = {"AUTHORIZED": "authorized", "CANCELLED": "cancelled", "FAILED": "failed"}
+PAGE = "FACEBOOK"
 
 
 class ConnectNotConfigured(Exception):
@@ -74,6 +95,10 @@ class ConnectSessionNotFound(Exception):
 
 class InvalidReturnUrl(Exception):
     pass
+
+
+class PageNotOffered(Exception):
+    """The Page id sent with a pick token is not one of the Pages offered."""
 
 
 class ConnectSessionNotAuthorized(Exception):
@@ -104,15 +129,23 @@ def simulation_active() -> bool:
     return not settings.meta_app_id
 
 
-def assert_configured() -> None:
-    """Raise ``ConnectNotConfigured`` unless the feature is switched on."""
+def assert_configured(channel_type: Optional[str] = None) -> None:
+    """Raise ``ConnectNotConfigured`` unless the feature is switched on, and,
+    for a given ``channel_type``, unless that connect has its own Meta
+    configuration id (WhatsApp: Embedded Signup; FACEBOOK: Facebook Login for
+    Business). Session reads check the shared settings only."""
     if not settings.omni_partner_wa_redirect_uri:
         raise ConnectNotConfigured()
     if simulation_active():
         return
-    if not (
-        settings.meta_app_secret and settings.meta_es_config_id and settings.meta_es_dialog_version
-    ):
+    if not (settings.meta_app_secret and settings.meta_es_dialog_version):
+        raise ConnectNotConfigured()
+    if channel_type is None:
+        return
+    config_id = (
+        settings.omni_partner_meta_config_id if channel_type == PAGE else settings.meta_es_config_id
+    )
+    if not config_id:
         raise ConnectNotConfigured()
 
 
@@ -156,11 +189,23 @@ def build_redirect(return_url: str, session_id: str, outcome: str, client_state:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
 
 
-def build_dialog_url(raw_state: str) -> str:
+def build_dialog_url(raw_state: str, channel_type: str = "WHATSAPP") -> str:
     redirect_uri = settings.omni_partner_wa_redirect_uri
     if simulation_active():
         sep = "&" if "?" in redirect_uri else "?"
         return f"{redirect_uri}{sep}{urlencode({'state': raw_state, 'code': SIM_CODE})}"
+    if channel_type == PAGE:
+        # Facebook Login for Business: the configuration carries the Page and
+        # Instagram messaging permissions; no Embedded Signup extras.
+        return (
+            f"https://www.facebook.com/{quote(settings.meta_es_dialog_version, safe='.')}/dialog/oauth"
+            f"?client_id={quote(settings.meta_app_id, safe='')}"
+            f"&config_id={quote(settings.omni_partner_meta_config_id, safe='')}"
+            "&response_type=code"
+            "&override_default_response_type=true"
+            f"&redirect_uri={quote(redirect_uri, safe='')}"
+            f"&state={quote(raw_state, safe='')}"
+        )
     return (
         f"https://www.facebook.com/{quote(settings.meta_es_dialog_version, safe='.')}/dialog/oauth"
         f"?client_id={quote(settings.meta_app_id, safe='')}"
@@ -216,7 +261,7 @@ class PartnerConnectService:
         return_url: str,
         client_state: Optional[str],
     ) -> PartnerConnectSessionCreated:
-        assert_configured()
+        assert_configured(channel_type)
         ws = PartnerWorkspaceService(self.db).require(scope, workspace_id)
         key = self.repo.get_partner_key(key_id, scope.tenant_id)
         allowed = key.allowed_return_origins if key is not None else None
@@ -244,7 +289,7 @@ class PartnerConnectService:
             id=row.id,
             workspaceId=row.workspace_id,
             status=row.status,
-            url=build_dialog_url(raw_state),
+            url=build_dialog_url(raw_state, channel_type),
             expiresAt=row.expires_at,
         )
 
@@ -267,14 +312,16 @@ class PartnerConnectService:
         return row
 
     # ---- public: the Meta callback ----
-    def callback(self, state: str, code: Optional[str], error: Optional[str]) -> str:
-        """Claim the state once and answer the redirect. Raises
+    def callback(self, state: str, code: Optional[str], error: Optional[str]) -> ConnectCallbackResponse:
+        """Claim the state once and answer the redirect (or, for a Page
+        connect that signed in, the Page picker). Raises
         ``ConnectSessionNotFound`` for an unknown, used or expired state and
         for a session whose scope is no longer usable."""
         assert_configured()
         row = self.repo.get_by_state_hash(_hash_state(state))
         if row is None or row.status != "OPEN" or row.claimed_at is not None:
             raise ConnectSessionNotFound()
+        assert_configured(row.channel_type)
         now = _now()
         if _aware(row.expires_at) <= now:
             self.repo.expire_due(now, session_id=row.id)
@@ -288,7 +335,10 @@ class PartnerConnectService:
         if error or not code:
             self._finish_callback(row, {"status": "CANCELLED", "error_code": None, "completed_at": _now()})
             logger.info("partner connect session %s cancelled at Meta", row.id)
-            return self._callback_redirect(row)
+            return self._redirect_response(row)
+
+        if row.channel_type == PAGE:
+            return self._page_callback(row, code)
 
         try:
             credentials = get_adapter("WHATSAPP").exchange_code(
@@ -304,7 +354,7 @@ class PartnerConnectService:
             self._finish_callback(
                 row, {"status": "FAILED", "error_code": "code_exchange_failed", "completed_at": _now()}
             )
-            return self._callback_redirect(row)
+            return self._redirect_response(row)
 
         if credentials.get("dev"):
             credentials = {**credentials, "dev_seed": row.id}
@@ -312,7 +362,121 @@ class PartnerConnectService:
             row, {"status": "AUTHORIZED", "credentials_json": encrypt_credentials(credentials)}
         ):
             logger.info("partner connect session %s authorized", row.id)
-        return self._callback_redirect(row)
+        return self._redirect_response(row)
+
+    def _redirect_response(self, row: PartnerConnectSession) -> ConnectCallbackResponse:
+        return ConnectCallbackResponse(redirect=self._callback_redirect(row))
+
+    # ---- public: the Page picker (channel_type FACEBOOK) ----
+    def _page_callback(self, row: PartnerConnectSession, code: str) -> ConnectCallbackResponse:
+        """Exchange the code, list the user's Pages and hand the hosted page
+        the picker. The session stays OPEN until ``select_page``."""
+        adapter = get_channel_adapter(PAGE)
+        try:
+            credentials = adapter.exchange_code(code, settings.omni_partner_wa_redirect_uri)
+            if not credentials.get("dev"):
+                credentials = adapter.exchange_long_lived_token(credentials)
+            pages = adapter.list_pages(credentials)
+        except Exception as exc:  # noqa: BLE001 - any Meta failure ends the session
+            logger.warning("partner connect session %s page sign-in failed (%s)", row.id, type(exc).__name__)
+            credentials, pages = None, []
+        if credentials and credentials.get("dev") and not simulation_active():
+            credentials = None
+        if not credentials or not credentials.get("access_token"):
+            self._finish_callback(
+                row, {"status": "FAILED", "error_code": "code_exchange_failed", "completed_at": _now()}
+            )
+            return self._redirect_response(row)
+        pages = [p for p in pages or [] if isinstance(p, dict) and p.get("id")]
+        if not pages:
+            self._finish_callback(
+                row, {"status": "FAILED", "error_code": "no_page_found", "completed_at": _now()}
+            )
+            logger.info("partner connect session %s found no Page", row.id)
+            return self._redirect_response(row)
+
+        stored = {
+            "access_token": credentials["access_token"],
+            "page_ids": [str(p["id"]) for p in pages],
+        }
+        if credentials.get("dev"):
+            stored["dev"] = True
+        pick_token = secrets.token_urlsafe(32)
+        if not self._finish_callback(
+            row,
+            {"credentials_json": encrypt_credentials(stored), "state_hash": _hash_state(pick_token)},
+        ):
+            return self._redirect_response(row)
+        logger.info("partner connect session %s signed in, %d Page(s) offered", row.id, len(pages))
+        in_use = MetaConnectService(self.db)._external_ids_in_use()
+        options = []
+        for p in pages:
+            ig = p.get("instagram_business_account") or {}
+            ig_id = ig.get("id") if isinstance(ig, dict) else None
+            free = str(p["id"]) not in in_use or (bool(ig_id) and ig_id not in in_use)
+            options.append(
+                ConnectPageOption(
+                    id=str(p["id"]),
+                    name=str(p.get("name") or p["id"]),
+                    igUsername=(ig.get("username") if isinstance(ig, dict) else None) if ig_id else None,
+                    connected=not free,
+                )
+            )
+        return ConnectCallbackResponse(pagePicker=ConnectPagePicker(pickToken=pick_token, pages=options))
+
+    def select_page(self, pick_token: str, page_id: Optional[str]) -> ConnectCallbackResponse:
+        """Spend the pick token once: a Page id makes the session AUTHORIZED,
+        none (the user cancelled) CANCELLED; either answers the redirect.
+        Raises ``ConnectSessionNotFound`` like the callback, and
+        ``PageNotOffered`` for a Page that was not in the list."""
+        assert_configured()
+        token_hash = _hash_state(pick_token)
+        row = self.repo.get_by_state_hash(token_hash)
+        if (
+            row is None
+            or row.channel_type != PAGE
+            or row.status != "OPEN"
+            or row.claimed_at is None
+            or not row.credentials_json
+        ):
+            raise ConnectSessionNotFound()
+        assert_configured(row.channel_type)
+        now = _now()
+        if _aware(row.expires_at) <= now:
+            self.repo.expire_due(now, session_id=row.id)
+            raise ConnectSessionNotFound()
+        if not self._scope_usable(row):
+            raise ConnectSessionNotFound()
+        # The pick token is single-use: whatever happens, its hash goes.
+        burnt = _hash_state(secrets.token_urlsafe(32))
+        if not page_id:
+            values = {
+                "status": "CANCELLED",
+                "credentials_json": None,
+                "completed_at": now,
+                "state_hash": burnt,
+            }
+            if not self.repo.finish_pick(row.id, token_hash, values):
+                raise ConnectSessionNotFound()
+            logger.info("partner connect session %s cancelled at the Page list", row.id)
+            self.db.refresh(row)
+            return self._redirect_response(row)
+        stored = decrypt_credentials(row.credentials_json) or {}
+        if page_id not in (stored.get("page_ids") or []):
+            raise PageNotOffered()
+        chosen = {"access_token": stored.get("access_token"), "page_id": page_id}
+        if stored.get("dev"):
+            chosen["dev"] = True
+        values = {
+            "status": "AUTHORIZED",
+            "credentials_json": encrypt_credentials(chosen),
+            "state_hash": burnt,
+        }
+        if not self.repo.finish_pick(row.id, token_hash, values):
+            raise ConnectSessionNotFound()
+        logger.info("partner connect session %s authorized for one Page", row.id)
+        self.db.refresh(row)
+        return self._redirect_response(row)
 
     def _finish_callback(self, row: PartnerConnectSession, values: dict) -> bool:
         """The callback's outcome, written only while the session is still OPEN
@@ -371,6 +535,9 @@ class PartnerConnectService:
         return row
 
     def _provision(self, row: PartnerConnectSession) -> None:
+        if row.channel_type == PAGE:
+            self._provision_page(row)
+            return
         credentials = decrypt_credentials(row.credentials_json) if row.credentials_json else {}
         if not credentials or (credentials.get("dev") and not simulation_active()):
             self._finish(row, "FAILED", "code_exchange_failed")
@@ -447,6 +614,105 @@ class PartnerConnectService:
         if not created:
             self._finish(row, "FAILED", "phone_number_in_use")
             logger.info("partner connect session %s: every number already connected", row.id)
+            return
+        self.db.refresh(row)
+        row.result_channel_ids = [c.id for c in created]
+        self._finish(row, "COMPLETED", None)
+        logger.info(
+            "partner connect session %s completed: %d channel(s), %d skipped",
+            row.id,
+            len(created),
+            skipped,
+        )
+
+    def _provision_page(self, row: PartnerConnectSession) -> None:
+        """Messenger channel for the chosen Page, Instagram channel for its
+        linked professional account; each skipped when already live anywhere.
+        Channels an earlier, interrupted attempt made are kept."""
+        credentials = decrypt_credentials(row.credentials_json) if row.credentials_json else {}
+        if not credentials or not credentials.get("access_token") or (
+            credentials.get("dev") and not simulation_active()
+        ):
+            self._finish(row, "FAILED", "code_exchange_failed")
+            return
+        page_id = credentials.get("page_id")
+        dev = bool(credentials.get("dev"))
+        adapter = get_channel_adapter(PAGE)
+        user_credentials = {"access_token": credentials["access_token"]}
+        if dev:
+            user_credentials["dev"] = True
+        try:
+            pages = adapter.list_pages(user_credentials)
+        except CodeExchangeError:
+            logger.warning("partner connect session %s: the Pages could not be read", row.id)
+            pages = []
+        page = next((p for p in pages or [] if isinstance(p, dict) and str(p.get("id")) == page_id), None)
+        created: List[Channel] = [
+            c
+            for c in self.repo.get_channels(row.result_channel_ids or [], row.tenant_id, row.workspace_id)
+            if not c.is_trashed
+        ]
+        if page is None and not created:
+            self._finish(row, "FAILED", "page_not_found")
+            logger.info("partner connect session %s: the chosen Page is no longer available", row.id)
+            return
+
+        channel_credentials = {"access_token": (page or {}).get("access_token", "")}
+        if dev:
+            channel_credentials["dev"] = True
+        targets = []
+        if page is not None:
+            targets.append((PAGE, str(page["id"]), page.get("name") or "Facebook Page"))
+            ig = page.get("instagram_business_account") or {}
+            if isinstance(ig, dict) and ig.get("id"):
+                targets.append(("INSTAGRAM", str(ig["id"]), ig.get("username") or page.get("name") or "Instagram"))
+
+        statuses.ensure_statuses(self.db, row.tenant_id)
+        meta = MetaConnectService(self.db)
+        have = {(c.channel_type, c.external_account_id) for c in created}
+        skipped = 0
+        for channel_type, account_id, name in targets:
+            if (channel_type, account_id) in have:
+                continue
+            try:
+                meta._assert_external_account_available(account_id)
+            except ExternalAccountInUse:
+                skipped += 1
+                continue
+            channel = Channel(
+                tenant_id=row.tenant_id,
+                workspace_id=row.workspace_id,
+                channel_type=channel_type,
+                name=name,
+                credentials_json=encrypt_credentials(channel_credentials),
+                external_account_id=account_id,
+                external_account_name=name,
+                is_active=True,
+                status_id=statuses.status_id_for(self.db, row.tenant_id, "CHANNEL", "ACTIVE"),
+                last_verified_at=_now(),
+            )
+            try:
+                meta._persist_channel(channel)
+            except ExternalAccountInUse:
+                skipped += 1
+                continue
+            self.repo.record_channel(row.id, channel.id)
+            created.append(channel)
+
+        if page is not None and created:
+            try:
+                # Always the Page id, also for Instagram (page-linked messaging).
+                adapter.subscribe_webhook(
+                    channel_credentials, str(page["id"]), f"/omnichannel/webhooks/{created[0].id}"
+                )
+            except Exception:  # noqa: BLE001 - subscription failure never blocks the connect
+                logger.warning("partner connect session %s: Page subscription failed", row.id)
+        for channel in created:
+            emit_channel_updated(self.db, channel)
+
+        if not created:
+            self._finish(row, "FAILED", "page_in_use")
+            logger.info("partner connect session %s: the Page is already connected", row.id)
             return
         self.db.refresh(row)
         row.result_channel_ids = [c.id for c in created]

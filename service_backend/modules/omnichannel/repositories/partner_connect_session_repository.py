@@ -128,6 +128,23 @@ class PartnerConnectSessionRepository:
         self.db.commit()
         return n == 1
 
+    def finish_pick(self, session_id: str, token_hash: str, values: dict) -> bool:
+        """Spend a Page pick token once: write ``values`` only while the
+        session is still OPEN, claimed and holds that token's hash; False
+        when another request spent it or the session ended meanwhile."""
+        n = (
+            self.db.query(PartnerConnectSession)
+            .filter(
+                PartnerConnectSession.id == session_id,
+                PartnerConnectSession.status == "OPEN",
+                PartnerConnectSession.claimed_at.isnot(None),
+                PartnerConnectSession.state_hash == token_hash,
+            )
+            .update(values, synchronize_session=False)
+        )
+        self.db.commit()
+        return n == 1
+
     def claim_complete(
         self, session_id: str, now: datetime, stale_before: Optional[datetime] = None
     ) -> bool:
