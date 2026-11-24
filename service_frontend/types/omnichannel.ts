@@ -42,6 +42,38 @@ export interface Workspace {
   updatedAt: string; // ISO
 }
 
+/** Lifecycle of a client app. Only the partner and connect-session routes check it. */
+export type ClientAppStatus = 'ACTIVE' | 'DISABLED';
+
+/** A workspace as it appears nested under its client app. */
+export interface ClientAppWorkspace {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+/**
+ * The consuming application that owns a tenant's workspaces and partner keys
+ * (client app -> workspaces -> channels). One tenant may hold several.
+ */
+export interface ClientApp {
+  id: string;
+  name: string;
+  slug: string | null;
+  status: ClientAppStatus;
+  isDefault: boolean;
+  workspaceCount: number;
+  workspaces: ClientAppWorkspace[];
+}
+
+export interface CreateClientAppInput {
+  name: string;
+}
+
+export interface UpdateClientAppInput {
+  name: string;
+}
+
 /** A core user that is a member of a workspace (RBAC capability is separate). */
 export interface WorkspaceMember {
   id: string; // membership row id

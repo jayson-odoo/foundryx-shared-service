@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.models.tenant import Tenant
 
-from ..models import ClientApp, PartnerApiKey
+from ..models import ClientApp, PartnerApiKey, Workspace
 from ..repositories.client_app_repository import ClientAppRepository
 
 STATUS_ACTIVE = "ACTIVE"
@@ -39,6 +39,14 @@ FALLBACK_NAME = "Default"
 
 
 class ClientAppNotFound(Exception):
+    pass
+
+
+class ClientAppInvalidName(Exception):
+    pass
+
+
+class ClientAppNameConflict(Exception):
     pass
 
 
@@ -155,10 +163,84 @@ class ClientAppService:
         return app
 
     # ---- dashboard read ----
-    def list_with_counts(self, tenant_id: str) -> List[Tuple[ClientApp, int]]:
+    def list_with_workspaces(self, tenant_id: str) -> List[Tuple[ClientApp, int, List[Workspace]]]:
         self.heal_tenant(tenant_id)
         self.db.commit()
-        counts = self.repo.workspace_counts(tenant_id)
-        return [(app, counts.get(app.id, 0)) for app in self.repo.list_for_tenant(tenant_id)]
+        grouped = self.repo.live_workspaces_by_app(tenant_id)
+        return [
+            (app, len(grouped.get(app.id, [])), grouped.get(app.id, []))
+            for app in self.repo.list_for_tenant(tenant_id)
+        ]
+
+    def item_state(self, client_app_id: str, tenant_id: str) -> Tuple[ClientApp, int, List[Workspace]]:
+        app = self.require(client_app_id, tenant_id)
+        workspaces = self.repo.live_workspaces_for_app(client_app_id, tenant_id)
+        return app, len(workspaces), workspaces
+
+    # ---- dashboard writes (create, rename, move a workspace) ----
+    def create_named(self, tenant_id: str, name: str, created_by: str) -> ClientApp:
+        """An explicit 'new client app' action: unlike
+        ``find_or_create_by_name`` (the dashboard workspace-create path), a
+        name already in use is a conflict, never a silent reuse."""
+        name = (name or "").strip()
+        if not name:
+            raise ClientAppInvalidName()
+        if self.repo.get_by_name(tenant_id, name) is not None:
+            raise ClientAppNameConflict()
+        try:
+            app = self._insert(
+                lambda: ClientApp(
+                    tenant_id=tenant_id,
+                    name=name,
+                    is_default=False,
+                    status=STATUS_ACTIVE,
+                    created_by=created_by,
+                ),
+                lambda: None,
+            )
+        except IntegrityError as exc:
+            raise ClientAppNameConflict() from exc
+        self.db.commit()
+        self.db.refresh(app)
+        return app
+
+    def rename(self, client_app_id: str, tenant_id: str, name: str) -> ClientApp:
+        app = self.require(client_app_id, tenant_id)
+        name = (name or "").strip()
+        if not name:
+            raise ClientAppInvalidName()
+        existing = self.repo.get_by_name(tenant_id, name)
+        if existing is not None and existing.id != app.id:
+            raise ClientAppNameConflict()
+        app.name = name
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise ClientAppNameConflict() from exc
+        self.db.refresh(app)
+        return app
+
+    def move_workspace(self, client_app_id: str, tenant_id: str, workspace_id: str) -> Workspace:
+        """Re-point a workspace to another of the tenant's client apps. Its
+        workspace keys, webhook endpoints and partner connect sessions key
+        off ``workspace_id`` (or carry their own ``client_app_id`` stamped at
+        creation), so nothing else needs to change for them to keep working."""
+        from .workspace_service import WorkspaceExternalRefInUse, WorkspaceNotFound
+
+        target = self.require(client_app_id, tenant_id)
+        ws = self.repo.get_workspace(workspace_id, tenant_id)
+        if ws is None:
+            raise WorkspaceNotFound()
+        if ws.client_app_id == target.id:
+            return ws
+        ws.client_app_id = target.id
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise WorkspaceExternalRefInUse(ws.id) from exc
+        self.db.refresh(ws)
+        return ws
 
 

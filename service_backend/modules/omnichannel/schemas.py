@@ -1529,6 +1529,12 @@ class PartnerKeyMintResponse(ApiModel):
     fullKey: str  # shown ONCE at mint, never again
 
 
+class ClientAppWorkspaceItem(ApiModel):
+    id: str
+    name: str
+    isDefault: bool
+
+
 class ClientAppItem(ApiModel):
     id: str
     name: str
@@ -1536,10 +1542,23 @@ class ClientAppItem(ApiModel):
     status: str  # ACTIVE | DISABLED
     isDefault: bool
     workspaceCount: int  # live workspaces
+    workspaces: List[ClientAppWorkspaceItem] = []  # live workspaces
 
 
 class ClientAppListResponse(ApiModel):
     data: List[ClientAppItem]
+
+
+class ClientAppCreateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ClientAppUpdateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ClientAppMoveWorkspaceRequest(ApiModel):
+    workspaceId: str = Field(min_length=1, max_length=64)
 
 
 class PartnerMeResponse(ApiModel):
