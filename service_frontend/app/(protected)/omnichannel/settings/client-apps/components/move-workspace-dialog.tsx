@@ -4,6 +4,7 @@
  * webhooks key off workspace_id and keep working; an in-flight partner connect
  * session of the old client app stops working. */
 import { useEffect, useState } from 'react';
+import type { ClientApp, ClientAppWorkspace } from '@/types/omnichannel';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import {
@@ -16,7 +17,6 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
-import type { ClientApp, ClientAppWorkspace } from '@/types/omnichannel';
 
 export interface MoveWorkspaceDialogProps {
   open: boolean;
@@ -55,7 +55,11 @@ export function MoveWorkspaceDialog({
       toast.success(`${workspace.name} moved.`);
       onOpenChange(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not move the workspace.');
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'Could not move the workspace.',
+      );
     } finally {
       setSubmitting(false);
     }
@@ -69,7 +73,11 @@ export function MoveWorkspaceDialog({
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            Move <span className="font-medium text-foreground">{workspace?.name}</span> to another client app.
+            Move{' '}
+            <span className="font-medium text-foreground">
+              {workspace?.name}
+            </span>{' '}
+            to another client app.
           </p>
           <div className="flex flex-col gap-1.5">
             <Label>Target client app</Label>
@@ -89,7 +97,11 @@ export function MoveWorkspaceDialog({
           </div>
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+          >
             Cancel
           </Button>
           <Button

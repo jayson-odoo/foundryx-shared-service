@@ -2,6 +2,8 @@
 
 /** Read-only workspace list of one client app, each row offering a Move. */
 import { FolderInput } from 'lucide-react';
+import type { ClientApp, ClientAppWorkspace } from '@/types/omnichannel';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -11,8 +13,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ClampedText } from '@/components/platform/clamped-text';
-import { Badge } from '@/components/ui/badge';
-import type { ClientApp, ClientAppWorkspace } from '@/types/omnichannel';
 
 export interface ClientAppWorkspacesDialogProps {
   open: boolean;
@@ -21,16 +21,25 @@ export interface ClientAppWorkspacesDialogProps {
   onMove: (workspace: ClientAppWorkspace) => void;
 }
 
-export function ClientAppWorkspacesDialog({ open, onOpenChange, app, onMove }: ClientAppWorkspacesDialogProps) {
+export function ClientAppWorkspacesDialog({
+  open,
+  onOpenChange,
+  app,
+  onMove,
+}: ClientAppWorkspacesDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{app ? `${app.name} - workspaces` : 'Workspaces'}</DialogTitle>
+          <DialogTitle>
+            {app ? `${app.name} - workspaces` : 'Workspaces'}
+          </DialogTitle>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-2">
           {app && app.workspaces.length === 0 && (
-            <p className="text-sm text-muted-foreground">This client app has no workspaces yet.</p>
+            <p className="text-sm text-muted-foreground">
+              This client app has no workspaces yet.
+            </p>
           )}
           {app?.workspaces.map((ws) => (
             <div
@@ -45,7 +54,12 @@ export function ClientAppWorkspacesDialog({ open, onOpenChange, app, onMove }: C
                   </Badge>
                 )}
               </div>
-              <Button variant="outline" size="sm" onClick={() => onMove(ws)} data-testid={`move-workspace-${ws.id}`}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onMove(ws)}
+                data-testid={`move-workspace-${ws.id}`}
+              >
                 <FolderInput className="size-4" />
                 Move
               </Button>

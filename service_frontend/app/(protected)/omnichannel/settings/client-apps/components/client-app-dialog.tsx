@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
+import type { ClientApp } from '@/types/omnichannel';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import {
@@ -16,7 +17,6 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import type { ClientApp } from '@/types/omnichannel';
 import {
   clientAppSchema,
   defaultClientAppFormValues,
@@ -32,7 +32,13 @@ export interface ClientAppDialogProps {
   onRename: (id: string, values: ClientAppFormValues) => Promise<unknown>;
 }
 
-export function ClientAppDialog({ open, onOpenChange, app, onCreate, onRename }: ClientAppDialogProps) {
+export function ClientAppDialog({
+  open,
+  onOpenChange,
+  app,
+  onCreate,
+  onRename,
+}: ClientAppDialogProps) {
   const editing = !!app;
   const [submitting, setSubmitting] = useState(false);
 
@@ -59,7 +65,11 @@ export function ClientAppDialog({ open, onOpenChange, app, onCreate, onRename }:
       }
       onOpenChange(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not save the client app.');
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'Could not save the client app.',
+      );
     } finally {
       setSubmitting(false);
     }
@@ -69,7 +79,9 @@ export function ClientAppDialog({ open, onOpenChange, app, onCreate, onRename }:
     <Dialog open={open} onOpenChange={(v) => !submitting && onOpenChange(v)}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>{editing ? 'Rename client app' : 'Create client app'}</DialogTitle>
+          <DialogTitle>
+            {editing ? 'Rename client app' : 'Create client app'}
+          </DialogTitle>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
@@ -78,19 +90,32 @@ export function ClientAppDialog({ open, onOpenChange, app, onCreate, onRename }:
               id="client-app-name"
               autoFocus
               value={form.watch('name')}
-              onChange={(e) => form.setValue('name', e.target.value, { shouldValidate: true })}
+              onChange={(e) =>
+                form.setValue('name', e.target.value, { shouldValidate: true })
+              }
               data-testid="client-app-name"
             />
             {form.formState.errors.name && (
-              <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
+              <p className="text-xs text-destructive">
+                {form.formState.errors.name.message}
+              </p>
             )}
           </div>
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+          >
             Cancel
           </Button>
-          <Button variant="primary" onClick={submit} disabled={submitting} data-testid="client-app-submit">
+          <Button
+            variant="primary"
+            onClick={submit}
+            disabled={submitting}
+            data-testid="client-app-submit"
+          >
             {editing ? 'Save changes' : 'Create client app'}
           </Button>
         </DialogFooter>

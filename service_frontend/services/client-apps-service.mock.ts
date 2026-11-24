@@ -1,4 +1,8 @@
-import type { ClientApp, CreateClientAppInput, UpdateClientAppInput } from '@/types/omnichannel';
+import type {
+  ClientApp,
+  CreateClientAppInput,
+  UpdateClientAppInput,
+} from '@/types/omnichannel';
 import type { ClientAppsService } from './client-apps-service';
 import { delay } from './mock-query';
 

@@ -1,8 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import type {
+  ClientApp,
+  CreateClientAppInput,
+  UpdateClientAppInput,
+} from '@/types/omnichannel';
 import { clientAppsService } from '@/services/client-apps-service';
-import type { ClientApp, CreateClientAppInput, UpdateClientAppInput } from '@/types/omnichannel';
 
 export interface UseClientAppsResult {
   apps: ClientApp[];
@@ -11,7 +15,10 @@ export interface UseClientAppsResult {
   refresh: () => Promise<void>;
   create: (input: CreateClientAppInput) => Promise<ClientApp>;
   rename: (id: string, input: UpdateClientAppInput) => Promise<ClientApp>;
-  moveWorkspace: (targetClientAppId: string, workspaceId: string) => Promise<ClientApp>;
+  moveWorkspace: (
+    targetClientAppId: string,
+    workspaceId: string,
+  ) => Promise<ClientApp>;
 }
 
 /** Client apps for the Client apps settings screen - list + create/rename/move,
@@ -57,7 +64,10 @@ export function useClientApps(): UseClientAppsResult {
 
   const moveWorkspace = useCallback(
     async (targetClientAppId: string, workspaceId: string) => {
-      const app = await clientAppsService.moveWorkspace(targetClientAppId, workspaceId);
+      const app = await clientAppsService.moveWorkspace(
+        targetClientAppId,
+        workspaceId,
+      );
       await refresh();
       return app;
     },

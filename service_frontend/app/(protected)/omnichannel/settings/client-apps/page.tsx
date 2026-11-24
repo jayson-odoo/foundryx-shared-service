@@ -7,11 +7,11 @@
  * the same permission as the partner-key routes.
  */
 import { Fragment, useEffect, useRef, useState } from 'react';
+import type { ClientApp, ClientAppWorkspace } from '@/types/omnichannel';
+import { useClientApps } from '@/hooks/use-client-apps';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { ResourceList } from '@/components/platform/resource-list';
-import { useClientApps } from '@/hooks/use-client-apps';
-import type { ClientApp, ClientAppWorkspace } from '@/types/omnichannel';
 import { ClientAppDialog } from './components/client-app-dialog';
 import { ClientAppWorkspacesDialog } from './components/client-app-workspaces-dialog';
 import { MoveWorkspaceDialog } from './components/move-workspace-dialog';
@@ -39,7 +39,8 @@ function ClientAppsView() {
   const [workspacesApp, setWorkspacesApp] = useState<ClientApp | null>(null);
 
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
-  const [movingWorkspace, setMovingWorkspace] = useState<ClientAppWorkspace | null>(null);
+  const [movingWorkspace, setMovingWorkspace] =
+    useState<ClientAppWorkspace | null>(null);
 
   const config = useClientAppList({
     apps,
@@ -86,7 +87,9 @@ function ClientAppsView() {
         workspace={movingWorkspace}
         fromClientAppId={workspacesApp?.id ?? null}
         apps={apps}
-        onMove={(targetClientAppId, workspaceId) => moveWorkspace(targetClientAppId, workspaceId)}
+        onMove={(targetClientAppId, workspaceId) =>
+          moveWorkspace(targetClientAppId, workspaceId)
+        }
       />
     </Fragment>
   );

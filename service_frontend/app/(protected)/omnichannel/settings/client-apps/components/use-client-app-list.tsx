@@ -5,14 +5,17 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { FolderInput, PencilLine } from 'lucide-react';
+import type { ClientApp } from '@/types/omnichannel';
+import type { ListQuery, ListResult } from '@/types/resource';
+import { Badge } from '@/components/ui/badge';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { ClampedText } from '@/components/platform/clamped-text';
-import { Badge } from '@/components/ui/badge';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import type {
+  ResourceAction,
+  ResourceListConfig,
+} from '@/components/platform/resource-list';
 import { StatusBadge } from '@/components/platform/status-badge';
-import type { ResourceListConfig, ResourceAction } from '@/components/platform/resource-list';
-import type { ListQuery, ListResult } from '@/types/resource';
-import type { ClientApp } from '@/types/omnichannel';
 import { CLIENT_APP_STATUS_REGISTRY } from './client-app-status';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -64,10 +67,16 @@ export function useClientAppList({
         id: 'name',
         accessorFn: (r) => r.name,
         meta: { headerTitle: 'Name' },
-        header: ({ column }) => <DataGridColumnHeader title="Name" column={column} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Name" column={column} />
+        ),
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
-            <ClampedText text={row.original.name} lines={1} className="font-medium" />
+            <ClampedText
+              text={row.original.name}
+              lines={1}
+              className="font-medium"
+            />
             {row.original.isDefault && (
               <Badge variant="secondary" appearance="light" size="sm">
                 Default
@@ -82,8 +91,15 @@ export function useClientAppList({
         id: 'status',
         accessorFn: (r) => r.status,
         meta: { headerTitle: 'Status' },
-        header: ({ column }) => <DataGridColumnHeader title="Status" column={column} />,
-        cell: ({ row }) => <StatusBadge status={row.original.status} registry={CLIENT_APP_STATUS_REGISTRY} />,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Status" column={column} />
+        ),
+        cell: ({ row }) => (
+          <StatusBadge
+            status={row.original.status}
+            registry={CLIENT_APP_STATUS_REGISTRY}
+          />
+        ),
         size: 120,
         enableSorting: true,
       },
@@ -91,8 +107,14 @@ export function useClientAppList({
         id: 'workspaceCount',
         accessorFn: (r) => r.workspaceCount,
         meta: { headerTitle: 'Workspaces' },
-        header: ({ column }) => <DataGridColumnHeader title="Workspaces" column={column} />,
-        cell: ({ row }) => <span className="text-sm tabular-nums">{row.original.workspaceCount}</span>,
+        header: ({ column }) => (
+          <DataGridColumnHeader title="Workspaces" column={column} />
+        ),
+        cell: ({ row }) => (
+          <span className="text-sm tabular-nums">
+            {row.original.workspaceCount}
+          </span>
+        ),
         size: 110,
         enableSorting: true,
       },
@@ -108,7 +130,11 @@ export function useClientAppList({
               <ActionMenu
                 actions={actions}
                 rows={[row.original]}
-                runtime={{ ctx: meta?.resourceCtx, index, reload: meta?.reload ?? (() => {}) }}
+                runtime={{
+                  ctx: meta?.resourceCtx,
+                  index,
+                  reload: meta?.reload ?? (() => {}),
+                }}
                 surface="row"
               />
             </div>
@@ -121,10 +147,13 @@ export function useClientAppList({
       },
     ];
 
-    const fetcher = async (query: ListQuery): Promise<ListResult<ClientApp>> => {
+    const fetcher = async (
+      query: ListQuery,
+    ): Promise<ListResult<ClientApp>> => {
       let rows = [...apps];
       const search = query.search?.trim().toLowerCase();
-      if (search) rows = rows.filter((a) => a.name.toLowerCase().includes(search));
+      if (search)
+        rows = rows.filter((a) => a.name.toLowerCase().includes(search));
       if (query.sort) {
         const { id, desc } = query.sort;
         const val = (a: ClientApp): string | number => {
@@ -142,13 +171,19 @@ export function useClientAppList({
         rows = [...rows].sort((a, b) => {
           const av = val(a);
           const bv = val(b);
-          return typeof av === 'number' && typeof bv === 'number' ? av - bv : String(av).localeCompare(String(bv));
+          return typeof av === 'number' && typeof bv === 'number'
+            ? av - bv
+            : String(av).localeCompare(String(bv));
         });
         if (desc) rows.reverse();
       }
       const total = rows.length;
       const start = query.page * query.pageSize;
-      return { data: rows.slice(start, start + query.pageSize), total, page: query.page };
+      return {
+        data: rows.slice(start, start + query.pageSize),
+        total,
+        page: query.page,
+      };
     };
 
     return {

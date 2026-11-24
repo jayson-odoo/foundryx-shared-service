@@ -1,5 +1,9 @@
+import type {
+  ClientApp,
+  CreateClientAppInput,
+  UpdateClientAppInput,
+} from '@/types/omnichannel';
 import { apiFetch } from '@/lib/api-client';
-import type { ClientApp, CreateClientAppInput, UpdateClientAppInput } from '@/types/omnichannel';
 import type { ClientAppsService } from './client-apps-service';
 
 interface ClientAppListResponse {
@@ -8,7 +12,9 @@ interface ClientAppListResponse {
 
 export const realClientAppsService: ClientAppsService = {
   async list() {
-    const res = await apiFetch<ClientAppListResponse>('/omnichannel/client-apps');
+    const res = await apiFetch<ClientAppListResponse>(
+      '/omnichannel/client-apps',
+    );
     return res.data;
   },
 
@@ -27,9 +33,12 @@ export const realClientAppsService: ClientAppsService = {
   },
 
   async moveWorkspace(targetClientAppId, workspaceId) {
-    return apiFetch<ClientApp>(`/omnichannel/client-apps/${targetClientAppId}/workspaces/move`, {
-      method: 'POST',
-      body: JSON.stringify({ workspaceId }),
-    });
+    return apiFetch<ClientApp>(
+      `/omnichannel/client-apps/${targetClientAppId}/workspaces/move`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ workspaceId }),
+      },
+    );
   },
 };
