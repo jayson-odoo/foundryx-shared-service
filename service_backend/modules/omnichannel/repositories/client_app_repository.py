@@ -44,19 +44,41 @@ class ClientAppRepository:
             .all()
         )
 
-    def workspace_counts(self, tenant_id: str) -> Dict[str, int]:
-        """Live workspaces per client app."""
+    def live_workspaces_by_app(self, tenant_id: str) -> Dict[str, List[Workspace]]:
+        """Live workspaces of the tenant, grouped by client app."""
         rows = (
-            self.db.query(Workspace.client_app_id, func.count(Workspace.id))
+            self.db.query(Workspace)
             .filter(
                 Workspace.tenant_id == tenant_id,
                 Workspace.client_app_id.isnot(None),
                 Workspace.is_trashed.is_(False),
             )
-            .group_by(Workspace.client_app_id)
+            .order_by(Workspace.name.asc(), Workspace.id.asc())
             .all()
         )
-        return {cid: n for cid, n in rows}
+        out: Dict[str, List[Workspace]] = {}
+        for ws in rows:
+            out.setdefault(ws.client_app_id, []).append(ws)
+        return out
+
+    def live_workspaces_for_app(self, client_app_id: str, tenant_id: str) -> List[Workspace]:
+        return (
+            self.db.query(Workspace)
+            .filter(
+                Workspace.client_app_id == client_app_id,
+                Workspace.tenant_id == tenant_id,
+                Workspace.is_trashed.is_(False),
+            )
+            .order_by(Workspace.name.asc(), Workspace.id.asc())
+            .all()
+        )
+
+    def get_workspace(self, workspace_id: str, tenant_id: str) -> Optional[Workspace]:
+        return (
+            self.db.query(Workspace)
+            .filter(Workspace.id == workspace_id, Workspace.tenant_id == tenant_id)
+            .first()
+        )
 
     def has_unassigned(self, tenant_id: str) -> bool:
         """Any NULL-parent workspace or partner key in the tenant."""
