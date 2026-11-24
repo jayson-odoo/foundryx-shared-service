@@ -41,10 +41,14 @@ NOTES_KINDS = ("PO", "SPO")
 DB_READ_TIMEOUT_SECONDS = 20
 # The header columns kept from the database, and the row columns (the builders force the transfer-option columns
 # and the key itself, so those are never taken from the database).
-DB_HEADER_KEYS = tuple(dict.fromkeys(HEADER_KEYS + EDIT_HEADER_KEYS))
+# DocKey and DocNo are the request's own identity: the PUT keeps the key and number it was asked for.
+DB_HEADER_KEYS = tuple(k for k in dict.fromkeys(HEADER_KEYS + EDIT_HEADER_KEYS) if k not in ("DocKey", "DocNo"))
 DB_ROW_KEYS = tuple(k for k in ROW_KEYS if k not in ("DtlKey", "FullTransferOption", "FullTransferFromDocList"))
-_HEADER_SELECT = sa.text("SELECT * FROM PO WHERE DocKey = :k AND DocNo = :n")
-_ROWS_SELECT = sa.text("SELECT * FROM PODTL WHERE DocKey = :k")
+# Static statements: the column lists come from the code constants above (never from input), quoted [Col].
+_HEADER_COLUMNS = ", ".join(f"[{c}]" for c in DB_HEADER_KEYS)
+_ROW_COLUMNS = ", ".join(f"[{c}]" for c in dict.fromkeys(("DtlKey",) + DB_ROW_KEYS + (FURTHER_DESC,)))
+_HEADER_SELECT = sa.text(f"SELECT {_HEADER_COLUMNS} FROM PO WHERE DocKey = :k AND DocNo = :n")
+_ROWS_SELECT = sa.text(f"SELECT {_ROW_COLUMNS} FROM PODTL WHERE DocKey = :k")
 
 
 class DocDbSource(Protocol):
@@ -76,8 +80,8 @@ def _kept(record: Mapping[str, Any], keys: tuple) -> Dict[str, Any]:
 
 
 class SqlDocDb:
-    """``SELECT * FROM PO WHERE DocKey = :k AND DocNo = :n`` (exactly one row) and ``SELECT * FROM PODTL WHERE
-    DocKey = :k`` (its DtlKey set equal to the document's), through a ``sql_database`` connection resolved WITH
+    """``SELECT <header columns> FROM PO WHERE DocKey = :k AND DocNo = :n`` (exactly one row) and ``SELECT <row columns>
+    FROM PODTL WHERE DocKey = :k`` (its DtlKey set equal to the document's), through a ``sql_database`` connection resolved WITH
     tenant_id by the caller; read-only, time-boxed. Any error, an undecryptable credential or a mismatch is
     unknown (None)."""
 
