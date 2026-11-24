@@ -25,7 +25,6 @@ from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back import auth
 from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
-from modules.autocount.write_back.line_notes import NotesReader, SqlDocDb
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
@@ -173,7 +172,6 @@ class WriteFrame:
         self._refused_base_url: Optional[str] = None
         self._write_headers: Dict[str, str] = {}
         self._read_headers: Dict[str, str] = {}
-        self._notes_extra: Optional[Any] = None  # plan 73: the company's AutoCount DB source (None = unread: every PO / SPO write refuses)
         self.actions = WriteActionRepository(db)
         self.staged = StagedDocRepository(db)
         self.connections = ConnectionRepository(db)
@@ -214,9 +212,7 @@ class WriteFrame:
 
     def _reader_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
         reader = auth.attach_headers(self._reader_factory(base_url), self._read_headers)
-        reader = cl.attach_call_log(reader, log or self._call_log)
-        # plan 73 D1: every PO / SPO read carries the values stored in the AutoCount DB (header + rows + FurtherDescription)
-        return NotesReader(reader, self._notes_extra)
+        return cl.attach_call_log(reader, log or self._call_log)
 
     def _client_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
         client = auth.attach_headers(self._client_factory(base_url), self._write_headers)
@@ -271,23 +267,10 @@ class WriteFrame:
             )
         return conn if conn is not None and conn.is_active else None
 
-    def _line_notes_source(self, company: AcCompany) -> Optional[Any]:
-        """Plan 73 R1: the company's AutoCount DB source: its explicit ``line_notes_connection_id`` when set, else
-        its own source connection (``company.connection_id``); either must resolve WITH tenant_id as an ACTIVE
-        same-tenant ``sql_database`` connection, else None (unknown, every PO / SPO write refuses)."""
-        from modules.autocount.sql_provider import SQL_DATABASE_PROVIDER_KEY
-
-        connection_id = company.line_notes_connection_id or company.connection_id
-        if not connection_id:
-            return None
-        conn = self.connections.get_for_provider(company.tenant_id, connection_id, SQL_DATABASE_PROVIDER_KEY)
-        return SqlDocDb(conn) if conn is not None and conn.is_active else None
-
     def _resolve_write_base_url(self, company: AcCompany) -> "Tuple[Optional[str], Optional[Tuple[str, str]]]":
         """``(url, None)`` or ``(None, (code, message))``: the company's write
         connection URL resolved WITH tenant_id and the write guard applied."""
         self._refused_base_url = None
-        self._notes_extra = self._line_notes_source(company)
         conn = self._write_connection(company)
         if conn is None:
             return None, (WRITE_DISABLED, "")

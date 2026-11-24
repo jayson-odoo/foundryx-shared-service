@@ -99,8 +99,7 @@
    "PackageDocKey": 0,
    "ParentDtlKey": 0,
    "FromSODtlKey": 0,
-   "FromSODocList": "",
-   "FurtherDescription": ""
+   "FromSODocList": ""
   },
   {
    "DtlKey": 46179077,
@@ -142,8 +141,7 @@
    "PackageDocKey": 0,
    "ParentDtlKey": 0,
    "FromSODtlKey": 0,
-   "FromSODocList": "",
-   "FurtherDescription": ""
+   "FromSODocList": ""
   }
  ]
 }

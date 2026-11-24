@@ -30,7 +30,7 @@ HEADER_KEYS = {
 ROW_KEYS = {
     "DtlKey", "ItemCode", "Location", "Description", "ProjNo", "UOM", "UserUOM", "Qty",
     "FOCQty", "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Desc2", "FromDocType",
-    "FromDocNo", "FromDocDtlKey", "FullTransferOption", "FullTransferFromDocList", "FurtherDescription",
+    "FromDocNo", "FromDocDtlKey", "FullTransferOption", "FullTransferFromDocList",
 }
 FORBIDDEN_ROW = {"SubTotal", "SmallestQty", "Seq", "FromSODtlKey", "LocalSubTotal", "TaxableAmt"}
 

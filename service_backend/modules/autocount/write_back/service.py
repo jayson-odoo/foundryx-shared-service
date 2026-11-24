@@ -74,7 +74,6 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 )
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
-from modules.autocount.write_back.line_notes import stored_fields_changed
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
 from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
@@ -104,8 +103,7 @@ _VERIFY_FIELDS = ("ItemCode", "Location", "UOM", "Qty")
 # B4: a sent row must also read back with the price and delivery date it was sent with.
 _VERIFY_VALUE_FIELDS = ("UnitPrice", "DeliveryDate")
 ROW_VALUES_NOT_KEPT = "ROW_VALUES_NOT_KEPT"
-# plan 73: the Further Description is carried on every re-sent row but is not a read-back field (UNREADABLE_ROW_KEYS)
-_UNTOUCHED_FIELDS = tuple(k for k in payloads.ROW_KEYS if k not in payloads.UNREADABLE_ROW_KEYS) + ("FromSODtlKey",)
+_UNTOUCHED_FIELDS = payloads.ROW_KEYS + ("FromSODtlKey",)
 _MAX_TEXT = 2000
 
 
@@ -846,19 +844,8 @@ class WriteBackService(WriteFrame):
         if is_split and so_doc is not None and plan.so_dtl_key is not None:
             return self._finish_split(plan, company, client, row, reader, before, after, body, so_doc)
         result = self._finish(row, OUTCOME_DONE, document=after)
-        self._note_stored_changes(result, row, before, after)
         self._stage(company, plan.kind[0], after)
         return result
-
-    @staticmethod
-    def _note_stored_changes(result: WriteActionResult, row: AcWriteAction, before: Doc, after: Doc) -> None:
-        """Plan 73: a landed write that changed a stored field it did not intend to is a warning (names only in the
-        log, the outcome unchanged)."""
-        changed = stored_fields_changed(before, after)
-        if changed:
-            result.warnings.append(payloads.STORED_FIELDS_CHANGED)
-            logger.warning("autocount stored fields changed op=%s doc=%s fields=%s",
-                           row.id, after.get("DocKey"), ",".join(changed))
 
     def _verify_split(
         self, plan: _Plan, reader: AutoCountDocReader, before: Doc, body: Doc, after: Doc
@@ -901,18 +888,6 @@ class WriteBackService(WriteFrame):
         except DocReadError as exc:
             return WriteActionResult(None, OUTCOME_PENDING, exc.code)
 
-    @staticmethod
-    def _with_sent_note(after: Doc, dtl_key: int, sent_row: Doc) -> Doc:
-        """Plan 73 F2: ``after`` with the Further Description of row ``dtl_key`` taken from the row PUT 1 SENT
-        (it already holds the merged note) when the read-back row lacks it. Never mutates ``after``."""
-        row = next((r for r in after.get("Details") or [] if r.get("DtlKey") == dtl_key), None)
-        if row is None or payloads.FURTHER_DESC in row or payloads.FURTHER_DESC not in sent_row:
-            return after
-        out = dict(after)
-        out["Details"] = [dict(r, **{payloads.FURTHER_DESC: sent_row[payloads.FURTHER_DESC]}) if r is row else r
-                          for r in after["Details"]]
-        return out
-
     def _finish_split(
         self,
         plan: _Plan,
@@ -948,7 +923,6 @@ class WriteBackService(WriteFrame):
         restore = payloads.transfer_row_drift(wanted, new_row) if new_row is not None else {}
         if not restore:
             result = self._finish(row, OUTCOME_DONE, document=after1)
-            self._note_stored_changes(result, row, before, after1)
             result.detail = new_row
             self._stage(company, plan.kind[0], after1)
             return result
@@ -957,11 +931,7 @@ class WriteBackService(WriteFrame):
         # the note is never read back (plan 65 P3): sent, never judged
         readable = {k: v for k, v in restore.items() if k not in payloads.UNREADABLE_ROW_KEYS}
         readable_values = {k: v for k, v in values.items() if k not in payloads.UNREADABLE_ROW_KEYS}
-        try:
-            body2 = payloads.build_restore_transfer_row(self._with_sent_note(after1, new_key, sent_new), new_key, restore)
-        except WriteRefusal:  # plan 73: the link landed, its read-back has no line notes and PUT 1 sent none: no restore
-            self.db.commit()
-            return self._finish(row, OUTCOME_MISMATCH, ROW_VALUES_NOT_KEPT, document=after1)
+        body2 = payloads.build_restore_transfer_row(after1, new_key, restore)
         first_status = row.response_status
         row.request_json = [body1, body2]
         row.response_json = [row.response_json, None]
@@ -1008,7 +978,6 @@ class WriteBackService(WriteFrame):
             self.db.commit()  # restored, but something else moved
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
         result = self._finish(row, OUTCOME_DONE, code, document=final)
-        self._note_stored_changes(result, row, before, final)
         result.detail = row_of(final, new_key)
         self._stage(company, plan.kind[0], final)
         return result
@@ -1039,28 +1008,5 @@ def set_write_connection(
     if conn is None:
         raise WriteConnectionError("CONNECTION_NOT_FOUND")
     company.write_connection_id = conn.id
-    db.commit()
-    return company
-
-
-def set_line_notes_connection(
-    db: Session, *, tenant_id: str, company_id: str, connection_id: Optional[str]
-) -> AcCompany:
-    """Plan 73: point a company's PO line-notes read at a same-tenant ``sql_database`` connection (None
-    clears it), else a ``WriteConnectionError("CONNECTION_NOT_FOUND")`` with the company unchanged. Not an
-    entity source and not a write connection: the write guard (``assert_test_company``) does not apply."""
-    from modules.autocount.sql_provider import SQL_DATABASE_PROVIDER_KEY
-
-    company = CompanyRepository(db).get(tenant_id, company_id)
-    if company is None:
-        raise WriteConnectionError("CONNECTION_NOT_FOUND")
-    if connection_id is None:
-        company.line_notes_connection_id = None
-        db.commit()
-        return company
-    conn = ConnectionRepository(db).get_for_provider(tenant_id, connection_id, SQL_DATABASE_PROVIDER_KEY)
-    if conn is None:
-        raise WriteConnectionError("CONNECTION_NOT_FOUND")
-    company.line_notes_connection_id = conn.id
     db.commit()
     return company

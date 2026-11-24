@@ -318,11 +318,6 @@ def _plain_number(value: Any) -> Any:
     return int(d) if d == d.to_integral_value() else float(d)
 
 
-def _without_note(row: Optional[Doc]) -> Optional[Doc]:
-    """A stored copy of a row without its Further Description (never compared, and it can be about a megabyte)."""
-    return None if row is None else {k: v for k, v in row.items() if k != payloads.FURTHER_DESC}
-
-
 def _row_in(document: Optional[Doc], dtl_key: int) -> Optional[Doc]:
     """Plan 64: row ``dtl_key`` of the read-back ``document`` (the ``detail`` answer)."""
     return next((r for r in (document or {}).get("Details") or [] if r.get("DtlKey") == dtl_key), None)
@@ -784,8 +779,6 @@ class OperationService:
         return (datetime.now(timezone.utc) - made).total_seconds() >= LOOKUP_SETTLE_SECONDS
 
     def _step(self, name: str, res: PrimitiveResult) -> None:
-        if payloads.STORED_FIELDS_CHANGED in (res.warnings or ()) and payloads.STORED_FIELDS_CHANGED not in self._warnings:
-            self._warnings.append(payloads.STORED_FIELDS_CHANGED)  # plan 73: the operation says so too
         self._steps.append({"step": name, "outcome": res.outcome, "code": res.error_code,
                             "actionId": res.action_id, "newDtlKey": res.new_dtl_key,
                             "at": _iso_z(datetime.now(timezone.utc))})
@@ -1214,7 +1207,7 @@ class OperationService:
             # plan 71: why the source row was not used, kept so a Resume answer still says it (review)
             **({"returnWarnings": [w for w in self._warnings if w in RETURN_WARNINGS]} if self._return_to else {}),
             # plan 71: the merge goes back into the source row: its key and before-image (the exact read-back)
-            **({"returnTo": plan["merge"], "returnBefore": _without_note(_row_in(doc, plan["merge"]))}
+            **({"returnTo": plan["merge"], "returnBefore": _row_in(doc, plan["merge"])}
                if self._return_to is not None and plan.get("merge") == self._return_to else {}),
         })
 
@@ -1469,11 +1462,6 @@ class OperationService:
                 # the "D" never landed: the line is as it was once the strays are gone
                 self.prims._stage(company, snap["kind"], doc)
                 return self._finish(row, RECOVERED, failed_code, document=doc)
-            if payloads.FURTHER_DESC not in snap["row"]:
-                # plan 73 F4: a snapshot from before the line notes were kept. The "D" already landed, so refusing
-                # would strand a deleted row: the re-add stands, without a Further Description (code only, no content).
-                logger.warning("autocount recover re-adds a row without its Further Description (%s), op %s",
-                               payloads.AUTOCOUNT_DB_UNREAD, row.id)
             res = self.prims.add_line(
                 **self._call(row, company, snap, "recover"), line=self._line_of(snap, snap["oldLink"])
             )

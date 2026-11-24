@@ -99,8 +99,7 @@
    "PackageDocKey": 0,
    "ParentDtlKey": 0,
    "FromSODtlKey": 0,
-   "FromSODocList": "",
-   "FurtherDescription": ""
+   "FromSODocList": ""
   },
   {
    "DtlKey": 12011,
@@ -142,8 +141,7 @@
    "PackageDocKey": 0,
    "ParentDtlKey": 0,
    "FromSODtlKey": 11990,
-   "FromSODocList": "SO389293",
-   "FurtherDescription": ""
+   "FromSODocList": "SO389293"
   },
   {
    "DtlKey": 12013,
@@ -185,8 +183,7 @@
    "PackageDocKey": 0,
    "ParentDtlKey": 0,
    "FromSODtlKey": 11993,
-   "FromSODocList": "SO389293",
-   "FurtherDescription": ""
+   "FromSODocList": "SO389293"
   },
   {
    "DtlKey": 12015,
@@ -228,8 +225,7 @@
    "PackageDocKey": 0,
    "ParentDtlKey": 0,
    "FromSODtlKey": 11996,
-   "FromSODocList": "SO389293",
-   "FurtherDescription": ""
+   "FromSODocList": "SO389293"
   },
   {
    "DtlKey": 12017,
@@ -271,8 +267,7 @@
    "PackageDocKey": 0,
    "ParentDtlKey": 0,
    "FromSODtlKey": 0,
-   "FromSODocList": "",
-   "FurtherDescription": ""
+   "FromSODocList": ""
   }
  ]
 }

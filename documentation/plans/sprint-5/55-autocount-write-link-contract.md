@@ -40,14 +40,6 @@ quantity goes back into it in ONE PUT (section 4.2 "Return to the source row"), 
 stale `in_progress` run on the same PO first (section 4.0a). A resend under the key of any `recovered`
 operation runs fresh (the key is released), not only `OPERATION_NOT_APPLIED`.
 
-2026-11-24 (plan 73, `73-po-link-keep-further-desc.md`): every PO / SPO write (link, batch link, unlink, relink,
-relocate, edit, add line, delete line, restore) is now read-modify-write from the AutoCount DB: the header fields
-and every existing line field, including `FurtherDescription`, are sent back as stored. The S/O note goes into
-`FurtherDescription` of the new linked row, after the source line's text. New refusal `AUTOCOUNT_DB_UNREAD`
-(`refused`, 409, nothing sent to AutoCount, retry-safe, key released) with the plain `message` "The purchase order could not be read from AutoCount, so the change was not made. Try again." when the
-DB read fails. A split link whose restore cannot read the DB ends `mismatch` `ROW_VALUES_NOT_KEPT` (resumable).
-Additive: no other field, status or route changes.
-
 2026-11-19 (plan 69, `69-autocount-bulk-link-fast.md`): new `POST /api/v1/autocount/po-links/doc-batch` links
 EVERY listed row of ONE PO document in one call, with one result per line (section 4.1b); SS sends one link
 write per 40 new rows, never a size refusal. `po-links/batch` loses its 20-entry cap (a 2000-entry body guard
@@ -510,13 +502,12 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 
 | outcome | HTTP | errorCode | Meaning |
 |---|---|---|---|
-| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged. `LOCATION_NOT_MOVED` only on the single part-row link. The header money and tax fields and stamps AutoCount recomputes on a save (totals, tax, `TaxEntityID`, `LastModified`) are not judged. Plan 73: `warnings` may carry `STORED_FIELDS_CHANGED` when, after a landed PO / SPO write, a stored field the change did not intend (a header field, or a kept line's Further Description) reads back different; the outcome stays `done` |
+| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged. `LOCATION_NOT_MOVED` only on the single part-row link. The header money and tax fields and stamps AutoCount recomputes on a save (totals, tax, `TaxEntityID`, `LastModified`) are not judged |
 | `needs_attention` | 502 | `RESTORE_NOT_LANDED` | Batch link, whole-row link or relink: the links stand but the restore of the new rows (location, unit price, delivery date, discount, note) did not land. Resumable (section 4.0a) |
 | `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` | The write may or may not have happened; the server could not confirm it |
 | `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
 | `refused` | 422 | `LOCATION_UNKNOWN` | Plan 70: a `location` the request names is not in AutoCount's Location master; nothing written, key released. `message` is a plain reason to show as is ("Location X does not exist in AutoCount, so nothing was changed. ...") |
-| `refused` | 409 | `AUTOCOUNT_DB_UNREAD` | Plan 73: the PO / SPO could not be read from the AutoCount DB; nothing sent to AutoCount, retry-safe. `message` is plain text to show as is: "The purchase order could not be read from AutoCount, so the change was not made. Try again." |
 | `refused` | 409 | any code below | Refused before anything was written |
 | `mismatch` | 502 | `READBACK_MISMATCH` | AutoCount accepted the write but the document read back differently from what was sent |
 | `mismatch` | 502 | `ROW_VALUES_NOT_KEPT` | Split link: the link landed, but the new row's unit price or delivery date could not be put back to the PO row's values (section 5) |
@@ -531,7 +522,6 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 
 | errorCode | Meaning | CRM action |
 |---|---|---|
-| `AUTOCOUNT_DB_UNREAD` | Plan 73: every PO / SPO write reads the document from the AutoCount DB first (read-modify-write) and could not | Retry later; the message is plain text to show |
 | `DOC_BUSY` | Another write on the same document is in flight, or ended `pending_verification` less than 10 minutes ago | Wait and retry; after 10 minutes an unfinished action no longer blocks |
 | `DOC_UNKNOWN` | The document is not in the synced copy, so its date is unknown | Run or wait for the doc sync, then retry |
 | `DOC_STALE` | `expectedLastModified` no longer matches: the document changed in AutoCount | Refresh the document, re-check the row, retry with the new `LastModified` |
