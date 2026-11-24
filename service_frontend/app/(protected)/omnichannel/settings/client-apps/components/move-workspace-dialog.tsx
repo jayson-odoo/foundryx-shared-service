@@ -1,8 +1,8 @@
 'use client';
 
-/** Moves one workspace to another of the tenant's client apps. Keeps its
- * keys, webhooks and partner connect sessions working (they key off
- * workspace_id, or carry their own client_app_id); only the parent changes. */
+/** Moves one workspace to another of the tenant's client apps. Its keys and
+ * webhooks key off workspace_id and keep working; an in-flight partner connect
+ * session of the old client app stops working. */
 import { useEffect, useState } from 'react';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';

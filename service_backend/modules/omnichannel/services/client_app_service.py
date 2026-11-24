@@ -223,9 +223,10 @@ class ClientAppService:
 
     def move_workspace(self, client_app_id: str, tenant_id: str, workspace_id: str) -> Workspace:
         """Re-point a workspace to another of the tenant's client apps. Its
-        workspace keys, webhook endpoints and partner connect sessions key
-        off ``workspace_id`` (or carry their own ``client_app_id`` stamped at
-        creation), so nothing else needs to change for them to keep working."""
+        workspace keys and webhook endpoints key off ``workspace_id`` and keep
+        working. Partner connect sessions carry the ``client_app_id`` stamped
+        at creation, so an in-flight session of the old client app stops
+        working (callback and complete answer ``connect_session_not_found``)."""
         from .workspace_service import WorkspaceExternalRefInUse, WorkspaceNotFound
 
         target = self.require(client_app_id, tenant_id)

@@ -413,7 +413,7 @@ def test_rename_rejects_a_duplicate_name_and_404s_outside_the_tenant(client, ses
     ).status_code == 403
 
 
-def test_move_a_workspace_via_the_api_keeps_its_keys_sessions_and_connections_working(client, session_factory):
+def test_move_a_workspace_via_the_api_moves_partner_access_and_keeps_its_workspace_keys(client, session_factory):
     hdr_first = partner_headers(client)
     wid = _put(client, hdr_first, "org-move-api").json()["id"]
     _seed_channel(session_factory, wid, phone_number_id="pn-ca-move-api")
