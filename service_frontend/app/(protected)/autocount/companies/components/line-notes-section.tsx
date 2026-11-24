@@ -8,6 +8,7 @@ import { DetailRow } from './detail-row';
 
 /** The clear option's value (a SearchSelect value is always a string). */
 const NONE = '';
+const NOT_FOUND = 'Connection not found';
 
 export interface LineNotesSectionProps {
   /** The persisted company - read mode renders from this. */
@@ -39,13 +40,25 @@ function LineNotesField({
 }: LineNotesSectionProps) {
   const { options, isLoading } = useAutocountLineNotesConnections();
 
+  // A saved connection that is no longer listed (deleted) is shown as such, never as unset.
+  const missing = (id: string | null): boolean =>
+    !!id && !isLoading && !options.some((o) => o.value === id);
+
   const readLabel = useMemo(() => {
     if (!company.lineNotesConnectionId) return '-';
     const match = options.find((o) => o.value === company.lineNotesConnectionId);
-    return match?.label ?? '-';
-  }, [company.lineNotesConnectionId, options]);
+    return match?.label ?? (isLoading ? '-' : NOT_FOUND);
+  }, [company.lineNotesConnectionId, isLoading, options]);
 
-  const choices = useMemo(() => [{ label: 'None', value: NONE }, ...options], [options]);
+  const choices = useMemo(
+    () => [
+      { label: 'None', value: NONE },
+      ...(missing(connectionId) && connectionId ? [{ label: NOT_FOUND, value: connectionId }] : []),
+      ...options,
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [connectionId, isLoading, options],
+  );
 
   return (
     <DetailRow label="Line notes database">

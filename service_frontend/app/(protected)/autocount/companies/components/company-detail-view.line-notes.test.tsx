@@ -213,3 +213,36 @@ describe('company detail - Line notes database (AC-74-04)', () => {
     expect(reload).not.toHaveBeenCalled();
   });
 });
+
+describe('company detail - Line notes database save order (round 1)', () => {
+  it('a failing Sorento check sends no line notes PATCH', async () => {
+    show({ sinkImpl: 'sorento', sinkConnectionId: null, sorentoCompanyCode: 'ABC' });
+    const select = await screen.findByLabelText(FIELD);
+    await waitFor(() => expect(screen.getByRole('option', { name: /AutoCount DB/ })).toBeInTheDocument());
+    fireEvent.change(select, { target: { value: 'sql-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(service.updateLineNotesConnection).not.toHaveBeenCalled();
+  });
+
+  it('line notes saved then the push target fails: reloads and keeps the saved value', async () => {
+    service.updateSinkTarget.mockRejectedValue(new ApiError('Push target refused.', 422));
+    show({ sinkImpl: 'sorento', sinkConnectionId: 'sc-1', sorentoCompanyCode: 'ABC' });
+    const select = (await screen.findByLabelText(FIELD)) as HTMLSelectElement;
+    await waitFor(() => expect(screen.getByRole('option', { name: /AutoCount DB/ })).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('sink-company-code'), { target: { value: 'XYZ' } });
+    fireEvent.change(select, { target: { value: 'sql-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(service.updateLineNotesConnection).toHaveBeenCalledWith('c1', { connectionId: 'sql-1' }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+    expect(select.value).toBe('sql-1');
+  });
+
+  it('a saved connection that is no longer listed reads "Connection not found", not unset', async () => {
+    show({ lineNotesConnectionId: 'deleted-conn' });
+    const select = (await screen.findByLabelText(FIELD)) as HTMLSelectElement;
+    await waitFor(() => expect(screen.getByRole('option', { name: /AutoCount DB/ })).toBeInTheDocument());
+    expect(screen.getByRole('option', { name: 'Connection not found' })).toBeInTheDocument();
+    expect(select.value).toBe('deleted-conn');
+  });
+});

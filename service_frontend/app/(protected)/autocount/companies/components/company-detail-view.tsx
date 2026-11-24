@@ -120,27 +120,9 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const sinkDirty = pushDirty || lineNotesDirty;
 
   const onSaveOverview = useCallback(async (): Promise<boolean> => {
-    if (lineNotesDirty) {
-      try {
-        await autocountService.updateLineNotesConnection(companyId, { connectionId: lineNotesId });
-        setLineNotesError(null);
-        if (!pushDirty) {
-          done('Line notes database updated.', {
-            what: 'Line notes database updated',
-            forWhom: loadedCompany?.name,
-          });
-          reload();
-          return true;
-        }
-      } catch (error) {
-        setLineNotesError(
-          error instanceof ApiError ? error.message : 'That line notes database could not be saved.',
-        );
-        return false;
-      }
-    }
     // Foolproof-UI: a Sorento delivery cannot be saved without a connection,
     // nor without the company code every Sorento call is anchored on (A6).
+    // Checked first: nothing is saved while the form cannot be saved as a whole.
     if (sinkImpl === 'sorento' && !sinkConnectionId) {
       toast.error('Choose a Sorento connection before saving.');
       return false;
@@ -148,6 +130,27 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     if (sinkImpl === 'sorento' && !companyCode.trim()) {
       toast.error('Enter the Sorento company code before saving.');
       return false;
+    }
+    let lineNotesSaved = false;
+    if (lineNotesDirty) {
+      try {
+        await autocountService.updateLineNotesConnection(companyId, { connectionId: lineNotesId });
+        setLineNotesError(null);
+        lineNotesSaved = true;
+      } catch (error) {
+        setLineNotesError(
+          error instanceof ApiError ? error.message : 'That line notes database could not be saved.',
+        );
+        return false;
+      }
+    }
+    if (!pushDirty && lineNotesSaved) {
+      done('Line notes database updated.', {
+        what: 'Line notes database updated',
+        forWhom: loadedCompany?.name,
+      });
+      reload();
+      return true;
     }
     try {
       await autocountService.updateSinkTarget(companyId, {
@@ -165,6 +168,8 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       toast.error(
         error instanceof ApiError ? error.message : 'That push target could not be saved.',
       );
+      // The line notes database is already saved: reload so Cancel never shows the stale value.
+      if (lineNotesSaved) reload();
       return false;
     }
   }, [

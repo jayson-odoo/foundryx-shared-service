@@ -626,9 +626,9 @@ interface EtlTaskOverlay {
 
 const etlOverlays = new Map<string, EtlTaskOverlay>();
 const companyCodes = new Map<string, string | null>();
+const mockLineNotes = new Map<string, string | null>();
 /** Pure-mock only: the persisted sink target per company (the overlay reads
  * the REAL company's sink instead). */
-const mockLineNotes = new Map<string, string | null>();
 const mockSinks = new Map<string, Pick<AutocountCompany, 'sinkImpl' | 'sinkConnectionId'>>();
 const sourceImpls = new Map<string, AutocountSourceImpl>();
 /** Result columns of every preview run this session, by normalized query. */

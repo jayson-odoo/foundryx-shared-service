@@ -255,15 +255,16 @@ def set_line_notes_connection(
 ) -> CompanyItem:
     """Plan 74: set or clear the company's line notes database connection (a same-tenant ``sql_database``
     connection). Reuses ``autocount.companies.manage``: no new permission, no grant sweep."""
+    service = CompanyService(db)
     try:
-        company = CompanyService(db).set_line_notes_connection(
+        company = service.set_line_notes_connection(
             current_user.tenant_id, company_id, body.connectionId
         )
     except LineNotesConnectionInvalid as exc:
         return _field_errors({"connectionId": exc.message}, exc.message)
     except AutocountServiceError as exc:
         _raise(exc)
-    return CompanyItem.model_validate(company)
+    return _company_item(company, source_kind=service.source_kind_for(current_user.tenant_id, company))
 
 
 @router.patch(

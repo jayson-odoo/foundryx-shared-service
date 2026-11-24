@@ -236,3 +236,12 @@ def test_ac_74_06_a_po_write_is_unchanged_and_never_reads_the_line_notes_databas
     res = h.edit("PO", 7001, line_changes=[{"DtlKey": doc["Details"][0]["DtlKey"], "Qty": 3}])
     assert res.outcome == "done", (res.outcome, res.error_code)
     assert [c for c in h.vendor.writes() if c.method == "PUT"]
+
+
+def test_ac_74_02_patch_answer_carries_the_companys_source_kind(client, session_factory):
+    db = session_factory()
+    company_id, sql_id = _company(db), _conn(db, "sql_database")
+    db.close()
+    r = client.patch(_url(company_id), json={"connectionId": sql_id}, headers=_auth(client))
+    assert r.status_code == 200, r.text
+    assert r.json()["sourceKind"] == "api"  # the company reads through its API connection, not the default
