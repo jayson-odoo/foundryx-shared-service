@@ -102,13 +102,29 @@ def test_legacy_body_header_has_no_blank_text_field_and_keeps_the_non_blank_ones
 
 @pytest.mark.parametrize("name", ["link_row whole", "link_row partial", "unlink_row", "relink_row", "relocate",
                                   "link_batch", "header-only edit", "delete_line"])
-def test_legacy_kept_and_re_sent_rows_carry_no_further_description(h, world, name):
+def test_legacy_pre_existing_rows_carry_no_further_description(h, world, name):
+    before = {r["DtlKey"] for r in h.vendor.rows("PO", 7001)}
     _drive(h, world)[name]()
-    assert puts(h), name  # a refused write sends nothing and would pass the loop below for the wrong reason
-    for call in puts(h):
+    sent = puts(h)
+    assert sent, name  # a refused write sends nothing and would pass the loop below for the wrong reason
+    resent = [r for call in sent for r in call.body["Details"] if r["DtlKey"] in before]
+    if name != "header-only edit":  # the only path that sends no row at all
+        assert resent, name  # re-sent at least one row that existed before the operation (a "D" row counts)
+    for r in resent:
+        assert "FurtherDescription" not in r, (name, r["DtlKey"])
+    # a row that is NEW (DtlKey 0 or minted by this operation) may carry the S/O note, exactly AutoCount's wrapper
+    for call in sent:
         for r in call.body["Details"]:
-            if r["DtlKey"] != 0:
-                assert "FurtherDescription" not in r, (name, r["DtlKey"])
+            if r["DtlKey"] not in before and "FurtherDescription" in r:
+                fd = r["FurtherDescription"]
+                assert fd.startswith(P._RTF_HEAD) and fd.endswith(P._RTF_TAIL) and "S/O:" in fd, (name, fd)
+
+
+def test_legacy_partial_link_resends_the_cut_row_without_fd(h, world):
+    res = _drive(h, world)["link_row partial"]()
+    assert res.outcome == "done"
+    cut = [r for r in puts(h)[0].body["Details"] if r["DtlKey"] == world.p_free]
+    assert len(cut) == 1 and "FurtherDescription" not in cut[0]
 
 
 @pytest.mark.parametrize("name", ["link_row whole", "link_row partial"])
