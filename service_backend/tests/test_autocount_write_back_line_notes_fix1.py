@@ -64,13 +64,13 @@ def _strip_fd_after_put(h):
     ac.read_transport = httpx.MockTransport(on_get)
 
 
-def test_split_link_restore_uses_the_note_sent_in_put_1_when_the_readback_has_none(h, monkeypatch):
+def test_split_link_restore_with_an_unread_db_after_put_1_is_a_clean_mismatch_with_no_second_put(h, monkeypatch):
+    """Round 2: a restore body built from an unread document would send hapi's blank header, so it is not sent."""
     _strip_fd_after_put(h)
     monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _KnownThenUnknown(h.ac))
     res = h.link_split()
-    assert res.error_code != "INTERNAL_ERROR" and res.outcome != "pending", (res.outcome, res.error_code)
-    assert len(h.ac.put_calls) == 2  # the restore was built from the row PUT 1 sent
-    assert "FurtherDescription" in h.ac.put_bodies[1]["Details"][0]
+    assert (res.outcome, res.error_code) == ("mismatch", "ROW_VALUES_NOT_KEPT"), (res.outcome, res.error_code)
+    assert len(h.ac.put_calls) == 1
 
 
 def test_split_link_restore_that_cannot_be_built_is_a_clean_mismatch(h, monkeypatch):
