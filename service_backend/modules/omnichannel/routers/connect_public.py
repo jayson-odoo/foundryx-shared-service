@@ -20,7 +20,10 @@ pages}}`` instead of a redirect, the same page shows the list, and this
 route spends the single-use pick token: a ``pageId`` from the list gives
 ``status=authorized``, none gives ``status=cancelled``; both answer
 ``200 {redirect}``. A spent, unknown or expired token: the same uniform 404
-and throttle; a Page id that was not offered: ``422 invalid_page``.
+and throttle; a Page id that was not offered: ``422 invalid_page`` (also a
+throttle miss). The third wrong Page id of one pick token ends the session
+``FAILED`` (``page_select_attempts_exceeded``) and answers the redirect with
+``status=failed``.
 
 The request carries the Meta code: it is never logged and never echoed.
 """
@@ -85,4 +88,6 @@ def page_select(
         throttle.record_embed(ip=throttle_key)
         raise ApiError(404, "connect_session_not_found", "Connect session not found.")
     except PageNotOffered:
+        # A wrong Page id is a miss like an unknown token: it pumps the same bucket.
+        throttle.record_embed(ip=throttle_key)
         raise ApiError(422, "invalid_page", "That Page was not offered for this connection.")

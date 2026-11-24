@@ -458,6 +458,31 @@ describe('wa-callback page, Facebook Page connect (page picker)', () => {
     expect(screen.getByRole('button', { name: 'Cancel connection' })).toBeTruthy();
   });
 
+  it('follows the failed redirect when the pick ends the session', async () => {
+    // page_select_attempts_exceeded: the backend ends the session and answers
+    // the stored return URL with status=failed, like any other ending.
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse(picker))
+      .mockResolvedValueOnce(
+        okResponse({ redirect: 'https://app.example/return?status=failed' }),
+      );
+    vi.stubGlobal('fetch', fetchSpy);
+    setUrl('?state=st_p5&code=c');
+
+    render(<WaCallbackPage />);
+
+    await screen.findByText('Choose a Facebook Page');
+    const connect = screen.getByRole('button', { name: 'Connect Page' });
+    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.click(screen.getByText('Side Page'));
+    fireEvent.click(connect);
+    await waitFor(() =>
+      expect(replaceSpy).toHaveBeenCalledWith('https://app.example/return?status=failed'),
+    );
+    expect(screen.queryByText(/could not complete the connection/i)).not.toBeInTheDocument();
+  });
+
   it('a refused pick shows the neutral message', async () => {
     vi.stubGlobal(
       'fetch',

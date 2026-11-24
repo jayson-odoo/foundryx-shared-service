@@ -83,6 +83,12 @@ MAX_RETURN_URL = 2048
 COMPLETE_LEASE = timedelta(minutes=5)
 CALLBACK_OUTCOMES = {"AUTHORIZED": "authorized", "CANCELLED": "cancelled", "FAILED": "failed"}
 PAGE = "FACEBOOK"
+# Wrong Page ids a pick token survives: the last one ends the session FAILED
+# with ``page_select_attempts_exceeded`` (the hosted page only ever sends ids
+# from the list, so a wrong id means a tampered request).
+MAX_WRONG_PAGE_TRIES = 3
+ATTEMPTS_EXCEEDED = "page_select_attempts_exceeded"
+CAS_RETRIES = 5
 
 
 class ConnectNotConfigured(Exception):
@@ -98,7 +104,8 @@ class InvalidReturnUrl(Exception):
 
 
 class PageNotOffered(Exception):
-    """The Page id sent with a pick token is not one of the Pages offered."""
+    """The Page id sent with a pick token is not one of the Pages offered
+    (counted; the pick token survives until ``MAX_WRONG_PAGE_TRIES``)."""
 
 
 class ConnectSessionNotAuthorized(Exception):
@@ -428,7 +435,8 @@ class PartnerConnectService:
         """Spend the pick token once: a Page id makes the session AUTHORIZED,
         none (the user cancelled) CANCELLED; either answers the redirect.
         Raises ``ConnectSessionNotFound`` like the callback, and
-        ``PageNotOffered`` for a Page that was not in the list."""
+        ``PageNotOffered`` for a Page that was not in the list; the third
+        such Page id ends the session instead (``_wrong_page``)."""
         assert_configured()
         token_hash = _hash_state(pick_token)
         row = self.repo.get_by_state_hash(token_hash)
@@ -463,7 +471,7 @@ class PartnerConnectService:
             return self._redirect_response(row)
         stored = decrypt_credentials(row.credentials_json) or {}
         if page_id not in (stored.get("page_ids") or []):
-            raise PageNotOffered()
+            return self._wrong_page(row, token_hash, burnt, now)
         chosen = {"access_token": stored.get("access_token"), "page_id": page_id}
         if stored.get("dev"):
             chosen["dev"] = True
@@ -477,6 +485,41 @@ class PartnerConnectService:
         logger.info("partner connect session %s authorized for one Page", row.id)
         self.db.refresh(row)
         return self._redirect_response(row)
+
+    def _wrong_page(
+        self, row: PartnerConnectSession, token_hash: str, burnt: str, now: datetime
+    ) -> ConnectCallbackResponse:
+        """Count one wrong Page id inside the encrypted credentials with a
+        compare-and-set write, so concurrent wrong tries are each counted.
+        Below the limit raise ``PageNotOffered`` (the token stays usable);
+        at the limit end the session FAILED, clear the credentials, burn the
+        token and answer the redirect like any other ending."""
+        for _ in range(CAS_RETRIES):
+            current = row.credentials_json
+            stored = decrypt_credentials(current) if current else None
+            if row.status != "OPEN" or row.state_hash != token_hash or not stored:
+                raise ConnectSessionNotFound()
+            tries = int(stored.get("wrong_page_tries") or 0) + 1
+            if tries >= MAX_WRONG_PAGE_TRIES:
+                values = {
+                    "status": "FAILED",
+                    "error_code": ATTEMPTS_EXCEEDED,
+                    "credentials_json": None,
+                    "completed_at": now,
+                    "state_hash": burnt,
+                }
+            else:
+                values = {"credentials_json": encrypt_credentials({**stored, "wrong_page_tries": tries})}
+            if self.repo.finish_pick(row.id, token_hash, values, expected_credentials=current):
+                self.db.refresh(row)
+                if tries >= MAX_WRONG_PAGE_TRIES:
+                    logger.info("partner connect session %s: too many wrong Page ids, ended", row.id)
+                    return self._redirect_response(row)
+                logger.info("partner connect session %s: wrong Page id (%d)", row.id, tries)
+                raise PageNotOffered()
+            # Another request changed the row first: read it again and recount.
+            self.db.refresh(row)
+        raise PageNotOffered()
 
     def _finish_callback(self, row: PartnerConnectSession, values: dict) -> bool:
         """The callback's outcome, written only while the session is still OPEN

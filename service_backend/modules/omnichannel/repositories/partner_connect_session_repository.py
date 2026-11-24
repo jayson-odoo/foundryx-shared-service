@@ -128,20 +128,28 @@ class PartnerConnectSessionRepository:
         self.db.commit()
         return n == 1
 
-    def finish_pick(self, session_id: str, token_hash: str, values: dict) -> bool:
+    def finish_pick(
+        self,
+        session_id: str,
+        token_hash: str,
+        values: dict,
+        expected_credentials: Optional[str] = None,
+    ) -> bool:
         """Spend a Page pick token once: write ``values`` only while the
         session is still OPEN, claimed and holds that token's hash; False
-        when another request spent it or the session ended meanwhile."""
-        n = (
-            self.db.query(PartnerConnectSession)
-            .filter(
-                PartnerConnectSession.id == session_id,
-                PartnerConnectSession.status == "OPEN",
-                PartnerConnectSession.claimed_at.isnot(None),
-                PartnerConnectSession.state_hash == token_hash,
-            )
-            .update(values, synchronize_session=False)
+        when another request spent it or the session ended meanwhile. With
+        ``expected_credentials`` the write also needs the stored (encrypted)
+        credentials to be exactly that value, so a counter kept inside them
+        is updated compare-and-set (each Fernet token is unique)."""
+        q = self.db.query(PartnerConnectSession).filter(
+            PartnerConnectSession.id == session_id,
+            PartnerConnectSession.status == "OPEN",
+            PartnerConnectSession.claimed_at.isnot(None),
+            PartnerConnectSession.state_hash == token_hash,
         )
+        if expected_credentials is not None:
+            q = q.filter(PartnerConnectSession.credentials_json == expected_credentials)
+        n = q.update(values, synchronize_session=False)
         self.db.commit()
         return n == 1
 
