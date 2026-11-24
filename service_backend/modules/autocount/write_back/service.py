@@ -74,6 +74,7 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 )
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
+from modules.autocount.write_back.line_notes import stored_fields_changed
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
 from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
@@ -843,8 +844,19 @@ class WriteBackService(WriteFrame):
         if is_split and so_doc is not None and plan.so_dtl_key is not None:
             return self._finish_split(plan, company, client, row, reader, before, after, body, so_doc)
         result = self._finish(row, OUTCOME_DONE, document=after)
+        self._note_stored_changes(result, row, before, after)
         self._stage(company, plan.kind[0], after)
         return result
+
+    @staticmethod
+    def _note_stored_changes(result: WriteActionResult, row: AcWriteAction, before: Doc, after: Doc) -> None:
+        """Plan 73: a landed write that changed a stored field it did not intend to is a warning (names only in the
+        log, the outcome unchanged)."""
+        changed = stored_fields_changed(before, after)
+        if changed:
+            result.warnings.append(payloads.STORED_FIELDS_CHANGED)
+            logger.warning("autocount stored fields changed op=%s doc=%s fields=%s",
+                           row.id, after.get("DocKey"), ",".join(changed))
 
     def _verify_split(
         self, plan: _Plan, reader: AutoCountDocReader, before: Doc, body: Doc, after: Doc

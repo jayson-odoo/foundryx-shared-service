@@ -19,13 +19,14 @@ import copy
 import logging
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, Mapping, Optional, Protocol
+from typing import Any, Dict, List, Mapping, Optional, Protocol
 
 import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
 
 from app.secrets import decrypt_secret
 from modules.autocount.sql_source.runtime import RUNTIME, SqlSourceRuntime
+from modules.autocount.write_back import payloads
 from modules.autocount.write_back.payloads import (
     DB_UNREAD_MARKER,
     EDIT_HEADER_KEYS,
@@ -164,6 +165,34 @@ def _unread(doc: Doc) -> Doc:
     for row in out.get("Details") or []:
         row.pop(FURTHER_DESC, None)
     out[DB_UNREAD_MARKER] = True
+    return out
+
+
+def stored_fields_changed(
+    before: Any, after: Any, *, intended_header: Any = (), intended_fd_rows: Any = (),
+) -> List[str]:
+    """Plan 73 post-write check: the NAMES of the stored fields that differ between the pre-write document and the
+    read-back although the write did not intend to change them. Only when both came from the AutoCount DB (neither is
+    marked unread): every ``DB_HEADER_KEYS`` header field except ``intended_header``, and the Further Description of
+    every row present in both except ``intended_fd_rows`` (a new row is not in ``before``). The Remark2-4 mirror
+    tolerance of the read-back verifiers is deliberately NOT applied: the mirror is what this reports. Never values."""
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return []
+    if before.get(DB_UNREAD_MARKER) or after.get(DB_UNREAD_MARKER):
+        return []
+    skip = set(intended_header)
+    out: List[str] = [
+        key for key in DB_HEADER_KEYS
+        if key in before and key not in skip and not payloads._same(before.get(key), after.get(key))
+    ]
+    now = {r.get("DtlKey"): r for r in after.get("Details") or []}
+    deliberate = set(intended_fd_rows)
+    for row in before.get("Details") or []:
+        key = row.get("DtlKey")
+        if key in deliberate or key not in now or FURTHER_DESC not in row or FURTHER_DESC not in now[key]:
+            continue
+        if row[FURTHER_DESC] != now[key][FURTHER_DESC]:
+            out.append(f"Details[{key}].{FURTHER_DESC}")
     return out
 
 

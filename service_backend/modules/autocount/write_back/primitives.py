@@ -31,6 +31,7 @@ from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
 from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.repositories import CompanyRepository
 from modules.autocount.write_back import capabilities, frame, guard, payloads
+from modules.autocount.write_back.line_notes import stored_fields_changed
 from modules.autocount.write_back.client import WriteTransportError
 from modules.autocount.write_back.doc_kinds import DocKind, kind_of
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
@@ -918,12 +919,29 @@ class PrimitiveService(WriteFrame):
             extra["warnings"] = warnings
             return self._wrap(self._finish(row, OUTCOME_MISMATCH, verdict_code, message=message), **extra)
         extra["warnings"] = warnings
+        self._note_stored_changes(call, row, before, after, warnings)
         if call.primitive == CREATE:
             row.doc_key = after.get("DocKey")
         result = self._finish(row, OUTCOME_DONE, document=after, message=message)
         if call.kind != "QT" and call.stage:
             self._stage(company, call.kind, after)
         return self._wrap(result, **extra)
+
+    @staticmethod
+    def _note_stored_changes(call: _Call, row: AcWriteAction, before: Optional[Doc], after: Doc,
+                             warnings: List[str]) -> None:
+        """Plan 73: a landed PO / SPO write that changed a stored field it did not intend to is a warning (names
+        only in the log, the outcome unchanged)."""
+        if call.kind not in ("PO", "SPO") or before is None or call.primitive == CREATE:
+            return
+        fd_rows = [c.get("DtlKey") for c in call.line_changes or () if payloads.FURTHER_DESC in c]
+        changed = stored_fields_changed(before, after, intended_header=call.header_changes or (),
+                                        intended_fd_rows=fd_rows)
+        if changed:
+            if payloads.STORED_FIELDS_CHANGED not in warnings:
+                warnings.append(payloads.STORED_FIELDS_CHANGED)
+            logger.warning("autocount stored fields changed op=%s doc=%s fields=%s",
+                           call.operation_id or row.id, after.get("DocKey"), ",".join(changed))
 
     def _read_back(
         self, call: _Call, reader: Any, answer: Any, request: VendorRequest,

@@ -746,6 +746,8 @@ class OperationService:
         return (datetime.now(timezone.utc) - made).total_seconds() >= LOOKUP_SETTLE_SECONDS
 
     def _step(self, name: str, res: PrimitiveResult) -> None:
+        if payloads.STORED_FIELDS_CHANGED in (res.warnings or ()) and payloads.STORED_FIELDS_CHANGED not in self._warnings:
+            self._warnings.append(payloads.STORED_FIELDS_CHANGED)  # plan 73: the operation says so too
         self._steps.append({"step": name, "outcome": res.outcome, "code": res.error_code,
                             "actionId": res.action_id, "newDtlKey": res.new_dtl_key,
                             "at": _iso_z(datetime.now(timezone.utc))})

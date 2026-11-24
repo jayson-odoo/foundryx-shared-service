@@ -148,6 +148,9 @@ _NOTES_KINDS = ("PO", "SPO")
 DB_UNREAD_MARKER = "_dbUnread"  # set on a PO / SPO the AutoCount DB could not be read for; never in any key list, never sent
 
 
+STORED_FIELDS_CHANGED = "STORED_FIELDS_CHANGED"
+
+
 def public_doc(doc: Any) -> Any:
     """Plan 73: ``doc`` without the internal unread marker, for anything stored or returned (the document shape of
     contract 57 never carries it). Copies only when the marker is there; anything else is returned as is."""
