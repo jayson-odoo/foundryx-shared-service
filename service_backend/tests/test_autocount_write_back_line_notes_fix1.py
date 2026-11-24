@@ -41,10 +41,10 @@ class _KnownThenUnknown:
     def __init__(self, ac):
         self.ac = ac
 
-    def notes(self, kind, doc):
+    def read(self, kind, doc):
         if self.ac.put_calls:
             return None
-        return {r.get("DtlKey"): "" for r in doc.get("Details") or []}
+        return {"header": {}, "rows": {r.get("DtlKey"): {"FurtherDescription": ""} for r in doc.get("Details") or []}}
 
 
 def _strip_fd_after_put(h):
@@ -75,7 +75,7 @@ def test_split_link_restore_uses_the_note_sent_in_put_1_when_the_readback_has_no
 
 def test_split_link_restore_that_cannot_be_built_is_a_clean_mismatch(h, monkeypatch):
     def refuse(*a, **k):
-        raise P.WriteRefusal(P.LINE_NOTES_UNKNOWN, P.LINE_NOTES_UNKNOWN_MESSAGE, plain=True)
+        raise P.WriteRefusal(P.AUTOCOUNT_DB_UNREAD, P.AUTOCOUNT_DB_UNREAD_MESSAGE, plain=True)
 
     monkeypatch.setattr(P, "build_restore_transfer_row", refuse)
     res = h.link_split()
@@ -93,10 +93,10 @@ class _OpKnownThenUnknown:
     def __init__(self, vendor):
         self.vendor = vendor
 
-    def notes(self, kind, doc):
+    def read(self, kind, doc):
         if self.vendor.writes():
             return None
-        return {r.get("DtlKey"): "" for r in doc.get("Details") or []}
+        return {"header": {}, "rows": {r.get("DtlKey"): {"FurtherDescription": ""} for r in doc.get("Details") or []}}
 
 
 def _op_strip_fd_after_put(vendor):
@@ -148,4 +148,4 @@ def test_recover_re_adds_the_row_and_logs_the_code_when_the_snapshot_has_no_fd(o
     with caplog.at_level("WARNING", logger="foundryx.autocount"):
         res = h.run("link_row", w.params["link_row"])
     assert res.outcome == "recovered"  # not stranded: the deleted row is back
-    assert any(P.LINE_NOTES_UNKNOWN in r.getMessage() for r in caplog.records)
+    assert any(P.AUTOCOUNT_DB_UNREAD in r.getMessage() for r in caplog.records)

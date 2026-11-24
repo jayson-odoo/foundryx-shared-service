@@ -1,10 +1,10 @@
 """Plan 73 (RED): a PO / SPO write keeps the line Further Description (FD, RTF with pictures).
 
 Contract under test (documentation/plans/sprint-5/73-po-link-keep-further-desc.md):
-``modules.autocount.write_back.line_notes`` (LineNotesSource, HapiLineNotes, attach_line_notes,
-NotesReader) and the ``payloads`` builders (append_note, FURTHER_DESC, LINE_NOTES_UNKNOWN).
+``modules.autocount.write_back.line_notes`` (DocDbSource, attach_db_doc,
+NotesReader) and the ``payloads`` builders (append_note, FURTHER_DESC, AUTOCOUNT_DB_UNREAD).
 Every row a builder re-sends or copies carries the source row's FD byte for byte; a new linked
-row gets the S/O note appended; an unknown FD is refused (``LINE_NOTES_UNKNOWN``) before any PUT.
+row gets the S/O note appended; an unknown FD is refused (``AUTOCOUNT_DB_UNREAD``) before any PUT.
 """
 
 from __future__ import annotations
@@ -95,14 +95,14 @@ def _link_line(source, so_dtl=800101, qty=1, **over):
 def _refuses(fn):
     with pytest.raises(WriteRefusal) as exc:
         fn()
-    assert exc.value.code == "LINE_NOTES_UNKNOWN"
+    assert exc.value.code == "AUTOCOUNT_DB_UNREAD"
 
 
 # ---- constants + append_note --------------------------------------------------------------------
 
 def test_constants():
     assert P.FURTHER_DESC == "FurtherDescription"
-    assert P.LINE_NOTES_UNKNOWN == "LINE_NOTES_UNKNOWN"
+    assert P.AUTOCOUNT_DB_UNREAD == "AUTOCOUNT_DB_UNREAD"
 
 
 def test_append_note_empty_fd_is_the_default_wrapper():
@@ -137,46 +137,6 @@ def test_append_note_fd_already_holding_the_note_is_unchanged():
 
 # ---- line_notes module --------------------------------------------------------------------------
 
-def test_hapi_line_notes_reads_every_row_fd():
-    from modules.autocount.write_back.line_notes import HapiLineNotes
-
-    doc = _po()
-    assert HapiLineNotes().notes("PO", doc) == dict(zip(_keys(doc), (FD1, FD2, FD3)))
-
-
-def test_hapi_line_notes_one_row_without_the_key_is_unknown():
-    from modules.autocount.write_back.line_notes import HapiLineNotes
-
-    assert HapiLineNotes().notes("PO", _without_fd(_po(), 1)) is None
-
-
-def test_hapi_line_notes_empty_fd_is_a_known_empty_note():
-    from modules.autocount.write_back.line_notes import HapiLineNotes
-
-    doc = _po(fds=("", "", ""))
-    assert HapiLineNotes().notes("PO", doc) == {k: "" for k in _keys(doc)}
-
-
-def test_attach_line_notes_sets_every_row_and_defaults_missing_keys_to_empty():
-    from modules.autocount.write_back.line_notes import attach_line_notes
-
-    doc = _po(fds=(None, None, None))
-    before = copy.deepcopy(doc)
-    k0, k1, k2 = _keys(doc)
-    out = attach_line_notes(doc, {k0: FD1, k2: FD3})
-    assert [r["FurtherDescription"] for r in out["Details"]] == [FD1, "", FD3]
-    assert doc == before  # input not mutated
-    assert out is not doc
-
-
-def test_attach_line_notes_unknown_returns_the_doc_unchanged():
-    from modules.autocount.write_back.line_notes import attach_line_notes
-
-    doc = _po(fds=(None, None, None))
-    out = attach_line_notes(doc, None)
-    assert out == doc and all("FurtherDescription" not in r for r in out["Details"])
-
-
 class _InnerReader:
     def __init__(self, docs):
         self.docs = docs
@@ -196,15 +156,17 @@ class _InnerReader:
 
 
 class _Source:
+    """A DocDbSource: the stored header (none) and every row's Further Description."""
+
     def __init__(self, answer=None):
         self.calls: List[Any] = []
         self.answer = answer
 
-    def notes(self, kind, doc):
+    def read(self, kind, doc):
         self.calls.append((kind, doc["DocKey"]))
         if self.answer is not None:
             return self.answer
-        return dict(zip(_keys(doc), (FD1, FD2, FD3)))
+        return {"header": {}, "rows": {k: {"FurtherDescription": fd} for k, fd in zip(_keys(doc), (FD1, FD2, FD3))}}
 
 
 @pytest.mark.parametrize("kind", ["PO", "SPO"])
@@ -230,15 +192,16 @@ def test_notes_reader_leaves_so_and_qt_untouched(kind):
     assert source.calls == []
 
 
-def test_notes_reader_unknown_source_leaves_rows_without_the_key():
+@pytest.mark.parametrize("source", [None, "read_none"])
+def test_notes_reader_unread_db_leaves_rows_without_the_key_even_when_hapi_carries_it(source):
     from modules.autocount.write_back.line_notes import NotesReader
 
-    class _Unknown:
-        def notes(self, kind, doc):
+    class _Unread:
+        def read(self, kind, doc):
             return None
 
-    doc = _po(fds=(None, None, None))
-    got = NotesReader(_InnerReader({"PO": doc}), _Unknown()).get_document("PO", 7001, None)
+    doc = _po()  # the vendor GET itself carries FurtherDescription on every row
+    got = NotesReader(_InnerReader({"PO": doc}), None if source is None else _Unread()).get_document("PO", 7001, None)
     assert all("FurtherDescription" not in r for r in got["Details"])
 
 
@@ -467,9 +430,9 @@ class _FakeSource:
     def __init__(self):
         self.calls = 0
 
-    def notes(self, kind, doc):
+    def read(self, kind, doc):
         self.calls += 1
-        return {r["DtlKey"]: FD1 for r in doc["Details"]}
+        return {"header": {}, "rows": {r["DtlKey"]: {"FurtherDescription": FD1} for r in doc["Details"]}}
 
 
 def _patch_source(monkeypatch, source):
@@ -478,21 +441,21 @@ def _patch_source(monkeypatch, source):
     monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: source, raising=False)
 
 
-def test_link_row_without_any_line_notes_source_is_refused_and_nothing_is_put(h, monkeypatch):
+def test_link_row_without_any_db_source_is_refused_and_nothing_is_put(h, monkeypatch):
     world = World(h)  # the fake PO read carries no FurtherDescription
     _patch_source(monkeypatch, None)
     res = h.run("link_row", world.params["link_row"])
-    assert (res.outcome, res.error_code) == ("refused", "LINE_NOTES_UNKNOWN"), (res.outcome, res.error_code)
+    assert (res.outcome, res.error_code) == ("refused", "AUTOCOUNT_DB_UNREAD"), (res.outcome, res.error_code)
     assert [c for c in h.vendor.calls if c.method == "PUT"] == []
     assert h.vendor.writes() == []
 
 
-def test_link_row_with_a_line_notes_source_sends_the_fd_on_the_new_row(h, monkeypatch):
+def test_link_row_with_a_db_source_sends_the_fd_on_the_new_row(h, monkeypatch):
     world = World(h)
     source = _FakeSource()
     _patch_source(monkeypatch, source)
     res = h.run("link_row", world.params["link_row"])
-    assert res.error_code != "LINE_NOTES_UNKNOWN", res
+    assert res.error_code != "AUTOCOUNT_DB_UNREAD", res
     puts = [c for c in h.vendor.writes() if c.method == "PUT"]
     assert puts and source.calls >= 1
     sent = [r for c in puts for r in c.body["Details"] if r.get("FullTransferOption") != "D"]
@@ -502,15 +465,3 @@ def test_link_row_with_a_line_notes_source_sends_the_fd_on_the_new_row(h, monkey
     for r in sent:  # no later write (the restore PUT) swaps the FD for a bare note
         if "FurtherDescription" in r:
             assert PICT1 in r["FurtherDescription"]
-
-
-def test_link_row_when_the_vendor_read_itself_carries_fd_needs_no_source(h, monkeypatch):
-    world = World(h)
-    for r in h.vendor.rows("PO", 7001):  # the vendor adds FurtherDescription to every PO GET row
-        r["FurtherDescription"] = FD1
-    _patch_source(monkeypatch, None)
-    res = h.run("link_row", world.params["link_row"])
-    assert res.error_code != "LINE_NOTES_UNKNOWN", res
-    puts = [c for c in h.vendor.writes() if c.method == "PUT"]
-    (new,) = [r for r in puts[0].body["Details"] if r["DtlKey"] == 0]
-    assert new["FurtherDescription"].startswith(FD1[:-1]) and PICT1 in new["FurtherDescription"]

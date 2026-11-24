@@ -906,12 +906,20 @@ def key_limit_redis(monkeypatch):
     _reset_key_limit_state(key_limits)
 
 
-class _KnownEmptyLineNotes:
-    """Plan 73 test default: every PO / SPO row's Further Description is known and empty (the fake vendor's
-    GET never carries the key, like hapi). A test that cares patches ``WriteFrame._line_notes_source``."""
+class _EchoDocDb:
+    """Plan 73 test default: the AutoCount DB read echoes the document's own header and rows, every row's Further
+    Description as the GET carries it (else empty). A test that cares patches ``WriteFrame._line_notes_source``."""
 
-    def notes(self, kind, doc):
-        return {row.get("DtlKey"): "" for row in doc.get("Details") or []}
+    def read(self, kind, doc):
+        from modules.autocount.write_back.line_notes import DB_HEADER_KEYS, DB_ROW_KEYS
+
+        header = {k: doc[k] for k in DB_HEADER_KEYS if k in doc}
+        rows = {}
+        for row in doc.get("Details") or []:
+            stored = {k: row[k] for k in DB_ROW_KEYS if k in row}
+            stored["FurtherDescription"] = row.get("FurtherDescription", "")
+            rows[row.get("DtlKey")] = stored
+        return {"header": header, "rows": rows}
 
 
 @pytest.fixture(autouse=True)
@@ -921,4 +929,4 @@ def _default_line_notes_source(monkeypatch):
         return
     from modules.autocount.write_back.frame import WriteFrame
 
-    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _KnownEmptyLineNotes(), raising=False)
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _EchoDocDb(), raising=False)

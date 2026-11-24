@@ -36,10 +36,10 @@ class _UnknownAfterPut:
     def __init__(self, vendor):
         self.vendor = vendor
 
-    def notes(self, kind, doc):
+    def read(self, kind, doc):
         if puts(self.vendor_h):
             return None
-        return {r.get("DtlKey"): "" for r in doc.get("Details") or []}
+        return {"header": {}, "rows": {r.get("DtlKey"): {"FurtherDescription": ""} for r in doc.get("Details") or []}}
 
 
 def _notes_vanish_after_put(h, monkeypatch):
@@ -90,8 +90,16 @@ FD = (r"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Arial;}}\viewkind4\uc1
       r"{\pict\pngblip\picw10\pich10 " + PICT + "}\\par\r\n}")
 
 
+class _EchoFd:
+    """The DB read of a vendor whose rows hold the stored FD: each row's own FurtherDescription, empty if none."""
+
+    def read(self, kind, doc):
+        return {"header": {}, "rows": {r.get("DtlKey"): {"FurtherDescription": r.get("FurtherDescription", "")}
+                                       for r in doc.get("Details") or []}}
+
+
 def _po_rows_carry_fd(h, monkeypatch):
-    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: None)  # hapi's own FD only
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _EchoFd())
     for r in h.vendor.rows("PO", 7001):
         r["FurtherDescription"] = FD
 
