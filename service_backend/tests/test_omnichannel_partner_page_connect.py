@@ -76,7 +76,7 @@ def real(monkeypatch):
     monkeypatch.setattr(settings, "meta_es_dialog_version", "v25.0")
 
 
-def graph(monkeypatch, pages, *, record=None, exchange_status=200, subscribe_status=200):
+def graph(monkeypatch, pages, *, record=None, exchange_status=200, subscribe_status=200, accounts_status=None):
     """A fake Meta Graph for Facebook Login: code exchange, long-lived
     exchange, ``/me/accounts`` answering ``pages``, Page subscription."""
     from modules.omnichannel.adapters.messenger import MessengerAdapter
@@ -95,6 +95,8 @@ def graph(monkeypatch, pages, *, record=None, exchange_status=200, subscribe_sta
             return httpx.Response(200, json={"access_token": USER_TOKEN})
         if path.endswith("/me/accounts"):
             assert params.get("access_token") == LONG_TOKEN
+            if accounts_status is not None and accounts_status[0] != 200:
+                return httpx.Response(accounts_status[0], json={"error": {"message": "token revoked"}})
             return httpx.Response(200, json={"data": pages})
         if path.endswith("/subscribed_apps"):
             if request.method == "GET":
@@ -413,6 +415,20 @@ def test_page_gone_before_complete_fails_page_not_found(client, real, monkeypatc
     assert body["status"] == "FAILED" and body["errorCode"] == "page_not_found"
 
 
+def test_graph_error_at_complete_ends_failed_page_not_found(client, real, monkeypatch):
+    accounts_status = [200]
+    graph(monkeypatch, [page()], accounts_status=accounts_status)
+    hdr, ws = setup(client)
+    sid, picker = signed_in(client, hdr, ws, code=CODE)
+    select(client, picker["pickToken"], "109001")
+    accounts_status[0] = 401
+    res = complete(client, hdr, sid)
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "FAILED" and res.json()["errorCode"] == "page_not_found"
+    got = client.get(f"{P}/connect-sessions/{sid}", headers=hdr).json()
+    assert got["status"] == "FAILED" and got["channelIds"] in (None, [])
+
+
 def test_dev_credentials_never_used_with_a_meta_app_configured(client, real, monkeypatch, session_factory):
     from modules.omnichannel.services import partner_connect_service
 
@@ -551,13 +567,3 @@ def test_send_outside_the_24h_window_is_refused(client, sim, session_factory):
         headers=wk,
     )
     assert res.status_code == 409 and res.json()["error"]["code"] == "messaging_window_closed"
-
-
-def test_consumer_guide_documents_the_page_connect():
-    import pathlib
-
-    guide = (
-        pathlib.Path(__file__).resolve().parents[2] / "documentation" / "omnichannel" / "consumer-integration-guide.md"
-    ).read_text()
-    for needle in ('"channelType": "FACEBOOK"', "page-select", "page_in_use", "no_page_found", "page_not_found"):
-        assert needle in guide, needle

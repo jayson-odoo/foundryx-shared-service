@@ -51,6 +51,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 
 from ..adapters import get_adapter as get_channel_adapter
+from ..adapters.base import CodeExchangeError
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, PartnerConnectSession
 from ..origins import InvalidOrigin, _validate_origin
@@ -640,7 +641,11 @@ class PartnerConnectService:
         user_credentials = {"access_token": credentials["access_token"]}
         if dev:
             user_credentials["dev"] = True
-        pages = adapter.list_pages(user_credentials)
+        try:
+            pages = adapter.list_pages(user_credentials)
+        except CodeExchangeError:
+            logger.warning("partner connect session %s: the Pages could not be read", row.id)
+            pages = []
         page = next((p for p in pages or [] if isinstance(p, dict) and str(p.get("id")) == page_id), None)
         created: List[Channel] = [
             c
