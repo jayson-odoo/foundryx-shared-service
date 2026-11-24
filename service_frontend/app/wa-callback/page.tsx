@@ -31,7 +31,9 @@ import { useFxControls } from '@/hooks/use-fx';
  * `pagePicker` instead of a redirect: the page lists the Pages the person can
  * manage (only those that would connect something), and the choice or a
  * cancel is posted with the single-use pick token; that answer carries the
- * redirect.
+ * redirect. A pick that ends the session instead (too many Page ids that
+ * were not on the list: `status=failed`) answers a redirect too and is
+ * followed the same way; any refusal shows the neutral message.
  */
 
 interface PageOption {

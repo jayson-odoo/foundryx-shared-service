@@ -264,12 +264,94 @@ def test_callback_state_and_pick_token_each_work_once(client, sim):
     assert select(client, "never-issued", "pg-701").json() == SESSION_NOT_FOUND
 
 
-def test_a_page_that_was_not_offered_is_refused_and_the_token_stays_usable(client, sim):
+def _wrong_tries(session_factory, sid):
+    from modules.omnichannel.security import decrypt_credentials
+
+    row = session_row(session_factory, sid)
+    return (decrypt_credentials(row.credentials_json) or {}).get("wrong_page_tries", 0)
+
+
+def test_a_page_that_was_not_offered_is_refused_counted_and_the_token_stays_usable(
+    client, sim, session_factory
+):
     hdr, ws = setup(client)
     sid, picker = signed_in(client, hdr, ws)
-    bad = select(client, picker["pickToken"], "pg-someone-else")
-    assert bad.status_code == 422 and bad.json()["error"]["code"] == "invalid_page"
-    assert select(client, picker["pickToken"], "pg-702").status_code == 200
+    for n in (1, 2):
+        bad = select(client, picker["pickToken"], "pg-someone-else")
+        assert bad.status_code == 422 and bad.json()["error"]["code"] == "invalid_page"
+        assert _wrong_tries(session_factory, sid) == n
+        assert session_row(session_factory, sid).status == "OPEN"
+    ok = select(client, picker["pickToken"], "pg-702")
+    assert ok.status_code == 200
+    assert query(ok.json()["redirect"])["status"] == ["authorized"]
+    # The chosen credentials carry no counter forward.
+    assert _wrong_tries(session_factory, sid) == 0
+
+
+def test_the_third_wrong_page_ends_the_session_and_burns_the_token(client, sim, session_factory):
+    hdr, ws = setup(client)
+    sid, picker = signed_in(client, hdr, ws)
+    before = session_row(session_factory, sid).state_hash
+    for _ in range(2):
+        assert select(client, picker["pickToken"], "pg-nope").status_code == 422
+    end = select(client, picker["pickToken"], "pg-nope")
+    assert end.status_code == 200, end.text
+    q = query(end.json()["redirect"])
+    assert q["status"] == ["failed"] and q["session"] == [sid] and q["state"] == ["nonce-page"]
+    row = session_row(session_factory, sid)
+    assert row.status == "FAILED" and row.error_code == "page_select_attempts_exceeded"
+    assert row.credentials_json is None and row.completed_at is not None
+    assert row.state_hash != before
+    got = client.get(f"{P}/connect-sessions/{sid}", headers=hdr).json()
+    assert got["status"] == "FAILED" and got["errorCode"] == "page_select_attempts_exceeded"
+    # Replay after the burn: the uniform 404, also with a Page from the list.
+    for page_id in ("pg-701", "pg-nope", None):
+        again = select(client, picker["pickToken"], page_id)
+        assert again.status_code == 404 and again.json() == SESSION_NOT_FOUND
+    assert complete(client, hdr, sid).status_code == 409
+
+
+def test_wrong_pages_count_toward_the_per_ip_throttle(client, sim, monkeypatch):
+    hdr, ws = setup(client)
+    _, picker = signed_in(client, hdr, ws)
+    _, other = signed_in(client, hdr, ws)
+    monkeypatch.setattr(settings, "throttle_embed_max_fails", 2)
+    assert select(client, picker["pickToken"], "pg-nope").status_code == 422
+    assert select(client, other["pickToken"], "pg-nope").status_code == 422
+    blocked = select(client, other["pickToken"], "pg-701")
+    assert blocked.status_code == 429 and blocked.headers.get("Retry-After")
+
+
+def test_a_lost_compare_and_set_recounts_instead_of_losing_a_try(client, sim, session_factory, monkeypatch):
+    """Two wrong tries racing: the one whose write loses re-reads the row
+    and counts on top of the winner's write."""
+    from modules.omnichannel.repositories import partner_connect_session_repository as repo_mod
+    from modules.omnichannel.security import decrypt_credentials, encrypt_credentials
+
+    hdr, ws = setup(client)
+    sid, picker = signed_in(client, hdr, ws)
+    real = repo_mod.PartnerConnectSessionRepository.finish_pick
+    raced = {"done": False}
+
+    def racing(self, session_id, token_hash, values, expected_credentials=None):
+        if expected_credentials is not None and not raced["done"]:
+            raced["done"] = True
+            # A concurrent wrong try lands first.
+            stored = decrypt_credentials(expected_credentials)
+            self.db.query(repo_mod.PartnerConnectSession).filter(
+                repo_mod.PartnerConnectSession.id == session_id
+            ).update(
+                {"credentials_json": encrypt_credentials({**stored, "wrong_page_tries": 1})},
+                synchronize_session=False,
+            )
+            self.db.commit()
+        return real(self, session_id, token_hash, values, expected_credentials)
+
+    monkeypatch.setattr(repo_mod.PartnerConnectSessionRepository, "finish_pick", racing)
+    assert select(client, picker["pickToken"], "pg-nope").status_code == 422
+    assert _wrong_tries(session_factory, sid) == 2
+    end = select(client, picker["pickToken"], "pg-nope")
+    assert query(end.json()["redirect"])["status"] == ["failed"]
 
 
 def test_cancel_on_the_page_list_ends_the_session(client, sim, session_factory):
