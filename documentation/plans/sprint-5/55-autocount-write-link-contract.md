@@ -516,7 +516,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
 | `refused` | 422 | `LOCATION_UNKNOWN` | Plan 70: a `location` the request names is not in AutoCount's Location master; nothing written, key released. `message` is a plain reason to show as is ("Location X does not exist in AutoCount, so nothing was changed. ...") |
-| `refused` | 409 | `AUTOCOUNT_DB_UNREAD` | Plan 73: the PO / SPO could not be read from the AutoCount DB; nothing sent to AutoCount, retry-safe. `message` is plain text to show as is: "The purchase order could not be read from AutoCount, so the change was not made. Try again." |
+| `refused` | 409 | `AUTOCOUNT_DB_UNREAD` | Plan 73: only when a line notes database is set for the company and it cannot be read (a company with none set writes as before); nothing sent to AutoCount, retry-safe. `message` is plain text to show as is: "The purchase order could not be read from AutoCount, so the change was not made. Try again." |
 | `refused` | 409 | any code below | Refused before anything was written |
 | `mismatch` | 502 | `READBACK_MISMATCH` | AutoCount accepted the write but the document read back differently from what was sent |
 | `mismatch` | 502 | `ROW_VALUES_NOT_KEPT` | Split link: the link landed, but the new row's unit price or delivery date could not be put back to the PO row's values (section 5) |
@@ -531,7 +531,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 
 | errorCode | Meaning | CRM action |
 |---|---|---|
-| `AUTOCOUNT_DB_UNREAD` | Plan 73: every PO / SPO write reads the document from the AutoCount DB first (read-modify-write) and could not | Retry later; the message is plain text to show |
+| `AUTOCOUNT_DB_UNREAD` | Plan 73: a company with a line notes database set reads the document from it first (read-modify-write) and could not | Retry later; the message is plain text to show |
 | `DOC_BUSY` | Another write on the same document is in flight, or ended `pending_verification` less than 10 minutes ago | Wait and retry; after 10 minutes an unfinished action no longer blocks |
 | `DOC_UNKNOWN` | The document is not in the synced copy, so its date is unknown | Run or wait for the doc sync, then retry |
 | `DOC_STALE` | `expectedLastModified` no longer matches: the document changed in AutoCount | Refresh the document, re-check the row, retry with the new `LastModified` |

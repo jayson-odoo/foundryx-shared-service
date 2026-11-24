@@ -19,9 +19,9 @@ class _ReadNone:
         return None
 
 
-@pytest.fixture(params=["no_source", "read_none"])
+@pytest.fixture(params=["read_none"])
 def unread(request, monkeypatch):
-    source = None if request.param == "no_source" else _ReadNone()
+    source = _ReadNone()
     monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: source)
 
 

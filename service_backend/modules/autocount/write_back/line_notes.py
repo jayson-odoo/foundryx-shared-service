@@ -28,6 +28,7 @@ from app.secrets import decrypt_secret
 from modules.autocount.sql_source.runtime import RUNTIME, SqlSourceRuntime
 from modules.autocount.write_back import payloads
 from modules.autocount.write_back.payloads import (
+    DB_LEGACY_MARKER,
     DB_UNREAD_MARKER,
     EDIT_HEADER_KEYS,
     FURTHER_DESC,
@@ -177,6 +178,16 @@ def attach_db_doc(doc: Doc, db: Optional[Mapping[str, Any]]) -> Doc:
     return out
 
 
+def _legacy(doc: Doc) -> Doc:
+    """Legacy mode (no source set): the GET document as it is, without any Further Description (none is ever re-sent)
+    and marked so the builders neither refuse nor require it."""
+    out = copy.deepcopy(doc)
+    for row in out.get("Details") or []:
+        row.pop(FURTHER_DESC, None)
+    out[DB_LEGACY_MARKER] = True
+    return out
+
+
 def _unread(doc: Doc) -> Doc:
     """The GET document marked unread: the database could not be read, so no PO / SPO body may be built from it, and
     the vendor's own Further Description is not trusted (dropped)."""
@@ -197,7 +208,8 @@ def stored_fields_changed(
     tolerance of the read-back verifiers is deliberately NOT applied: the mirror is what this reports. Never values."""
     if not isinstance(before, dict) or not isinstance(after, dict):
         return []
-    if before.get(DB_UNREAD_MARKER) or after.get(DB_UNREAD_MARKER):
+    if (before.get(DB_UNREAD_MARKER) or after.get(DB_UNREAD_MARKER)
+            or before.get(DB_LEGACY_MARKER) or after.get(DB_LEGACY_MARKER)):
         return []
     skip = set(intended_header)
     out: List[str] = [
@@ -229,7 +241,9 @@ class NotesReader:
     def _enrich(self, kind: str, doc: Doc) -> Doc:
         if kind not in NOTES_KINDS or not isinstance(doc, dict):
             return doc
-        stored = self._source.read(kind, doc) if self._source is not None else None
+        if self._source is None:  # no line notes database set: legacy mode, never a refusal (crew ruling s20)
+            return _legacy(doc)
+        stored = self._source.read(kind, doc)
         return attach_db_doc(doc, stored) if stored is not None else _unread(doc)
 
     def get_document(self, kind: str, doc_key: int, doc_date: Any, doc_no: Optional[str] = None) -> Doc:

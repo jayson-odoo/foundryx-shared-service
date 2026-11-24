@@ -287,11 +287,11 @@ def _no_puts(h):
     assert h.vendor.writes() == []
 
 
-@pytest.mark.parametrize("source", ["none", "read_none"])
+@pytest.mark.parametrize("source", ["read_none"])
 @pytest.mark.parametrize("op", ["link_row", "unlink_row", "relink_row", "split_link"])
 def test_operation_refused_before_any_put_when_the_db_is_unread(h, monkeypatch, source, op):
     world = World(h)
-    _patch(monkeypatch, None if source == "none" else _NoRead())
+    _patch(monkeypatch, _NoRead())
     params = dict(world.params["relink_row" if op == "relink_row" else op if op != "split_link" else "link_row"])
     if op == "split_link":
         params = dict(po_doc_key=7001, po_dtl_key=world.p_free, so_doc_key=7002, so_dtl_key=world.so_a, qty=2)
@@ -305,7 +305,7 @@ def test_hapi_fd_alone_is_not_enough_the_header_must_be_read_from_the_db_too(h, 
     world = World(h)
     for r in h.vendor.rows("PO", 7001):
         r["FurtherDescription"] = FD1  # even when the vendor GET carried FD on every row
-    _patch(monkeypatch, None)
+    _patch(monkeypatch, _NoRead())
     res = h.run("link_row", world.params["link_row"])
     assert (res.outcome, res.error_code) == ("refused", UNREAD)
     _no_puts(h)
@@ -313,7 +313,7 @@ def test_hapi_fd_alone_is_not_enough_the_header_must_be_read_from_the_db_too(h, 
 
 def test_primitive_edit_refused_before_any_put_when_the_db_is_unread(h, monkeypatch):
     world = World(h)
-    _patch(monkeypatch, None)
+    _patch(monkeypatch, _NoRead())
     res = h.edit("PO", 7001, line_changes=[{"DtlKey": world.p_free, "Qty": 2}])
     assert (res.outcome, res.error_code) == ("refused", UNREAD), (res.outcome, res.error_code)
     _no_puts(h)
@@ -321,7 +321,7 @@ def test_primitive_edit_refused_before_any_put_when_the_db_is_unread(h, monkeypa
 
 def test_a_refused_unread_link_locks_nothing_and_a_retry_runs(h, monkeypatch):
     world = World(h)
-    _patch(monkeypatch, None)
+    _patch(monkeypatch, _NoRead())
     first = h.run("link_row", world.params["link_row"], key="k-1")
     assert first.error_code == UNREAD
     _patch(monkeypatch, _FakeDbSource())

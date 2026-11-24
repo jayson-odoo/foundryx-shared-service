@@ -441,9 +441,14 @@ def _patch_source(monkeypatch, source):
     monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: source, raising=False)
 
 
-def test_link_row_without_any_db_source_is_refused_and_nothing_is_put(h, monkeypatch):
+class _UnreadSource:
+    def read(self, kind, doc):
+        return None
+
+
+def test_link_row_with_an_unreadable_db_source_is_refused_and_nothing_is_put(h, monkeypatch):
     world = World(h)  # the fake PO read carries no FurtherDescription
-    _patch_source(monkeypatch, None)
+    _patch_source(monkeypatch, _UnreadSource())
     res = h.run("link_row", world.params["link_row"])
     assert (res.outcome, res.error_code) == ("refused", "AUTOCOUNT_DB_UNREAD"), (res.outcome, res.error_code)
     assert [c for c in h.vendor.calls if c.method == "PUT"] == []

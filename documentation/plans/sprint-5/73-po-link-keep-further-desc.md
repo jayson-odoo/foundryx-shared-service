@@ -74,3 +74,13 @@ through it. It prints one line per company (id and `OK`, `NO_CONNECTION` or `REA
 value or credential) and exits 1 unless every company is OK (0 also when no company can write). `scripts/blue_green_deploy.sh`
 runs it in the NEW backend container after the health wait and before the Caddy swap; on failure the new color is stopped and
 the old color keeps serving.
+
+## Legacy mode (crew ruling s20)
+A write never refuses before a line notes connection is set. When no source resolves (no explicit
+`line_notes_connection_id`, and the company's own source is not an active same-tenant `sql_database` connection) the
+document is read in legacy mode: no DB read, no `AUTOCOUNT_DB_UNREAD`, kept and re-sent rows carry no FurtherDescription,
+the S/O note on the new linked row is AutoCount's default wrapper holding the note (as before plan 73), and the header
+omits every text field the read returned blank (never `""`). No `STORED_FIELDS_CHANGED` check. Only a resolved source whose
+read fails is a refusal (DB mode). `check-line-notes` prints `NO_CONNECTION` for a company in legacy mode but exits 0; it
+exits 1 only on `READ_FAILED`.
+

@@ -193,7 +193,8 @@ def _header_unchanged(before: Doc, after: Doc, body: Doc) -> bool:
     """Every header field read before the write (and every one we sent) reads
     back unchanged, except the audit stamps, the vendor-computed totals and the
     vendor's Remark1 mirror (plan 65 D1, the one helper every PO verify uses)."""
-    keys = {k for k in list(before) + list(body) if k != "Details"}
+    keys = {k for k in list(before) + list(body) if k != "Details"
+            and k not in (payloads.DB_UNREAD_MARKER, payloads.DB_LEGACY_MARKER)}
     for key in keys:
         if key.startswith(_HEADER_FREE_PREFIXES) or key in _HEADER_FREE_TOTALS:
             continue

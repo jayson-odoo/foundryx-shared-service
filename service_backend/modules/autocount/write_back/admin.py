@@ -4,8 +4,8 @@
         --tenant-slug <slug> --company-id <uuid> --connection-id <uuid>
     python -m modules.autocount.write_back.admin set-line-notes-connection \\
         --tenant-slug <slug> --company-id <uuid> [--connection-id <uuid>]   (omit = clear)
-    python -m modules.autocount.write_back.admin check-line-notes   (release guard: exit 1 unless every write-enabled
-        company's line notes database answers a read-only probe)
+    python -m modules.autocount.write_back.admin check-line-notes   (release guard: exit 1 only when a set line notes
+        database fails its read-only probe; a company with none is printed NO_CONNECTION, exit 0)
 
 Prints a result code only, never a URL.
 """
@@ -16,7 +16,7 @@ import argparse
 from typing import Optional, Sequence
 
 from modules.autocount.services.company_service import AutocountServiceError, CompanyService
-from modules.autocount.write_back.line_notes_check import OK, check_line_notes
+from modules.autocount.write_back.line_notes_check import READ_FAILED, check_line_notes
 from modules.autocount.write_back.service import WriteConnectionError, set_write_connection
 
 
@@ -42,7 +42,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             results = check_line_notes(db)
         for company_id, code in results:
             print(f"{company_id} {code}")
-        return 0 if all(code == OK for _id, code in results) else 1
+        return 1 if any(code == READ_FAILED for _id, code in results) else 0  # NO_CONNECTION is a warning only
 
     with SessionLocal() as db:
         tenant = db.query(Tenant).filter(Tenant.slug == args.tenant_slug).first()

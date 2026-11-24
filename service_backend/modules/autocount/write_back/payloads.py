@@ -108,10 +108,13 @@ def _blank_text(value: Any) -> bool:
 
 
 def _pick_header(source: Doc, keys: Sequence[str]) -> Doc:
-    """``_pick`` for a document header: also omits a blank master-reference code."""
+    """``_pick`` for a document header: also omits a blank master-reference code, and in legacy mode (no line notes
+    source set) every text field the read returned blank (hapi blanks stored values, so "" is never sent back)."""
+    legacy = is_legacy(source)
     return {
         k: v for k, v in _pick(source, keys).items()
         if not (k in MASTER_REF_HEADER_KEYS and _blank_text(v))
+        and not (legacy and isinstance(v, str) and v == "")
     }
 
 
@@ -146,6 +149,9 @@ _NOTES_KINDS = ("PO", "SPO")
 
 
 DB_UNREAD_MARKER = "_dbUnread"  # set on a PO / SPO the AutoCount DB could not be read for; never in any key list, never sent
+# Set on a PO / SPO read while NO line notes source is set (legacy mode, crew ruling s20): no DB read, no refusal, no
+# Further Description on kept rows, no blank header text. Never in any key list, never sent.
+DB_LEGACY_MARKER = "_dbLegacy"
 
 
 STORED_FIELDS_CHANGED = "STORED_FIELDS_CHANGED"
@@ -154,9 +160,14 @@ STORED_FIELDS_CHANGED = "STORED_FIELDS_CHANGED"
 def public_doc(doc: Any) -> Any:
     """Plan 73: ``doc`` without the internal unread marker, for anything stored or returned (the document shape of
     contract 57 never carries it). Copies only when the marker is there; anything else is returned as is."""
-    if isinstance(doc, dict) and DB_UNREAD_MARKER in doc:
-        return {k: v for k, v in doc.items() if k != DB_UNREAD_MARKER}
+    if isinstance(doc, dict) and (DB_UNREAD_MARKER in doc or DB_LEGACY_MARKER in doc):
+        return {k: v for k, v in doc.items() if k not in (DB_UNREAD_MARKER, DB_LEGACY_MARKER)}
     return doc
+
+
+def is_legacy(doc: Any) -> bool:
+    """True for a PO / SPO read in legacy mode (no line notes source set)."""
+    return isinstance(doc, dict) and bool(doc.get(DB_LEGACY_MARKER))
 
 
 def require_db_read(doc: Mapping[str, Any]) -> None:
@@ -173,10 +184,16 @@ def require_line_notes(*rows: Mapping[str, Any]) -> None:
         raise WriteRefusal(AUTOCOUNT_DB_UNREAD, AUTOCOUNT_DB_UNREAD_MESSAGE, plain=True)
 
 
-def _resend(kind_name: str, row: Doc) -> Doc:
-    """``_row_fields`` of a row that is sent again (not deleted): a PO / SPO row must carry its note."""
+def _require_notes(doc: Mapping[str, Any], *rows: Mapping[str, Any]) -> None:
+    """``require_line_notes`` in DB mode; legacy mode (no source set) never requires the note."""
+    if not is_legacy(doc):
+        require_line_notes(*rows)
+
+
+def _resend(kind_name: str, row: Doc, doc: Mapping[str, Any]) -> Doc:
+    """``_row_fields`` of a row that is sent again (not deleted): a PO / SPO row must carry its note (DB mode)."""
     if kind_name in _NOTES_KINDS:
-        require_line_notes(row)
+        _require_notes(doc, row)
     return _row_fields(row)
 
 
@@ -347,7 +364,7 @@ def build_link(
         "Location": location or so_row.get("Location"),
     }
     body = keep_shipping_po(_header(po), po)
-    new = _normal(_resend("PO", po_row))
+    new = _normal(_resend("PO", po_row, po))
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
     with_so_delivery_date(new, _day(so_row.get("DeliveryDate")))  # 16 Nov rule: the SO line's date, never the PO's
     with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
@@ -383,7 +400,7 @@ def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref
         raise WriteRefusal("DOC_UNKNOWN", "the linked sales order row is not in the synced copy")
     if row.get("Location") == location:
         raise WriteRefusal("ROW_ALREADY_AT_LOCATION", "row is already at that location")
-    moved = _normal(_resend("PO", row))
+    moved = _normal(_resend("PO", row, po))
     moved["Location"] = location
     body = keep_shipping_po(_header(po), po)
     body["Details"] = [moved]
@@ -621,7 +638,7 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
     (location, unit price, delivery date) set back to what the split sent."""
     if not values:
         raise WriteRefusal("NO_CHANGE", "nothing to restore")
-    row = _normal(_resend("PO", _find_row(po, dtl_key)))
+    row = _normal(_resend("PO", _find_row(po, dtl_key), po))
     row.update(values)
     _merge_bare_note(row, _find_row(po, dtl_key), values)
     body = keep_shipping_po(_header(po), po)
@@ -867,7 +884,7 @@ def build_edit(
         for key in edits:
             if key not in line_keys:
                 raise WriteRefusal("FIELD_NOT_EDITABLE", key)
-        out = _normal(_resend(kind.name, row))
+        out = _normal(_resend(kind.name, row, doc))
         out.update({k: _plain(v) for k, v in edits.items()})
         _merge_bare_note(out, row, edits)
         price = _num_of(out.get("UnitPrice"))
@@ -912,7 +929,7 @@ def build_row_replace(kind_name: str, doc: Doc, old_row: Mapping[str, Any], new_
     _check_kind_doc(kind, doc)
     old = _find_row(doc, old_row.get("DtlKey"))  # type: ignore[arg-type]
     if kind.name in _NOTES_KINDS:
-        require_line_notes(old)
+        _require_notes(doc, old)
     new = _inherit_note(_vendor_line(new_row, 0, kind.name), old)
     if not new.get("FromDocType"):
         new.update(FromDocType="", FromDocNo="", FromDocDtlKey=0)
@@ -943,7 +960,7 @@ def build_link_doc(kind_name: str, doc: Doc,
     for old_key, new_rows in groups:
         old = _find_row(doc, old_key)
         if kind.name in _NOTES_KINDS:
-            require_line_notes(old)
+            _require_notes(doc, old)
         taken = sum((_dec(r.get("Qty")) for r in new_rows), Decimal(0))
         rest = _dec(old.get("Qty")) - taken
         if rest < 0:
@@ -967,7 +984,7 @@ def build_unlink_merge(kind_name: str, doc: Doc, linked_key: int, free_key: int)
     _check_kind_doc(kind, doc)
     linked = _find_row(doc, linked_key)
     free = _find_row(doc, free_key)
-    raised = _normal(_resend(kind.name, free))
+    raised = _normal(_resend(kind.name, free, doc))
     raised["Qty"] = _num(_dec(free.get("Qty")) + _dec(linked.get("Qty")))
     body = _doc_header(kind, doc)
     body["Details"] = [_deleted(linked), raised]

@@ -124,12 +124,17 @@ def test_resume_split_restore_carries_further_description(h, w, monkeypatch):
     assert row["FurtherDescription"].count(PICT) == 1
 
 
+class _ReadNone:
+    def read(self, kind, doc):
+        return None
+
+
 def test_resume_split_restore_notes_unknown_sends_no_put(h, w, monkeypatch):
     _po_rows_carry_fd(h, monkeypatch)
     res = _parked_split(h, w)
     for r in h.vendor.rows("PO", 7001):  # the notes can no longer be read
         r.pop("FurtherDescription", None)
-    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: None)
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _ReadNone())
     before = len(puts(h))
     out = resume(h, res)
     assert (out.outcome, out.error_code) == ("needs_attention", "RESTORE_NOT_LANDED"), (out.outcome, out.error_code)

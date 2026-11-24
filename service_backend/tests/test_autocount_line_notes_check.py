@@ -60,9 +60,9 @@ def test_no_write_enabled_company_exits_0(h, capsys):
     assert admin.main(["check-line-notes"]) == 0
 
 
-def test_a_write_company_without_a_source_is_no_connection_and_exit_1(h, capsys):
-    _company(h, notes_id=None)  # its own source connection is the hapi one: no sql_database fallback
-    assert admin.main(["check-line-notes"]) == 1
+def test_a_write_company_without_a_source_is_no_connection_but_exit_0(h, capsys):
+    _company(h, notes_id=None)  # its own source connection is the hapi one: legacy mode, a warning only
+    assert admin.main(["check-line-notes"]) == 0
     out = capsys.readouterr().out
     assert f"{h.company.id} NO_CONNECTION" in out
 
