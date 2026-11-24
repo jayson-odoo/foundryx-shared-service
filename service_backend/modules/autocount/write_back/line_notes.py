@@ -27,6 +27,7 @@ from cryptography.fernet import InvalidToken
 from app.secrets import decrypt_secret
 from modules.autocount.sql_source.runtime import RUNTIME, SqlSourceRuntime
 from modules.autocount.write_back.payloads import (
+    DB_UNREAD_MARKER,
     EDIT_HEADER_KEYS,
     FURTHER_DESC,
     HEADER_KEYS,
@@ -144,12 +145,12 @@ def attach_db_doc(doc: Doc, db: Optional[Mapping[str, Any]]) -> Doc:
 
 
 def _unread(doc: Doc) -> Doc:
-    """The GET document with no Further Description: the database could not be read, the vendor's own is not trusted."""
-    if not any(FURTHER_DESC in row for row in doc.get("Details") or []):
-        return doc
+    """The GET document marked unread: the database could not be read, so no PO / SPO body may be built from it, and
+    the vendor's own Further Description is not trusted (dropped)."""
     out = copy.deepcopy(doc)
     for row in out.get("Details") or []:
         row.pop(FURTHER_DESC, None)
+    out[DB_UNREAD_MARKER] = True
     return out
 
 

@@ -669,6 +669,10 @@ class PrimitiveService(WriteFrame):
 
     @staticmethod
     def _build(call: _Call, doc: Doc) -> VendorRequest:
+        if call.operation_id is not None and call.step == "recover" and doc.get(payloads.DB_UNREAD_MARKER):
+            # plan 73 H1: the documented exception: a recover puts back a row an operation already deleted, so it is
+            # never refused for an unread database (refusing would strand the deleted row)
+            doc = {k: v for k, v in doc.items() if k != payloads.DB_UNREAD_MARKER}
         if call.operation_id is None:  # plan 66: only an operation's link step may carry the note
             call = replace(call, line=_no_note(call.line),
                            lines=None if call.lines is None else [_no_note(x) for x in call.lines],

@@ -145,6 +145,16 @@ AUTOCOUNT_DB_UNREAD_MESSAGE = (
 _NOTES_KINDS = ("PO", "SPO")
 
 
+DB_UNREAD_MARKER = "_dbUnread"  # set on a PO / SPO the AutoCount DB could not be read for; never in any key list, never sent
+
+
+def require_db_read(doc: Mapping[str, Any]) -> None:
+    """Plan 73 H1: a PO / SPO body (any of them, also a header-only one) is built from values read from the AutoCount
+    DB; a document marked unread is refused before any write."""
+    if doc.get(DB_UNREAD_MARKER):
+        raise WriteRefusal(AUTOCOUNT_DB_UNREAD, AUTOCOUNT_DB_UNREAD_MESSAGE, plain=True)
+
+
 def require_line_notes(*rows: Mapping[str, Any]) -> None:
     """Plan 73 D3: a row we re-send or copy must carry its Further Description (as read). Missing = unknown:
     refused before any write (resending it blank could erase the note and its pictures)."""
@@ -196,6 +206,7 @@ def keep_shipping_po(body: Doc, doc: Doc) -> Doc:
     """SS-SHIPPINGPO-PRESERVE: a PO / SPO edit body carries ``ShippingPO`` exactly as SS just
     read it ("F" stays "F", "T" stays "T"); omitted, the vendor edit writes NUL, which
     AutoCount shows as ticked (prod 20 Nov). Copied, never computed; unknown is refused."""
+    require_db_read(doc)
     _require_known_shipping(doc)
     body[SHIPPING_PO] = doc[SHIPPING_PO]
     return body
