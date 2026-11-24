@@ -44,9 +44,19 @@ DB_READ_TIMEOUT_SECONDS = 20
 # DocKey and DocNo are the request's own identity: the PUT keeps the key and number it was asked for.
 DB_HEADER_KEYS = tuple(k for k in dict.fromkeys(HEADER_KEYS + EDIT_HEADER_KEYS) if k not in ("DocKey", "DocNo"))
 DB_ROW_KEYS = tuple(k for k in ROW_KEYS if k not in ("DtlKey", "FullTransferOption", "FullTransferFromDocList"))
-# Static statements, bound parameters only. SELECT * on purpose: the whitelists hold names the database may not have (SO-only
-# keys, hapi wire names), so an explicit list could fail every PO read; the columns are whitelisted after the read.
-_HEADER_SELECT = sa.text("SELECT * FROM PO WHERE DocKey = :k AND DocNo = :n")
+# Static statements, bound parameters only. The rows read is SELECT * (no sensitive columns there); the columns are
+# whitelisted after the read.
+# The header read selects only the fields SS writes (never every column of the table): a static, bracket-quoted list.
+DB_HEADER_COLUMNS = (
+    "DocKey", "DocNo", "CreditorCode", "CreditorName", "Ref", "Description", "DisplayTerm", "PurchaseAgent",
+    "InvAddr1", "InvAddr2", "InvAddr3", "InvAddr4", "Phone1", "Fax1", "Attention", "BranchCode",
+    "DeliverAddr1", "DeliverAddr2", "DeliverAddr3", "DeliverAddr4", "DeliverPhone1", "DeliverFax1", "DeliverContact",
+    "CurrencyCode", "CurrencyRate", "Remark1", "Remark2", "Remark3", "Remark4", "RefDocNo", "ShipVia", "ShipInfo",
+    "InclusiveTax", "DocDate",
+)
+_HEADER_SELECT = sa.text(
+    "SELECT " + ", ".join(f"[{c}]" for c in DB_HEADER_COLUMNS) + " FROM PO WHERE DocKey = :k AND DocNo = :n"
+)
 _ROWS_SELECT = sa.text("SELECT * FROM PODTL WHERE DocKey = :k")
 
 
@@ -79,7 +89,7 @@ def _kept(record: Mapping[str, Any], keys: tuple) -> Dict[str, Any]:
 
 
 class SqlDocDb:
-    """``SELECT * FROM PO WHERE DocKey = :k AND DocNo = :n`` (exactly one row) and ``SELECT * FROM PODTL WHERE
+    """``SELECT <the written header fields> FROM PO WHERE DocKey = :k AND DocNo = :n`` (exactly one row) and ``SELECT * FROM PODTL WHERE
     DocKey = :k`` (its DtlKey set equal to the document's), through a ``sql_database`` connection resolved WITH
     tenant_id by the caller; read-only, time-boxed. Any error, an undecryptable credential or a mismatch is
     unknown (None)."""

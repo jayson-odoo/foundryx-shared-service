@@ -17,7 +17,7 @@ from app.models.connection import Connection
 from app.secrets import encrypt_secret
 from modules.autocount.sql_source.runtime import SqlSourceRuntime
 from modules.autocount.write_back.frame import WriteFrame
-from modules.autocount.write_back.line_notes import DB_HEADER_KEYS, DB_ROW_KEYS, SqlDocDb
+from modules.autocount.write_back.line_notes import DB_HEADER_COLUMNS, DB_ROW_KEYS, SqlDocDb
 from modules.autocount.write_back.service import WriteConnectionError, set_line_notes_connection
 from tests.test_autocount_write_back_service import OTHER_TENANT, db, h  # noqa: F401
 
@@ -31,15 +31,15 @@ def _engine(rows, header=None):
     column exists (the explicit SELECT names them all); two are created in another case (REMARK4, deliverydate) to
     exercise the case-insensitive mapping."""
     engine = sa.create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    header_cols = ["REMARK4" if c == "Remark4" else c for c in DB_HEADER_KEYS]
+    header_cols = ["REMARK4" if c == "Remark4" else c for c in DB_HEADER_COLUMNS if c not in ("DocKey", "DocNo")]
     row_cols = ["deliverydate" if c == "DeliveryDate" else c for c in DB_ROW_KEYS]
     with engine.begin() as conn:
         conn.execute(sa.text("CREATE TABLE PODTL (DtlKey INTEGER, DocKey INTEGER, UDF_Y TEXT, "
                              + ", ".join(f"[{c}]" for c in row_cols) + ")"))
-        conn.execute(sa.text("CREATE TABLE PO (DocKey INTEGER, DocNo TEXT, UDF_X TEXT, "
+        conn.execute(sa.text("CREATE TABLE PO (DocKey INTEGER, DocNo TEXT, UDF_Extra TEXT, "
                              + ", ".join(f"[{c}]" for c in header_cols) + ")"))
         for dock in {r[1] for r in rows}:
-            conn.execute(sa.text("INSERT INTO PO (DocKey, DocNo, UDF_X, REMARK4, CurrencyRate, DocDate, Phone1) "
+            conn.execute(sa.text("INSERT INTO PO (DocKey, DocNo, UDF_Extra, REMARK4, CurrencyRate, DocDate, Phone1) "
                                  "VALUES (:a, :b, 'x', 'L', 1.5, :d, '')"),
                          {"a": dock, "b": f"PO-{dock}", "d": datetime(2026, 11, 4)})
         for dtl, dock, fd in rows:
@@ -193,3 +193,15 @@ def test_setter_refuses_another_tenants_company(h):
         set_line_notes_connection(h.db, tenant_id=OTHER_TENANT, company_id=h.company.id, connection_id=conn.id)
     assert exc.value.code == "CONNECTION_NOT_FOUND"
 
+
+
+def test_the_header_read_names_its_columns_never_star_and_a_stray_column_is_never_read():
+    from modules.autocount.write_back import line_notes as ln
+
+    text = str(ln._HEADER_SELECT)
+    assert "*" not in text
+    selected = {c.strip(" []") for c in text.split("SELECT")[1].split("FROM")[0].split(",")}
+    assert selected == set(DB_HEADER_COLUMNS)
+    out = _source([(1, 7001, "x")]).read("PO", _doc(1))
+    assert "UDF_Extra" not in out["header"] and "UDF_X" not in out["header"]
+    assert "SalesAgent" not in out["header"] and "YourPONo" not in out["header"]  # not PO columns: never overlaid
