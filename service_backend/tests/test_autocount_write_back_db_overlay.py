@@ -94,7 +94,8 @@ def test_every_row_gets_fd_and_row_keys_from_the_db():
     out = attach_db_doc(doc, db_doc)
     assert [r["FurtherDescription"] for r in out["Details"]] == [FD1, FD2, FD3]
     assert out["Details"][0]["Desc2"] == "stored-d2"
-    assert out["Details"][1]["Desc2"] == doc["Details"][1].get("Desc2", "")  # not in the db row: hapi value stays
+    assert "Desc2" not in doc["Details"][1] and "Desc2" not in out["Details"][1]  # unread on both sides: never invented
+    assert out["Details"][0]["Desc2"] == "stored-d2"  # the db row carries Desc2: it is sent as stored
 
 
 def test_attach_db_doc_does_not_mutate_the_input():
