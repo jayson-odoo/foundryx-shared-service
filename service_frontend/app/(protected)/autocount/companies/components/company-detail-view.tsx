@@ -49,6 +49,7 @@ import { DetailRow } from './detail-row';
 import { DocFeedsTab } from './doc-feeds-tab';
 import { DocumentPrerequisiteCard } from './document-prerequisite-card';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
+import { LineNotesSection } from './line-notes-section';
 import { SinkTargetSection } from './sink-target-section';
 import { useAutocountEntitiesListConfig } from './use-entities-list-config';
 import { useAutocountRunsListConfig } from './use-runs-list-config';
@@ -86,6 +87,10 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const [sinkImpl, setSinkImpl] = useState<AutocountSinkImpl>('logging');
   const [sinkConnectionId, setSinkConnectionId] = useState<string | null>(null);
   const [companyCode, setCompanyCode] = useState('');
+  // Line notes database (plan 74): saved through the same single save.
+  const persistedLineNotes = loadedCompany?.lineNotesConnectionId ?? null;
+  const [lineNotesId, setLineNotesId] = useState<string | null>(null);
+  const [lineNotesError, setLineNotesError] = useState<string | null>(null);
 
   // Re-seed from the persisted values whenever THEY change (after a save/reload).
   // Keyed on the persisted fields, not the whole `detail` object, so a
@@ -95,7 +100,9 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     setSinkImpl(persistedSink);
     setSinkConnectionId(persistedConnectionId);
     setCompanyCode(persistedCompanyCode);
-  }, [persistedSink, persistedConnectionId, persistedCompanyCode]);
+    setLineNotesId(persistedLineNotes);
+    setLineNotesError(null);
+  }, [persistedSink, persistedConnectionId, persistedCompanyCode, persistedLineNotes]);
 
   const onSinkChange = useCallback((impl: AutocountSinkImpl) => {
     setSinkImpl(impl);
@@ -104,13 +111,34 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     if (impl === 'logging') setSinkConnectionId(null);
   }, []);
 
-  const sinkDirty =
+  const pushDirty =
     sinkImpl !== persistedSink ||
     (sinkImpl === 'sorento' &&
       (sinkConnectionId !== persistedConnectionId ||
         companyCode.trim() !== persistedCompanyCode.trim()));
+  const lineNotesDirty = !!loadedCompany?.writeEnabled && lineNotesId !== persistedLineNotes;
+  const sinkDirty = pushDirty || lineNotesDirty;
 
-  const onSavePushTarget = useCallback(async (): Promise<boolean> => {
+  const onSaveOverview = useCallback(async (): Promise<boolean> => {
+    if (lineNotesDirty) {
+      try {
+        await autocountService.updateLineNotesConnection(companyId, { connectionId: lineNotesId });
+        setLineNotesError(null);
+        if (!pushDirty) {
+          done('Line notes database updated.', {
+            what: 'Line notes database updated',
+            forWhom: loadedCompany?.name,
+          });
+          reload();
+          return true;
+        }
+      } catch (error) {
+        setLineNotesError(
+          error instanceof ApiError ? error.message : 'That line notes database could not be saved.',
+        );
+        return false;
+      }
+    }
     // Foolproof-UI: a Sorento delivery cannot be saved without a connection,
     // nor without the company code every Sorento call is anchored on (A6).
     if (sinkImpl === 'sorento' && !sinkConnectionId) {
@@ -139,13 +167,26 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       );
       return false;
     }
-  }, [companyCode, companyId, done, loadedCompany?.name, sinkConnectionId, sinkImpl, reload]);
+  }, [
+    companyCode,
+    companyId,
+    done,
+    lineNotesDirty,
+    lineNotesId,
+    loadedCompany?.name,
+    pushDirty,
+    reload,
+    sinkConnectionId,
+    sinkImpl,
+  ]);
 
   const onCancelPushTarget = useCallback(() => {
     setSinkImpl(persistedSink);
     setSinkConnectionId(persistedConnectionId);
     setCompanyCode(persistedCompanyCode);
-  }, [persistedSink, persistedConnectionId, persistedCompanyCode]);
+    setLineNotesId(persistedLineNotes);
+    setLineNotesError(null);
+  }, [persistedSink, persistedConnectionId, persistedCompanyCode, persistedLineNotes]);
 
   const onSync = useCallback(
     async (entityType: string) => {
@@ -362,6 +403,13 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                 companyCode={companyCode}
                 onCompanyCodeChange={setCompanyCode}
               />
+              <LineNotesSection
+                company={company}
+                editing={editing && canManage}
+                connectionId={lineNotesId}
+                onChange={setLineNotesId}
+                error={lineNotesError}
+              />
             </div>
           ),
         },
@@ -442,7 +490,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
       editable: true,
       editPermission: AC_COMPANIES_MANAGE,
       isDirty: sinkDirty,
-      onSave: onSavePushTarget,
+      onSave: onSaveOverview,
       onCancel: onCancelPushTarget,
       // Foundryx UIUX switch only (slice W5-AC-SETUP); ignored while off.
       // Edit at rest, Save push target's one save while editing; the sink
@@ -458,12 +506,14 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     formatDateTime,
     onAddEntity,
     onCancelPushTarget,
-    onSavePushTarget,
+    onSaveOverview,
     onSinkChange,
     outcome,
     reload,
     runsConfig,
     runsKey,
+    lineNotesError,
+    lineNotesId,
     sinkConnectionId,
     sinkDirty,
     sinkImpl,

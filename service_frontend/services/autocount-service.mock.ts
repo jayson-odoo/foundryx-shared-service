@@ -77,6 +77,7 @@ import type {
   AutocountPullSnapshotRowsPage,
   AutocountSimulateFieldResult,
   AutocountSimulateResult,
+  AutocountLineNotesInput,
   AutocountSinkTargetInput,
   AutocountSorentoField,
   AutocountSourceImpl,
@@ -133,6 +134,8 @@ function mockCompany(overrides: Partial<AutocountCompany> = {}): AutocountCompan
     createdAt: '2026-07-01T00:00:00Z',
     sourceKind: 'api',
     documentPrerequisites: [],
+    lineNotesConnectionId: null,
+    writeEnabled: true,
     ...overrides,
   };
 }
@@ -625,6 +628,7 @@ const etlOverlays = new Map<string, EtlTaskOverlay>();
 const companyCodes = new Map<string, string | null>();
 /** Pure-mock only: the persisted sink target per company (the overlay reads
  * the REAL company's sink instead). */
+const mockLineNotes = new Map<string, string | null>();
 const mockSinks = new Map<string, Pick<AutocountCompany, 'sinkImpl' | 'sinkConnectionId'>>();
 const sourceImpls = new Map<string, AutocountSourceImpl>();
 /** Result columns of every preview run this session, by normalized query. */
@@ -921,7 +925,8 @@ function mockCompanyState(id: string): AutocountCompany {
       sinkConnectionId: legacy ? 'conn-9' : null,
     });
   }
-  return sink ? { ...base, sinkImpl: sink.sinkImpl, sinkConnectionId: sink.sinkConnectionId } : base;
+  const withSink = sink ? { ...base, sinkImpl: sink.sinkImpl, sinkConnectionId: sink.sinkConnectionId } : base;
+  return mockLineNotes.has(id) ? { ...withSink, lineNotesConnectionId: mockLineNotes.get(id) ?? null } : withSink;
 }
 
 function applyCompanyOverlay(company: AutocountCompany): AutocountCompany {
@@ -2705,6 +2710,7 @@ export function resetEtlMockState(): void {
   etlOverlays.clear();
   companyCodes.clear();
   mockSinks.clear();
+  mockLineNotes.clear();
   sourceImpls.clear();
   previewColumnsByQuery.clear();
   httpPreviewColumnsByKey.clear();
@@ -2958,6 +2964,14 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
       sinkImpl: input.sinkImpl,
       sinkConnectionId: input.sinkImpl === 'sorento' ? input.sinkConnectionId ?? null : null,
     });
+    return Promise.resolve(applyCompanyOverlay(mockCompanyState(companyId)));
+  },
+
+  updateLineNotesConnection(
+    companyId: string,
+    input: AutocountLineNotesInput,
+  ): Promise<AutocountCompany> {
+    mockLineNotes.set(companyId, input.connectionId);
     return Promise.resolve(applyCompanyOverlay(mockCompanyState(companyId)));
   },
 
