@@ -31,6 +31,7 @@ from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
 from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.repositories import CompanyRepository
 from modules.autocount.write_back import capabilities, frame, guard, payloads
+from modules.autocount.write_back.line_notes import stored_fields_changed
 from modules.autocount.write_back.client import WriteTransportError
 from modules.autocount.write_back.doc_kinds import DocKind, kind_of
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
@@ -163,10 +164,12 @@ class _Call:
 
 
 def _no_note(line: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Plan 66: a line from outside an operation never carries the link note."""
-    if not line or payloads.LINK_NOTE_KEY not in line:
+    """Plan 66: a line from outside an operation never carries the link note; plan 73: nor a Further
+    Description of its own (the builders copy that from the row as read)."""
+    drop = (payloads.LINK_NOTE_KEY, payloads.FURTHER_DESC)
+    if not line or not any(k in line for k in drop):
         return line
-    return {k: v for k, v in line.items() if k != payloads.LINK_NOTE_KEY}
+    return {k: v for k, v in line.items() if k not in drop}
 
 
 # AC-57-47: what marks the start of an internal detail. The text is cut at the FIRST one:
@@ -249,7 +252,13 @@ def _groups_of(call: "_Call") -> List[Tuple[int, Sequence[Dict[str, Any]]]]:
 def _unchanged(before: Doc, after: Doc) -> bool:
     """The document reads back exactly as before the PUT (its stamp and every row)."""
     return (before.get("LastModified") == after.get("LastModified")
-            and (before.get("Details") or []) == (after.get("Details") or []))
+            and _rows_as_read(before) == _rows_as_read(after))
+
+
+def _rows_as_read(doc: Doc) -> List[Doc]:
+    """The rows without the keys no read returns reliably (the Further Description comes from a second source that may
+    answer on one read and not the next: plan 73 G1)."""
+    return [{k: v for k, v in r.items() if k not in payloads.UNREADABLE_ROW_KEYS} for r in doc.get("Details") or []]
 
 
 def _vendor_refusal(primitive: str, status: int, body: Any) -> Optional[str]:
@@ -661,6 +670,10 @@ class PrimitiveService(WriteFrame):
 
     @staticmethod
     def _build(call: _Call, doc: Doc) -> VendorRequest:
+        if call.operation_id is not None and call.step == "recover" and doc.get(payloads.DB_UNREAD_MARKER):
+            # plan 73 H1: the documented exception: a recover puts back a row an operation already deleted, so it is
+            # never refused for an unread database (refusing would strand the deleted row)
+            doc = {k: v for k, v in doc.items() if k != payloads.DB_UNREAD_MARKER}
         if call.operation_id is None:  # plan 66: only an operation's link step may carry the note
             call = replace(call, line=_no_note(call.line),
                            lines=None if call.lines is None else [_no_note(x) for x in call.lines],
@@ -906,12 +919,29 @@ class PrimitiveService(WriteFrame):
             extra["warnings"] = warnings
             return self._wrap(self._finish(row, OUTCOME_MISMATCH, verdict_code, message=message), **extra)
         extra["warnings"] = warnings
+        self._note_stored_changes(call, row, before, after, warnings)
         if call.primitive == CREATE:
             row.doc_key = after.get("DocKey")
         result = self._finish(row, OUTCOME_DONE, document=after, message=message)
         if call.kind != "QT" and call.stage:
             self._stage(company, call.kind, after)
         return self._wrap(result, **extra)
+
+    @staticmethod
+    def _note_stored_changes(call: _Call, row: AcWriteAction, before: Optional[Doc], after: Doc,
+                             warnings: List[str]) -> None:
+        """Plan 73: a landed PO / SPO write that changed a stored field it did not intend to is a warning (names
+        only in the log, the outcome unchanged)."""
+        if call.kind not in ("PO", "SPO") or before is None or call.primitive == CREATE:
+            return
+        fd_rows = [c.get("DtlKey") for c in call.line_changes or () if payloads.FURTHER_DESC in c]
+        changed = stored_fields_changed(before, after, intended_header=call.header_changes or (),
+                                        intended_fd_rows=fd_rows)
+        if changed:
+            if payloads.STORED_FIELDS_CHANGED not in warnings:
+                warnings.append(payloads.STORED_FIELDS_CHANGED)
+            logger.warning("autocount stored fields changed op=%s doc=%s fields=%s",
+                           call.operation_id or row.id, after.get("DocKey"), ",".join(changed))
 
     def _read_back(
         self, call: _Call, reader: Any, answer: Any, request: VendorRequest,
