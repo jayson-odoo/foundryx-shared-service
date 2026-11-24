@@ -25,7 +25,6 @@ from modules.autocount.models import (
 )
 from modules.autocount.write_back.constants import STAGING_JOB_ID  # noqa: F401 (re-exported)
 from modules.autocount.write_back.link_index import refresh_links, refresh_po_links_from_doc
-from modules.autocount.write_back import payloads
 from modules.autocount.write_back.doc_mapping import (
     ENTITY_BY_KIND,
     WrapperMappingError,
@@ -92,7 +91,7 @@ class DocStager:
         from modules.autocount.sync import json_safe_row
 
         entity_type = ENTITY_BY_KIND[kind]
-        raw = {k: v for k, v in payloads.public_doc(doc).items() if k != "Details"}
+        raw = {k: v for k, v in doc.items() if k != "Details"}
         raw["_lines"] = list(doc.get("Details") or [])
         raw = json_safe_row(raw)
         ref = f"{company.database_name}:{doc.get('DocKey')}"

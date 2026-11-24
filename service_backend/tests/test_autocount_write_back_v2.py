@@ -250,8 +250,7 @@ def test_ac_61_10_build_row_replace_is_old_row_deleted_plus_new_row_key_zero():
     from modules.autocount.write_back import payloads
 
     doc = new_doc("PO", 6001, "PO-6001", "C", [
-        {"ItemCode": "A", "Qty": 4.0, "UnitPrice": 5.0, "Location": "BR1", "FromSODtlKey": 900,
-         "FurtherDescription": ""}])
+        {"ItemCode": "A", "Qty": 4.0, "UnitPrice": 5.0, "Location": "BR1", "FromSODtlKey": 900}])
     old = doc["Details"][0]
     plain = {"ItemCode": "A", "UOM": "UNIT", "Qty": 4, "UnitPrice": 5.0, "Location": "BR1",
              "Description": "A", "DeliveryDate": "2026-12-01T00:00:00"}
