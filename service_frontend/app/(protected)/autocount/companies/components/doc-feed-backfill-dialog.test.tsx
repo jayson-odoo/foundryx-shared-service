@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 describe('DocFeedBackfillDialog (AC-14-93)', () => {
-  it('defaults the date range to 2019-01-01 through MYT today, not the browser/UTC date', async () => {
+  it('defaults the date range to 2000-01-01 through MYT today, not the browser/UTC date', async () => {
     // 2026-03-10T20:00:00Z is 2026-03-11 04:00 in MYT (UTC+8) - a moment
     // where the browser/UTC calendar date and the MYT one already differ.
     // No `userEvent` interaction here (Radix's real pointer sequence does
@@ -38,7 +38,7 @@ describe('DocFeedBackfillDialog (AC-14-93)', () => {
     const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
     render(<DocFeedBackfillDialog feed="delivery_orders" mode="push" fullBackfillDoneAt={null} backfill={null} onClose={vi.fn()} onStart={vi.fn()} onStop={vi.fn()} />);
 
-    expect(screen.getByText('01/01/2019 - 11/03/2026')).toBeInTheDocument();
+    expect(screen.getByText('01/01/2000 - 11/03/2026')).toBeInTheDocument();
   });
 
   it('has a Dry run switch, on by default', async () => {
@@ -126,11 +126,11 @@ describe('DocFeedBackfillDialog (AC-14-93)', () => {
     );
     // Dry run (default) may still cover the full history.
     await userEvent.click(screen.getByTestId('backfill-start'));
-    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: true, fromDay: '2019-01-01' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: true, fromDay: '2000-01-01' }));
 
     await userEvent.click(screen.getByTestId('backfill-dry-run-switch'));
     await userEvent.click(screen.getByTestId('backfill-start'));
-    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: false, fromDay: '2019-01-02' }));
+    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: false, fromDay: '2000-01-02' }));
   });
 
   it('a feed whose completed live run started after the floor (old 2023 floor) offers one live run from the floor', async () => {
@@ -152,5 +152,39 @@ describe('DocFeedBackfillDialog (AC-14-93)', () => {
     await userEvent.click(screen.getByTestId('backfill-dry-run-switch'));
     await userEvent.click(screen.getByTestId('backfill-start'));
     expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: false, fromDay: '2019-01-01' }));
+  });
+
+  // SS-BACKFILL-DATE-FLOOR - the owner could not pick 2010 (the floor was
+  // 2019 and the calendar only pages month by month): the range can be typed.
+  it('a typed From of 01/01/2010 starts the backfill from 2010-01-01', async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
+    render(<DocFeedBackfillDialog feed="goods_receive_notes" mode="push" fullBackfillDoneAt={null} backfill={null} onClose={vi.fn()} onStart={onStart} onStop={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole('button', { name: /01\/01\/2000 - / }));
+    const from = screen.getByTestId('date-range-typed-from');
+    await userEvent.clear(from);
+    await userEvent.type(from, '01/01/2010{Enter}');
+    expect(screen.getByRole('button', { name: /01\/01\/2010 - / })).toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByTestId('backfill-start'));
+    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: true, fromDay: '2010-01-01' }));
+  });
+
+  it('a typed From before the 2000 floor is refused, the range stays', async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
+    render(<DocFeedBackfillDialog feed="goods_receive_notes" mode="push" fullBackfillDoneAt={null} backfill={null} onClose={vi.fn()} onStart={onStart} onStop={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole('button', { name: /01\/01\/2000 - / }));
+    const from = screen.getByTestId('date-range-typed-from');
+    await userEvent.clear(from);
+    await userEvent.type(from, '31/12/1999{Enter}');
+    expect(screen.getByRole('alert')).toHaveTextContent('Pick a day from 01/01/2000');
+
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByTestId('backfill-start'));
+    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ fromDay: '2000-01-01' }));
   });
 });

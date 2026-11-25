@@ -22,11 +22,13 @@ import {
   localDateKey,
   parseKey,
   resolvePresetRange,
+  todayKeyInZone,
   type DateRangePickerProps,
   type DateRangePreset,
 } from '@/components/platform/date-range-picker/date-range-picker';
 import { FX_FIELD, FX_MENU } from './classes';
 import { FxCalendar } from './fx-calendar';
+import { DateRangeTypedInputs } from '@/components/platform/date-range-picker/date-range-typed-inputs';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -90,6 +92,8 @@ export function FxDateRangePicker({ value, onChange, timeZone, className, minDat
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<Date | null>(null);
   const [hovered, setHovered] = useState<Date | null>(null);
+  // Controlled once a typed day jumps it; `undefined` = open on the value's month.
+  const [month, setMonth] = useState<Date | undefined>(undefined);
   const wide = useMediaQuery('(min-width: 640px)');
 
   const pickPreset = (preset: DateRangePreset) => {
@@ -123,6 +127,7 @@ export function FxDateRangePicker({ value, onChange, timeZone, className, minDat
         setOpen(next);
         anchorRef.current = null;
         setHovered(null);
+        setMonth(undefined);
       }}
     >
       <PopoverTrigger asChild>
@@ -165,10 +170,27 @@ export function FxDateRangePicker({ value, onChange, timeZone, className, minDat
               </button>
             ))}
           </div>
+          <div className="flex min-w-0 flex-col">
+            <DateRangeTypedInputs
+              className="border-(--fx-line)"
+              from={value.from}
+              to={value.to}
+              minDate={minDate}
+              maxDate={maxDate}
+              today={todayKeyInZone(timeZone)}
+              onChange={(from, to) => {
+                anchorRef.current = null;
+                setHovered(null);
+                onChange({ preset: 'custom', from, to });
+              }}
+              onJump={(day) => setMonth(parseKey(day))}
+            />
           <FxCalendar
             mode="range"
             numberOfMonths={wide ? 2 : 1}
             defaultMonth={value.from || value.to ? parseKey(value.from || value.to) : undefined}
+            month={month}
+            onMonthChange={setMonth}
             selected={calendarValue}
             disabled={disabled.length ? disabled : undefined}
             onDayMouseEnter={(day) => {
@@ -191,6 +213,7 @@ export function FxDateRangePicker({ value, onChange, timeZone, className, minDat
               setOpen(false);
             }}
           />
+          </div>
         </div>
       </PopoverContent>
     </Popover>

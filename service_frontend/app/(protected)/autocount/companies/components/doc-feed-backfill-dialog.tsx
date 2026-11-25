@@ -27,7 +27,7 @@ import { docFeedLabel } from '../../components/autocount-meta';
 
 // Mirrors `BACKFILL_FROM_DEFAULT` (doc_feed/constants.py); the feed row's
 // `backfillFloor` wins when the backend sends it.
-const DOC_FEED_BACKFILL_FROM = '2019-01-01';
+const DOC_FEED_BACKFILL_FROM = '2000-01-01';
 // N5 (review round 1) - the backfill's own "today" is MYT (D6, fixed UTC+8,
 // no DST), never the browser's local zone: before 08:00 MYT the browser's
 // UTC "today" is still MYT's PREVIOUS day, and the backend refuses a `toDay`
@@ -71,7 +71,7 @@ export interface DocFeedBackfillDialogProps {
   mode: DocFeedMode;
   /** Set once the full-history live backfill has completed. */
   fullBackfillDoneAt: string | null;
-  /** The backfill range floor (YYYY-MM-DD); defaults to 2019-01-01. */
+  /** The backfill range floor (YYYY-MM-DD); defaults to 2000-01-01. */
   backfillFloor?: string | null;
   /** Earliest from-day a completed live backfill ran from (YYYY-MM-DD). */
   fullBackfillFromDay?: string | null;
