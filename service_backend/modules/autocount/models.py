@@ -864,6 +864,15 @@ DOC_FEED_BACKFILL_DONE = "done"
 # a stopped backfill closed by Discard: `done` + this error code (never a
 # completed run - the run-once guard ignores it).
 BACKFILL_DISCARDED_CODE = "DISCARDED"
+# SS-BACKFILL-AUTO-RESUME - a person pressed Stop: never resumed by itself
+# (also kept when the stopping job then dies, so a deploy never undoes it).
+BACKFILL_USER_STOPPED_CODE = "USER_STOPPED"
+# The worker reading the backfill was lost (deploy / restart / crash of the
+# process, not an error in the backfill): the beat resumes these by itself.
+BACKFILL_WORKER_LOSS_CODES = ("ORPHANED", "JOB_ENDED", "JOB_ORPHANED")
+BACKFILL_AUTO_RESUMING_CODE = "AUTO_RESUMING"  # the beat's claim, transient
+BACKFILL_AUTO_RESUMED_CODE = "AUTO_RESUMED"  # run-row history entry
+BACKFILL_AUTO_RESUME_LIMIT_CODE = "AUTO_RESUME_LIMIT"
 DOC_FEED_BACKFILL_OPEN_STATUSES = (
     DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING, DOC_FEED_BACKFILL_STOPPED,
 )

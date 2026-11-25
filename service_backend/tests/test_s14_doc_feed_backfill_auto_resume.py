@@ -13,7 +13,7 @@ behaviour: the row stays stopped for a person to Resume.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -135,7 +135,7 @@ def test_a_user_stop_whose_job_then_ends_stays_stopped(db, monkeypatch):
     _no_dispatch(monkeypatch)
     co, ac_conn, _ = wired_company(db)
     feed = _feed(db, co, ac_conn)
-    job = _job(db, co.tenant_id, status="running", heartbeat_at=NOW)
+    job = _job(db, co.tenant_id, status="running", heartbeat_at=datetime.now(timezone.utc))
     bf = _backfill(db, feed, from_day=date(2026, 9, 20), to_day=date(2026, 9, 29), job_id=job.id)
 
     DocFeedService(db).stop_backfill(co.tenant_id, co.id, DO)
@@ -157,7 +157,7 @@ def test_a_user_stop_whose_job_is_orphaned_stays_stopped(db, monkeypatch):
     _no_dispatch(monkeypatch)
     co, ac_conn, _ = wired_company(db)
     feed = _feed(db, co, ac_conn)
-    job = _job(db, co.tenant_id, status="running", heartbeat_at=NOW)
+    job = _job(db, co.tenant_id, status="running", heartbeat_at=datetime.now(timezone.utc))
     bf = _backfill(db, feed, from_day=date(2026, 9, 20), to_day=date(2026, 9, 29), job_id=job.id)
     DocFeedService(db).stop_backfill(co.tenant_id, co.id, DO)
 

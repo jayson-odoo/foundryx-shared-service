@@ -82,6 +82,11 @@ class DocFeedError(Exception):
         self.message = message
 
 
+# SS-BACKFILL-AUTO-RESUME - where a backfill row keeps its automatic-resume
+# count (inside ``summary_json``; dropped by the runner on every saved day).
+AUTO_RESUME_SUMMARY_KEY = "autoResume"
+
+
 class DocFeedValidationError(DocFeedError):
     """A save-time or action-time field 422 - the router renders
     ``{fieldErrors: {field: message}}`` (plan section 3.2)."""
@@ -579,8 +584,12 @@ class DocFeedService:
     def stop_backfill(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
         backfill = self._open_backfill_or_404(tenant_id, company_id, feed)
         if backfill.status == DOC_FEED_BACKFILL_RUNNING:
-            from ..models import DOC_FEED_BACKFILL_STOPPING
+            from ..models import BACKFILL_USER_STOPPED_CODE, DOC_FEED_BACKFILL_STOPPING
 
+            # SS-BACKFILL-AUTO-RESUME - a person's Stop is never undone by the
+            # beat's automatic resume.
+            backfill.error = None
+            backfill.error_code = BACKFILL_USER_STOPPED_CODE
             if self.backfills.abort_pending_job(
                 tenant_id, backfill.job_id, now=datetime.now(timezone.utc)
             ):
@@ -595,7 +604,12 @@ class DocFeedService:
     def resume_backfill(
         self, tenant_id: str, company_id: str, feed: str,
         *, actor_user_id: Optional[str] = None, transport: Any = None,
+        auto_resume_count: Optional[int] = None, backfill_id: Optional[str] = None,
     ) -> AcDocFeedBackfill:
+        """Resume a stopped backfill from its saved day. A person's Resume
+        (``auto_resume_count=None``) starts the automatic-resume count afresh;
+        the beat's automatic resume (SS-BACKFILL-AUTO-RESUME) passes the count
+        this resume makes and the row it claimed (``backfill_id``)."""
         self._company(tenant_id, company_id)
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
@@ -603,6 +617,8 @@ class DocFeedService:
         self._reap_feed(tenant_id, row.id)
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
+            raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
+        if backfill_id is not None and backfill.id != backfill_id:
             raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
         # SS-BACKFILL-CHUNKED (review round 1) - a stopped row's old segment
         # that is still only QUEUED would never read anything (it no-ops on
@@ -639,6 +655,18 @@ class DocFeedService:
         )
         backfill.status = DOC_FEED_BACKFILL_RUNNING
         backfill.job_id = job.id
+        # SS-BACKFILL-AUTO-RESUME - the stop reason belongs to the stop that
+        # just ended (a stale `ORPHANED` must never make a later user Stop
+        # look like a worker loss). The automatic-resume count lives in the
+        # progress summary: the runner rewrites the summary on every saved
+        # day, so a saved day restarts the count ("N in a row").
+        backfill.error = None
+        backfill.error_code = None
+        summary = dict(backfill.summary_json or {})
+        summary.pop(AUTO_RESUME_SUMMARY_KEY, None)
+        if auto_resume_count is not None:
+            summary[AUTO_RESUME_SUMMARY_KEY] = {"count": int(auto_resume_count)}
+        backfill.summary_json = summary or None
         self.db.commit()
         self._dispatch(job, run_doc_feed_backfill_job, transport=transport)
         self.db.refresh(backfill)

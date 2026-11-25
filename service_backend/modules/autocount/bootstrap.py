@@ -448,6 +448,7 @@ def on_job_orphaned(
     # backfill record ``stopped`` and resumable (Q6 "crash-safe").
     if job_type in ("autocount_doc_feed_run", "autocount_doc_feed_backfill"):
         from .models import (
+            BACKFILL_USER_STOPPED_CODE,
             DOC_FEED_BACKFILL_RUNNING,
             DOC_FEED_BACKFILL_STOPPED,
             DOC_FEED_BACKFILL_STOPPING,
@@ -515,12 +516,15 @@ def on_job_orphaned(
         if backfill is not None and backfill.status in (
             DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING,
         ):
+            # SS-BACKFILL-AUTO-RESUME - a row a person was stopping stays a
+            # user Stop; a running one lost its worker (auto-resumed later).
+            user_stop = backfill.status == DOC_FEED_BACKFILL_STOPPING
             backfill.status = DOC_FEED_BACKFILL_STOPPED
             backfill.error = (
                 getattr(job, "error", None)
                 or "Interrupted: the worker stopped before this backfill finished."
             )
-            backfill.error_code = "ORPHANED"
+            backfill.error_code = BACKFILL_USER_STOPPED_CODE if user_stop else "ORPHANED"
         db.flush()
         return
     if job_type == PREVIEW_JOB_TYPE:
