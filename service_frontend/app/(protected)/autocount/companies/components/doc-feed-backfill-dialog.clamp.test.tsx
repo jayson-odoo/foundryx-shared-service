@@ -13,7 +13,7 @@ vi.mock('@/components/platform/date-range-picker', () => ({
     <button
       type="button"
       data-testid="pick-floor-day"
-      onClick={() => onChange({ preset: 'custom', from: '2019-01-01', to: '2019-01-01' })}
+      onClick={() => onChange({ preset: 'custom', from: '2000-01-01', to: '2000-01-01' })}
     >
       pick
     </button>
@@ -38,6 +38,6 @@ describe('DocFeedBackfillDialog range clamp (N-3)', () => {
     await userEvent.click(screen.getByTestId('pick-floor-day'));
     await userEvent.click(screen.getByTestId('backfill-dry-run-switch'));
     await userEvent.click(screen.getByTestId('backfill-start'));
-    expect(onStart).toHaveBeenCalledWith({ dryRun: false, fromDay: '2019-01-02', toDay: '2019-01-02' });
+    expect(onStart).toHaveBeenCalledWith({ dryRun: false, fromDay: '2000-01-02', toDay: '2000-01-02' });
   });
 });

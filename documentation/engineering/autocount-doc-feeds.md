@@ -125,7 +125,7 @@ beyond `recheckDays`).
 
 A durable `ac_doc_feed_backfill` record: day by day, sequential, resumable, at most one OPEN
 (`running|stopping|stopped`) per feed (partial unique index; a lost Start race is a 409
-`BACKFILL_OPEN`). The day loop reads `bydocdate` per day and pushes it. Range floor `2019-01-01`
+`BACKFILL_OPEN`). The day loop reads `bydocdate` per day and pushes it. Range floor `2000-01-01` (every feed)
 (`BACKFILL_FROM_DEFAULT`, `doc_feed/constants.py`; a `fromDay` below it is a 422; moved from
 2023-01-01 by SLOW-MOVING-BACKFILL); `toDay` <= MYT today, and a run stops at its `toDay` (a
 gap-only range, e.g. floor to the day before the CRM's existing history, never re-pushes later
@@ -245,7 +245,7 @@ plan 10 Appendix A), built by the same `autocount_pull_snapshot` job, stored in 
 Facts a maintainer needs:
 
 - **Scope:** flat `fromDay` / `toDay` / `docNo` on the build body (MYT doc-date days, 31-day
-  cap, floor 2019-01-01 (`BACKFILL_FROM_DEFAULT`), `toDay` <= MYT today; `docNo` alone = the 31 days ending today, filter
+  cap, floor 2000-01-01 (`BACKFILL_FROM_DEFAULT`), `toDay` <= MYT today; `docNo` alone = the 31 days ending today, filter
   only, the vendor has no by-DocNo door). Stored in `metadata_json` from creation and echoed on
   every response for this entity.
 - **Source:** this feed's own `ac_doc_feed` row for `delivery_orders` (its connection and book)

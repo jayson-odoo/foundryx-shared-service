@@ -1875,7 +1875,7 @@ export interface DocFeedIssue {
 }
 
 /** `POST /autocount/doc-feeds/{companyId}/{feed}/backfill` body - defaults
- * (2019-01-01 .. today) are resolved server-side; the dialog only sends what
+ * (2000-01-01 .. today) are resolved server-side; the dialog only sends what
  * the operator changed. */
 export interface DocFeedBackfillStartInput {
   dryRun: boolean;
