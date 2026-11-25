@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.jobs.crash_text import crash_text
 from app.jobs.service import JobService
-from app.models.background_job import JOB_FAILED, JOB_TERMINAL_STATUSES
+from app.models.background_job import JOB_ABORTED, JOB_FAILED, JOB_TERMINAL_STATUSES
 
 from ..doc_feed.clock import myt_date
 from ..doc_feed.constants import (
@@ -80,6 +80,11 @@ class DocFeedError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+# SS-BACKFILL-AUTO-RESUME - where a backfill row keeps its automatic-resume
+# count (inside ``summary_json``; dropped by the runner on every saved day).
+AUTO_RESUME_SUMMARY_KEY = "autoResume"
 
 
 class DocFeedValidationError(DocFeedError):
@@ -577,10 +582,28 @@ class DocFeedService:
         return backfill
 
     def stop_backfill(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
+        from ..models import (
+            BACKFILL_AUTO_RESUMING_CODE,
+            BACKFILL_USER_STOPPED_CODE,
+            BACKFILL_WORKER_LOSS_CODES,
+        )
+
         backfill = self._open_backfill_or_404(tenant_id, company_id, feed)
+        if backfill.status == DOC_FEED_BACKFILL_STOPPED and backfill.error_code in (
+            *BACKFILL_WORKER_LOSS_CODES, BACKFILL_AUTO_RESUMING_CODE,
+        ):
+            # SS-BACKFILL-AUTO-RESUME - the reap inside this call (or a beat
+            # just before it) wrote the row off as a worker loss; the person
+            # still asked to Stop, so the beat must not resume it.
+            backfill.error_code = BACKFILL_USER_STOPPED_CODE
+            self.db.commit()
         if backfill.status == DOC_FEED_BACKFILL_RUNNING:
             from ..models import DOC_FEED_BACKFILL_STOPPING
 
+            # SS-BACKFILL-AUTO-RESUME - a person's Stop is never undone by the
+            # beat's automatic resume.
+            backfill.error = None
+            backfill.error_code = BACKFILL_USER_STOPPED_CODE
             if self.backfills.abort_pending_job(
                 tenant_id, backfill.job_id, now=datetime.now(timezone.utc)
             ):
@@ -595,7 +618,12 @@ class DocFeedService:
     def resume_backfill(
         self, tenant_id: str, company_id: str, feed: str,
         *, actor_user_id: Optional[str] = None, transport: Any = None,
+        auto_resume_count: Optional[int] = None, backfill_id: Optional[str] = None,
     ) -> AcDocFeedBackfill:
+        """Resume a stopped backfill from its saved day. A person's Resume
+        (``auto_resume_count=None``) starts the automatic-resume count afresh;
+        the beat's automatic resume (SS-BACKFILL-AUTO-RESUME) passes the count
+        this resume makes and the row it claimed (``backfill_id``)."""
         self._company(tenant_id, company_id)
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
@@ -603,6 +631,8 @@ class DocFeedService:
         self._reap_feed(tenant_id, row.id)
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
+            raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
+        if backfill_id is not None and backfill.id != backfill_id:
             raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
         # SS-BACKFILL-CHUNKED (review round 1) - a stopped row's old segment
         # that is still only QUEUED would never read anything (it no-ops on
@@ -633,13 +663,35 @@ class DocFeedService:
             )
         # Review round 1 - job first, then `running` + its job id in ONE
         # commit (the reaper never sees running under the old ended job).
+        from ..models import BACKFILL_AUTO_RESUMING_CODE
+
+        seen_job_id = backfill.job_id
+        # SS-BACKFILL-AUTO-RESUME - the automatic-resume count lives in the
+        # progress summary: the runner rewrites the summary on every saved
+        # day, so a saved day restarts the count ("N in a row"); a person's
+        # Resume starts it afresh.
+        summary = dict(backfill.summary_json or {})
+        summary.pop(AUTO_RESUME_SUMMARY_KEY, None)
+        if auto_resume_count is not None:
+            summary[AUTO_RESUME_SUMMARY_KEY] = {"count": int(auto_resume_count)}
         job = JobService(self.db).create(
             type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
             payload={"backfillId": backfill.id},
         )
-        backfill.status = DOC_FEED_BACKFILL_RUNNING
-        backfill.job_id = job.id
+        # `running` + its job id in ONE guarded write (the reaper never sees
+        # running under the old ended job). The stop reason is cleared with
+        # it: a stale `ORPHANED` must never make a later user Stop look like
+        # a worker loss. A Resume that raced another (a person + the beat)
+        # loses here and its job is closed unrun.
+        if not self.backfills.start_resume(
+            tenant_id, backfill.id, seen_job_id, job.id, summary=summary or None,
+            require_code=BACKFILL_AUTO_RESUMING_CODE if auto_resume_count is not None else None,
+        ):
+            self.db.rollback()
+            JobService(self.db).finish(job, status=JOB_ABORTED, error="Another resume started first.")
+            raise DocFeedConflictError("BACKFILL_JOB_LIVE", "This backfill has just been resumed.")
         self.db.commit()
+        self.db.refresh(backfill)
         self._dispatch(job, run_doc_feed_backfill_job, transport=transport)
         self.db.refresh(backfill)
         return backfill

@@ -17,12 +17,22 @@ import type { DocFeedsView } from '@/types/autocount';
  * skip-row noise" applies to the CLIENT'S own network chatter too).
  */
 
+// SS-BACKFILL-AUTO-RESUME - a backfill stopped by a lost worker (a deploy)
+// is resumed by the doc-feed beat about a minute later, so it is still in
+// flight: keep polling so an open tab shows the resume without a reload.
+// Mirrors `BACKFILL_WORKER_LOSS_CODES` + the beat's claim code (backend
+// `modules/autocount/models.py`).
+const AUTO_RESUMED_STOP_CODES = new Set(['ORPHANED', 'JOB_ENDED', 'JOB_ORPHANED', 'AUTO_RESUMING']);
+
 function hasInFlight(view: DocFeedsView | null): boolean {
   if (!view) return false;
   return view.feeds.some(
     (feed) =>
       (feed.lastRun && feed.lastRun.outcome === null) ||
-      (feed.backfill && (feed.backfill.status === 'running' || feed.backfill.status === 'stopping')),
+      (feed.backfill &&
+        (feed.backfill.status === 'running' ||
+          feed.backfill.status === 'stopping' ||
+          (feed.backfill.status === 'stopped' && AUTO_RESUMED_STOP_CODES.has(feed.backfill.errorCode ?? '')))),
   );
 }
 

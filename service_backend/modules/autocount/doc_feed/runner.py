@@ -25,6 +25,7 @@ from ..http_source.book import derive_book
 from ..http_source.client import HttpApiClient, connection_sizing
 from ..http_source.source import DELETE_GUARD_MIN_ABSOLUTE, DELETE_GUARD_RATIO
 from ..models import (
+    BACKFILL_USER_STOPPED_CODE,
     DOC_FEED_BACKFILL_DONE,
     DOC_FEED_BACKFILL_RUNNING,
     DOC_FEED_BACKFILL_STOPPED,
@@ -1203,9 +1204,23 @@ def run_backfill(
         # S2 - discard any uncommitted work of the day this failed on before
         # even touching `backfill_row` (mirrors `_finish_failed`).
         db.rollback()
+        if backfill_row.job_id != job_id:
+            # SS-BACKFILL-AUTO-RESUME - this worker was written off and the
+            # backfill was resumed under a newer job meanwhile: never stop
+            # (or overwrite) the run that now owns the row.
+            return backfill_row
+        code = stop_reason["code"]
+        if code == "JOB_ORPHANED" and (
+            backfill_row.status == DOC_FEED_BACKFILL_STOPPING
+            or backfill_row.error_code == BACKFILL_USER_STOPPED_CODE
+        ):
+            # SS-BACKFILL-AUTO-RESUME - a person pressed Stop before this
+            # worker was written off: it stays a user Stop (never resumed by
+            # the beat).
+            code = BACKFILL_USER_STOPPED_CODE
         backfill_row.status = DOC_FEED_BACKFILL_STOPPED
         backfill_row.error = stop_reason["message"][:4000]
-        backfill_row.error_code = stop_reason["code"]
+        backfill_row.error_code = code
         db.commit()
         _new_run_for_backfill(
             db, backfill_row, feed_row, now, outcome=RUN_FAILED,

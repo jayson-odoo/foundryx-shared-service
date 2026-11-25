@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
@@ -84,6 +84,15 @@ def sweep_doc_feeds(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
         elif outcome == "skipped":
             skipped += 1
     missing = _report_missing_feed_books(db)
+    # SS-BACKFILL-AUTO-RESUME - BEFORE the reaper: a row the reaper stops on
+    # this tick is resumed on the next one (a minute later), never in the
+    # same breath as it was written off.
+    try:
+        auto_resumed = auto_resume_lost_backfills(db, now=now)
+    except Exception:  # noqa: BLE001 - never stops the sweep
+        logger.exception("doc-feed backfill auto-resume failed")
+        db.rollback()
+        auto_resumed = 0
     try:
         reaped = reap_stale_backfills(db, now=now)
     except Exception:  # noqa: BLE001 - the reaper never stops the sweep
@@ -93,6 +102,7 @@ def sweep_doc_feeds(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
     return {
         "fired": fired, "skipped": skipped, "failed": failed,
         "missingFeedBooks": missing, "reapedBackfills": reaped,
+        "autoResumedBackfills": auto_resumed,
     }
 
 
@@ -176,6 +186,162 @@ def _reap_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: datetime, 
     db.commit()
     logger.error("doc-feed backfill %s: its job had ended; stopped", backfill.id)
     return True
+
+
+# SS-BACKFILL-AUTO-RESUME - a deploy recreates the jobs worker with no grace,
+# so the reading segment is killed (never re-run: acks_late is off). Core's
+# orphan sweep / the reaper above then stop the row with a worker-loss code;
+# the beat resumes it from its saved day through Resume's own path, at most
+# this many times in a row (no day saved in between) so a crash loop ends.
+BACKFILL_AUTO_RESUME_MAX = 5
+# A claim (``AUTO_RESUMING``) the beat never followed up (its process died
+# between the claim and the resume) is taken over after this long.
+BACKFILL_AUTO_RESUME_CLAIM_STALE = timedelta(minutes=10)
+
+
+def _ddmmyyyy(day) -> str:
+    return day.strftime("%d/%m/%Y")
+
+
+def auto_resume_lost_backfills(
+    db: Session, *, now: Optional[datetime] = None, transport: Any = None,
+) -> int:
+    """Resume every stopped backfill whose worker was lost (``ORPHANED`` /
+    ``JOB_ENDED`` / ``JOB_ORPHANED``). A user Stop, a time limit, a crash and
+    CRM / AutoCount errors are never touched. Returns how many resumed. Each
+    row commits on its own; one bad row never stops the others. ``transport``
+    is the test-only route override Resume itself takes."""
+    from ..models import BACKFILL_WORKER_LOSS_CODES
+
+    current = now or datetime.now(timezone.utc)
+    repo = DocFeedBackfillRepository(db)
+    resumed = 0
+    for backfill in repo.stopped_by_worker_loss(
+        BACKFILL_WORKER_LOSS_CODES,
+        stale_claim_before=current - BACKFILL_AUTO_RESUME_CLAIM_STALE,
+        scope=active_tenant_service_join,
+    ):
+        try:
+            if _auto_resume_one(db, repo, backfill, now=current, transport=transport):
+                resumed += 1
+        except Exception:  # noqa: BLE001 - one bad row never stops the pass
+            logger.exception("doc-feed backfill auto-resume failed for %s", backfill.id)
+            db.rollback()
+    return resumed
+
+
+def _auto_resume_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: datetime, transport: Any) -> bool:
+    from ..models import (
+        BACKFILL_AUTO_RESUME_LIMIT_CODE,
+        BACKFILL_AUTO_RESUMED_CODE,
+        BACKFILL_AUTO_RESUMING_CODE,
+        BACKFILL_WORKER_LOSS_CODES,
+        DOC_FEED_MODE_PUSH,
+    )
+    from ..services.doc_feed_service import (
+        AUTO_RESUME_SUMMARY_KEY,
+        DocFeedError,
+        DocFeedService,
+    )
+
+    db.refresh(backfill)
+    seen_code = backfill.error_code
+    if backfill.status != DOC_FEED_BACKFILL_STOPPED or seen_code not in (
+        *BACKFILL_WORKER_LOSS_CODES, BACKFILL_AUTO_RESUMING_CODE,
+    ):
+        return False
+    # The code to give back when a resume is refused: a stale claim's own
+    # worker-loss reason is gone, it reads as "the job ended".
+    release_code = "JOB_ENDED" if seen_code == BACKFILL_AUTO_RESUMING_CODE else seen_code
+    feed = DocFeedRepository(db).get_by_id(backfill.tenant_id, backfill.feed_id)
+    # Resume's own feed rules, checked first so a feed that is Off (or a
+    # live backfill whose feed left Push) is simply left for a person -
+    # quietly, every beat - with its stop reason untouched.
+    if feed is None or feed.mode == DOC_FEED_MODE_OFF:
+        return False
+    if not backfill.dry_run and feed.mode != DOC_FEED_MODE_PUSH:
+        return False
+    summary = backfill.summary_json or {}
+    state = summary.get(AUTO_RESUME_SUMMARY_KEY) if isinstance(summary, dict) else None
+    count = int(state.get("count") or 0) if isinstance(state, dict) else 0
+    resume_day = backfill.next_day
+    old_job_id = backfill.job_id
+    if not repo.claim_for_auto_resume(
+        backfill.tenant_id, backfill.id, seen_code,
+        now=now, stale_claim_before=now - BACKFILL_AUTO_RESUME_CLAIM_STALE,
+    ):
+        db.rollback()
+        return False
+
+    if count >= BACKFILL_AUTO_RESUME_MAX:
+        message = (
+            f"The server stopped while this backfill was reading, {BACKFILL_AUTO_RESUME_MAX} times "
+            f"in a row without finishing a day, so it was not continued by itself. "
+            f"Resume continues from {_ddmmyyyy(resume_day)}."
+        )
+        db.refresh(backfill)
+        backfill.error = message
+        backfill.error_code = BACKFILL_AUTO_RESUME_LIMIT_CODE
+        _log_auto_resume(db, backfill, feed, old_job_id, resume_day, now=now,
+                         code=BACKFILL_AUTO_RESUME_LIMIT_CODE, message=message)
+        db.commit()
+        logger.error(
+            "doc-feed backfill %s: worker lost %d times in a row; left stopped",
+            backfill.id, BACKFILL_AUTO_RESUME_MAX,
+        )
+        return False
+
+    db.commit()  # the claim: a second beat now sees AUTO_RESUMING
+    try:
+        DocFeedService(db).resume_backfill(
+            backfill.tenant_id, backfill.company_id, feed.feed,
+            transport=transport, auto_resume_count=count + 1, backfill_id=backfill.id,
+        )
+    except DocFeedError as exc:
+        # e.g. the old job is still finishing, or another backfill holds the
+        # book: give the stop reason back, the next beat tries again.
+        db.rollback()
+        repo.release_auto_resume_claim(backfill.tenant_id, backfill.id, release_code)
+        db.commit()
+        logger.info("doc-feed backfill %s: not resumed yet (%s)", backfill.id, exc)
+        return False
+    except Exception:
+        db.rollback()
+        repo.release_auto_resume_claim(backfill.tenant_id, backfill.id, release_code)
+        db.commit()
+        raise
+    _log_auto_resume(
+        db, backfill, feed, old_job_id, resume_day, now=now, code=BACKFILL_AUTO_RESUMED_CODE,
+        message=(
+            f"The server stopped while this backfill was reading. It continued by itself "
+            f"from {_ddmmyyyy(resume_day)} (automatic resume {count + 1} of {BACKFILL_AUTO_RESUME_MAX})."
+        ),
+    )
+    db.commit()
+    logger.warning(
+        "doc-feed backfill %s: worker lost (%s); resumed from %s (%d of %d)",
+        backfill.id, seen_code, resume_day, count + 1, BACKFILL_AUTO_RESUME_MAX,
+    )
+    return True
+
+
+def _log_auto_resume(db: Session, backfill, feed: AcDocFeed, old_job_id, resume_day, *,
+                     now: datetime, code: str, message: str) -> None:
+    """One history entry (a backfill run row) per automatic resume: the
+    segment the lost worker was reading, shown as Aborted with the plain
+    reason on the feed's runs list. No commit."""
+    from ..models import RUN_ABORTED, AcDocFeedRun
+    from .constants import RUN_KIND_BACKFILL
+    from .runner import _new_summary
+
+    db.add(AcDocFeedRun(
+        tenant_id=backfill.tenant_id, company_id=backfill.company_id,
+        feed_id=backfill.feed_id, feed=backfill.feed, kind=RUN_KIND_BACKFILL,
+        dry_run=backfill.dry_run, job_id=old_job_id,
+        day_from=resume_day, day_to=None, requests=0, fetched_count=0,
+        outcome=RUN_ABORTED, error=message[:4000], error_code=code,
+        summary_json=_new_summary(), started_at=now, finished_at=now, duration_ms=0,
+    ))
 
 
 def _report_missing_feed_books(db: Session) -> int:

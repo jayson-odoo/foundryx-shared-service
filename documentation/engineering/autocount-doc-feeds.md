@@ -181,6 +181,28 @@ segment is left alone. Stop on a row whose next segment is still queued aborts t
 at once. **Dry run first** (registrations): finished, non-discarded dry runs that together cover
 every day of the live range satisfy the gate (pieces count; one gap day refuses).
 
+**Auto-resume after a worker loss (SS-BACKFILL-AUTO-RESUME).** A deploy recreates the jobs worker
+with no grace, so the reading segment is killed and never re-run. A row stopped with a
+worker-loss code (`ORPHANED` from the orphan hook, `JOB_ENDED` from the reaper, `JOB_ORPHANED`
+from the runner fence; `BACKFILL_WORKER_LOSS_CODES`, `models.py`) is resumed by the doc-feed beat
+(`auto_resume_lost_backfills`, `doc_feed/scheduler.py`, run BEFORE the reaper so a row written off
+on one tick resumes on the next) through Resume's own path, from its saved `next_day`, for active
+tenants/modules only and only while Resume's feed rules hold (feed not Off; a live backfill needs
+Push). Cap: at most `BACKFILL_AUTO_RESUME_MAX` (5) automatic resumes in a row with no saved day
+between; the count lives in `summary_json["autoResume"]`, which the runner drops on every saved
+day, and a person's Resume clears it. At the cap the row stays `stopped` with `AUTO_RESUME_LIMIT`
+and a plain message. Each automatic resume (and the cap) writes one `ABORTED` backfill run row
+(`AUTO_RESUMED` / `AUTO_RESUME_LIMIT`) as the feed's history; the feed row's **Last run** skips
+those rows (`DocFeedRunRepository.latest_for_feed`, crew ruling b) and keeps the last poll or
+segment. A person's Stop is `USER_STOPPED` and is never auto-resumed: Stop writes it (also on a
+row its own reap just wrote off), and the orphan hook, the reaper (SQL `CASE` on `stopping`) and
+the runner fence keep it when a stopping row's job dies. `TIME_LIMIT`, `CRASHED`, sink, vendor
+and CRM stops stay stopped. Races: the beat claims a row with a guarded `AUTO_RESUMING` write
+(a claim left behind by a dead beat is taken over after 10 minutes), and Resume itself is one
+guarded `stopped -> running` write on the job id it judged (`start_resume`), so a person and the
+beat never both start a segment; a written-off worker never stops the run that resumed its row.
+Pinned by `tests/test_s14_doc_feed_backfill_auto_resume.py`.
+
 ## 6. Failure text
 
 A sink failure is stored on `run.error` / `backfill.error` through

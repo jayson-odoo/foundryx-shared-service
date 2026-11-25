@@ -1708,6 +1708,9 @@ export interface DocFeedBackfill {
   daysTotal: number;
   daysDone: number;
   error: string | null;
+  /** Why a stopped backfill stopped (e.g. `USER_STOPPED`, `ORPHANED`); the
+   * hook keeps polling while a worker-loss stop waits for its auto-resume. */
+  errorCode?: string | null;
 }
 
 /** A cadence - the Entities task schedule shape (`AutocountEtlSourceConfig`'s
