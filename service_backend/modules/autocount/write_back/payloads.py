@@ -152,16 +152,20 @@ DB_UNREAD_MARKER = "_dbUnread"  # set on a PO / SPO the AutoCount DB could not b
 # Set on a PO / SPO read while NO line notes source is set (legacy mode, crew ruling s20): no DB read, no refusal, no
 # Further Description on kept rows, no blank header text. Never in any key list, never sent.
 DB_LEGACY_MARKER = "_dbLegacy"
+# Legacy mode where the vendor GET carries FurtherDescription on EVERY row (vendor 25 Nov): the note is known, so the
+# row-copy paths carry it exactly as read; the header stays legacy (no DB overlay, blank text omitted). Never sent.
+HAPI_FD_MARKER = "_hapiFd"
 
 
 STORED_FIELDS_CHANGED = "STORED_FIELDS_CHANGED"
+INTERNAL_MARKERS = (DB_UNREAD_MARKER, DB_LEGACY_MARKER, HAPI_FD_MARKER)
 
 
 def public_doc(doc: Any) -> Any:
     """Plan 73: ``doc`` without the internal unread marker, for anything stored or returned (the document shape of
     contract 57 never carries it). Copies only when the marker is there; anything else is returned as is."""
-    if isinstance(doc, dict) and (DB_UNREAD_MARKER in doc or DB_LEGACY_MARKER in doc):
-        return {k: v for k, v in doc.items() if k not in (DB_UNREAD_MARKER, DB_LEGACY_MARKER)}
+    if isinstance(doc, dict) and any(m in doc for m in INTERNAL_MARKERS):
+        return {k: v for k, v in doc.items() if k not in INTERNAL_MARKERS}
     return doc
 
 
@@ -185,8 +189,9 @@ def require_line_notes(*rows: Mapping[str, Any]) -> None:
 
 
 def _require_notes(doc: Mapping[str, Any], *rows: Mapping[str, Any]) -> None:
-    """``require_line_notes`` in DB mode; legacy mode (no source set) never requires the note."""
-    if not is_legacy(doc):
+    """``require_line_notes`` in DB mode (and in legacy mode when the vendor GET carried every row's note); plain
+    legacy mode (no source, no note on the GET) never requires it."""
+    if not is_legacy(doc) or doc.get(HAPI_FD_MARKER):
         require_line_notes(*rows)
 
 

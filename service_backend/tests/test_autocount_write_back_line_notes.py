@@ -192,7 +192,7 @@ def test_notes_reader_leaves_so_and_qt_untouched(kind):
     assert source.calls == []
 
 
-@pytest.mark.parametrize("source", [None, "read_none"])
+@pytest.mark.parametrize("source", ["read_none"])
 def test_notes_reader_unread_db_leaves_rows_without_the_key_even_when_hapi_carries_it(source):
     from modules.autocount.write_back.line_notes import NotesReader
 
@@ -202,6 +202,17 @@ def test_notes_reader_unread_db_leaves_rows_without_the_key_even_when_hapi_carri
 
     doc = _po()  # the vendor GET itself carries FurtherDescription on every row
     got = NotesReader(_InnerReader({"PO": doc}), None if source is None else _Unread()).get_document("PO", 7001, None)
+    assert all("FurtherDescription" not in r for r in got["Details"])
+
+
+def test_notes_reader_no_source_keeps_the_get_fd_when_every_row_carries_it_else_drops_it():
+    from modules.autocount.write_back.line_notes import NotesReader
+
+    doc = _po()  # legacy mode, the vendor GET carries FurtherDescription on every row (vendor 25 Nov): kept as read
+    got = NotesReader(_InnerReader({"PO": doc}), None).get_document("PO", 7001, None)
+    assert [r["FurtherDescription"] for r in got["Details"]] == [FD1, FD2, FD3]
+    partial = _without_fd(_po(), 1)  # one row without the key: none is kept
+    got = NotesReader(_InnerReader({"PO": partial}), None).get_document("PO", 7001, None)
     assert all("FurtherDescription" not in r for r in got["Details"])
 
 
