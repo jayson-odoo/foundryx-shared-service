@@ -454,3 +454,33 @@ def test_r1_a_written_off_worker_never_stops_the_run_that_resumed_the_row(db, mo
     runner.run_backfill(db, bf, now=NOW, vendor_transport=_Vendor().client(), sink_transport=_sink())
     db.refresh(bf)
     assert bf.status == "running" and bf.job_id == new.id and bf.error_code is None
+
+
+# ── crew ruling (b): the feed row's Last run skips automatic-resume rows ────
+
+
+def test_r2_the_feed_rows_last_run_skips_automatic_resume_rows(db, monkeypatch):
+    """The Aborted history row stays in the runs list, but the feed row's
+    Last run cell keeps showing the last poll / segment (no new state on the
+    feed row the brief did not ask for)."""
+    from modules.autocount.services.doc_feed_service import DocFeedService as Svc
+
+    _no_dispatch(monkeypatch)
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    poll = AcDocFeedRun(
+        tenant_id=co.tenant_id, company_id=co.id, feed_id=feed.id, feed=DO, kind="poll",
+        dry_run=False, outcome="SUCCESS", started_at=NOW - timedelta(hours=1),
+        finished_at=NOW - timedelta(hours=1), summary_json={},
+    )
+    db.add(poll)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), status="stopped")
+    bf.error_code = "ORPHANED"
+    db.commit()
+
+    assert auto_resume_lost_backfills(db, now=NOW) == 1
+    assert len(_history(db, feed.id)) == 1  # the history row is still there
+
+    item = next(i for i in Svc(db).view(co.tenant_id, co.id).feeds if i.feed == DO)
+    assert item.lastRun is not None
+    assert item.lastRun.id == poll.id and item.lastRun.outcome == "SUCCESS"

@@ -23,6 +23,7 @@ from ..models import (
     AcDocFeedIssue,
     AcDocFeedLedger,
     AcDocFeedRun,
+    BACKFILL_AUTO_RESUME_RUN_CODES,
     BACKFILL_AUTO_RESUMING_CODE,
     BACKFILL_DISCARDED_CODE,
     BACKFILL_USER_STOPPED_CODE,
@@ -427,12 +428,19 @@ class DocFeedRunRepository:
         return run
 
     def latest_for_feed(self, tenant_id: str, company_id: str, feed_id: str) -> Optional[AcDocFeedRun]:
+        """The feed row's Last run. SS-BACKFILL-AUTO-RESUME (crew ruling b):
+        the automatic-resume history rows stay in the runs list but never
+        become the feed row's Last run (it keeps the last poll / segment)."""
         return (
             self.db.query(AcDocFeedRun)
             .filter(
                 AcDocFeedRun.tenant_id == tenant_id,
                 AcDocFeedRun.company_id == company_id,
                 AcDocFeedRun.feed_id == feed_id,
+                or_(
+                    AcDocFeedRun.error_code.is_(None),
+                    AcDocFeedRun.error_code.notin_(BACKFILL_AUTO_RESUME_RUN_CODES),
+                ),
             )
             .order_by(AcDocFeedRun.started_at.desc())
             .first()
