@@ -245,7 +245,8 @@ def test_ac_57_14_edit_does_not_mutate_input():
 def test_ac_57_14_edit_so_and_spo_paths():
     assert P.build_edit("SO", so_doc(), {"Ref": "N"}, []).path == "/EditSalesOrderbydockey"
     spo = {"DocKey": 1, "DocNo": "S1", "ShippingPO": "T", "Cancelled": "F", "CreditorCode": "C1",
-           "Details": [{"DtlKey": 5, "ItemCode": "A", "UOM": "U", "Qty": 1.0, "UnitPrice": 1.0, "Location": "HQ"}]}
+           "Details": [{"DtlKey": 5, "ItemCode": "A", "UOM": "U", "Qty": 1.0, "UnitPrice": 1.0, "Location": "HQ",
+                        "FurtherDescription": ""}]}
     req = P.build_edit("SPO", spo, {"Ref": "N"}, [{"DtlKey": 5, "Qty": 2}])
     assert req.path == "/EditPurchaseOrderbydockey" and req.body["ShippingPO"] == "T"
 

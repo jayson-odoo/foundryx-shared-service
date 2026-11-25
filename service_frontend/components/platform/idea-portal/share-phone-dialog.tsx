@@ -6,6 +6,7 @@ import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { useSharePhoneStep, type ShareAction } from '@/hooks/use-idea-portal';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Alert, AlertTitle } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
 import { PhoneInput } from '@/components/platform/phone-input/phone-input';
 import { OtpCodeField, useResendCooldown } from '@/components/platform/otp-code-field/otp-code-field';
@@ -86,6 +87,12 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
     [step, action, ideaId, onProven],
   );
 
+  const errorBox = step.error ? (
+    <Alert variant="destructive" appearance="light" size="sm">
+      <AlertTitle>{step.error}</AlertTitle>
+    </Alert>
+  ) : null;
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !step.busy && onClose()}>
       <DialogContent className="max-w-md" aria-describedby={undefined}>
@@ -94,20 +101,12 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
           {step.step === 'phone' ? (
-            <form
-              noValidate
-              className="flex flex-col gap-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void submitPhone();
-              }}
-            >
+            <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="share-phone">Phone number</Label>
                 <PhoneInput
                   id="share-phone"
                   defaultCountry="MY"
-                  autoFocus
                   value={phone}
                   showError={submitted}
                   onChange={(e164, meta) => {
@@ -117,16 +116,17 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
                   }}
                 />
               </div>
-              {step.error && (
-                <p className="text-sm text-destructive" role="alert">
-                  {step.error}
-                </p>
-              )}
-              <Button type="submit" className="h-11 w-full" disabled={step.busy}>
+              {errorBox}
+              <Button
+                type="button"
+                className="h-11 w-full"
+                disabled={!phone || step.busy}
+                onClick={() => void submitPhone()}
+              >
                 {step.busy && <LoaderCircleIcon className="size-4 animate-spin" />}
                 Continue
               </Button>
-            </form>
+            </div>
           ) : (
             <>
               <div className="flex flex-col items-start gap-1">
@@ -136,10 +136,12 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
                 <Button
                   type="button"
                   mode="link"
+                  underlined="solid"
                   size="sm"
                   disabled={step.busy}
                   onClick={() => {
                     setCode('');
+                    cooldown.start(0);
                     restart();
                   }}
                 >
@@ -159,13 +161,9 @@ export function SharePhoneDialog({ shareToken, ideaId, action, onClose, onProven
                 sent
                 pending={step.busy}
                 onResend={() => void send()}
-                status={verifying ? <span>Signing you in as {readable(phone)}</span> : undefined}
+                status={verifying ? <span>Checking the code for {readable(phone)}</span> : undefined}
               />
-              {step.error && (
-                <p className="text-sm text-destructive" role="alert">
-                  {step.error}
-                </p>
-              )}
+              {errorBox}
             </>
           )}
         </DialogBody>

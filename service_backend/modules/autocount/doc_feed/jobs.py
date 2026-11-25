@@ -17,14 +17,22 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.orm import Session
 
 from app.jobs.registry import JobHandlerDef, register_job_handler
 from app.jobs.crash_text import crash_text
 from app.jobs.service import JobService
-from app.models.background_job import JOB_DONE, JOB_FAILED, BackgroundJob
+from app.models.background_job import JOB_DONE, JOB_FAILED, JOB_TERMINAL_STATUSES, BackgroundJob
 
-from ..models import DOC_FEED_MODE_OFF, DOC_FEED_MODE_PUSH
+from ..models import (
+    DOC_FEED_BACKFILL_RUNNING,
+    DOC_FEED_BACKFILL_STOPPED,
+    DOC_FEED_BACKFILL_STOPPING,
+    DOC_FEED_MODE_OFF,
+    DOC_FEED_MODE_PUSH,
+    AcDocFeedBackfill,
+)
 from ..repositories.doc_feed_repository import DocFeedBackfillRepository, DocFeedRepository
 from .constants import (
     DOC_FEED_BACKFILL_JOB_TYPE,
@@ -32,7 +40,7 @@ from .constants import (
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
 )
-from .runner import run_backfill, run_poll, run_sweep
+from .runner import run_backfill, run_poll, run_sweep, segment_continues
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -103,7 +111,14 @@ def run_doc_feed_job(db: Session, job: BackgroundJob, *, transport: Any = None) 
 
 
 def run_doc_feed_backfill_job(db: Session, job: BackgroundJob, *, transport: Any = None) -> None:
-    """``autocount_doc_feed_backfill`` - one day-loop segment (D13)."""
+    """``autocount_doc_feed_backfill`` - one day-loop SEGMENT (D13).
+
+    SS-BACKFILL-CHUNKED: a segment reads for at most
+    ``autocount_doc_feed_backfill_segment_seconds`` then queues the next
+    segment (``_queue_next_segment``), so a multi-year backfill never meets
+    the job's own time limit. However this job ends - done, time limit,
+    crash - the backfill row is never left ``running``/``stopping`` without
+    a worker: a stopped row is resumable from the UI."""
     service = JobService(db)
     payload = dict(job.payload_json or {})
     backfill_id = str(payload.get("backfillId") or "")
@@ -111,16 +126,106 @@ def run_doc_feed_backfill_job(db: Session, job: BackgroundJob, *, transport: Any
     if backfill is None:
         service.finish(job, status=JOB_FAILED, error="The backfill no longer exists.")
         return
+    if backfill.job_id and backfill.job_id != job.id:
+        # Kill-proof fence: this is a stale segment (the backfill was
+        # reaped and resumed under a newer job) - never read a day.
+        service.finish(job, status=JOB_DONE)
+        return
     now = datetime.now(timezone.utc)
     vendor_transport, sink_transport = _split_transport(transport)
     try:
         run_backfill(db, backfill, now=now, vendor_transport=vendor_transport, sink_transport=sink_transport)
+    except SoftTimeLimitExceeded:
+        logger.error("doc-feed backfill job %s hit its time limit", job.id)
+        db.rollback()
+        _close_backfill_stopped(db, job, backfill_id, code=BACKFILL_TIME_LIMIT_CODE,
+                                message=BACKFILL_TIME_LIMIT_MESSAGE)
+        service.finish(job, status=JOB_FAILED, error=JobService.SOFT_TIME_LIMIT_ERROR)
+        return
     except Exception as exc:  # noqa: BLE001 - isolated, mirrors run_job
         logger.exception("doc-feed backfill job %s crashed", job.id)
         db.rollback()
-        service.finish(job, status=JOB_FAILED, error=crash_text(exc))
+        error = crash_text(exc)
+        _close_backfill_stopped(db, job, backfill_id, code=BACKFILL_CRASHED_CODE, message=error)
+        service.finish(job, status=JOB_FAILED, error=error)
         return
+    db.refresh(backfill)
+    if not segment_continues(backfill):
+        service.finish(job, status=JOB_DONE)
+        return
+    next_job = _queue_next_segment(db, backfill, job)
     service.finish(job, status=JOB_DONE)
+    _dispatch_segment(db, next_job, transport=transport)
+
+
+BACKFILL_TIME_LIMIT_CODE = "TIME_LIMIT"
+BACKFILL_TIME_LIMIT_MESSAGE = (
+    "Stopped: this backfill ran past the job time limit. Resume continues from the next day."
+)
+BACKFILL_CRASHED_CODE = "CRASHED"
+
+
+def _close_backfill_stopped(db: Session, job: BackgroundJob, backfill_id: str, *, code: str, message: str) -> None:
+    """End a backfill whose job is ending abnormally as ``stopped`` (resumable)
+    with the error recorded. Only an in-flight row owned by THIS job flips: a
+    ``done``/``stopped`` row, or one a newer job owns, stays as it is. Never
+    raises (the caller still has to finish the job row)."""
+    try:
+        backfill = DocFeedBackfillRepository(db).get(job.tenant_id, backfill_id)
+        if backfill is None:
+            return
+        db.refresh(backfill)
+        if backfill.job_id and backfill.job_id != job.id:
+            return
+        if backfill.status in (DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING):
+            backfill.status = DOC_FEED_BACKFILL_STOPPED
+            backfill.error = (message or "")[:4000]
+            backfill.error_code = code
+            db.commit()
+    except Exception:  # noqa: BLE001 - the reaper is the backstop
+        logger.exception("doc-feed backfill %s could not be closed as stopped", backfill_id)
+        db.rollback()
+
+
+def _queue_next_segment(db: Session, backfill: AcDocFeedBackfill, job: BackgroundJob) -> BackgroundJob:
+    """Create the next segment's job and point the backfill at it in ONE
+    commit, before this job finishes: the row is never `running` under a
+    finished job for longer than this call."""
+    next_job = JobService(db).create(
+        type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=job.tenant_id,
+        actor_user_id=getattr(job, "actor_user_id", None),
+        payload={"backfillId": backfill.id},
+    )
+    backfill.job_id = next_job.id
+    db.commit()
+    return next_job
+
+
+def _dispatch_segment(db: Session, next_job: BackgroundJob, *, transport: Any) -> None:
+    """The same ONE-dispatch-path rule ``DocFeedService._dispatch`` keeps: a
+    test's transport override (eager only) runs the next segment inline with
+    it; everything else goes through ``JobService.enqueue`` (Celery in prod,
+    inline in eager dev). A failed enqueue leaves a pending job the
+    undispatched sweep fails, after which the reaper stops the row."""
+    from app.config import settings
+
+    if settings.celery_task_always_eager and transport is not None:
+        jobs = JobService(db)
+        if not jobs.claim(next_job.id):
+            return
+        db.refresh(next_job)
+        try:
+            run_doc_feed_backfill_job(db, next_job, transport=transport)
+        except Exception as exc:  # noqa: BLE001 - mirrors _run_eager_with_transport
+            db.rollback()
+            fresh = jobs.repo.get_unscoped(next_job.id)
+            if fresh is not None and fresh.status not in JOB_TERMINAL_STATUSES:
+                jobs.finish(fresh, status=JOB_FAILED, error=crash_text(exc))
+        return
+    try:
+        JobService(db).enqueue(next_job.id)
+    except Exception:  # noqa: BLE001 - the sweeps + reaper recover it
+        logger.exception("doc-feed backfill: next segment %s could not be queued", next_job.id)
 
 
 _RUN_HANDLER_DEF = JobHandlerDef(

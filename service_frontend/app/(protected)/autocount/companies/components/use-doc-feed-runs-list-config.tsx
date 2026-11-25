@@ -5,8 +5,9 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { embeddedListConfig } from '@/components/platform/resource-list/embedded-list-config';
-import type { ResourceListConfig } from '@/components/platform/resource-list';
+import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
 import { formatDurationMs } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
@@ -55,8 +56,27 @@ function summaryLabel(run: DocFeedRun): string {
   ];
   if (s.retryable) parts.push(`${s.retryable} waiting`);
   if (s.failed) parts.push(`${s.failed} failed`);
+  // Plan 72 - CRM answers on project registrations (needs review is a kind of failed).
+  if (s.needsReview) parts.push(`${s.needsReview} needs review`);
+  if (s.skipped) parts.push(`${s.skipped} skipped`);
+  if (s.switchedOff) parts.push(`${s.switchedOff} switched off`);
   if (s.staleIgnored) parts.push(`${s.staleIgnored} stale`);
   return parts.join(', ');
+}
+
+/** Plan 72 - a run whose summary carries counts by month (a registrations backfill). */
+export function hasMonthCounts(run: DocFeedRun): boolean {
+  return Object.keys(run.summary?.byMonth ?? {}).length > 0;
+}
+
+export interface DocFeedRunsListOptions {
+  /** Opens the "Counts by month" popup for one run. */
+  onMonthCounts?: (run: DocFeedRun) => void;
+}
+
+/** Stops a click in the row's menu cell from reaching the row. */
+function stopRowClick(event: React.MouseEvent) {
+  event.stopPropagation();
 }
 
 /**
@@ -64,10 +84,25 @@ function summaryLabel(run: DocFeedRun): string {
  * A feed filter (`SearchSelect` segment) lets an operator narrow to one of
  * the three feeds; newest first (the fetcher's own default order).
  */
-export function useDocFeedRunsListConfig(companyId: string): ResourceListConfig<DocFeedRun> {
+export function useDocFeedRunsListConfig(
+  companyId: string,
+  options: DocFeedRunsListOptions = {},
+): ResourceListConfig<DocFeedRun> {
   const { formatDateTime } = useDatetime();
+  const { onMonthCounts } = options;
 
   return useMemo<ResourceListConfig<DocFeedRun>>(() => {
+    const actions: ResourceAction<DocFeedRun>[] = onMonthCounts
+      ? [
+          {
+            id: 'month-counts',
+            label: 'Counts by month',
+            surfaces: { row: true },
+            isVisible: (rows) => rows.length === 1 && hasMonthCounts(rows[0]),
+            run: (rows) => onMonthCounts(rows[0]),
+          },
+        ]
+      : [];
     const columns: ColumnDef<DocFeedRun>[] = [
       {
         id: 'feed',
@@ -188,6 +223,26 @@ export function useDocFeedRunsListConfig(companyId: string): ResourceListConfig<
         enableSorting: false,
       },
     ];
+    if (actions.length > 0) {
+      columns.push({
+        id: 'actions',
+        meta: { reorderable: false },
+        header: () => null,
+        cell: ({ row, table }) => (
+          <div onClick={stopRowClick} className="flex justify-end">
+            <ActionMenu
+              actions={actions}
+              rows={[row.original]}
+              runtime={{ reload: table.options.meta?.reload ?? (() => {}) }}
+              surface="row"
+            />
+          </div>
+        ),
+        size: 60,
+        enableSorting: false,
+        enableHiding: false,
+      });
+    }
 
     return {
       ...embeddedListConfig<DocFeedRun>({
@@ -201,6 +256,7 @@ export function useDocFeedRunsListConfig(companyId: string): ResourceListConfig<
             pageSize: query.pageSize,
             feed: readEq(query.filter, 'feed') as DocFeedKey | undefined,
           }),
+        actions,
       }),
       filterFields: [
         {
@@ -212,5 +268,5 @@ export function useDocFeedRunsListConfig(companyId: string): ResourceListConfig<
       ],
       enableStatusViews: false,
     };
-  }, [companyId, formatDateTime]);
+  }, [companyId, formatDateTime, onMonthCounts]);
 }

@@ -47,6 +47,7 @@ import type {
   AutocountPullSnapshot,
   AutocountPullSnapshotRowsPage,
   AutocountSimulateResult,
+  AutocountLineNotesInput,
   AutocountSinkTargetInput,
   AutocountSqlConnection,
   AutocountSqlPreview,
@@ -184,6 +185,15 @@ export interface AutocountService {
   updateSinkTarget(
     companyId: string,
     input: AutocountSinkTargetInput,
+  ): Promise<AutocountCompany>;
+  /**
+   * Set or clear the company's line notes database connection
+   * (`PATCH /autocount/companies/{id}/line-notes-connection`, plan 74): a same-tenant
+   * `sql_database` connection id, or `null`. Anything else is a 422 with a plain message.
+   */
+  updateLineNotesConnection(
+    companyId: string,
+    input: AutocountLineNotesInput,
   ): Promise<AutocountCompany>;
   /**
    * One entity's current field mappings + the source/target catalogs the

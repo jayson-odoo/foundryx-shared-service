@@ -35,7 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from modules.autocount.alerts import _safe_subject, alert_recipients
-from modules.autocount.models import AcCompany, AcWriteOperation
+from modules.autocount.models import AcCompany, AcWriteAction, AcWriteOperation
 from modules.autocount.repositories import CompanyRepository
 from modules.autocount.write_back import call_log as cl, capabilities, frame, guard, payloads
 from modules.autocount.write_back.guard import WriteConnectionError
@@ -63,14 +63,17 @@ from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.primitives import (
     LOOKUP_FAILED,
     LOOKUP_FAILED_MESSAGE,
+    NOT_YET_CONFIRMED_MESSAGE,
     ROW_NEEDS_ATTENTION,
     VENDOR_REFUSED,
+    VENDOR_TIMEOUT,
+    VENDOR_TIMEOUT_MESSAGE,
     PrimitiveResult,
     PrimitiveService,
 )
 from modules.autocount.write_back.reader import DocReadError
-from modules.autocount.write_back.repository import OperationRepository, SpoPoLinkRepository
-from modules.autocount.write_back.service import WriteBackService
+from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, OperationRepository, SpoPoLinkRepository
+from modules.autocount.write_back.service import WriteBackService, verify_split
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -100,6 +103,11 @@ LOOKUP_SETTLE_SECONDS = int(frame.ACTION_DEADLINE_SECONDS) + VENDOR_WRITE_TIMEOU
 LEGACY_MATCH_SLACK_SECONDS = 5  # app clock vs database clock, for rows written before actions carried them
 NOT_CHECKABLE_MESSAGE = ("This change could not be checked automatically. Check the document in AutoCount "
                          "before changing it again.")
+SUPERSEDED = "SUPERSEDED"  # PO-LINK-STUCK-RECONCILE-B s2: a parked operation an operator closed, nothing written
+SUPERSEDED_MESSAGE = "Closed without changing AutoCount. A new link press starts fresh."
+NOT_LINKED_MESSAGE = "Nothing of this link is in AutoCount. Please try again."
+STILL_DIFFERENT_MESSAGE = ("AutoCount shows this line differently from the link that was sent. Check the purchase "
+                           "order in AutoCount, then try again or close it.")
 UNKNOWN_OPERATION = "UNKNOWN_OPERATION"
 OPERATION_NOT_RESUMABLE = "OPERATION_NOT_RESUMABLE"
 INVALID_PARAMS = "INVALID_PARAMS"
@@ -118,6 +126,11 @@ NOT_SENT = "NOT_SENT"  # plan 69: a document batch line whose chunk was never se
 ALL_LINKS_SKIPPED = "ALL_LINKS_SKIPPED"
 RESTORE_NOT_LANDED = "RESTORE_NOT_LANDED"  # plan 65 D3: the batch's restore PUT did not land (resumable)
 FOC_ON_ROW = "FOC_ON_ROW"  # plan 65 D2a: the line would take the whole of a row carrying FOC (hapi cannot move it)
+# Plan 71 (owner 20 Nov; CRM SS contract, sorento-crm#2607): an unlink's ``return_to_dtl_key`` row could not
+# take the qty back (not found / not open / tied / another item or unit / ...). ONE warning code on a done
+# unlink (the qty went the plan 66 / plan 62 way instead), never a refusal. The precise reason is logged.
+RETURN_SOURCE_NOT_OPEN = "RETURN_SOURCE_NOT_OPEN"
+RETURN_WARNINGS = frozenset({RETURN_SOURCE_NOT_OPEN})
 # Plan 69 D2: no size refusal a real press can reach - only a body guard far above a PO's row count.
 MAX_BATCH_LINKS = 2000
 TEMPLATE_KEY = "autocount_write_needs_attention"
@@ -190,6 +203,8 @@ class OperationResult:
     requested_at: Optional[str] = None
     linked_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # plan 71: unlink merged back into its source row: {fromDtlKey, toDtlKey, qty, location} (else None)
+    returned_to: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -242,6 +257,17 @@ def _pool_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[str]:
     return value.strip() or None
 
 
+def _return_of(defn: _OpDef, params: Dict[str, Any]) -> Optional[int]:
+    """Plan 71: the PO row an unlink returns its qty to (the caller's ``return_to_dtl_key``, the row the
+    qty was linked FROM). Other operations, or none given, keep today's behaviour."""
+    if defn.kind != "PO" or defn.mode != "unlink":
+        return None
+    value = params.get("return_to_dtl_key")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 def _requested_locations(op: str, params: Dict[str, Any]) -> List[str]:
     """Plan 70: the locations a request names (trimmed, in order): each batch line's ``location``; the one
     ``location`` of a PO link / relink / split. Every other operation ignores it (an unlink frees nothing
@@ -282,6 +308,19 @@ def _landed_at(steps: Any) -> Optional[str]:
 
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
+
+
+def _plain_number(value: Any) -> Any:
+    """Plan 71: a qty for the answer: a whole number as int (``1275``), else a float; None stays None."""
+    if value is None:
+        return None
+    d = _dec(value)
+    return int(d) if d == d.to_integral_value() else float(d)
+
+
+def _without_note(row: Optional[Doc]) -> Optional[Doc]:
+    """A stored copy of a row without its Further Description (never compared, and it can be about a megabyte)."""
+    return None if row is None else {k: v for k, v in row.items() if k != payloads.FURTHER_DESC}
 
 
 def _row_in(document: Optional[Doc], dtl_key: int) -> Optional[Doc]:
@@ -370,12 +409,15 @@ class OperationService:
         self._row: Optional[AcWriteOperation] = None
         self._op_deadline = 0.0
         self._pool_location: Optional[str] = None  # plan 66: the unlink's pool location (the caller's)
+        self._return_to: Optional[int] = None  # plan 71: the unlink's source row (the caller's)
         # plan 70: the caller's location for a PO link / relink / split (AutoCount's own spelling, checked)
         self._link_location: Optional[str] = None
         self._locations: Dict[str, str] = {}  # plan 70: casefold(code) -> code, every checked code of the run
         # (kind, doc_key) -> (date, document | the read's exception): a side read made beside another
         # GET, consumed by the next ``_read`` of that document (SS-AUTOCOUNT-SPEEDUP).
         self._prefetched: Dict[Tuple[str, int], Tuple[date, Any]] = {}
+        # PO-LINK-STUCK-RECONCILE-B s3/s4: the operation being reconciled timed out in AutoCount (VENDOR_TIMEOUT)
+        self._timeout_origin = False
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -448,7 +490,9 @@ class OperationService:
             return OperationResult(None, REFUSED, DOC_BUSY)  # not stored: the key stays usable
         self._steps, self._warnings = [], []
         self._mail_allowed = True
+        self._timeout_origin = False
         self._pool_location = None  # set per run by ``_execute_unlocked`` (plan 66)
+        self._return_to = None  # set per run by ``_execute_unlocked`` (plan 71)
         self._link_location, self._locations = None, {}  # set per run by ``_check_locations`` (plan 70)
         self._row = row
         self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
@@ -471,7 +515,8 @@ class OperationService:
             return OperationResult(row.id, REFUSED, OPERATION_NOT_RESUMABLE)  # a document primitive (create): untouched
         if self._never_applied(row):
             return self._settle_not_applied(row)
-        if row.status not in (NEEDS_ATTENTION, PENDING) or not row.snapshot_json or row.op == SPLIT_LINK:
+        parked = self._parked_statuses(row)
+        if row.status not in parked or not row.snapshot_json:
             return self._from_row(row)
         company = CompanyRepository(self.db).get(tenant_id, company_id)
         if company is None:
@@ -486,7 +531,7 @@ class OperationService:
             return OperationResult(row.id, REFUSED, DOC_BUSY)
         with locks:
             try:
-                claimed = self.ops.claim(tenant_id, company_id, row.id, (NEEDS_ATTENTION, PENDING))
+                claimed = self.ops.claim(tenant_id, company_id, row.id, parked)
                 self.db.commit()
             except IntegrityError:  # another operation holds the document
                 self.db.rollback()
@@ -498,7 +543,55 @@ class OperationService:
             self._row = row
             self._op_deadline = time.monotonic() + frame.ACTION_DEADLINE_SECONDS
             self._steps, self._warnings = list(row.steps_json or []), []
-            return self._guarded(row, company, lambda: self._resume(row, company, was), restore=was)
+            snap = row.snapshot_json if isinstance(row.snapshot_json, dict) else {}
+            self._warnings.extend(w for w in snap.get("returnWarnings") or [] if w in RETURN_WARNINGS)  # plan 71
+            self._timeout_origin = row.error_code == VENDOR_TIMEOUT
+            body = self._resume_split if row.op == SPLIT_LINK else self._resume
+            # s2 / s3: a ``refused`` / ``NOT_APPLIED`` answer here (nothing of it in AutoCount) releases the key
+            # like every refusal (``_settle_existing``); nothing is re-sent from a Resume
+            return self._guarded(row, company, lambda: body(row, company, was), restore=was)
+
+    def close_superseded(self, *, tenant_id: str, company_id: str, operation_id: str) -> OperationResult:
+        """PO-LINK-STUCK-RECONCILE-B s2, an operator action: a parked operation (``pending_verification`` /
+        ``needs_attention`` / a timed-out ``vendor_error``) ends a final ``refused`` / ``SUPERSEDED``. Nothing is
+        sent to AutoCount. The key is NOT released: the CRM's next look-up (same key + body) gets this answer
+        back and releases its hold; only a new press (a new key) writes again. A final or running operation is
+        answered as it stands, unchanged."""
+        row = self.ops.get(tenant_id, company_id, operation_id)
+        if row is None:
+            raise LookupError("operation not found")
+        if row.status == IN_PROGRESS:
+            return OperationResult(row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
+        if row.status not in self._parked_statuses(row):
+            return self._from_row(row)
+        if not self._write_settled(row):
+            # its write may still be saving (a late commit after a timeout): closing now could let a new press
+            # link it a second time. Answered as it stands until the save had time to finish.
+            answer = self._from_row(row)
+            answer.message = NOT_YET_CONFIRMED_MESSAGE
+            return answer
+        now = _iso_z(datetime.now(timezone.utc))
+        stored = _json_safe({
+            "outcome": REFUSED, "errorCode": SUPERSEDED, "message": SUPERSEDED_MESSAGE, "warnings": [],
+            "replacedLines": [], "document": None, "batch": None, "detail": None,
+            "requestedAt": _iso_z(row.created_at), "linkedAt": None, "finishedAt": now,
+        })
+        closed = self.ops.close_parked(tenant_id, company_id, row.id, self._parked_statuses(row), SUPERSEDED, stored)
+        self.db.commit()
+        self.db.refresh(row)
+        if not closed:  # a resume or another close won the conditional update
+            return self._from_row(row) if row.status != IN_PROGRESS else OperationResult(
+                row.id, REFUSED, OPERATION_IN_PROGRESS, IN_PROGRESS_MESSAGE)
+        logger.warning("autocount operation %s closed as superseded by an operator: nothing sent", row.id)
+        return self._from_row(row)
+
+    @staticmethod
+    def _parked_statuses(row: AcWriteOperation) -> Tuple[str, ...]:
+        """The statuses a Resume / a close may take an operation from: unknown or stopped part way. A
+        timed-out write (``VENDOR_TIMEOUT``) is unknown whatever its stored outcome."""
+        if row.error_code == VENDOR_TIMEOUT:
+            return (NEEDS_ATTENTION, PENDING, VENDOR_ERROR)
+        return (NEEDS_ATTENTION, PENDING)
 
     # ── frame ────────────────────────────────────────────────────────────────
 
@@ -576,9 +669,17 @@ class OperationService:
                          request_hash: str) -> Optional[OperationResult]:
         """The answer for a key that already has a row, or None when the key was released and the
         operation must run fresh (plan 62 D6)."""
+        if row.error_code == SUPERSEDED:  # closed by an operator: final, never run again under this key
+            return self._replay(row, op, request_hash)
         if self._nothing_landed(row.status, row.error_code):
             self._release_key(row)
             return None
+        if ((row.op == SPLIT_LINK or row.error_code == VENDOR_TIMEOUT) and row.op == op
+                and row.request_hash == request_hash and row.snapshot_json
+                and row.status in self._parked_statuses(row)):
+            # s2 / s3: a parked split, or a write AutoCount timed out on, is re-verified against AutoCount now;
+            # the look-up never sends the write again (only a later fresh press, once the read proved it absent)
+            return self.resume(tenant_id=tenant_id, company_id=company.id, operation_id=row.id)
         if (row.status == PENDING and row.op == op and row.request_hash == request_hash
                 and (row.snapshot_json or self._never_applied(row))):
             res = self.resume(tenant_id=tenant_id, company_id=company.id, operation_id=row.id)
@@ -633,16 +734,20 @@ class OperationService:
             row.doc_key, _doc_no(stored.get("document"), row.snapshot_json), stored.get("batch"),
             stored.get("detail"), stored.get("requestedAt") or _iso_z(row.created_at),
             stored.get("linkedAt") or _landed_at(row.steps_json), stored.get("finishedAt"),
+            stored.get("returnedTo"),
         )
 
     def _finish(self, row: AcWriteOperation, status: str, code: Optional[str] = None, *, message: str = "",
                 replaced: Optional[List[Tuple[int, int]]] = None,
                 document: Optional[Doc] = None, batch: Optional[Dict[str, Any]] = None,
-                detail: Optional[Doc] = None) -> OperationResult:
+                detail: Optional[Doc] = None, returned_to: Optional[Dict[str, Any]] = None) -> OperationResult:
+        if self._timeout_origin:
+            status, code, message = self._timeout_verdict(row, status, code, message)
         result = OperationResult(
             row.id, status, code, message, list(self._warnings), list(replaced or []), document,
             row.doc_key, _doc_no(document, row.snapshot_json), batch, detail if status == DONE else None,
             _iso_z(row.created_at), _landed_at(self._steps), _iso_z(datetime.now(timezone.utc)),
+            returned_to if status == DONE else None,
         )
         row.status, row.error_code = status, code
         row.steps_json = _json_safe(self._steps)
@@ -651,11 +756,36 @@ class OperationService:
             "replacedLines": [list(p) for p in result.replaced_lines], "document": document,
             "batch": batch, "detail": result.detail, "requestedAt": result.requested_at,
             "linkedAt": result.linked_at, "finishedAt": result.finished_at,
+            **({"returnedTo": result.returned_to} if result.returned_to else {}),
         })
         self.db.commit()
         return result
 
+    def _timeout_verdict(self, row: AcWriteOperation, status: str, code: Optional[str],
+                         message: str) -> Tuple[str, Optional[str], str]:
+        """s3/s4: a Resume / look-up of a write AutoCount timed out on. "Nothing landed" is only trusted once the
+        save had time to finish (``LOOKUP_SETTLE_SECONDS`` after the last write): before that it stays unknown
+        (``vendor_error`` / ``VENDOR_TIMEOUT``, the key kept), after it is a final ``refused`` (released, safe to
+        press again). A read that could not be made = a person checks (``needs_attention``)."""
+        if code == NOT_APPLIED and status in (RECOVERED, REFUSED):
+            if not self._write_settled(row):
+                return VENDOR_ERROR, VENDOR_TIMEOUT, NOT_YET_CONFIRMED_MESSAGE
+            return REFUSED, NOT_APPLIED, message or NOT_LINKED_MESSAGE
+        if status in (VENDOR_ERROR, PENDING) and code != VENDOR_TIMEOUT:
+            return NEEDS_ATTENTION, VENDOR_TIMEOUT, VENDOR_TIMEOUT_MESSAGE
+        return status, code, message
+
+    def _write_settled(self, row: AcWriteOperation) -> bool:
+        """The operation's last write is older than the longest a PUT can still be saving."""
+        last = self.prims.actions.newest_of_operation(row.tenant_id, row.company_id, row.id)
+        if last is None or last.created_at is None:
+            return True
+        made = last.created_at if last.created_at.tzinfo else last.created_at.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - made).total_seconds() >= LOOKUP_SETTLE_SECONDS
+
     def _step(self, name: str, res: PrimitiveResult) -> None:
+        if payloads.STORED_FIELDS_CHANGED in (res.warnings or ()) and payloads.STORED_FIELDS_CHANGED not in self._warnings:
+            self._warnings.append(payloads.STORED_FIELDS_CHANGED)  # plan 73: the operation says so too
         self._steps.append({"step": name, "outcome": res.outcome, "code": res.error_code,
                             "actionId": res.action_id, "newDtlKey": res.new_dtl_key,
                             "at": _iso_z(datetime.now(timezone.utc))})
@@ -721,6 +851,7 @@ class OperationService:
         if not op_capable(defn):
             raise _Done(REFUSED, VENDOR_UNSUPPORTED)
         self._pool_location = _pool_of(defn, params)
+        self._return_to = _return_of(defn, params)
         self._check_not_busy(company, spec.doc_key, defn.kind)
         doc_date, doc = self._read(company, defn.kind, spec.doc_key, spec.doc_date,
                                    beside=self._target_beside(company, defn, spec))
@@ -907,6 +1038,10 @@ class OperationService:
         target: Optional[Doc] = None
         if defn.target and spec.target_doc_key is not None:
             target = self._guard_target(company, defn, spec, doc, row, link_qty)
+        if mode == "partial" and self._return_to is not None:
+            # plan 71: the tied row is partly received, so it stays (cut): today's cut + add, plus the warning
+            logger.info("unlink return-to %s not used: the tied row is partly received", self._return_to)
+            self._warn(RETURN_SOURCE_NOT_OPEN)
         merge = self._merge_target(company, defn, doc, row) if mode == "delete" else None
         merge_qty = None
         if merge is not None:  # the free row's quantity now: a pending merge is judged against it
@@ -926,6 +1061,12 @@ class OperationService:
         own price and date, only its Qty goes up."""
         if defn.kind != "PO" or defn.mode != "unlink":
             return None
+        if self._return_to is not None:
+            why = self._return_refusal(company, doc, row, self._return_to)
+            if why is None:
+                return self._return_to
+            logger.info("unlink return-to %s not used: %s", self._return_to, why)
+            self._warn(RETURN_SOURCE_NOT_OPEN)  # plan 71: the qty goes the plan 66 / plan 62 way below
         pool = self._pool_location
         same = ("ItemCode", "UOM") if pool else ("ItemCode", "UOM", "Location")
         values: Tuple[str, ...] = () if pool else ("UnitPrice", "DeliveryDate")
@@ -952,6 +1093,40 @@ class OperationService:
             if received is not None and received > 0:  # unknown (the vendor hides it) joins the rule of _receipt
                 continue
             return int(cand["DtlKey"])
+        return None
+
+    def _warn(self, code: str) -> None:
+        if code not in self._warnings:
+            self._warnings.append(code)
+
+    def _row_receipt(self, company: AcCompany, doc: Doc, cand: Doc) -> Optional[Decimal]:
+        """A PO row's received qty from the run's receipt source (None = unknown)."""
+        if self._receipt_reader is not None:
+            return self._receipt_reader("PO", doc, cand)
+        return self.prims._row_received(company, "PO", dict(cand, DocKey=doc.get("DocKey")))
+
+    def _return_refusal(self, company: AcCompany, doc: Doc, row: Doc, key: int) -> Optional[str]:
+        """Plan 71 (owner 20 Nov: "return to whatever line it linked from"): None when the source row can take
+        the tied row's qty in ONE merge PUT (plan 62 D7's ``unlink_merge``), else the plain reason (logged; the
+        answer carries ``RETURN_SOURCE_NOT_OPEN``).
+        The source row is matched on the same PO (it is in ``doc``), item and unit ONLY: it keeps its own
+        location, price and date (that is the point: the qty goes back WHERE it came from). Open = not fully
+        received; a partly received or unknown receipt still takes the qty (only its Qty goes up)."""
+        cand = next((r for r in doc.get("Details") or [] if r.get("DtlKey") == key), None)
+        if cand is None:
+            return "not on this PO"
+        if key == row.get("DtlKey") or _link_of("PO", cand) or cand.get("FromDocType") not in ("", None):
+            return "tied to an SO row"
+        if any(cand.get(k) != row.get(k) for k in ("ItemCode", "UOM")):
+            return "another item or unit"
+        if self._spo_ref(company, key):
+            return "an SPO row points at it"
+        if self.prims.row_needs_attention(company, int(doc.get("DocKey") or 0), cand,
+                                          exclude_id=self._row.id if self._row else None):
+            return "an unresolved link operation covers it"  # plan 65 R1: growing a row an unresolved link covers breaks its Resume
+        received = self._row_receipt(company, doc, cand)
+        if received is not None and received >= _dec(cand.get("Qty")):
+            return "fully received"
         return None
 
     def _receipt(self, company: AcCompany, defn: _OpDef, doc: Doc, row: Doc) -> Tuple[str, Optional[Decimal]]:
@@ -1036,6 +1211,11 @@ class OperationService:
             "row": row, "received": None if plan["received"] is None else str(plan["received"]),
             "newLink": new_link, "oldLink": self._old_link(company, defn, row), "mergeInto": plan.get("merge"), "mergeBeforeQty": plan.get("mergeQty"),
             "location": row.get("Location"), "companyName": company.company_name or company.name,
+            # plan 71: why the source row was not used, kept so a Resume answer still says it (review)
+            **({"returnWarnings": [w for w in self._warnings if w in RETURN_WARNINGS]} if self._return_to else {}),
+            # plan 71: the merge goes back into the source row: its key and before-image (the exact read-back)
+            **({"returnTo": plan["merge"], "returnBefore": _without_note(_row_in(doc, plan["merge"]))}
+               if self._return_to is not None and plan.get("merge") == self._return_to else {}),
         })
 
     @staticmethod
@@ -1068,6 +1248,11 @@ class OperationService:
         note = (snap.get("soLink") or {}).get("note") if link is snap["newLink"] else None
         if note and link.get("FromDocType") == "SO":
             line[payloads.LINK_NOTE_KEY] = note
+        so_link = snap.get("soLink") if link is snap["newLink"] else None
+        if so_link is not None and link.get("FromDocType") == "SO":
+            # PO-LINK-STUCK-RECONCILE-B s11 (owner rule 16 Nov): the new tied row carries the SO line's date
+            # (none when the SO line has none), never the PO row's; the same rule as the split and the batches.
+            payloads.with_so_delivery_date(line, so_link.get("soDeliveryDate"))
         if qty is not None:
             line["Qty"] = float(qty)
         return line
@@ -1102,6 +1287,10 @@ class OperationService:
             **self._call(row, company, snap, "add"), line=self._line_of(snap, snap["newLink"], qty - received),
         )
         self._step("add", add)
+        if add.error_code == VENDOR_TIMEOUT:  # the add may still be saving: unknown, never undone straight away
+            if add.outcome == OUTCOME_VENDOR_ERROR:
+                raise _Done(VENDOR_ERROR, VENDOR_TIMEOUT, VENDOR_TIMEOUT_MESSAGE)
+            raise _Done(NEEDS_ATTENTION, VENDOR_TIMEOUT, VENDOR_TIMEOUT_MESSAGE)
         if add.outcome == OUTCOME_PENDING:
             raise _Done(PENDING, add.error_code)
         if add.outcome != OUTCOME_DONE or add.new_dtl_key is None:
@@ -1120,17 +1309,26 @@ class OperationService:
         res = self.prims.unlink_merge(**self._call(row, company, snap, "merge"), dtl_key=old_key, merge_key=free_key)
         self._step("merge", res)
         if res.outcome == OUTCOME_VENDOR_ERROR:
-            if res.error_code == VENDOR_REFUSED:  # AutoCount said no: nothing landed
-                raise _Done(VENDOR_ERROR, res.error_code, res.message)
-            raise _Done(PENDING, res.error_code, res.message)  # a bare 5xx or timeout: resume reads
+            self._vendor_stop(res)
         if res.outcome == OUTCOME_MISMATCH:  # the PUT landed but reads back wrong
             raise _Done(NEEDS_ATTENTION, res.error_code or INTERNAL_ERROR, res.message)
         if res.outcome != OUTCOME_DONE or res.document is None:
             self._abort_unless_done(res)
             raise _Done(PENDING, res.error_code or INTERNAL_ERROR)
         self.prims._stage(company, snap["kind"], res.document, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=res.document,
-                            detail=_row_in(res.document, free_key))
+        return self._merge_done(row, snap, old_key, free_key, res.document)
+
+    def _merge_done(self, row: AcWriteOperation, snap: Doc, old_key: int, free_key: int,
+                    document: Doc) -> OperationResult:
+        """A landed merge. Plan 71 (CRM SS contract): back into the source row = ``replacedLines`` [] and
+        ``returnedTo``; a pool / same-location merge (plan 62 / 66) answers as before."""
+        detail = _row_in(document, free_key)
+        if snap.get("returnTo") == free_key:
+            returned = {"fromDtlKey": old_key, "toDtlKey": free_key, "qty": _plain_number(snap["row"].get("Qty")),
+                        "location": (detail or {}).get("Location")}
+            return self._finish(row, DONE, None, replaced=[], document=document, detail=detail,
+                                returned_to=returned)
+        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=document, detail=detail)
 
     def _replace_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int) -> OperationResult:
         """Plan 61: ONE PUT [row "D", new row with the new link or none], then the move.
@@ -1140,10 +1338,7 @@ class OperationService:
         )
         self._step("replace", res)
         if res.outcome == OUTCOME_VENDOR_ERROR:
-            if res.error_code == VENDOR_REFUSED:  # AutoCount said no: nothing landed
-                raise _Done(VENDOR_ERROR, res.error_code, res.message)
-            # a timeout or a bare 5xx: the replace may have landed; resume reads AutoCount (AC-57-42)
-            raise _Done(PENDING, res.error_code, res.message)
+            self._vendor_stop(res)  # a timeout or a bare 5xx: the replace may have landed (AC-57-42)
         if res.outcome == OUTCOME_MISMATCH:  # the PUT landed but reads back wrong
             return self._recover(row, company, snap, res.error_code or INTERNAL_ERROR, False)
         if res.outcome != OUTCOME_DONE or res.new_dtl_key is None:
@@ -1165,10 +1360,21 @@ class OperationService:
         if res.outcome == OUTCOME_REFUSED:
             raise _Done(REFUSED, res.error_code, res.message)
         if res.outcome == OUTCOME_VENDOR_ERROR:
-            if res.error_code == VENDOR_REFUSED:  # AutoCount said no: nothing landed
-                raise _Done(VENDOR_ERROR, res.error_code, res.message)
-            raise _Done(PENDING, res.error_code, res.message)  # a bare 5xx may have landed: resume reads
+            self._vendor_stop(res)
+        if res.error_code == VENDOR_TIMEOUT:  # timed out and the read failed: a person checks (never refused)
+            raise _Done(NEEDS_ATTENTION, VENDOR_TIMEOUT, VENDOR_TIMEOUT_MESSAGE)
         raise _Done(PENDING, res.error_code, res.message)  # mismatch / pending: resume decides
+
+    @staticmethod
+    def _vendor_stop(res: PrimitiveResult) -> None:
+        """The one mapping of a write AutoCount answered with an error: its own refusal (the read proved nothing
+        changed) = ``VENDOR_REFUSED``, released; its SQL timeout with nothing changed YET = ``VENDOR_TIMEOUT``,
+        unknown (the key stays, a look-up or Resume reads again); anything else (a bare 5xx) may have landed =
+        pending, Resume reads."""
+        if res.error_code in (VENDOR_REFUSED, VENDOR_TIMEOUT):
+            raise _Done(VENDOR_ERROR, res.error_code, res.message if res.error_code == VENDOR_REFUSED
+                        else VENDOR_TIMEOUT_MESSAGE)
+        raise _Done(PENDING, res.error_code, res.message)
 
     def _move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, new_key: int,
               document: Optional[Doc], location: Optional[str], *, deadline: bool = True) -> Doc:
@@ -1263,6 +1469,11 @@ class OperationService:
                 # the "D" never landed: the line is as it was once the strays are gone
                 self.prims._stage(company, snap["kind"], doc)
                 return self._finish(row, RECOVERED, failed_code, document=doc)
+            if payloads.FURTHER_DESC not in snap["row"]:
+                # plan 73 F4: a snapshot from before the line notes were kept. The "D" already landed, so refusing
+                # would strand a deleted row: the re-add stands, without a Further Description (code only, no content).
+                logger.warning("autocount recover re-adds a row without its Further Description (%s), op %s",
+                               payloads.AUTOCOUNT_DB_UNREAD, row.id)
             res = self.prims.add_line(
                 **self._call(row, company, snap, "recover"), line=self._line_of(snap, snap["oldLink"])
             )
@@ -1378,6 +1589,9 @@ class OperationService:
                                              document=document)
             return self._finish(row, DONE, None, replaced=replaced, document=document,
                                 detail=_row_in(document, new_key))
+        if self._timeout_origin and not self._write_settled(row):
+            # s3: the timed-out write may still land; no undo / recovery write before the save had time to finish
+            return self._finish(row, VENDOR_ERROR, VENDOR_TIMEOUT, message=NOT_YET_CONFIRMED_MESSAGE, document=doc)
         if partial:
             if _dec(original.get("Qty")) == qty if original else True:
                 return self._finish(row, REFUSED, NOT_APPLIED, document=doc)
@@ -1404,11 +1618,13 @@ class OperationService:
         before = snap.get("mergeBeforeQty")
         landed = (free is not None and before is not None
                   and _dec(free.get("Qty")) == _dec(before) + _dec(snap["row"].get("Qty")))
+        if landed and snap.get("returnTo") == free_key and snap.get("returnBefore"):
+            # plan 71: the source row kept its own values (exact read-back, CRM SS contract)
+            landed = not payloads.merge_row_drift(snap["kind"], snap["returnBefore"], free)
         if not landed:
             return self._needs_attention(row, company, snap, "RESUMED")
         self.prims._stage(company, snap["kind"], doc, None)
-        return self._finish(row, DONE, None, replaced=[(old_key, free_key)], document=doc,
-                            detail=_row_in(doc, free_key))
+        return self._merge_done(row, snap, old_key, free_key, doc)
 
     def _resume_move(self, row: AcWriteOperation, company: AcCompany, snap: Doc, key: int, doc: Doc,
                      location: Optional[str]) -> Doc:
@@ -1493,19 +1709,22 @@ class OperationService:
         skipped: List[Dict[str, Any]] = []
         running = Decimal(0)
         for link in links:
-            code = link["skip"] or self._line_skip(company, doc, old, link, sources, free, running)
+            code = link["skip"] or (
+                "ROW_ALREADY_LINKED" if self._tie_stands(company, spec.doc_key, doc, spec.dtl_key, link["so_dtl_key"],
+                                                         link["qty"]) else None
+            ) or self._line_skip(company, doc, old, link, sources, free, running)
             if code:
                 skipped.append({"soDocKey": link["so_doc_key"], "soDtlKey": link["so_dtl_key"], "code": code})
                 continue
             running += link["qty"]
             applied.append(link)
-            lines.append(dict(
+            lines.append(payloads.with_so_delivery_date(dict(
                 {k: v for k, v in old.items() if k != "DtlKey"},
                 FromDocType="SO", FromDocNo=link["so_no"], FromDocDtlKey=link["so_dtl_key"],
                 Location=link["location"], Qty=float(link["qty"]), FOCQty=0,
                 Discount=payloads.link_discount(old.get("Discount")),  # D2a: an amount stays on the kept row
                 **{payloads.LINK_NOTE_KEY: link["so_link"]["note"]},  # plan 66: the note in the link PUT
-            ))
+            ), link["so_link"]["soDeliveryDate"]))
         if not applied:  # nothing to link: refused, nothing sent, the key is released
             return self._finish(row, REFUSED, ALL_LINKS_SKIPPED, message="every link was skipped",
                                 batch={"links": [], "skipped": skipped, "freeLine": None})
@@ -1530,9 +1749,7 @@ class OperationService:
             )
             self._step("link", res)
             if res.outcome == OUTCOME_VENDOR_ERROR:
-                if res.error_code == VENDOR_REFUSED:  # AutoCount said no (all or nothing): nothing landed
-                    raise _Done(VENDOR_ERROR, res.error_code, res.message)
-                raise _Done(PENDING, res.error_code, res.message)  # a bare 5xx or timeout: resume reads
+                self._vendor_stop(res)  # all or nothing: a refusal landed nothing, a timeout is unknown
             if res.outcome == OUTCOME_MISMATCH:  # the PUT landed but reads back wrong
                 raise _Done(NEEDS_ATTENTION, res.error_code or INTERNAL_ERROR, res.message)
             if res.outcome != OUTCOME_DONE or res.document is None:
@@ -1723,11 +1940,15 @@ class OperationService:
         before = action.before_json if action is not None else None
         if not isinstance(before, dict):
             return "RESUMED"
-        after = action.after_json if isinstance(action.after_json, dict) else doc
-        verdict = payloads.verify_link_batch("PO", before, int(snap["row"]["DtlKey"]), self._batch_lines(snap), after)
-        if verdict.outcome == payloads.DONE:
-            return None
-        return verdict.code or INTERNAL_ERROR
+        stored = action.after_json if isinstance(action.after_json, dict) else None
+        verdict = None
+        # the stored read-back first; then today's read (a timed-out save read "nothing yet", then landed)
+        for after in [a for a in (stored, doc) if a is not None]:
+            verdict = payloads.verify_link_batch("PO", before, int(snap["row"]["DtlKey"]), self._batch_lines(snap),
+                                                 after)
+            if verdict.outcome == payloads.DONE:
+                return None
+        return (verdict.code if verdict is not None else None) or INTERNAL_ERROR
 
     @staticmethod
     def _batch_shape(snap: Doc, doc: Doc) -> Optional[str]:
@@ -1973,6 +2194,10 @@ class OperationService:
                     return self._doc_stop(row, company, snap, results, status, res.error_code, last,
                                           message=res.message)
                 break
+            if res.error_code == VENDOR_TIMEOUT:  # s3/s4: unknown, never refused; read failed too = a person checks
+                status = VENDOR_ERROR if res.outcome == OUTCOME_VENDOR_ERROR else NEEDS_ATTENTION
+                return self._doc_stop(row, company, snap, results, status, VENDOR_TIMEOUT, last, checking=ci,
+                                      message=VENDOR_TIMEOUT_MESSAGE)
             if res.outcome == OUTCOME_MISMATCH:
                 return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION,
                                       res.error_code or INTERNAL_ERROR, last, checking=ci, message=res.message)
@@ -1995,35 +2220,59 @@ class OperationService:
         again is the resend of a line that already landed (a caller re-sending the whole list after a partial
         result): it is skipped ``ALREADY_LINKED``, never linked twice. Links nobody made through SS, or
         another PO row's links to the same SO row, never count."""
-        standing = {int(r.get("DtlKey") or 0): _link_of("PO", r) for r in doc.get("Details") or []}
         found: Dict[Tuple[int, int], int] = {}
-        for op in self.ops.link_results_on_doc(company.tenant_id, company.id, doc_key):
-            batch = (op.result_json or {}).get("batch") if isinstance(op.result_json, dict) else None
-            if not isinstance(batch, dict):
-                continue
-            made: List[Tuple[int, int, int]] = []
-            for line in batch.get("lines") or []:  # a document batch: each line names its origin row
-                if isinstance(line, dict) and line.get("result") == "linked":
-                    made.append((int(line.get("poDtlKey") or 0), int(line.get("soDtlKey") or 0),
-                                 int(line.get("newPoDtlKey") or 0)))
-            for link in batch.get("links") or []:  # a one-row batch: the origin is the operation's row
-                if isinstance(link, dict):
-                    made.append((int(op.dtl_key or 0), int(link.get("soDtlKey") or 0), int(link.get("poDtlKey") or 0)))
-            for origin, so_row, new_key in made:
-                if so_row and standing.get(new_key) == so_row:
-                    found[(origin, so_row)] = found.get((origin, so_row), 0) + 1
+        for origin, so_row, _row in self._ss_ties(company, doc_key, doc, ("link_batch", "link_doc_batch")):
+            found[(origin, so_row)] = found.get((origin, so_row), 0) + 1
         return found
+
+    def _ss_ties(self, company: AcCompany, doc_key: int, doc: Optional[Doc],
+                 ops: Tuple[str, ...] = ("link_batch", "link_doc_batch", SPLIT_LINK)) -> List[Tuple[int, int, Doc]]:
+        """``[(origin PO row, SO row, the tied row as it stands)]``: the links an earlier SS link operation of
+        ``ops`` made on this PO whose new row still stands on ``doc``, linked to that SO row (plan 69's history
+        rule, shared by PO-LINK-STUCK-RECONCILE-B s2). Links nobody made through SS never count. ``doc`` None =
+        every link SS made, standing or not (the no-read pre-check)."""
+        standing = {int(r.get("DtlKey") or 0): r for r in (doc or {}).get("Details") or [] if isinstance(r, dict)}
+        out: List[Tuple[int, int, Doc]] = []
+        for op in self.ops.link_results_on_doc(company.tenant_id, company.id, doc_key, ops):
+            stored = op.result_json if isinstance(op.result_json, dict) else {}
+            batch = stored.get("batch")
+            made: List[Tuple[int, int, int]] = []
+            if isinstance(batch, dict):
+                for line in batch.get("lines") or []:  # a document batch: each line names its origin row
+                    if isinstance(line, dict) and line.get("result") == "linked":
+                        made.append((int(line.get("poDtlKey") or 0), int(line.get("soDtlKey") or 0),
+                                     int(line.get("newPoDtlKey") or 0)))
+                for link in batch.get("links") or []:  # a one-row batch: the origin is the operation's row
+                    if isinstance(link, dict):
+                        made.append((int(op.dtl_key or 0), int(link.get("soDtlKey") or 0),
+                                     int(link.get("poDtlKey") or 0)))
+            detail = stored.get("detail")
+            if op.op == SPLIT_LINK and isinstance(detail, dict):  # a split: the origin is the operation's row
+                made.append((int(op.dtl_key or 0), _link_of("PO", detail), int(detail.get("DtlKey") or 0)))
+            for origin, so_row, new_key in made:
+                now = standing.get(new_key) if doc is not None else {"Qty": None}
+                if so_row and now is not None and (doc is None or _link_of("PO", now) == so_row):
+                    out.append((origin, so_row, now))
+        return out
+
+    def _tie_stands(self, company: AcCompany, doc_key: int, doc: Doc, origin: int, so_dtl_key: int,
+                    qty: Decimal) -> bool:
+        """PO-LINK-STUCK-RECONCILE-B s2: SS already tied ``qty`` of PO row ``origin`` to SO row ``so_dtl_key`` and
+        that tied row still stands: the same link again is a Change whose unlink did not free it (or a resend),
+        never a second split (``ROW_ALREADY_LINKED``)."""
+        return any(o == origin and s == so_dtl_key and _dec(now.get("Qty")) == qty
+                   for o, s, now in self._ss_ties(company, doc_key, doc))
 
     @staticmethod
     def _doc_new_row(old: Doc, link: Doc) -> Doc:
         """One new linked row of a document batch PUT (the one-row batch's shape, ``_batch_locked``)."""
-        return dict(
+        return payloads.with_so_delivery_date(dict(
             {k: v for k, v in old.items() if k != "DtlKey"},
             FromDocType="SO", FromDocNo=link["soNo"], FromDocDtlKey=int(link["soDtlKey"]),
             Location=link["location"], Qty=float(_dec(link["qty"])), FOCQty=0,
             Discount=payloads.link_discount(old.get("Discount")),
             **{payloads.LINK_NOTE_KEY: link.get("note")},
-        )
+        ), link.get("soDeliveryDate"))
 
     def _doc_chunk_landed(self, row: AcWriteOperation, company: AcCompany, snap: Doc, ci: int, document: Doc,
                           results: Dict[str, Doc], *, deadline: bool) -> "Union[OperationResult, Tuple[Doc, Doc]]":
@@ -2118,6 +2367,9 @@ class OperationService:
         untouched = all(self._part_untouched(part, doc) for part in open_parts)
         if not untouched:
             return self._doc_stop(row, company, snap, results, NEEDS_ATTENTION, "RESUMED", doc)
+        if self._timeout_origin and not self._write_settled(row):  # s3: AutoCount may still be saving the chunk
+            return self._doc_stop(row, company, snap, results, VENDOR_ERROR, VENDOR_TIMEOUT, doc, checking=ci,
+                                  message=NOT_YET_CONFIRMED_MESSAGE)
         for part in open_parts:
             for link in part["links"]:
                 results[str(link["index"])] = self._doc_line(link, "failed", NOT_APPLIED)
@@ -2173,11 +2425,20 @@ class OperationService:
         legacy.so_lock_held = True  # _execute holds the SO row lock around this call
         legacy.location_checked = True  # plan 70: ``_check_locations`` already checked it (one GET)
         qty = Decimal(str(params["qty"]))
-        # the over-link guard of other callers counts this link while its outcome is unknown (pending_link_qty)
-        self._store_snapshot(row, {"mode": "split", "links": [{"soDtlKey": spec.target_dtl_key, "qty": str(qty)}]})
         found, missing = self.prims.find_date(company, "PO", spec.doc_key, _as_date(spec.doc_date))
         if found is None and missing == frame.DOC_KIND_MISMATCH or found is None and missing:
             raise _Done(REFUSED, missing)
+        so_dtl = int(spec.target_dtl_key or 0)
+        if any(o == spec.dtl_key and so == so_dtl for o, so, _r in self._ss_ties(company, spec.doc_key, None)):
+            # s2: SS tied this PO row to this SO line before: one read decides whether that tie still stands
+            _d, doc = self._read(company, "PO", spec.doc_key, found)
+            if self._tie_stands(company, spec.doc_key, doc, spec.dtl_key, so_dtl, qty):
+                raise _Done(REFUSED, "ROW_ALREADY_LINKED", "This sales order line is already linked to this "
+                                                           "purchase order line for this quantity.")
+        # the over-link guard of other callers counts this link while its outcome is unknown (pending_link_qty);
+        # its write action carries the operation from its first commit (``OWNED_ACTIONS``: none = never sent)
+        self._store_snapshot(row, {"mode": "split", "links": [{"soDtlKey": spec.target_dtl_key, "qty": str(qty)}],
+                                   OWNED_ACTIONS: True})
         result: WriteActionResult = legacy.link(
             tenant_id=company.tenant_id, company_id=company.id, key_id=row.key_id,
             po_doc_key=spec.doc_key, po_dtl_key=spec.dtl_key, so_doc_key=int(spec.target_doc_key or 0),
@@ -2191,10 +2452,113 @@ class OperationService:
             self.db.commit()
         self._steps.append({"step": SPLIT_LINK, "outcome": result.outcome, "code": result.error_code,
                             "actionId": result.action_id})
-        status = result.outcome if result.outcome in (DONE, REFUSED, PENDING, VENDOR_ERROR) else (
-            PENDING if result.outcome == OUTCOME_MISMATCH else result.outcome)
+        if result.error_code == VENDOR_TIMEOUT:
+            # s3/s4: AutoCount timed out; the save may land later. ONE read decides now (never a second PUT):
+            # landed = done, nothing yet = unknown (the key stays), unreadable = a person checks
+            self.db.commit()
+            self._timeout_origin = True
+            return self._resume_split(row, company, VENDOR_ERROR)
+        status = result.outcome if result.outcome in (DONE, REFUSED, PENDING) else (
+            # a mismatch or a bare vendor failure may have landed: parked, Resume re-verifies (never re-sent)
+            PENDING if result.outcome in (OUTCOME_MISMATCH, VENDOR_ERROR) else result.outcome)
         return self._finish(row, status, result.error_code, message=result.message, document=result.document,
                             detail=result.detail)
+
+    def _resume_split(self, row: AcWriteOperation, company: AcCompany, was: str) -> OperationResult:
+        """PO-LINK-STUCK-RECONCILE-B s2: a parked split link re-verified against AutoCount now; the link PUT is
+        never sent again. Its tied row stands as the split made it (judged by the ONE link comparator on the
+        stored read-back, else on today's read) -> ``done``, after the ONE restore PUT only when a readable value
+        (location, price, date) is not as asked; nothing of it in AutoCount once the save had time to finish ->
+        ``refused`` / ``NOT_APPLIED`` (released); anything else -> ``needs_attention`` with a plain message."""
+        base_url, refusal = self.prims._resolve_write_base_url(company)
+        if base_url is None:
+            raise _Done(was, refusal[0] if refusal else WRITE_DISABLED)
+        self._base_url = base_url
+        self._check_test_company(company, restore=was)
+        snap0 = dict(row.snapshot_json or {})
+        action = self.prims.actions.operation_step(company.tenant_id, company.id, row.id, SPLIT_LINK)
+        if action is None:  # an owned split never made its action = never sent; an older one cannot tell
+            if snap0.get(OWNED_ACTIONS):
+                return self._split_absent(row, was, None)
+            return self._split_stop(row, company, snap0, "RESUMED")
+        bodies = action.request_json
+        body1 = bodies[0] if isinstance(bodies, list) and bodies else bodies
+        before = action.before_json
+        if action.outcome == OUTCOME_REFUSED or not isinstance(body1, dict) or not isinstance(before, dict):
+            return self._split_absent(row, was, None)  # refused before its PUT (the body is committed first)
+        new_sent = next((r for r in body1.get("Details") or [] if not r.get("DtlKey")), None)
+        po_dtl = int(row.dtl_key or 0)
+        old = _row_in(before, po_dtl)
+        if new_sent is None or old is None:
+            return self._split_stop(row, company, snap0, "RESUMED")
+        snap = _json_safe(dict(
+            snap0, kind="PO", docKey=row.doc_key, docNo=before.get("DocNo"),
+            docDate=str(before.get("DocDate") or "")[:10], row=old,
+            knownKeys=[r.get("DtlKey") for r in before.get("Details") or []],
+            location=old.get("Location"), companyName=company.company_name or company.name,
+        ))
+        row.snapshot_json = snap
+        self.db.commit()
+        doc = self._read_snapshot_doc(company, snap)
+        if doc is None:  # cannot tell
+            if self._timeout_origin:
+                return self._split_stop(row, company, snap, VENDOR_TIMEOUT, VENDOR_TIMEOUT_MESSAGE)
+            raise _Done(was, LOOKUP_FAILED, LOOKUP_FAILED_MESSAGE)
+        so_dtl, qty = int(new_sent.get("FromDocDtlKey") or 0), _dec(new_sent.get("Qty"))
+        known = set(snap["knownKeys"])
+        fresh = [r for r in doc.get("Details") or [] if r.get("DtlKey") not in known and _link_of("PO", r) == so_dtl]
+        tied = next((r for r in fresh if _dec(r.get("Qty")) == qty), None)
+        if tied is None:
+            now_old = _row_in(doc, po_dtl)
+            if not fresh and now_old is not None and _dec(now_old.get("Qty")) == _dec(old.get("Qty")):
+                return self._split_absent(row, was, doc, action)
+            return self._split_stop(row, company, snap, "RESUMED")
+        stored = action.after_json[0] if isinstance(action.after_json, list) else action.after_json
+        judged = [a for a in (stored, doc) if isinstance(a, dict)]
+        if not any(verify_split(before, after, body1, po_dtl) for after in judged):
+            return self._split_stop(row, company, snap, "READBACK_MISMATCH")
+        new_key = int(tied["DtlKey"])
+        location = new_sent.get("Location")
+        so_link = self._so_reread(company, new_sent.get("FromDocNo"), None, so_dtl, {})
+        if so_link is None:
+            return self._split_stop(row, company, snap, RESTORE_NOT_LANDED, document=doc)
+        readable = {k: v for k, v in payloads.transfer_row_drift(
+            payloads.transfer_restore(old, location, so_link), tied).items() if k not in payloads.UNREADABLE_ROW_KEYS}
+        document: Doc = doc
+        if readable:  # the ONE restore PUT of the split (never the link PUT again)
+            document, failed = self._restore_rows(row, company, snap, [(new_key, location, so_link)], doc,
+                                                  deadline=False)
+            if failed:
+                return self._split_stop(row, company, snap, RESTORE_NOT_LANDED, document=document)
+        refresh_po_links_from_doc(self.db, company.tenant_id, company.id,
+                                  f"{company.database_name}:{row.doc_key}", document)
+        self.db.commit()
+        self.prims._stage(company, "PO", document, None)
+        return self._finish(row, DONE, None, document=document, detail=_row_in(document, new_key))
+
+    def _split_absent(self, row: AcWriteOperation, was: str, doc: Optional[Doc],
+                      action: Optional[AcWriteAction] = None) -> OperationResult:
+        """Nothing of the split is in AutoCount. Trusted (``refused``, released by ``resume``) only once its PUT
+        had time to finish saving; before that it stays as it was (unknown, the key kept)."""
+        if action is not None and not self._write_settled(row):  # a slow save may still show up
+            code = VENDOR_TIMEOUT if self._timeout_origin else (row.error_code or LOOKUP_FAILED)
+            return self._finish(row, VENDOR_ERROR if self._timeout_origin else was, code,
+                                message=NOT_YET_CONFIRMED_MESSAGE, document=doc)
+        if action is not None and action.outcome in (OUTCOME_IN_FLIGHT, OUTCOME_PENDING):
+            # proven not applied: the write no longer holds the document (a new press is not DOC_BUSY)
+            action.outcome, action.error_code = OUTCOME_REFUSED, NOT_APPLIED
+        return self._finish(row, REFUSED, NOT_APPLIED, message=NOT_LINKED_MESSAGE, document=doc)
+
+    def _split_stop(self, row: AcWriteOperation, company: AcCompany, snap: Doc, code: str,
+                    message: str = STILL_DIFFERENT_MESSAGE, document: Optional[Doc] = None) -> OperationResult:
+        """A split that needs a person: ``needs_attention`` with a plain reason, nothing sent."""
+        result = self._needs_attention(row, company, snap, code, notify="row" in snap and "companyName" in snap,
+                                       document=document)
+        if message:
+            row.result_json = _json_safe(dict(row.result_json or {}, message=message))
+            self.db.commit()
+            result.message = message
+        return result
 
     # ── gateway helpers (plan 57 S6) ─────────────────────────────────────────
 
@@ -2545,7 +2909,7 @@ class OperationService:
                 note=f"the line was cut to the received quantity {Decimal(snap['received'])} and its "
                      f"remainder {remainder} could not be added",
             )
-        if snap.get("mode") in ("batch", "doc_batch") or snap.get("mergeInto"):  # an outcome that could not be confirmed
+        if snap.get("mode") in ("batch", "doc_batch", "split") or snap.get("mergeInto"):  # could not be confirmed
             event["mode"] = "check"
         try:
             self._notifier(event)

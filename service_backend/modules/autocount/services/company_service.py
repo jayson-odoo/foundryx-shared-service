@@ -123,6 +123,7 @@ from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
     CONTRACT_GATED_ENTITIES,
     DOC_FEED_CONTRACT_VERSION,
+    doc_feed_contract_version,
     LINKED_DOCUMENTS_CONTRACT_VERSION,
     AR_OUTSTANDING_CONTRACT_VERSION,
     BILLING_DOCUMENTS_CONTRACT_VERSION,
@@ -314,6 +315,10 @@ class CompanyNotFound(AutocountServiceError):
 
 class CompanyAlreadyExists(AutocountServiceError):
     pass
+
+
+class LineNotesConnectionInvalid(AutocountServiceError):
+    """The chosen line notes connection is not a database connection of this tenant (a 422 with a plain line)."""
 
 
 class SinkTargetValidationError(AutocountServiceError):
@@ -1370,20 +1375,39 @@ class CompanyService:
         would store a configuration guaranteed to fail at run time
         (foolproof-UI: never let the UI reach a certain runtime error).
         """
+        # Plan 72 - each feed's own floor (project registrations: 2.15).
+        required = doc_feed_contract_version(feed)
         if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
-            return {"version": None, "requiredVersion": DOC_FEED_CONTRACT_VERSION}
+            return {"version": None, "requiredVersion": required}
         if not (company.sorento_company_code or "").strip():
             return {
-                "version": None, "requiredVersion": DOC_FEED_CONTRACT_VERSION,
+                "version": None, "requiredVersion": required,
                 "reason": "config_error",
             }
         return self._contract_refusal(
             tenant_id, company,
-            required_version=DOC_FEED_CONTRACT_VERSION,
+            required_version=required,
             entity_name=feed,
             cache=self._doc_feed_gate_cache,
             cache_key=(tenant_id, company.id, feed),
         )
+
+    def set_line_notes_connection(
+        self, tenant_id: str, company_id: str, connection_id: Optional[str]
+    ) -> AcCompany:
+        """Plan 74: set (or clear with None) the company's line notes connection: a ``sql_database`` connection
+        resolved WITH the tenant (never a bare id). Anything else changes nothing."""
+        company = self.get(tenant_id, company_id)  # tenant-scope guard
+        if connection_id is None:
+            company.line_notes_connection_id = None
+        else:
+            conn = self.connections.get_for_provider(tenant_id, connection_id, SQL_DATABASE_PROVIDER_KEY)
+            if conn is None:
+                raise LineNotesConnectionInvalid("Choose a database connection of this tenant.")
+            company.line_notes_connection_id = conn.id
+        self.db.commit()
+        self.db.refresh(company)
+        return company
 
     def set_sink_target(
         self,

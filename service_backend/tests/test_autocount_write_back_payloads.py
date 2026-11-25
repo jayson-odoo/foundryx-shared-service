@@ -30,7 +30,7 @@ HEADER_KEYS = {
 ROW_KEYS = {
     "DtlKey", "ItemCode", "Location", "Description", "ProjNo", "UOM", "UserUOM", "Qty",
     "FOCQty", "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Desc2", "FromDocType",
-    "FromDocNo", "FromDocDtlKey", "FullTransferOption", "FullTransferFromDocList",
+    "FromDocNo", "FromDocDtlKey", "FullTransferOption", "FullTransferFromDocList", "FurtherDescription",
 }
 FORBIDDEN_ROW = {"SubTotal", "SmallestQty", "Seq", "FromSODtlKey", "LocalSubTotal", "TaxableAmt"}
 
@@ -121,10 +121,12 @@ def test_ac_55_10_header_whitelist_and_docKey(po, so):
     body = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
     assert body["DocKey"] == 12008
     header = {k for k in body if k != "Details"}
-    assert header <= HEADER_KEYS
+    assert header <= HEADER_KEYS | {"ShippingPO"}
     for k in ("DocKey", "DocNo", "CreditorCode", "CurrencyCode", "DocDate"):
         assert body[k] == po[k]
-    for k in ("Total", "NetTotal", "Cancelled", "LastModified", "DocStatus", "ShippingPO"):
+    # SS-SHIPPINGPO-PRESERVE: the flag rides as read, never left for the vendor to default
+    assert body["ShippingPO"] == po["ShippingPO"] == "F"
+    for k in ("Total", "NetTotal", "Cancelled", "LastModified", "DocStatus"):
         assert k not in body
 
 
@@ -166,8 +168,11 @@ def test_ac_55_11_split_real_case_srtkt38ss(po, so):
     assert new["FromDocDtlKey"] == 11989
     assert new["FOCQty"] == 0
     src = _row(po, 12017)
-    for k in ("ItemCode", "UOM", "UserUOM", "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Description", "Desc2", "ProjNo"):
+    for k in ("ItemCode", "UOM", "UserUOM", "UnitPrice", "Discount", "TaxCode", "Description", "Desc2", "ProjNo"):
         assert new[k] == src[k]
+    # PO-LINK-STUCK-RECONCILE-B (owner rule 16 Nov): the new tied row takes the SO line's date, never the PO
+    # row's; this SO line has none, so none is sent
+    assert "DeliveryDate" not in new
     for r in body["Details"]:
         assert set(r) <= ROW_KEYS
         assert not (set(r) & FORBIDDEN_ROW)
@@ -267,7 +272,8 @@ def test_ac_55_15_unlink_refused_when_spo_points_at_row(po):
 def test_ac_55_12_unlink_real_row_12013(po):
     body = build_unlink(po, 12013)
     assert body["DocKey"] == 12008
-    assert {k for k in body if k != "Details"} <= HEADER_KEYS
+    assert {k for k in body if k != "Details"} <= HEADER_KEYS | {"ShippingPO"}
+    assert body["ShippingPO"] == "F"  # SS-SHIPPINGPO-PRESERVE: as read
     assert [r["DtlKey"] for r in body["Details"]] == [12013, 0]  # plan 61: "D" + a new normal row
     assert _gone(body) == [12013]
     r = _new(body)
@@ -327,8 +333,10 @@ def test_vendor_link_in_place_omits_empty_date_keeps_valid_one(po, so):
     _row(po2, 12009)["DeliveryDate"] = EMPTY
     body = build_link(po2, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
     assert all("DeliveryDate" not in r for r in body["Details"])
-    body_ok = build_link(po, 12009, so, 11990, Decimal(1), so_linked_qty=Decimal(9))
-    assert _new(body_ok)["DeliveryDate"] == "2026-03-15T00:00:00"
+    so2 = copy.deepcopy(so)
+    _row(so2, 11990)["DeliveryDate"] = "2027-01-01T00:00:00"
+    body_ok = build_link(po, 12009, so2, 11990, Decimal(1), so_linked_qty=Decimal(9))
+    assert _new(body_ok)["DeliveryDate"] == "2027-01-01T00:00:00"  # the SO line's date (owner rule 16 Nov)
 
 
 def test_vendor_split_omits_empty_date_on_edited_and_new_row(po, so):
@@ -340,8 +348,11 @@ def test_vendor_split_omits_empty_date_on_edited_and_new_row(po, so):
 
 
 def test_vendor_split_keeps_a_valid_date_on_both_rows(po, so):
-    body = build_link(po, 12017, so, 11989, Decimal(10))
-    assert [r["DeliveryDate"] for r in body["Details"]] == ["2026-03-15T00:00:00"] * 2
+    so2 = copy.deepcopy(so)
+    _row(so2, 11989)["DeliveryDate"] = "2027-01-01T00:00:00"
+    body = build_link(po, 12017, so2, 11989, Decimal(10))
+    # the kept row keeps its own date; the new tied row takes the SO line's (owner rule 16 Nov)
+    assert [r["DeliveryDate"] for r in body["Details"]] == ["2026-03-15T00:00:00", "2027-01-01T00:00:00"]
 
 
 def test_vendor_missing_date_stays_missing(po, so):
