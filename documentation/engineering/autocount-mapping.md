@@ -184,8 +184,9 @@ rows seeded DISABLED, with one warning naming the config id. Manual operator ste
 `further_description_rtf` carries the line `FurtherDescription` exactly as stored in AutoCount (RTF,
 embedded images included; the `raw_text` transform never trims). It is on SO and PO lines (not
 SPO) and is sent only when the CRM advertises contract 2.16 or later (sorento-crm#2766). Below that
-version the key is left out. `line_remark` is unchanged. A value over 2 MiB (UTF-8) is not sent (null
-plus one warning naming the line). It is never cut, because cut RTF is broken RTF.
+version the key is left out. `line_remark` is unchanged. A value over 2 MiB (UTF-8) is not sent: the key
+is left out (so the CRM keeps its stored copy) and one warning names the line. It is never cut, because
+cut RTF is broken RTF. An ingest POST also closes early once its documents' RTF reaches 8 MiB.
 
 - SO: the preset line query already selects `FurtherDescription`. The preset adds a second row
   for it, `FurtherDescription -> further_description_rtf` (`raw_text`).

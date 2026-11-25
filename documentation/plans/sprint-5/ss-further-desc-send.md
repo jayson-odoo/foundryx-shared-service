@@ -14,7 +14,8 @@ Lane: SS-FURTHER-DESC-SEND (partner of the CRM lane RTF-FURTHER-DESC-RENDER, sor
   transform allowed onto `further_description_rtf`.
 - `canonical/documents.py`: field on `CanonicalSalesOrderLine` / `CanonicalPurchaseOrderLine` (v2 fallback),
   popped by `sink_payload` unless `advertises_further_desc_rtf` (>= 2.16). Cap `FURTHER_DESC_RTF_MAX_BYTES`
-  = 2 MiB UTF-8 (largest seen on db3 is about 1.2 MB). Over the cap it is null plus a warning, never cut.
+  = 2 MiB UTF-8 (largest seen on db3 is about 1.2 MB). Over the cap the key is omitted (flag in `extras`, so it
+  survives restaging) plus a warning, never cut. Ingest chunks close at 8 MiB of RTF (`chunk_by_rtf_bytes`).
 - `presets.py`: SO adds a second `FurtherDescription` row. PO has its own line query
   (`_PO_ONLY_LINE_QUERY` = shared PO/SPO text + `d.FurtherDescription`) plus the row. SPO is unchanged.
 - `backfill.backfill_further_desc_fields`, module Alembic 0050, `update_tenant` < 0.24.0 (manifest 0.24.0).
@@ -28,5 +29,5 @@ Not applicable: the bulk re-send was dropped. The CRM re-pull cost is one B6 rea
 plus one read-only SQL SELECT.
 
 ## Tests
-`service_backend/tests/test_autocount_further_desc_send.py` (46). Red on main @3f627be6 (collection error:
+`service_backend/tests/test_autocount_further_desc_send.py` (55). Red on main @3f627be6 (collection error:
 the contract constants did not exist).
