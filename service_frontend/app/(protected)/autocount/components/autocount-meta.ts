@@ -358,6 +358,9 @@ export const AC_TRANSFORMS: { value: string; label: string }[] = [
   // never target the field this feeds; the save-time 422 (AC-06-11) surfaces
   // as that row's own field error, same as every other rejected combination.
   { value: 'string_list', label: 'Comma-separated list' },
+  // SS-FURTHER-DESC-SEND - text exactly as stored (no trim): the raw line
+  // Further Description (RTF) on `further_description_rtf`.
+  { value: 'raw_text', label: 'Text as stored' },
 ];
 
 export function transformLabel(transform: string): string {

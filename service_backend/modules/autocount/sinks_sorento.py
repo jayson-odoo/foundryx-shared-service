@@ -53,6 +53,7 @@ from app.db_errors import db_error_in, stored_error_text
 from .canonical.base import CanonicalRecord
 from .canonical.documents import (
     PACKAGE_LINES_MIN_CONTRACT,
+    FURTHER_DESC_RTF_MIN_CONTRACT,
     REPLACES_LINE_REF_MIN_CONTRACT,
     CanonicalBillingDocument,
     CanonicalDocument,
@@ -380,6 +381,11 @@ REPLACES_LINE_REF_CONTRACT_VERSION = ContractVersion(*REPLACES_LINE_REF_MIN_CONT
 # SS-PACKAGE-LINES - `line_type` / `parent_line_ref` on billing lines (contract
 # 2.13); sent only when the CRM ADVERTISES at least this (``extra="forbid"``).
 PACKAGE_LINES_CONTRACT_VERSION = ContractVersion(*PACKAGE_LINES_MIN_CONTRACT)
+
+# SS-FURTHER-DESC-SEND (sorento-crm #2766) - `further_description_rtf` (raw
+# line Further Description) on SO and PO lines; sent only when the CRM
+# ADVERTISES at least this (line ingest is ``extra="forbid"``).
+FURTHER_DESC_RTF_CONTRACT_VERSION = ContractVersion(*FURTHER_DESC_RTF_MIN_CONTRACT)
 
 # Plan 72 (sorento-crm #2676, contract 2.15) - the project registrations doc
 # feed: >= 2.15 AND `project_registrations` advertised.

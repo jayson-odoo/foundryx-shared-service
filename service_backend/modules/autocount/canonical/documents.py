@@ -39,6 +39,8 @@ other canonical shape.
 """
 from __future__ import annotations
 
+import logging
+
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
@@ -47,6 +49,8 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .base import CanonicalLine, CanonicalRecord
+
+logger = logging.getLogger("foundryx.autocount")
 
 ENTITY_SALES_ORDER = "sales_order"
 ENTITY_PURCHASE_ORDER = "purchase_order"
@@ -232,6 +236,47 @@ def advertises_package_lines(advertised: Any) -> bool:
     return (int(major), int(minor)) >= PACKAGE_LINES_MIN_CONTRACT
 
 
+# SS-FURTHER-DESC-SEND: ``further_description_rtf`` (the raw AutoCount line
+# ``FurtherDescription``, RTF) on SO and PO lines reaches Sorento only when the
+# consumer's ADVERTISED contract is at least this (line ingest is
+# ``extra="forbid"``). ``line_remark`` is unchanged by this lane.
+# ``sinks_sorento.FURTHER_DESC_RTF_CONTRACT_VERSION`` is the same number.
+FURTHER_DESC_RTF_MIN_CONTRACT: Tuple[int, int] = (2, 16)
+
+
+def advertises_further_desc_rtf(advertised: Any) -> bool:
+    """True when the advertised contract is known and >= 2.16 (same
+    float-safe comparison as ``advertises_replaces_line_ref``)."""
+    if advertised is None:
+        return False
+    major, minor = getattr(advertised, "major", None), getattr(advertised, "minor", None)
+    if major is None or minor is None:
+        major, minor = int(advertised), 0
+    return (int(major), int(minor)) >= FURTHER_DESC_RTF_MIN_CONTRACT
+
+
+# SS-FURTHER-DESC-SEND: the cap on one line's raw Further Description (RTF with
+# embedded images; the largest seen on db3 is about 1.2 MB). Measured in UTF-8
+# bytes. A value over the cap is DROPPED (sent as null), never cut: a cut RTF
+# document is a broken one. Every drop is logged with its line ref.
+FURTHER_DESC_RTF_MAX_BYTES = 2 * 1024 * 1024
+
+
+def capped_further_desc_rtf(value: Optional[str], source_ref: Any = None) -> Optional[str]:
+    """``value`` unchanged when it fits ``FURTHER_DESC_RTF_MAX_BYTES``, else None
+    (one WARNING naming the line, never the text)."""
+    if not isinstance(value, str):
+        return value
+    size = len(value.encode("utf-8"))
+    if size <= FURTHER_DESC_RTF_MAX_BYTES:
+        return value
+    logger.warning(
+        "autocount: line %s Further Description is %d bytes, over the %d byte cap - not sent",
+        source_ref or "<unknown line>", size, FURTHER_DESC_RTF_MAX_BYTES,
+    )
+    return None
+
+
 class CanonicalDocumentLine(CanonicalLine):
     """Shared line rules (mirrors Sorento's ``_CanonicalLine``).
 
@@ -317,6 +362,15 @@ class CanonicalSalesOrderLine(CanonicalDocumentLine):
     # v2+ only like every fallback field.
     line_remark: Optional[str] = None
     section_heading: Optional[str] = None
+    # SS-FURTHER-DESC-SEND - the raw AutoCount `FurtherDescription` (RTF with
+    # embedded images, bytes unchanged: the `raw_text` transform never strips).
+    # On the wire only to a consumer advertising >= 2.16 (see `sink_payload`).
+    further_description_rtf: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _cap_further_description_rtf(self) -> "CanonicalSalesOrderLine":
+        self.further_description_rtf = capped_further_desc_rtf(self.further_description_rtf, self.source_ref)
+        return self
 
     # Plan 57 S5: ``{db}:{DocKey}:{DtlKey}`` of the row this line replaced (delete + add
     # of an operation); input from the write flow, wire field gated by the advertised
@@ -329,9 +383,23 @@ class CanonicalSalesOrderLine(CanonicalDocumentLine):
         "required_date",
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
-        CanonicalDocumentLine.FALLBACK_FIELDS + ("line_remark", "section_heading", "replaces_line_ref")
+        CanonicalDocumentLine.FALLBACK_FIELDS + (
+            "line_remark", "section_heading", "replaces_line_ref", "further_description_rtf",
+        )
     )
     OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("replaces_line_ref",)
+
+    def sink_payload(
+        self, *, contract_version: int = 1, advertised_contract: Any = None
+    ) -> Dict[str, Any]:
+        payload = super().sink_payload(
+            contract_version=contract_version, advertised_contract=advertised_contract,
+        )
+        # SS-FURTHER-DESC-SEND contract gate. Past it, an empty note is an
+        # explicit null (AutoCount cleared it), like `line_remark`.
+        if not advertises_further_desc_rtf(advertised_contract):
+            payload.pop("further_description_rtf", None)
+        return payload
 
 
 class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
@@ -343,6 +411,17 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
     # split/stripped/blank-dropped by the ESB (never sent as a raw string -
     # Sorento's `order_link_service.claim_book_pairing` runs once per value).
     from_so_numbers: Optional[List[str]] = None
+    # SS-FURTHER-DESC-SEND - the raw AutoCount `FurtherDescription` (RTF,
+    # bytes unchanged), same name and meaning as the SO line's. A v2 fallback
+    # field, and on the wire only to a consumer advertising >= 2.16 (see
+    # ``sink_payload``). Push only: Link PO (PR #354) reads PODTL itself and
+    # never consults this field.
+    further_description_rtf: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _cap_further_description_rtf(self) -> "CanonicalPurchaseOrderLine":
+        self.further_description_rtf = capped_further_desc_rtf(self.further_description_rtf, self.source_ref)
+        return self
 
     #     !!  LINE LINKAGE (sprint-5/06, AC-06-02) - INPUT then WIRE.  !!
     # Input fields feed engine minting (`mapping.py`, right beside the
@@ -380,6 +459,7 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
         CanonicalDocumentLine.FALLBACK_FIELDS + (
             "from_so_numbers", "from_so_line_ref", "from_so_external",
             "from_po_line_ref", "from_po_number", "replaces_line_ref",
+            "further_description_rtf",
         )
     )
     # SS-PO-LINK-NULL: `from_so_line_ref` is deliberately NOT omit-when-empty
@@ -391,6 +471,17 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
         "from_so_numbers", "from_so_external",
         "from_po_line_ref", "from_po_number", "replaces_line_ref",
     )
+
+    def sink_payload(
+        self, *, contract_version: int = 1, advertised_contract: Any = None
+    ) -> Dict[str, Any]:
+        payload = super().sink_payload(
+            contract_version=contract_version, advertised_contract=advertised_contract,
+        )
+        # SS-FURTHER-DESC-SEND contract gate (same rule as the SO line's).
+        if not advertises_further_desc_rtf(advertised_contract):
+            payload.pop("further_description_rtf", None)
+        return payload
 
 
 class CanonicalShippingOrderLine(CanonicalDocumentLine):

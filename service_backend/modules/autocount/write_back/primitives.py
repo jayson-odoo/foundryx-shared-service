@@ -31,7 +31,7 @@ from modules.autocount.canonical.documents import ENTITY_PURCHASE_ORDER
 from modules.autocount.models import AcCompany, AcWriteAction
 from modules.autocount.repositories import CompanyRepository
 from modules.autocount.write_back import capabilities, frame, guard, payloads
-from modules.autocount.write_back.line_notes import stored_fields_changed
+from modules.autocount.write_back.line_notes import attach_so_notes, stored_fields_changed
 from modules.autocount.write_back.client import WriteTransportError
 from modules.autocount.write_back.doc_kinds import DocKind, kind_of
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
@@ -548,6 +548,12 @@ class PrimitiveService(WriteFrame):
             payloads._check_kind_doc(kind_def, doc, cancelled_ok=True, write=False)
         except WriteRefusal as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
+        if kind_def.name == "SO":
+            # SS-FURTHER-DESC-SEND: hapi's SO GET has no FurtherDescription; the read (only the read) adds each
+            # row's stored text, raw, through the company's line-notes source (PO / SPO already get it from
+            # ``NotesReader``). A second, read-only SELECT after the vendor GET; no write path calls this.
+            doc = attach_so_notes(doc, self._notes_extra)
+            self.db.rollback()
         return PrimitiveResult(
             None, frame.OUTCOME_DONE, doc_key=doc.get("DocKey"), doc_no=doc.get("DocNo"), document=doc,
         )
