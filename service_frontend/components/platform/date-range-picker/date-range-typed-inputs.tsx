@@ -118,6 +118,7 @@ export function DateRangeTypedInputs({
       <input
         type="text"
         inputMode="numeric"
+        size={10}
         autoComplete="off"
         placeholder="dd/mm/yyyy"
         aria-label={label}
