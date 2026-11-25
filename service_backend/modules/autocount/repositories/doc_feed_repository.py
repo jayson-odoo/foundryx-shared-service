@@ -622,31 +622,84 @@ class DocFeedBackfillRepository:
         )
         return count > 0
 
-    def stopped_by_worker_loss(self, codes: Tuple[str, ...]) -> List[AcDocFeedBackfill]:
+    def stopped_by_worker_loss(
+        self, codes: Tuple[str, ...], *, stale_claim_before: datetime, scope=None,
+    ) -> List[AcDocFeedBackfill]:
         """SS-BACKFILL-AUTO-RESUME - every stopped backfill, across tenants
-        (the beat's pass), whose worker was lost (``codes``)."""
+        (the beat's pass), whose worker was lost (``codes``), plus a claim
+        (``AUTO_RESUMING``) older than ``stale_claim_before`` - the beat that
+        claimed it died before it resumed. ``scope`` narrows the query to
+        active tenants / modules (the sweep's own join)."""
+        query = self.db.query(AcDocFeedBackfill)
+        if scope is not None:
+            query = scope(query, AcDocFeedBackfill.tenant_id)
         return (
-            self.db.query(AcDocFeedBackfill)
-            .filter(
+            query.filter(
                 AcDocFeedBackfill.status == DOC_FEED_BACKFILL_STOPPED,
-                AcDocFeedBackfill.error_code.in_(codes),
+                or_(
+                    AcDocFeedBackfill.error_code.in_(codes),
+                    (AcDocFeedBackfill.error_code == BACKFILL_AUTO_RESUMING_CODE)
+                    & (AcDocFeedBackfill.updated_at < stale_claim_before),
+                ),
             )
             .all()
         )
 
-    def claim_for_auto_resume(self, tenant_id: str, backfill_id: str, seen_code: str) -> bool:
+    def claim_for_auto_resume(
+        self, tenant_id: str, backfill_id: str, seen_code: str,
+        *, now: Optional[datetime] = None, stale_claim_before: Optional[datetime] = None,
+    ) -> bool:
         """Guarded ``seen_code -> AUTO_RESUMING`` on a stopped row: two beats
-        that judged the same row never both resume it. No commit."""
+        that judged the same row never both claim it (a stale claim is taken
+        over only while it is still stale). No commit."""
+        query = self.db.query(AcDocFeedBackfill).filter(
+            AcDocFeedBackfill.tenant_id == tenant_id,
+            AcDocFeedBackfill.id == backfill_id,
+            AcDocFeedBackfill.status == DOC_FEED_BACKFILL_STOPPED,
+            AcDocFeedBackfill.error_code == seen_code,
+        )
+        if seen_code == BACKFILL_AUTO_RESUMING_CODE:
+            if stale_claim_before is None:
+                return False
+            query = query.filter(AcDocFeedBackfill.updated_at < stale_claim_before)
+        values: Dict[Any, Any] = {AcDocFeedBackfill.error_code: BACKFILL_AUTO_RESUMING_CODE}
+        if now is not None:
+            values[AcDocFeedBackfill.updated_at] = now
+        return query.update(values, synchronize_session=False) > 0
+
+    def start_resume(
+        self, tenant_id: str, backfill_id: str, seen_job_id: Optional[str], new_job_id: str,
+        *, summary: Optional[Dict[str, Any]], require_code: Optional[str] = None,
+    ) -> bool:
+        """Guarded ``stopped -> running`` under ``new_job_id`` while the row
+        still points at the job the caller judged: a person's Resume and the
+        beat's automatic one never both start a segment. No commit."""
+        job_match = (
+            AcDocFeedBackfill.job_id.is_(None) if seen_job_id is None
+            else AcDocFeedBackfill.job_id == seen_job_id
+        )
+        query = self.db.query(AcDocFeedBackfill).filter(
+            AcDocFeedBackfill.tenant_id == tenant_id,
+            AcDocFeedBackfill.id == backfill_id,
+            AcDocFeedBackfill.status == DOC_FEED_BACKFILL_STOPPED,
+            job_match,
+        )
+        if require_code is not None:
+            # The beat's own claim must still stand (a Stop pressed in the
+            # meantime replaced it with USER_STOPPED).
+            query = query.filter(AcDocFeedBackfill.error_code == require_code)
         count = (
-            self.db.query(AcDocFeedBackfill)
-            .filter(
-                AcDocFeedBackfill.tenant_id == tenant_id,
-                AcDocFeedBackfill.id == backfill_id,
-                AcDocFeedBackfill.status == DOC_FEED_BACKFILL_STOPPED,
-                AcDocFeedBackfill.error_code == seen_code,
+            query
+            .update(
+                {
+                    AcDocFeedBackfill.status: DOC_FEED_BACKFILL_RUNNING,
+                    AcDocFeedBackfill.job_id: new_job_id,
+                    AcDocFeedBackfill.error: None,
+                    AcDocFeedBackfill.error_code: None,
+                    AcDocFeedBackfill.summary_json: summary,
+                },
+                synchronize_session=False,
             )
-            .update({AcDocFeedBackfill.error_code: BACKFILL_AUTO_RESUMING_CODE},
-                    synchronize_session=False)
         )
         return count > 0
 

@@ -1204,6 +1204,11 @@ def run_backfill(
         # S2 - discard any uncommitted work of the day this failed on before
         # even touching `backfill_row` (mirrors `_finish_failed`).
         db.rollback()
+        if backfill_row.job_id != job_id:
+            # SS-BACKFILL-AUTO-RESUME - this worker was written off and the
+            # backfill was resumed under a newer job meanwhile: never stop
+            # (or overwrite) the run that now owns the row.
+            return backfill_row
         code = stop_reason["code"]
         if code == "JOB_ORPHANED" and (
             backfill_row.status == DOC_FEED_BACKFILL_STOPPING

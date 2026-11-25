@@ -297,3 +297,160 @@ def test_two_overlapping_beats_claim_the_row_once(db):
 
     assert repo.claim_for_auto_resume(co.tenant_id, bf.id, "ORPHANED") is True
     assert repo.claim_for_auto_resume(co.tenant_id, bf.id, "ORPHANED") is False
+
+
+# ── review round 1 ──────────────────────────────────────────────────────────
+
+
+def test_r1_stop_on_a_row_the_reap_writes_off_in_the_same_call_stays_a_user_stop(db, monkeypatch):
+    """After a deploy the row still says running (the dead job's heartbeat is
+    old); a person presses Stop, the reap inside Stop writes it off first."""
+    _no_dispatch(monkeypatch)
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    killed = _job(db, co.tenant_id, status="running",
+                  heartbeat_at=datetime.now(timezone.utc) - timedelta(minutes=30))
+    bf = _backfill(db, feed, from_day=date(2026, 9, 20), to_day=date(2026, 9, 29), job_id=killed.id)
+
+    DocFeedService(db).stop_backfill(co.tenant_id, co.id, DO)
+    db.refresh(bf)
+    assert bf.status == "stopped" and bf.error_code == "USER_STOPPED"
+    assert auto_resume_lost_backfills(db, now=NOW) == 0
+
+
+def test_r1_a_person_resuming_first_wins_over_the_beat(db, monkeypatch):
+    """The beat has claimed the row; a person's Resume lands before the
+    beat's own resume - only ONE segment is started."""
+    from app.models.background_job import BackgroundJob
+    from modules.autocount.repositories.doc_feed_repository import DocFeedBackfillRepository
+
+    _no_dispatch(monkeypatch)
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), status="stopped")
+    bf.error_code = "ORPHANED"
+    db.commit()
+    real = DocFeedBackfillRepository.claim_for_auto_resume
+
+    def claim_then_person_resumes(self, *a, **kw):
+        ok = real(self, *a, **kw)
+        self.db.commit()
+        DocFeedService(self.db).resume_backfill(co.tenant_id, co.id, DO)
+        return ok
+
+    monkeypatch.setattr(DocFeedBackfillRepository, "claim_for_auto_resume", claim_then_person_resumes)
+    assert auto_resume_lost_backfills(db, now=NOW) == 0
+    db.refresh(bf)
+    assert bf.status == "running"
+    jobs = db.query(BackgroundJob).filter_by(type="autocount_doc_feed_backfill").all()
+    live = [j for j in jobs if j.status != "aborted"]
+    assert len(live) == 1 and bf.job_id == live[0].id  # one segment only
+    assert _history(db, feed.id) == []
+
+
+def test_r1_the_guarded_resume_refuses_when_the_row_moved_on(db):
+    from modules.autocount.repositories.doc_feed_repository import DocFeedBackfillRepository
+
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    first = _job(db, co.tenant_id, status="failed")
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29),
+                   status="stopped", job_id=first.id)
+    bf.error_code = "USER_STOPPED"
+    db.commit()
+    repo = DocFeedBackfillRepository(db)
+    # The beat's resume needs its own claim to still stand.
+    assert repo.start_resume(co.tenant_id, bf.id, first.id, "job-x", summary=None,
+                             require_code="AUTO_RESUMING") is False
+    assert repo.start_resume(co.tenant_id, bf.id, first.id, "job-a", summary=None) is True
+    db.commit()
+    # A second resume that judged the row under `first` loses.
+    assert repo.start_resume(co.tenant_id, bf.id, first.id, "job-b", summary=None) is False
+    db.refresh(bf)
+    assert bf.job_id == "job-a" and bf.status == "running" and bf.error_code is None
+
+
+def test_r1_a_stop_pressed_after_the_beats_claim_is_not_undone(db, monkeypatch):
+    from modules.autocount.repositories.doc_feed_repository import DocFeedBackfillRepository
+
+    _no_dispatch(monkeypatch)
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), status="stopped")
+    bf.error_code = "JOB_ENDED"
+    db.commit()
+    real = DocFeedBackfillRepository.claim_for_auto_resume
+
+    def claim_then_person_stops(self, *a, **kw):
+        ok = real(self, *a, **kw)
+        self.db.commit()
+        DocFeedService(self.db).stop_backfill(co.tenant_id, co.id, DO)
+        return ok
+
+    monkeypatch.setattr(DocFeedBackfillRepository, "claim_for_auto_resume", claim_then_person_stops)
+    assert auto_resume_lost_backfills(db, now=NOW) == 0
+    db.refresh(bf)
+    assert bf.status == "stopped" and bf.error_code == "USER_STOPPED"
+
+
+def test_r1_a_claim_the_beat_never_followed_up_is_taken_over_once_stale(db, monkeypatch):
+    _no_dispatch(monkeypatch)
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), status="stopped")
+    bf.error_code = "AUTO_RESUMING"
+    db.commit()
+    db.query(type(bf)).filter_by(id=bf.id).update({"updated_at": NOW - timedelta(minutes=2)}, synchronize_session=False)
+    db.commit()
+    assert auto_resume_lost_backfills(db, now=NOW) == 0  # fresh claim: another beat owns it
+
+    db.query(type(bf)).filter_by(id=bf.id).update(
+        {"updated_at": NOW - timedelta(minutes=20)}, synchronize_session=False)
+    db.commit()
+    assert auto_resume_lost_backfills(db, now=NOW) == 1
+    db.refresh(bf)
+    assert bf.status == "running"
+
+
+def test_r1_an_inactive_module_is_not_resumed(db, monkeypatch):
+    from app.models.module import MODULE_STATUS_INACTIVE, Module, TenantModule
+
+    _no_dispatch(monkeypatch)
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), status="stopped")
+    bf.error_code = "ORPHANED"
+    tm = (
+        db.query(TenantModule).join(Module, Module.id == TenantModule.module_id)
+        .filter(TenantModule.tenant_id == co.tenant_id, Module.name == "autocount").one()
+    )
+    tm.status = MODULE_STATUS_INACTIVE
+    db.commit()
+
+    assert auto_resume_lost_backfills(db, now=NOW) == 0
+    db.refresh(bf)
+    assert bf.status == "stopped" and bf.error_code == "ORPHANED"
+
+
+def test_r1_a_written_off_worker_never_stops_the_run_that_resumed_the_row(db, monkeypatch):
+    from modules.autocount.doc_feed import runner
+
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    old = _job(db, co.tenant_id, status="running", heartbeat_at=NOW)
+    new = _job(db, co.tenant_id, status="running", heartbeat_at=NOW)
+    bf = _backfill(db, feed, from_day=date(2026, 9, 20), to_day=date(2026, 9, 29), job_id=old.id)
+
+    def dead_and_resumed_elsewhere(db_, job_id):
+        # Meanwhile: written off, auto-resumed under `new` (another session).
+        with db_.get_bind().begin() as conn:
+            conn.execute(type(bf).__table__.update().where(type(bf).__table__.c.id == bf.id)
+                         .values(job_id=new.id, status="running"))
+        return True
+
+    monkeypatch.setattr(runner, "_job_is_dead", dead_and_resumed_elsewhere)
+    from .test_s14_doc_feed_backfill_chunked import _sink
+
+    runner.run_backfill(db, bf, now=NOW, vendor_transport=_Vendor().client(), sink_transport=_sink())
+    db.refresh(bf)
+    assert bf.status == "running" and bf.job_id == new.id and bf.error_code is None

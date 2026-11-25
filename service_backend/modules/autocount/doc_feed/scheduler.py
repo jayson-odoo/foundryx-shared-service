@@ -194,6 +194,9 @@ def _reap_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: datetime, 
 # the beat resumes it from its saved day through Resume's own path, at most
 # this many times in a row (no day saved in between) so a crash loop ends.
 BACKFILL_AUTO_RESUME_MAX = 5
+# A claim (``AUTO_RESUMING``) the beat never followed up (its process died
+# between the claim and the resume) is taken over after this long.
+BACKFILL_AUTO_RESUME_CLAIM_STALE = timedelta(minutes=10)
 
 
 def _ddmmyyyy(day) -> str:
@@ -213,7 +216,11 @@ def auto_resume_lost_backfills(
     current = now or datetime.now(timezone.utc)
     repo = DocFeedBackfillRepository(db)
     resumed = 0
-    for backfill in repo.stopped_by_worker_loss(BACKFILL_WORKER_LOSS_CODES):
+    for backfill in repo.stopped_by_worker_loss(
+        BACKFILL_WORKER_LOSS_CODES,
+        stale_claim_before=current - BACKFILL_AUTO_RESUME_CLAIM_STALE,
+        scope=active_tenant_service_join,
+    ):
         try:
             if _auto_resume_one(db, repo, backfill, now=current, transport=transport):
                 resumed += 1
@@ -227,6 +234,7 @@ def _auto_resume_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: dat
     from ..models import (
         BACKFILL_AUTO_RESUME_LIMIT_CODE,
         BACKFILL_AUTO_RESUMED_CODE,
+        BACKFILL_AUTO_RESUMING_CODE,
         BACKFILL_WORKER_LOSS_CODES,
         DOC_FEED_MODE_PUSH,
     )
@@ -238,8 +246,13 @@ def _auto_resume_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: dat
 
     db.refresh(backfill)
     seen_code = backfill.error_code
-    if backfill.status != DOC_FEED_BACKFILL_STOPPED or seen_code not in BACKFILL_WORKER_LOSS_CODES:
+    if backfill.status != DOC_FEED_BACKFILL_STOPPED or seen_code not in (
+        *BACKFILL_WORKER_LOSS_CODES, BACKFILL_AUTO_RESUMING_CODE,
+    ):
         return False
+    # The code to give back when a resume is refused: a stale claim's own
+    # worker-loss reason is gone, it reads as "the job ended".
+    release_code = "JOB_ENDED" if seen_code == BACKFILL_AUTO_RESUMING_CODE else seen_code
     feed = DocFeedRepository(db).get_by_id(backfill.tenant_id, backfill.feed_id)
     # Resume's own feed rules, checked first so a feed that is Off (or a
     # live backfill whose feed left Push) is simply left for a person -
@@ -253,7 +266,10 @@ def _auto_resume_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: dat
     count = int(state.get("count") or 0) if isinstance(state, dict) else 0
     resume_day = backfill.next_day
     old_job_id = backfill.job_id
-    if not repo.claim_for_auto_resume(backfill.tenant_id, backfill.id, seen_code):
+    if not repo.claim_for_auto_resume(
+        backfill.tenant_id, backfill.id, seen_code,
+        now=now, stale_claim_before=now - BACKFILL_AUTO_RESUME_CLAIM_STALE,
+    ):
         db.rollback()
         return False
 
@@ -285,13 +301,13 @@ def _auto_resume_one(db: Session, repo, backfill: AcDocFeedBackfill, *, now: dat
         # e.g. the old job is still finishing, or another backfill holds the
         # book: give the stop reason back, the next beat tries again.
         db.rollback()
-        repo.release_auto_resume_claim(backfill.tenant_id, backfill.id, seen_code)
+        repo.release_auto_resume_claim(backfill.tenant_id, backfill.id, release_code)
         db.commit()
         logger.info("doc-feed backfill %s: not resumed yet (%s)", backfill.id, exc)
         return False
     except Exception:
         db.rollback()
-        repo.release_auto_resume_claim(backfill.tenant_id, backfill.id, seen_code)
+        repo.release_auto_resume_claim(backfill.tenant_id, backfill.id, release_code)
         db.commit()
         raise
     _log_auto_resume(
