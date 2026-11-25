@@ -152,16 +152,20 @@ DB_UNREAD_MARKER = "_dbUnread"  # set on a PO / SPO the AutoCount DB could not b
 # Set on a PO / SPO read while NO line notes source is set (legacy mode, crew ruling s20): no DB read, no refusal, no
 # Further Description on kept rows, no blank header text. Never in any key list, never sent.
 DB_LEGACY_MARKER = "_dbLegacy"
+# Legacy mode where the vendor GET carries FurtherDescription on EVERY row (vendor 25 Nov): the note is known, so the
+# row-copy paths carry it exactly as read; the header stays legacy (no DB overlay, blank text omitted). Never sent.
+HAPI_FD_MARKER = "_hapiFd"
 
 
 STORED_FIELDS_CHANGED = "STORED_FIELDS_CHANGED"
+INTERNAL_MARKERS = (DB_UNREAD_MARKER, DB_LEGACY_MARKER, HAPI_FD_MARKER)
 
 
 def public_doc(doc: Any) -> Any:
     """Plan 73: ``doc`` without the internal unread marker, for anything stored or returned (the document shape of
     contract 57 never carries it). Copies only when the marker is there; anything else is returned as is."""
-    if isinstance(doc, dict) and (DB_UNREAD_MARKER in doc or DB_LEGACY_MARKER in doc):
-        return {k: v for k, v in doc.items() if k not in (DB_UNREAD_MARKER, DB_LEGACY_MARKER)}
+    if isinstance(doc, dict) and any(m in doc for m in INTERNAL_MARKERS):
+        return {k: v for k, v in doc.items() if k not in INTERNAL_MARKERS}
     return doc
 
 
@@ -185,8 +189,9 @@ def require_line_notes(*rows: Mapping[str, Any]) -> None:
 
 
 def _require_notes(doc: Mapping[str, Any], *rows: Mapping[str, Any]) -> None:
-    """``require_line_notes`` in DB mode; legacy mode (no source set) never requires the note."""
-    if not is_legacy(doc):
+    """``require_line_notes`` in DB mode (and in legacy mode when the vendor GET carried every row's note); plain
+    legacy mode (no source, no note on the GET) never requires it."""
+    if not is_legacy(doc) or doc.get(HAPI_FD_MARKER):
         require_line_notes(*rows)
 
 
@@ -195,6 +200,24 @@ def _resend(kind_name: str, row: Doc, doc: Mapping[str, Any]) -> Doc:
     if kind_name in _NOTES_KINDS:
         _require_notes(doc, row)
     return _row_fields(row)
+
+
+def inherits_original_note(rest: Decimal, index: int = 0) -> bool:
+    """Owner rule 25 Nov: a NEW linked row carries the original row's Further Description only when the original goes
+    away (nothing of it is left: ``rest == 0``) and only on the FIRST new row of it; a split's new rows (the original
+    keeps a rest) and every later new row carry only their own S/O note. The one decision."""
+    return rest == 0 and index == 0
+
+
+# A line of ``build_link_doc`` may carry the planner's decision (a row whose links span chunks: the first new line OVERALL
+# inherits, whatever its chunk sees). Plain bool, never a vendor key, never sent.
+INHERIT_NOTE_KEY = "_inheritNote"
+
+
+def _note_only(new: Doc) -> Doc:
+    """``new`` without any Further Description of the original (its S/O note is added by ``with_link_note``)."""
+    new.pop(FURTHER_DESC, None)
+    return new
 
 
 def _inherit_note(new: Doc, old: Mapping[str, Any]) -> Doc:
@@ -365,6 +388,8 @@ def build_link(
     }
     body = keep_shipping_po(_header(po), po)
     new = _normal(_resend("PO", po_row, po))
+    if not inherits_original_note(free - qty):
+        _note_only(new)  # a split: the new row carries only the S/O note, the original keeps its own
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
     with_so_delivery_date(new, _day(so_row.get("DeliveryDate")))  # 16 Nov rule: the SO line's date, never the PO's
     with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
@@ -547,14 +572,6 @@ def _bare_note(value: Any) -> Optional[str]:
     return None
 
 
-def _merge_bare_note(out: Doc, row: Mapping[str, Any], values: Mapping[str, Any]) -> None:
-    """Plan 73 D4: a restore value that is only a note in AutoCount's wrapper is merged after the row's own
-    FD (idempotent), never sent in place of it. A full FD value is sent as given."""
-    escaped = _bare_note(values.get(FURTHER_DESC))
-    if escaped is not None:
-        out[FURTHER_DESC] = _append_escaped(row.get(FURTHER_DESC), escaped)
-
-
 def _ends_with_note(fd: str, escaped: str) -> bool:
     """True when ``fd`` already ends with the note (its trailing ``\\par``, blanks and braces ignored)."""
     tail = fd.rstrip(_RTF_PAD)
@@ -640,7 +657,6 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
         raise WriteRefusal("NO_CHANGE", "nothing to restore")
     row = _normal(_resend("PO", _find_row(po, dtl_key), po))
     row.update(values)
-    _merge_bare_note(row, _find_row(po, dtl_key), values)
     body = keep_shipping_po(_header(po), po)
     body["Details"] = [row]
     return body
@@ -886,7 +902,6 @@ def build_edit(
                 raise WriteRefusal("FIELD_NOT_EDITABLE", key)
         out = _normal(_resend(kind.name, row, doc))
         out.update({k: _plain(v) for k, v in edits.items()})
-        _merge_bare_note(out, row, edits)
         price = _num_of(out.get("UnitPrice"))
         if "Qty" in edits:
             validate_qty(_dec(out.get("Qty")))  # QTY_INVALID: not above zero, over 1e9 or over 8 places
@@ -971,7 +986,14 @@ def build_link_doc(kind_name: str, doc: Doc,
             kept = _normal(_row_fields(old))
             kept["Qty"] = _num(rest)
             details.append(kept)
-        added.extend(with_link_note(_inherit_note(_vendor_line(r, 0, kind.name), old), r) for r in new_rows)
+        for index, r in enumerate(new_rows):
+            line = _vendor_line(r, 0, kind.name)
+            if r.get(INHERIT_NOTE_KEY, inherits_original_note(rest, index)):
+                line.pop(FURTHER_DESC, None)
+                _inherit_note(line, old)
+            else:
+                _note_only(line)
+            added.append(with_link_note(line, r))
     body = _doc_header(kind, doc)
     body["Details"] = details + added
     return VendorRequest("PUT", kind.edit_path, body)

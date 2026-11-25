@@ -192,7 +192,7 @@ def test_notes_reader_leaves_so_and_qt_untouched(kind):
     assert source.calls == []
 
 
-@pytest.mark.parametrize("source", [None, "read_none"])
+@pytest.mark.parametrize("source", ["read_none"])
 def test_notes_reader_unread_db_leaves_rows_without_the_key_even_when_hapi_carries_it(source):
     from modules.autocount.write_back.line_notes import NotesReader
 
@@ -202,6 +202,17 @@ def test_notes_reader_unread_db_leaves_rows_without_the_key_even_when_hapi_carri
 
     doc = _po()  # the vendor GET itself carries FurtherDescription on every row
     got = NotesReader(_InnerReader({"PO": doc}), None if source is None else _Unread()).get_document("PO", 7001, None)
+    assert all("FurtherDescription" not in r for r in got["Details"])
+
+
+def test_notes_reader_no_source_keeps_the_get_fd_when_every_row_carries_it_else_drops_it():
+    from modules.autocount.write_back.line_notes import NotesReader
+
+    doc = _po()  # legacy mode, the vendor GET carries FurtherDescription on every row (vendor 25 Nov): kept as read
+    got = NotesReader(_InnerReader({"PO": doc}), None).get_document("PO", 7001, None)
+    assert [r["FurtherDescription"] for r in got["Details"]] == [FD1, FD2, FD3]
+    partial = _without_fd(_po(), 1)  # one row without the key: none is kept
+    got = NotesReader(_InnerReader({"PO": partial}), None).get_document("PO", 7001, None)
     assert all("FurtherDescription" not in r for r in got["Details"])
 
 
@@ -232,14 +243,14 @@ def test_link_whole_qty_without_a_note_copies_fd_byte_identical():
     assert _new(body)[0]["FurtherDescription"] == FD1
 
 
-def test_link_partial_edited_row_and_new_row_both_carry_fd():
+def test_link_partial_edited_row_keeps_fd_and_new_row_is_note_only():
     po, so = _po(), _so()
     k0 = _keys(po)[0]
     body = P.build_link(po, k0, so, _keys(so)[0], Decimal(1), note=NOTE)
     (edited,) = [r for r in body["Details"] if r["DtlKey"] == k0]
     (new,) = _new(body)
     assert edited["FurtherDescription"] == FD1
-    assert new["FurtherDescription"] == P.append_note(FD1, NOTE)
+    assert new["FurtherDescription"] == P.autocount_rtf(NOTE)  # owner 25 Nov: a split's new row carries only the note
 
 
 @pytest.mark.parametrize("qty", [Decimal(4), Decimal(1)])
@@ -279,17 +290,16 @@ def test_restore_transfer_row_keeps_fd_when_the_values_carry_none():
     assert body["Details"][0]["FurtherDescription"] == FD1
 
 
-def test_restore_transfer_row_note_value_is_merged_never_replaces_the_fd():
+def test_restore_transfer_row_sends_the_note_value_exactly_as_given_never_rebuilt_from_the_read():
+    """AutoCount reads a new SO-linked row back with an empty note (live db3 25 Nov): the caller's value is the intended
+    one (what PUT 1 sent), so the restore sends it byte for byte and never merges it into the read-back note."""
     po = _po()
-    body = P.build_restore_transfer_row(po, _keys(po)[0], {"FurtherDescription": P.autocount_rtf(NOTE)})
-    sent = body["Details"][0]["FurtherDescription"]
-    assert PICT1 in sent and "Special finish" in sent and NOTE in sent
-
-
-def test_restore_transfer_row_resending_the_merged_value_is_idempotent():
-    po = _po(fds=(P.append_note(FD1, NOTE), FD2, FD3))
-    body = P.build_restore_transfer_row(po, _keys(po)[0], {"FurtherDescription": P.autocount_rtf(NOTE)})
-    assert body["Details"][0]["FurtherDescription"] == P.append_note(FD1, NOTE)
+    given = P.append_note(FD1, NOTE)
+    body = P.build_restore_transfer_row(po, _keys(po)[0], {"FurtherDescription": given})
+    assert body["Details"][0]["FurtherDescription"] == given
+    note_only = P.autocount_rtf(NOTE)
+    body = P.build_restore_transfer_row(po, _keys(po)[0], {"FurtherDescription": note_only})
+    assert body["Details"][0]["FurtherDescription"] == note_only  # a bare value is a split's intended note, not a merge
 
 
 def test_restore_transfer_row_unknown_fd_refused():
@@ -367,14 +377,14 @@ def test_add_line_copy_sends_the_fd_it_is_given_byte_identical():
     assert _new(body)[0]["FurtherDescription"] == FD1
 
 
-def test_link_doc_whole_row_new_rows_each_copy_the_old_fd_with_their_own_note():
+def test_link_doc_whole_row_first_new_row_copies_the_old_fd_the_others_are_note_only():
     po = _po()
     k0 = _keys(po)[0]
     src = po["Details"][0]
     rows = [_link_line(src, qty=3, soNote=NOTE), _link_line(src, so_dtl=800102, qty=1, soNote="**OTHER S/O: 2")]
     body = P.build_link_doc("PO", po, [(k0, rows)]).body
     fds = [r["FurtherDescription"] for r in _new(body)]
-    assert fds == [P.append_note(FD1, NOTE), P.append_note(FD1, "**OTHER S/O: 2")]
+    assert fds == [P.append_note(FD1, NOTE), P.autocount_rtf("**OTHER S/O: 2")]
 
 
 def test_link_doc_rest_kept_row_keeps_its_fd():
@@ -383,7 +393,7 @@ def test_link_doc_rest_kept_row_keeps_its_fd():
     body = P.build_link_doc("PO", po, [(k0, [_link_line(po["Details"][0], qty=1, soNote=NOTE)])]).body
     (kept,) = [r for r in body["Details"] if r["DtlKey"] == k0]
     assert kept["FurtherDescription"] == FD1 and kept.get("FullTransferOption") != "D"
-    assert _new(body)[0]["FurtherDescription"] == P.append_note(FD1, NOTE)
+    assert _new(body)[0]["FurtherDescription"] == P.autocount_rtf(NOTE)  # the original keeps a rest: note only
 
 
 def test_link_batch_new_row_keeps_fd():

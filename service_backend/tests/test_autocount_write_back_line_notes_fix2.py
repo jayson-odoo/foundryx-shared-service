@@ -114,14 +114,13 @@ def test_resume_split_restore_carries_further_description(h, w, monkeypatch):
     _po_rows_carry_fd(h, monkeypatch)
     res = _parked_split(h, w)
     sent_fd = _sent_note(h)
-    assert sent_fd.startswith(FD[:-1]) and PICT in sent_fd and sent_fd != FD  # the S/O note is appended after the FD
+    assert PICT not in sent_fd and "S/O:" in sent_fd  # a split: the new row carries only the S/O note (owner 25 Nov)
     out = resume(h, res)
     assert (out.outcome, out.error_code) == ("done", None), (out.outcome, out.error_code, out.message)
     restore = puts(h)[-1].body["Details"]
     assert puts(h)[-1] is not link_puts(h)[0]
     (row,) = restore
-    assert row["FurtherDescription"] == sent_fd and PICT in row["FurtherDescription"]
-    assert row["FurtherDescription"].count(PICT) == 1
+    assert row["FurtherDescription"] == sent_fd and PICT not in row["FurtherDescription"]
 
 
 class _ReadNone:

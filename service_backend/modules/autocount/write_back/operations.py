@@ -1284,7 +1284,11 @@ class OperationService:
         self._step("cut", cut)
         self._abort_unless_done(cut)
         add = self.prims.add_line(
-            **self._call(row, company, snap, "add"), line=self._line_of(snap, snap["newLink"], qty - received),
+            **self._call(row, company, snap, "add"),
+            # a LINK keeps the cut row's Further Description and the new row carries only the S/O note (owner 25 Nov);
+            # unlink / relink / SPO ops add the remainder with the original's note as before
+            line={k: v for k, v in self._line_of(snap, snap["newLink"], qty - received).items()
+                  if not (k == payloads.FURTHER_DESC and self._note_only_op(row))},
         )
         self._step("add", add)
         if add.error_code == VENDOR_TIMEOUT:  # the add may still be saving: unknown, never undone straight away
@@ -1409,6 +1413,19 @@ class OperationService:
             self._move_warnings({k: None for k in failed})
         return document
 
+    @staticmethod
+    def _note_only_op(row: AcWriteOperation) -> bool:
+        """The owner's note-only rule (a split's new line carries only the S/O note) is the PO LINK's alone."""
+        return row.op == "link_row"
+
+    @staticmethod
+    def _note_source(original: Doc, inherits: bool) -> Doc:
+        """The row whose Further Description the restore appends the S/O note to: the original's (``inherits``, the
+        note PUT 1 sent) or none (a split's new row carries only the S/O note, owner 25 Nov)."""
+        if inherits:
+            return original
+        return {k: v for k, v in original.items() if k != payloads.FURTHER_DESC}
+
     def _restore_rows(self, row: AcWriteOperation, company: AcCompany, snap: Doc,
                       moves: List[Tuple[int, Optional[str], Optional[Doc]]], document: Optional[Doc], *,
                       deadline: bool = True) -> Tuple[Doc, Optional[set]]:
@@ -1419,8 +1436,11 @@ class OperationService:
         changes_by_key: Dict[int, Dict[str, Any]] = {}
         for move in moves:
             new_key, location, so_link = move[0], move[1], move[2]
-            source = move[3] if len(move) > 3 else snap["row"]  # plan 69: a document batch's own row per move
+            source = move[3] if len(move) > 3 else self._note_source(
+                snap["row"], not (snap.get("mode") == "partial" and self._note_only_op(row)))
             landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
+            # AutoCount reads a new SO-linked row back with an EMPTY note (live db3 25 Nov), so the restore value is
+            # never built from the read-back: it is the note PUT 1 sent (original + note, or the note alone).
             changes = payloads.transfer_row_drift(payloads.transfer_restore(source, location, so_link), landed)
             if changes:
                 changes_by_key[new_key] = changes
@@ -1872,8 +1892,9 @@ class OperationService:
         known = set(snap["knownKeys"])
         fresh = [r for r in document.get("Details") or [] if r.get("DtlKey") not in known]
         answer: List[Dict[str, Any]] = []
-        moves: List[Tuple[int, Optional[str], Optional[Doc]]] = []
-        for link in snap["links"]:
+        moves: List[Tuple[int, Optional[str], Optional[Doc], Doc]] = []
+        rest = _dec(snap["row"].get("Qty")) - sum((_dec(lk["qty"]) for lk in snap["links"]), Decimal(0))
+        for index, link in enumerate(snap["links"]):
             match = next((r for r in fresh if _link_of("PO", r) == int(link["soDtlKey"])
                           and _dec(r.get("Qty")) == _dec(link["qty"])), None)
             if match is None:  # cannot happen after a verified PUT; resume rejects it earlier
@@ -1882,7 +1903,8 @@ class OperationService:
             answer.append({"soDocKey": link["soDocKey"], "soDtlKey": link["soDtlKey"], "qty": link["qty"],
                            "poDtlKey": int(match["DtlKey"])})
             moves.append((int(match["DtlKey"]), link.get("location"),
-                          {"soDeliveryDate": link.get("soDeliveryDate"), "note": link.get("note")}))
+                          {"soDeliveryDate": link.get("soDeliveryDate"), "note": link.get("note")},
+                          self._note_source(snap["row"], payloads.inherits_original_note(rest, index))))
         document, failed = self._restore_rows(row, company, snap, moves, document, deadline=deadline)
         self.prims._stage(company, snap["kind"], document, None)
         old_key = int(snap["row"]["DtlKey"])
@@ -2117,6 +2139,9 @@ class OperationService:
                                 "soDtlKey": link["so_dtl_key"], "qty": str(link["qty"]), "soNo": link["so_no"],
                                 "location": link["location"], "soDeliveryDate": link["so_link"]["soDeliveryDate"],
                                 "note": link["so_link"]["note"]})
+            rest_total = _dec(old.get("Qty")) - sum((_dec(a["qty"]) for a in applied), Decimal(0))
+            for position, a in enumerate(applied):  # the first new line OVERALL of a fully taken row inherits its note
+                a["inheritNote"] = payloads.inherits_original_note(rest_total, position)
             if applied:
                 planned.append((old, applied))
         requested = [{"index": link["index"], "poDtlKey": link["po_dtl_key"], "soDocKey": link["so_doc_key"],
@@ -2272,6 +2297,7 @@ class OperationService:
             Location=link["location"], Qty=float(_dec(link["qty"])), FOCQty=0,
             Discount=payloads.link_discount(old.get("Discount")),
             **{payloads.LINK_NOTE_KEY: link.get("note")},
+            **({payloads.INHERIT_NOTE_KEY: bool(link["inheritNote"])} if "inheritNote" in link else {}),
         ), link.get("soDeliveryDate"))
 
     def _doc_chunk_landed(self, row: AcWriteOperation, company: AcCompany, snap: Doc, ci: int, document: Doc,
@@ -2286,8 +2312,13 @@ class OperationService:
                                   checking=ci)
         for part, link, new_row in matched:
             found.append((link, int(new_row["DtlKey"])))
+            links = list(part.get("links") or [])
+            rest = _dec(part["row"].get("Qty")) - sum((_dec(lk.get("qty")) for lk in links), Decimal(0))
+            index = next((i for i, lk in enumerate(links) if lk.get("index") == link.get("index")), 0)
+            inherit = bool(link["inheritNote"]) if "inheritNote" in link else payloads.inherits_original_note(rest, index)
             moves.append((int(new_row["DtlKey"]), link.get("location"),
-                          {"soDeliveryDate": link.get("soDeliveryDate"), "note": link.get("note")}, part["row"]))
+                          {"soDeliveryDate": link.get("soDeliveryDate"), "note": link.get("note")},
+                          self._note_source(part["row"], inherit)))
         document, failed = self._restore_rows(row, company, snap, moves, document, deadline=deadline)
         for link, new_key in found:
             results[str(link["index"])] = self._doc_line(link, "linked", new_key=new_key)
@@ -2522,11 +2553,15 @@ class OperationService:
         so_link = self._so_reread(company, new_sent.get("FromDocNo"), None, so_dtl, {})
         if so_link is None:
             return self._split_stop(row, company, snap, RESTORE_NOT_LANDED, document=doc)
+        sent_source = {k: v for k, v in old.items() if k != payloads.FURTHER_DESC}
+        if payloads.FURTHER_DESC in new_sent:  # the note PUT 1 sent for this row (a split: the S/O note alone)
+            sent_source[payloads.FURTHER_DESC] = new_sent[payloads.FURTHER_DESC]
         readable = {k: v for k, v in payloads.transfer_row_drift(
-            payloads.transfer_restore(old, location, so_link), tied).items() if k not in payloads.UNREADABLE_ROW_KEYS}
+            payloads.transfer_restore(sent_source, location, so_link), tied).items()
+            if k not in payloads.UNREADABLE_ROW_KEYS}
         document: Doc = doc
         if readable:  # the ONE restore PUT of the split (never the link PUT again)
-            document, failed = self._restore_rows(row, company, snap, [(new_key, location, so_link)], doc,
+            document, failed = self._restore_rows(row, company, snap, [(new_key, location, so_link, sent_source)], doc,
                                                   deadline=False)
             if failed:
                 return self._split_stop(row, company, snap, RESTORE_NOT_LANDED, document=document)

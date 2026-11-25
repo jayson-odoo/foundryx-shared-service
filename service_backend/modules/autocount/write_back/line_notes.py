@@ -31,6 +31,7 @@ from modules.autocount.write_back import payloads
 from modules.autocount.write_back.payloads import (
     DB_LEGACY_MARKER,
     DB_UNREAD_MARKER,
+    HAPI_FD_MARKER,
     EDIT_HEADER_KEYS,
     FURTHER_DESC,
     HEADER_KEYS,
@@ -180,11 +181,17 @@ def attach_db_doc(doc: Doc, db: Optional[Mapping[str, Any]]) -> Doc:
 
 
 def _legacy(doc: Doc) -> Doc:
-    """Legacy mode (no source set): the GET document as it is, without any Further Description (none is ever re-sent)
-    and marked so the builders neither refuse nor require it."""
+    """Legacy mode (no source set): the GET document marked so the builders neither refuse nor require anything.
+    When the vendor GET carries FurtherDescription on EVERY row the notes are known and kept as read (marked
+    ``HAPI_FD_MARKER``: every re-sent or re-added row carries its note byte for byte); otherwise none is kept, so none
+    is ever re-sent."""
     out = copy.deepcopy(doc)
-    for row in out.get("Details") or []:
-        row.pop(FURTHER_DESC, None)
+    rows = out.get("Details") or []
+    if rows and all(FURTHER_DESC in row for row in rows):
+        out[HAPI_FD_MARKER] = True
+    else:
+        for row in rows:
+            row.pop(FURTHER_DESC, None)
     out[DB_LEGACY_MARKER] = True
     return out
 
