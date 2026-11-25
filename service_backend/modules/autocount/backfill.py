@@ -3651,3 +3651,248 @@ def backfill_billing_package_lines(
         )
         touched += 1
     return touched
+
+
+# ── SS-FURTHER-DESC-SEND - raw line `FurtherDescription` on SO + PO ──────────
+
+# The PO line preset text BEFORE this lane - FROZEN (never read off the live
+# preset, same rule as every text above). It is still the SPO preset's text.
+_PRE_FURTHER_DESC_PO_LINE_QUERY = (
+    "SELECT d.DtlKey AS DtlKey, i.AutoKey AS ItemAutoKey, "
+    "w.AutoKey AS LocationAutoKey, d.Qty AS Qty, "
+    "d.TransferedQty AS TransferedQty, d.UnitPrice AS UnitPrice, "
+    "d.DiscountAmt AS DiscountAmt, d.SubTotal AS SubTotal, d.UOM AS UOM, "
+    "d.DeliveryDate AS ExpectedDate, d.ItemCode AS ItemCode, "
+    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq, "
+    "d.FromSODtlKey AS FromSODtlKey, so.DocKey AS FromSODocKey, "
+    "so.DocNo AS FromSODocNo, d.FromSODocList AS FromSODocList, "
+    "CASE WHEN d.FromDocType = 'PO' THEN d.FromDocDtlKey END AS FromPODtlKey, "
+    "sh.DocKey AS FromPODocKey, sh.DocNo AS FromPODocNo "
+    "FROM {database}.dbo.PODTL AS d "
+    "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
+    "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+    "LEFT JOIN {database}.dbo.SODTL AS sd ON sd.DtlKey = d.FromSODtlKey "
+    "LEFT JOIN {database}.dbo.SO AS so ON so.DocKey = sd.DocKey "
+    "LEFT JOIN {database}.dbo.PODTL AS src ON src.DtlKey = d.FromDocDtlKey AND d.FromDocType = 'PO' "
+    "LEFT JOIN {database}.dbo.PO AS sh ON sh.DocKey = src.DocKey "
+    "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+)
+# This lane's own target text - FROZEN; `test_frozen_po_target_equals_todays_
+# preset` (test_autocount_further_desc_send.py) forces a re-pin when it moves.
+_FURTHER_DESC_PO_LINE_QUERY = _PRE_FURTHER_DESC_PO_LINE_QUERY.replace(
+    "sh.DocKey AS FromPODocKey, sh.DocNo AS FromPODocNo ",
+    "sh.DocKey AS FromPODocKey, sh.DocNo AS FromPODocNo, "
+    "d.FurtherDescription AS FurtherDescription ", 1,
+)
+
+_FURTHER_DESC_ENTITY_CONFIG_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "source_config", "line_result_columns",
+}
+
+
+def backfill_further_desc_fields(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA, tenant_id: Optional[str] = None,
+) -> int:
+    """SS-FURTHER-DESC-SEND: a ``FurtherDescription -> further_description_rtf``
+    ``raw_text`` line row (the raw RTF, bytes unchanged) on every EXISTING
+    ``sales_order`` and ``purchase_order`` task. ``line_remark`` rows are never
+    touched. A row is created only when the task has no
+    ``further_description_rtf`` row in ANY state (an operator-deleted row is
+    never brought back: ``update_tenant`` runs this once, version-gated).
+
+    * SO: the line query already selects ``FurtherDescription`` since
+      FULFIL-SO-REMARK, so the row is ENABLED when the task's column list
+      carries it, an ENABLED ``FurtherDescription`` line row already exists, or
+      the query is today's preset text; else DISABLED with one WARNING.
+    * PO: a stored ``lineQuery`` byte-identical to the FROZEN previous preset
+      text (own company's ``database_name``) is rewritten to the new text and
+      ``FurtherDescription`` is appended to a non-empty ``line_result_columns``;
+      the row is ENABLED when the query was rewritten or the column list
+      already carries the column, DISABLED with one WARNING otherwise (a
+      hand-written query is left byte-untouched). A query already on the new
+      text seeds nothing.
+
+    SPO tasks are not touched. Returns rows changed; 0 on a schema predating
+    these tables. ``tenant_id`` scopes the pass (``update_tenant``); ``None``
+    (module Alembic) covers every tenant. Frozen ``sa.table`` only; never
+    commits.
+    """
+    needed = {
+        "ac_entity_config": _FURTHER_DESC_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _SALES_ORDER_REF_COMPANY_COLUMNS,
+        "ac_field_mapping": _SALES_ORDER_REF_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("line_result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+    touched = 0
+
+    def seed_row(cfg_tenant: str, company_id: str, entity_type: str, enabled: bool) -> bool:
+        scoped = (
+            field_mapping.c.tenant_id == cfg_tenant,
+            field_mapping.c.company_id == company_id,
+            field_mapping.c.entity_type == entity_type,
+            field_mapping.c.scope == SCOPE_LINE,
+        )
+        has_row = connectable.execute(
+            sa.select(field_mapping.c.id).where(
+                *scoped, field_mapping.c.canonical_field == "further_description_rtf",
+            )
+        ).first() is not None
+        if has_row:
+            return False
+        sort_order = connectable.execute(
+            sa.select(sa.func.coalesce(sa.func.max(field_mapping.c.sort_order), -1) + 1).where(*scoped)
+        ).scalar()
+        connectable.execute(
+            sa.insert(field_mapping).values(
+                id=str(uuid.uuid4()),
+                tenant_id=cfg_tenant,
+                company_id=company_id,
+                entity_type=entity_type,
+                scope=SCOPE_LINE,
+                source_path="FurtherDescription",
+                canonical_field="further_description_rtf",
+                transform="raw_text",
+                formula=None,
+                is_required=False,
+                is_enabled=enabled,
+                is_source_owned=True,
+                sort_order=sort_order,
+            )
+        )
+        return True
+
+    def database_of(config_id: str, cfg_tenant: str, company_id: str, label: str) -> Optional[str]:
+        row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == cfg_tenant,
+            )
+        ).first()
+        if row is None or not row[0]:
+            logger.warning(
+                "%s task %s's company could not be resolved under its own tenant - "
+                "the Further Description backfill skipped it.", label, config_id,
+            )
+            return None
+        return row[0]
+
+    def warn_disabled(label: str, config_id: str) -> None:
+        logger.warning(
+            "%s task %s has a line query the Further Description backfill does "
+            "not recognise as the AutoCount preset - left untouched. Add "
+            "`d.FurtherDescription AS FurtherDescription` to the line query and "
+            "enable the `FurtherDescription -> further_description_rtf` row on "
+            "the Mapping tab.", label, config_id,
+        )
+
+    # ── SO: the column is already selected (FULFIL-SO-REMARK) ──
+    so_stmt = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.source_config, entity_config.c.line_result_columns,
+    ).where(entity_config.c.entity_type == ENTITY_SALES_ORDER)
+    if tenant_id is not None:
+        so_stmt = so_stmt.where(entity_config.c.tenant_id == tenant_id)
+    for config_id, cfg_tenant, company_id, source_config, line_columns in connectable.execute(so_stmt).fetchall():
+        database_name = database_of(config_id, cfg_tenant, company_id, "Sales-order")
+        if database_name is None:
+            continue
+        stored = (source_config or {}).get("lineQuery")
+        if not stored:
+            continue  # not a SQL task (the vendor API carries no Further Description)
+        selects_it = connectable.execute(
+            sa.select(field_mapping.c.id).where(
+                field_mapping.c.tenant_id == cfg_tenant,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == ENTITY_SALES_ORDER,
+                field_mapping.c.scope == SCOPE_LINE,
+                field_mapping.c.source_path == "FurtherDescription",
+                field_mapping.c.is_enabled.is_(True),
+            )
+        ).first() is not None
+        enabled = (
+            selects_it
+            or "FurtherDescription" in list(line_columns or [])
+            or stored == _REMARK_SO_LINE_QUERY.replace("{database}", database_name)
+        )
+        if seed_row(cfg_tenant, company_id, ENTITY_SALES_ORDER, enabled):
+            touched += 1
+            if not enabled:
+                warn_disabled("Sales-order", config_id)
+
+    # ── PO: line query + row ──
+    stmt = sa.select(
+        entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+        entity_config.c.source_config, entity_config.c.line_result_columns,
+    ).where(entity_config.c.entity_type == ENTITY_PURCHASE_ORDER)
+    if tenant_id is not None:
+        stmt = stmt.where(entity_config.c.tenant_id == tenant_id)
+    for config_id, cfg_tenant, company_id, source_config, line_columns in connectable.execute(stmt).fetchall():
+        database_name = database_of(config_id, cfg_tenant, company_id, "Purchase-order")
+        if database_name is None:
+            continue
+        fresh = dict(source_config or {})
+        columns = list(line_columns or [])
+        stored = fresh.get("lineQuery")
+        if not stored:
+            continue  # not a SQL task (the vendor API carries no Further Description)
+        old_text = _PRE_FURTHER_DESC_PO_LINE_QUERY.replace("{database}", database_name)
+        new_text = _FURTHER_DESC_PO_LINE_QUERY.replace("{database}", database_name)
+        if stored == new_text:
+            continue  # already current: never reseed a row an operator deleted
+        replaced = stored == old_text
+        if replaced:
+            fresh["lineQuery"] = new_text
+            values: Dict[str, Any] = {"source_config": fresh}
+            # An EMPTY column list means "never previewed" - leave it empty.
+            if columns and "FurtherDescription" not in columns:
+                columns.append("FurtherDescription")
+                values["line_result_columns"] = columns
+            connectable.execute(
+                sa.update(entity_config).where(entity_config.c.id == config_id).values(**values)
+            )
+            touched += 1
+        enabled = replaced or "FurtherDescription" in columns
+        if seed_row(cfg_tenant, company_id, ENTITY_PURCHASE_ORDER, enabled):
+            touched += 1
+            if not enabled:
+                warn_disabled("Purchase-order", config_id)
+    return touched

@@ -140,6 +140,16 @@ def t_string(value: Any) -> Optional[str]:
     return str(value).strip()
 
 
+# SS-FURTHER-DESC-SEND - the byte-for-byte text transform. AutoCount's line
+# `FurtherDescription` is RTF (embedded images included); `t_string`'s strip
+# would change the bytes the CRM renders, so this one only maps an empty /
+# whitespace-only cell to None and otherwise returns the stored text as-is.
+def t_raw_text(value: Any) -> Optional[str]:
+    if _blank(value):
+        return None
+    return value if isinstance(value, str) else str(value)
+
+
 def t_bool(value: Any) -> Optional[bool]:
     """``"T"``/``"F"`` - and real bools, and 1/0, all of which occur."""
     if _blank(value):
@@ -355,6 +365,8 @@ TRANSFORMS = {
     "slash_datetime": slash_datetime,
     # sprint-5/06 (AC-06-01) - `FromSODocList`/comma-separated line targets.
     "string_list": t_string_list,
+    # SS-FURTHER-DESC-SEND - text kept exactly as stored (no strip).
+    "raw_text": t_raw_text,
 }
 
 
@@ -937,6 +949,9 @@ LINE_FIELD_ALLOWED_TRANSFORMS: Dict[str, frozenset] = {
     # `int`/`decimal`/`ref_*` all saved onto a plain string field
     # (`canonical/documents.py`).
     "from_po_number": frozenset({"string"}),
+    # SS-FURTHER-DESC-SEND - the raw line Further Description: only the
+    # byte-for-byte transform (a stripped `string` would change the RTF).
+    "further_description_rtf": frozenset({"raw_text"}),
 }
 
 # A canonical LINE field whose declared shape is a LIST (only

@@ -235,6 +235,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_consignment_transferred_qty,
         backfill_customer_debtor_type,
         backfill_customer_display_term,
+        backfill_further_desc_fields,
         backfill_customer_sales_agent,
         backfill_product_item_class,
         backfill_product_item_type,
@@ -373,6 +374,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # runs the same repair once on deploy.
     if parse_version(from_version) < (0, 23, 0):
         backfill_customer_display_term(db, schema=schema, tenant_id=tenant_id)
+    # 0.23.0 -> 0.24.0 (SS-FURTHER-DESC-SEND, partner of sorento-crm #2766):
+    # every existing `sales_order` / `purchase_order` task gets a
+    # `FurtherDescription -> further_description_rtf` (`raw_text`) line row (PO
+    # query rewritten when it is the preset text). `line_remark` untouched.
+    # Module Alembic 0050 runs the same repair once on deploy.
+    if parse_version(from_version) < (0, 24, 0):
+        backfill_further_desc_fields(db, schema=schema, tenant_id=tenant_id)
 
     service = CompanyService(db)
     page = 0

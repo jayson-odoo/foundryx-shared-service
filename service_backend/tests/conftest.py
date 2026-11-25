@@ -921,6 +921,10 @@ class _EchoDocDb:
             rows[row.get("DtlKey")] = stored
         return {"header": header, "rows": rows}
 
+    def read_so_notes(self, doc):
+        """SS-FURTHER-DESC-SEND: a sales order's stored Further Description per row, echoed from the GET (else "")."""
+        return {row.get("DtlKey"): row.get("FurtherDescription", "") for row in doc.get("Details") or []} or None
+
 
 @pytest.fixture(autouse=True)
 def _default_line_notes_source(monkeypatch):
