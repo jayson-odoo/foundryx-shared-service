@@ -10,7 +10,7 @@ Differences pinned here:
   numeric ``DocKey``; ``source_ref`` = ``{book}:PROJREG:{ProjNo}``;
 * the only vendor door is by date (``Date``), so the poll reads by date;
 * contract gate 2.15 with ``project_registrations`` advertised;
-* the backfill floor is 2006-01-01, a live backfill needs a finished dry run
+* the backfill floor is 2000-01-01, a live backfill needs a finished dry run
   over the same days first, the dry run counts records by month, and one
   backfill per book is open at a time;
 * reads only from the books in ``AUTOCOUNT_PROJECT_REGISTRATIONS_FEED_BOOKS``
@@ -157,7 +157,7 @@ def test_feed_kind_door_and_floor_are_pinned():
     assert C.BY_DOC_DATE_PATH[PR] == "/ProjectRegbyDate"
     assert C.BY_DOC_DATE_PARAM[PR] == "Date"
     assert PR not in C.BY_LAST_MODIFIED_PATH
-    assert C.backfill_floor(PR) == date(2006, 1, 1)
+    assert C.backfill_floor(PR) == date(2000, 1, 1)
     assert C.backfill_floor(C.FEED_DELIVERY_ORDERS) == date.fromisoformat(C.BACKFILL_FROM_DEFAULT)
 
 
@@ -333,14 +333,14 @@ def test_dry_run_backfill_counts_by_month_and_writes_nothing(db):
 def test_backfill_resumes_from_its_own_cursor(db):
     co, ac_conn = _wired(db)
     feed = _feed(db, co, ac_conn)
-    bf = _backfill(db, feed, from_day=date(2006, 1, 1), to_day=date(2006, 1, 4), dry_run=False)
-    data = {"20060101": [_reg("A1", "2006-01-01")], "20060103": [_reg("C1", "2006-01-03")]}
-    first = _Vendor(data, fail_on="20060103")
+    bf = _backfill(db, feed, from_day=date(2000, 1, 1), to_day=date(2000, 1, 4), dry_run=False)
+    data = {"20000101": [_reg("A1", "2000-01-01")], "20000103": [_reg("C1", "2000-01-03")]}
+    first = _Vendor(data, fail_on="20000103")
     crm = _Crm()
     run_backfill(db, bf, now=NOW, vendor_transport=first.transport(), sink_transport=crm.transport())
     db.refresh(bf)
     assert bf.status == "stopped"
-    assert bf.next_day == date(2006, 1, 3)
+    assert bf.next_day == date(2000, 1, 3)
     assert all(p.get("backfill") is True for p in crm.pushes)
 
     bf.status = "running"
@@ -348,22 +348,22 @@ def test_backfill_resumes_from_its_own_cursor(db):
     second = _Vendor(data)
     run_backfill(db, bf, now=NOW, vendor_transport=second.transport(), sink_transport=crm.transport())
     db.refresh(bf)
-    assert second.calls == ["20060103", "20060104"]  # never re-reads finished days
+    assert second.calls == ["20000103", "20000104"]  # never re-reads finished days
     assert bf.status == "done"
     db.refresh(feed)
     assert feed.full_backfill_done_at is not None
     assert db.query(AcDocFeedLedger).filter_by(feed=PR).count() == 2
 
 
-def test_backfill_start_floor_is_2006(db, monkeypatch):
+def test_backfill_start_floor_is_2000(db, monkeypatch):
     co, ac_conn = _wired(db)
     _feed(db, co, ac_conn)
     service = DocFeedService(db)
     monkeypatch.setattr(service, "_dispatch", lambda *a, **k: None)
     with pytest.raises(DocFeedValidationError):
-        service.start_backfill(co.tenant_id, co.id, PR, dry_run=True, from_day=date(2005, 12, 31))
+        service.start_backfill(co.tenant_id, co.id, PR, dry_run=True, from_day=date(1999, 12, 31))
     bf = service.start_backfill(co.tenant_id, co.id, PR, dry_run=True)
-    assert bf.from_day == date(2006, 1, 1)
+    assert bf.from_day == date(2000, 1, 1)
 
 
 def test_live_backfill_needs_a_finished_dry_run_over_the_same_days(db, monkeypatch):
@@ -427,5 +427,5 @@ def test_view_lists_the_feed_with_its_own_floor(db):
     service.company_service.doc_feed_gate_error = lambda *a, **k: None
     view = service.view(co.tenant_id, co.id)
     item = next(i for i in view.feeds if i.feed == PR)
-    assert item.backfillFloor == date(2006, 1, 1)
+    assert item.backfillFloor == date(2000, 1, 1)
     assert item.window.pollBasis == "doc_date"

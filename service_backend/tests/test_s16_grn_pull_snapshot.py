@@ -120,7 +120,7 @@ def test_ac_16_70_docno_alone_defaults_to_the_31_myt_days_ending_today(client, d
         {},
         {"toDay": "2026-09-01"},
         {"fromDay": "2026/09/01"},
-        {"fromDay": "2018-12-31"},
+        {"fromDay": "1999-12-31"},
         {"docNo": "   "},
     ],
 )
