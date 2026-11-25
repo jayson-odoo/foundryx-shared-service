@@ -335,24 +335,139 @@ def test_mint_accepts_an_optional_client_app_of_the_callers_tenant(client, sessi
     assert client.post(KEYS, json={"name": "x", "clientAppId": eco}, headers=admin_b).status_code == 422
 
 
-def test_client_app_list_is_read_only_scoped_and_permissioned(client, session_factory):
+def test_client_app_list_is_scoped_and_permissioned(client, session_factory):
     eco = _new_app(session_factory, "Ecohub")
     hdr = partner_headers(client)
-    _put(client, hdr, "org-count", name="Org")  # default app gains a live workspace
+    org = _put(client, hdr, "org-count", name="Org").json()  # default app gains a live workspace
     other_tenant(client, session_factory, slug="ca-list-b")
     res = client.get(APPS, headers=_auth(client))
     assert res.status_code == 200, res.text
     items = {a["name"]: a for a in res.json()["data"]}
     assert set(items) == {"General", "Ecohub"}  # never another tenant's
-    assert set(items["General"]) == {"id", "name", "slug", "status", "isDefault", "workspaceCount"}
+    assert set(items["General"]) == {
+        "id", "name", "slug", "status", "isDefault", "workspaceCount", "workspaces",
+    }
     assert items["General"]["isDefault"] is True and items["General"]["workspaceCount"] == 2
+    assert {w["name"] for w in items["General"]["workspaces"]} == {"General", "Org"}
     assert items["Ecohub"] == {
         "id": eco, "name": "Ecohub", "slug": None, "status": "ACTIVE", "isDefault": False,
-        "workspaceCount": 0,
+        "workspaceCount": 0, "workspaces": [],
     }
     assert client.get(APPS, headers=_no_perm_auth(client, session_factory, "ca-noperm@example.com")).status_code == 403
-    for method in ("POST", "PATCH", "PUT", "DELETE"):
-        assert client.request(method, APPS, headers=_auth(client), json={}).status_code == 405
+    assert client.request("PUT", APPS, headers=_auth(client), json={}).status_code == 405
+    assert client.request("DELETE", APPS, headers=_auth(client), json={}).status_code == 405
+
+
+# ── create, rename, move (dashboard, same permission) ────────────────────────
+def test_create_rejects_a_duplicate_or_blank_name_and_is_tenant_scoped(client, session_factory):
+    _new_app(session_factory, "Ecohub")
+    res = client.post(APPS, json={"name": "New App"}, headers=_auth(client))
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["name"] == "New App" and body["isDefault"] is False
+    assert body["workspaceCount"] == 0 and body["workspaces"] == []
+
+    dup = client.post(APPS, json={"name": " ecohub "}, headers=_auth(client))
+    assert dup.status_code == 409, dup.text
+
+    blank = client.post(APPS, json={"name": "   "}, headers=_auth(client))
+    assert blank.status_code == 422, blank.text
+
+    assert client.post(
+        APPS, json={"name": "x"}, headers=_no_perm_auth(client, session_factory, "ca-create-noperm@example.com")
+    ).status_code == 403
+
+    tid, other_hdr = other_tenant(client, session_factory, slug="ca-create-other")
+    same_name = client.post(APPS, json={"name": "New App"}, headers=other_hdr)
+    assert same_name.status_code == 201, same_name.text  # names are per tenant, not global
+    assert same_name.json()["id"] != body["id"]
+
+
+def test_rename_rejects_a_duplicate_name_and_404s_outside_the_tenant(client, session_factory):
+    eco = _new_app(session_factory, "Ecohub")
+    fuji = _new_app(session_factory, "MyFuji Platform")
+
+    res = client.patch(f"{APPS}/{eco}", json={"name": "Ecohub Renamed"}, headers=_auth(client))
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "Ecohub Renamed"
+
+    dup = client.patch(f"{APPS}/{fuji}", json={"name": "ecohub renamed"}, headers=_auth(client))
+    assert dup.status_code == 409, dup.text
+
+    same = client.patch(f"{APPS}/{eco}", json={"name": "Ecohub Renamed"}, headers=_auth(client))
+    assert same.status_code == 200, same.text  # renaming to its own current name is not a conflict
+
+    blank = client.patch(f"{APPS}/{eco}", json={"name": ""}, headers=_auth(client))
+    assert blank.status_code == 422, blank.text
+
+    missing = client.patch(f"{APPS}/does-not-exist", json={"name": "X"}, headers=_auth(client))
+    assert missing.status_code == 404, missing.text
+
+    _, other_hdr = other_tenant(client, session_factory, slug="ca-rename-other")
+    cross = client.patch(f"{APPS}/{eco}", json={"name": "Stolen"}, headers=other_hdr)
+    assert cross.status_code == 404, cross.text
+
+    assert client.patch(
+        f"{APPS}/{eco}", json={"name": "Z"},
+        headers=_no_perm_auth(client, session_factory, "ca-rename-noperm@example.com"),
+    ).status_code == 403
+
+
+def test_move_a_workspace_via_the_api_moves_partner_access_and_keeps_its_workspace_keys(client, session_factory):
+    hdr_first = partner_headers(client)
+    wid = _put(client, hdr_first, "org-move-api").json()["id"]
+    _seed_channel(session_factory, wid, phone_number_id="pn-ca-move-api")
+    workspace_key = client.post(
+        f"{P}/workspaces/{wid}/api-keys", json={"name": "org key"}, headers=hdr_first
+    ).json()["fullKey"]
+    app2 = _new_app(session_factory, "Second app")
+    _, hdr_second = _key_for(client, app2, name="Second")
+
+    res = client.post(f"{APPS}/{app2}/workspaces/move", json={"workspaceId": wid}, headers=_auth(client))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["id"] == app2 and wid in {w["id"] for w in body["workspaces"]}
+
+    # Partner access follows the new client app; the old one's key no longer sees it.
+    assert client.get(f"{P}/workspaces/{wid}", headers=hdr_second).status_code == 200
+    assert client.get(f"{P}/workspaces/{wid}", headers=hdr_first).json() == NOT_FOUND
+    # The workspace key (unaffected by client_app_id) keeps working.
+    pub = client.get("/api/v1/omnichannel/templates", headers={"Authorization": f"Bearer {workspace_key}"})
+    assert pub.status_code == 200, pub.text
+
+    # Re-pointing to its current client app is a harmless no-op.
+    noop = client.post(f"{APPS}/{app2}/workspaces/move", json={"workspaceId": wid}, headers=_auth(client))
+    assert noop.status_code == 200, noop.text
+
+
+def test_move_rejects_an_external_ref_conflict_a_missing_workspace_and_cross_tenant_targets(client, session_factory):
+    app2 = _new_app(session_factory, "Second app")
+    eco_app, hdr_eco = _key_for(client, _new_app(session_factory, "Ecohub"), name="EcoHub")
+    _, hdr_second = _key_for(client, app2, name="Second")
+    ws_eco = _put(client, hdr_eco, "org-conflict", name="Eco").json()["id"]
+    _put(client, hdr_second, "org-conflict", name="Second Org")  # same external_ref, other client app
+
+    conflict = client.post(f"{APPS}/{app2}/workspaces/move", json={"workspaceId": ws_eco}, headers=_auth(client))
+    assert conflict.status_code == 409, conflict.text
+
+    missing_ws = client.post(
+        f"{APPS}/{app2}/workspaces/move", json={"workspaceId": "no-such-workspace"}, headers=_auth(client)
+    )
+    assert missing_ws.status_code == 404, missing_ws.text
+
+    missing_app = client.post(
+        f"{APPS}/does-not-exist/workspaces/move", json={"workspaceId": ws_eco}, headers=_auth(client)
+    )
+    assert missing_app.status_code == 404, missing_app.text
+
+    tid, other_hdr = other_tenant(client, session_factory, slug="ca-move-other")
+    cross = client.post(f"{APPS}/{app2}/workspaces/move", json={"workspaceId": ws_eco}, headers=other_hdr)
+    assert cross.status_code == 404, cross.text  # another tenant can't target this client app
+
+    assert client.post(
+        f"{APPS}/{app2}/workspaces/move", json={"workspaceId": ws_eco},
+        headers=_no_perm_auth(client, session_factory, "ca-move-noperm@example.com"),
+    ).status_code == 403
 
 
 # ── partner routes scoped by client app ──────────────────────────────────────

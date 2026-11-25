@@ -386,6 +386,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         permission: 'workspaces.manage',
       },
       {
+        title: 'Client apps',
+        path: '/omnichannel/settings/client-apps',
+        permission: 'partner_keys.manage',
+      },
+      {
         // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.
         title: 'Migration',
         path: '/omnichannel/settings/migration',
@@ -580,6 +585,11 @@ export const MENU_MEGA: MenuConfig = [
                 title: 'Embed access',
                 path: '/omnichannel/settings/embed',
                 permission: 'workspaces.manage',
+              },
+              {
+                title: 'Client apps',
+                path: '/omnichannel/settings/client-apps',
+                permission: 'partner_keys.manage',
               },
               {
                 // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.
@@ -792,6 +802,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Embed access',
         path: '/omnichannel/settings/embed',
         permission: 'workspaces.manage',
+      },
+      {
+        title: 'Client apps',
+        path: '/omnichannel/settings/client-apps',
+        permission: 'partner_keys.manage',
       },
       {
         // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.

@@ -1529,6 +1529,12 @@ class PartnerKeyMintResponse(ApiModel):
     fullKey: str  # shown ONCE at mint, never again
 
 
+class ClientAppWorkspaceItem(ApiModel):
+    id: str
+    name: str
+    isDefault: bool
+
+
 class ClientAppItem(ApiModel):
     id: str
     name: str
@@ -1536,10 +1542,23 @@ class ClientAppItem(ApiModel):
     status: str  # ACTIVE | DISABLED
     isDefault: bool
     workspaceCount: int  # live workspaces
+    workspaces: List[ClientAppWorkspaceItem] = []  # live workspaces
 
 
 class ClientAppListResponse(ApiModel):
     data: List[ClientAppItem]
+
+
+class ClientAppCreateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ClientAppUpdateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ClientAppMoveWorkspaceRequest(ApiModel):
+    workspaceId: str = Field(min_length=1, max_length=64)
 
 
 class PartnerMeResponse(ApiModel):
@@ -1739,7 +1758,9 @@ class PartnerWorkspaceListResponse(ApiModel):
 
 # ── Partner connect sessions (FSS-1) ─────────────────────────────────────────
 class PartnerConnectSessionCreateRequest(ApiModel):
-    channelType: Literal["WHATSAPP"] = "WHATSAPP"
+    # FACEBOOK = one Facebook Page: a Messenger channel plus an Instagram
+    # channel when the Page has a linked professional account (wp-6).
+    channelType: Literal["WHATSAPP", "FACEBOOK"] = "WHATSAPP"
     returnUrl: str = Field(min_length=1, max_length=2048)
     clientState: Optional[str] = Field(default=None, max_length=512)
 
@@ -1775,8 +1796,35 @@ class ConnectCallbackRequest(ApiModel):
     error: Optional[str] = Field(default=None, max_length=512)
 
 
+class ConnectPageOption(ApiModel):
+    """One Page offered on the hosted Page list. ``connected``: the Page and
+    its Instagram account (when linked) are both already live channels, so
+    choosing it would create nothing."""
+
+    id: str
+    name: str
+    igUsername: Optional[str] = None
+    connected: bool = False
+
+
+class ConnectPagePicker(ApiModel):
+    pickToken: str
+    pages: List[ConnectPageOption]
+
+
 class ConnectCallbackResponse(ApiModel):
-    redirect: str
+    """Exactly one of the two is set: ``redirect`` (follow it), or, for a
+    Page connect that signed in, ``pagePicker`` (show the list, then
+    ``POST /connect/page-select``)."""
+
+    redirect: Optional[str] = None
+    pagePicker: Optional[ConnectPagePicker] = None
+
+
+class ConnectPageSelectRequest(ApiModel):
+    pickToken: str = Field(min_length=1, max_length=256)
+    # Omitted or null = the user cancelled on the Page list.
+    pageId: Optional[str] = Field(default=None, max_length=128)
 
 
 class PublicMessageListResponse(VersionedPayload, ApiModel):

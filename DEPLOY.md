@@ -352,6 +352,8 @@ baked into the frontend image; the script also writes it as `PUBLIC_BASE_URL`),
 `NEXTAUTH_URL` (`https://$APP_DOMAIN`). Optional:
 `POSTGRES_USER`, `POSTGRES_DB`, `IMAGE_REPO`, `RELEASE_TAG`, `BACKEND_WORKERS`,
 `META_APP_ID`, `META_ES_CONFIG_ID`, `META_GRAPH_VERSION`, `NEXT_PUBLIC_META_*`,
+`OMNI_PARTNER_WA_REDIRECT_URI` and `META_ES_DIALOG_VERSION` (partner hosted connect;
+the secret `OMNI_PARTNER_META_CONFIG_ID` adds the Facebook Page connect),
 `PLATFORM_SMTP_HOST`/`_PORT`/`_SECURITY`/`_FROM_EMAIL`/`_FROM_NAME`.
 `AUTOCOUNT_PROJECT_REGISTRATIONS_FEED_BOOKS` (default `db3`; comma list of books the AutoCount project-registration feed reads, e.g. `db1`; containers must be recreated to pick it up).
 `AUTOCOUNT_PROJECT_REGISTRATION_ENABLED` (default `false`; `true` turns on the four AutoCount project-registration routes; containers must be recreated to pick it up).

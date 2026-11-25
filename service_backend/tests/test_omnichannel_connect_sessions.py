@@ -704,6 +704,22 @@ def test_a_disabled_client_app_is_refused_on_partner_routes_and_at_the_callback(
     assert callback(client, state_of(res["url"])).status_code == 200
 
 
+def test_a_moved_workspace_ends_its_in_flight_sessions(client, session_factory, sim):
+    hdr, ws = setup(client)
+    opened = create(client, hdr, ws).json()
+    authorized = create(client, hdr, ws).json()
+    assert callback(client, state_of(authorized["url"])).status_code == 200
+    target = _new_app(session_factory, "Second app")
+    moved = client.post(
+        f"/omnichannel/client-apps/{target}/workspaces/move", json={"workspaceId": ws}, headers=_auth(client)
+    )
+    assert moved.status_code == 200, moved.text
+    assert callback(client, state_of(opened["url"])).json() == SESSION_NOT_FOUND
+    done = client.post(f"{P}/connect-sessions/{authorized['id']}/complete", headers=hdr)
+    assert done.status_code == 404 and done.json() == SESSION_NOT_FOUND
+    assert channels(client, key(client, app_id=target, name="Second"), ws) == []
+
+
 def test_a_trashed_workspace_ends_the_flow(client, session_factory, sim):
     from modules.omnichannel.models import Workspace
 
