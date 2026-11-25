@@ -298,9 +298,9 @@ def test_ac_12_32_no_new_autocount_migration_added():
         match = re.match(r"^(\d+)_", path.name)
         if match:
             highest = max(highest, int(match.group(1)))
-    assert highest <= 49, (
-        f"a new autocount migration (>0049) exists ({highest}) - AC-12-32 "
+    assert highest <= 50, (
+        f"a new autocount migration (>0050) exists ({highest}) - AC-12-32 "
         "says THIS plan ships no schema change (a later plan may legitimately "
         "move this ceiling again, as AC-CONSIGN-PULL just did from 29 to 30, and "
-        "SS-INTEGRATION-ALERT (plan 33) did from 30 to 31)"
+        "SS-INTEGRATION-ALERT (plan 33) did from 30 to 31, SS-FURTHER-DESC-SEND from 49 to 50)"
     )

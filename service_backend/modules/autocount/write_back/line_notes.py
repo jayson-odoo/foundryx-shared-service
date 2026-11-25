@@ -62,6 +62,13 @@ _HEADER_SELECT = sa.text(
     "SELECT " + ", ".join(f"[{c}]" for c in DB_HEADER_COLUMNS) + " FROM PO WHERE DocKey = :k AND DocNo = :n"
 )
 _ROWS_SELECT = sa.text("SELECT * FROM PODTL WHERE DocKey = :k")
+# SS-FURTHER-DESC-SEND: the B6 read of a sales order. hapi's SO GET carries no
+# FurtherDescription, so the read adds each row's stored text (raw RTF, bytes
+# unchanged). Two columns only, and the DocNo must match the document read.
+_SO_NOTES_SELECT = sa.text(
+    "SELECT d.DtlKey AS DtlKey, d.FurtherDescription AS FurtherDescription "
+    "FROM SODTL AS d JOIN SO AS h ON h.DocKey = d.DocKey WHERE d.DocKey = :k AND h.DocNo = :n"
+)
 
 
 # The release guard's probes: one row of each table, nothing read from it (SQL Server dialect, like AutoCount itself).
@@ -157,6 +164,64 @@ class SqlDocDb:
         if set(rows) != keys:
             return None  # a row the database does not know, or one the document read does not have
         return {"header": _kept(headers[0], DB_HEADER_KEYS), "rows": rows}
+
+    def read_so_notes(self, doc: Mapping[str, Any]) -> Optional[Dict[Any, str]]:
+        """SS-FURTHER-DESC-SEND: ``{DtlKey: FurtherDescription}`` of one sales order (``_SO_NOTES_SELECT``), the
+        text exactly as stored (NULL is ""). None when unknown: any error, an undecryptable credential, no row, or a
+        DtlKey twice."""
+        if doc.get("DocKey") in (None, ""):
+            return None
+        try:
+            credentials: Dict[str, Any] = {}
+            if self._connection.credentials_json:
+                credentials = decrypt_secret(self._connection.credentials_json)
+            with self._runtime.readonly_connection(
+                self._connection.id, self._connection.config_json or {}, credentials,
+                timeout_s=DB_READ_TIMEOUT_SECONDS,
+            ) as conn:
+                records = [dict(r) for r in conn.execute(
+                    _SO_NOTES_SELECT, {"k": doc["DocKey"], "n": doc.get("DocNo")}).mappings().fetchall()]
+        except InvalidToken:
+            logger.warning("autocount db read: the connection credentials cannot be decrypted")
+            return None
+        except Exception as exc:  # noqa: BLE001 - never the driver text: it can hold a host or a value
+            logger.warning("autocount db read failed (%s)", type(exc).__name__)
+            return None
+        notes: Dict[Any, str] = {}
+        for record in records:
+            lowered = {str(k).lower(): v for k, v in record.items()}
+            dtl = lowered.get("dtlkey")
+            if dtl is None or dtl in notes:
+                return None
+            text = lowered.get("furtherdescription")
+            notes[dtl] = text if isinstance(text, str) else ""
+        return notes or None
+
+
+def so_read_notes(source: Any, doc: Mapping[str, Any]) -> Optional[Dict[Any, str]]:
+    """``{DtlKey: FurtherDescription}`` of the sales order ``doc`` from the AutoCount DB (NULL is ""), or None when
+    unknown: no ``read_so_notes`` on the source, a failed read, or no row at all for the document."""
+    reader = getattr(source, "read_so_notes", None)
+    return reader(doc) if callable(reader) else None
+
+
+def attach_so_notes(doc: Doc, source: Optional[Any]) -> Doc:
+    """SS-FURTHER-DESC-SEND, B6 read only: ``doc`` (a sales order) with each row's stored FurtherDescription, raw.
+    The same three states as a PO read: no source set is legacy (``_legacy``), a read that fails or misses a row of
+    the document is unread (``_unread``: no row carries the key), else every row carries its stored text. Never used
+    by a write: QT / SO / PO / SPO bodies and Link PO are unchanged. The input is not mutated."""
+    if not isinstance(doc, dict):
+        return doc
+    if source is None:
+        return _legacy(doc)
+    notes = so_read_notes(source, doc)
+    rows = doc.get("Details") or []
+    if notes is None or any(row.get("DtlKey") not in notes for row in rows):
+        return _unread(doc)
+    out = copy.deepcopy(doc)
+    for row in out.get("Details") or []:
+        row[FURTHER_DESC] = notes[row.get("DtlKey")]
+    return out
 
 
 def attach_db_doc(doc: Doc, db: Optional[Mapping[str, Any]]) -> Doc:

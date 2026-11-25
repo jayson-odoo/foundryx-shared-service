@@ -130,7 +130,7 @@ def test_ac_63_23_there_is_a_single_module_migration_head():
         if d:
             downs.add(d.group(1))
     heads = revisions - downs
-    assert heads == {"0049_autocount_line_notes_conn"}, heads  # plan 74 ships 0049 on top of 0047 + 0048
+    assert heads == {"0050_autocount_further_desc"}, heads  # SS-FURTHER-DESC-SEND ships 0050 on top of 0049
 
 
 # ------------------------------------------------------------------ rig

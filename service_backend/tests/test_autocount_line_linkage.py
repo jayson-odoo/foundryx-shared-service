@@ -882,7 +882,9 @@ def test_po_line_query_selects_the_seven_linkage_columns_via_the_new_joins():
     assert "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL" in text, text
     assert "UDF" not in text, "no per-company UDF column belongs in the shared preset text"
     assert SPO_PRESET.line_query == _PO_LINE_QUERY
-    assert PO_PRESET.line_query == _PO_LINE_QUERY
+    # SS-FURTHER-DESC-SEND: the PO task's own text = the shared text + the raw FurtherDescription column
+    assert PO_PRESET.line_query == _PO_LINE_QUERY.replace(
+        "sh.DocNo AS FromPODocNo ", "sh.DocNo AS FromPODocNo, d.FurtherDescription AS FurtherDescription ", 1)
 
 
 # ── AC-06-13: header OUTER APPLY + fingerprint gain the four aggregates ────

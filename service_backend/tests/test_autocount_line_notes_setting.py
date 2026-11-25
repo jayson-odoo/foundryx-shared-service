@@ -101,9 +101,9 @@ def test_ac_74_01_company_has_a_nullable_line_notes_connection_column():
 def test_ac_74_01_migration_0049_is_the_single_head_over_0048():
     script = ScriptDirectory(str(MODULE_ALEMBIC))
     heads = script.get_heads()
-    assert len(heads) == 1, heads
-    head = script.get_revision(heads[0])
-    assert head.revision.startswith("0049") and len(head.revision) <= 32, head.revision
+    assert len(heads) == 1, heads  # SS-FURTHER-DESC-SEND's 0050 now chains on top of 0049
+    head = script.get_revision("0049_autocount_line_notes_conn")
+    assert len(head.revision) <= 32, head.revision
     assert str(head.down_revision).startswith("0048"), head.down_revision
     text = next((MODULE_ALEMBIC / "versions").glob("0049_*.py")).read_text()
     assert "line_notes_connection_id" in text and "ADD COLUMN IF NOT EXISTS" in text.upper()

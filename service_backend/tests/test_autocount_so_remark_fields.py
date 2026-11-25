@@ -164,17 +164,17 @@ def test_so_line_query_keeps_the_fingerprint_cut_and_old_columns():  # SS-2
 
 
 def test_so_preset_line_rows_map_remark_and_section_heading():  # SS-2
-    by_src = {f.source_path: f for f in SO_PRESET.line}
-    assert by_src["FurtherDescription"] == PresetField("FurtherDescription", "line_remark", "string")
-    assert by_src["SectionHeading"] == PresetField("SectionHeading", "section_heading", "string")
+    # SS-FURTHER-DESC-SEND adds a second FurtherDescription row (raw, `further_description_rtf`)
+    assert PresetField("FurtherDescription", "line_remark", "string") in SO_PRESET.line
+    assert PresetField("SectionHeading", "section_heading", "string") in SO_PRESET.line
 
 
 def test_po_and_spo_line_presets_are_unchanged():  # SS-2
+    # SS-FURTHER-DESC-SEND later gave PO (only) a raw `further_description_rtf`; never `line_remark`.
     for preset in (PO_PRESET, SPO_PRESET):
-        sources = {f.source_path for f in preset.line}
-        assert not ({"FurtherDescription", "SectionHeading"} & sources)
-        assert "FurtherDescription" not in preset.line_query
+        assert not [f for f in preset.line if f.canonical_field in ("line_remark", "section_heading")]
         assert "SectionHeading" not in preset.line_query
+    assert "FurtherDescription" not in SPO_PRESET.line_query
 
 
 def test_so_line_model_carries_remark_and_heading_on_the_wire():  # SS-2
