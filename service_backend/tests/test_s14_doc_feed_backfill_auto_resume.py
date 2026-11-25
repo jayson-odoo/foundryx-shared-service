@@ -484,3 +484,22 @@ def test_r2_the_feed_rows_last_run_skips_automatic_resume_rows(db, monkeypatch):
     item = next(i for i in Svc(db).view(co.tenant_id, co.id).feeds if i.feed == DO)
     assert item.lastRun is not None
     assert item.lastRun.id == poll.id and item.lastRun.outcome == "SUCCESS"
+
+
+def test_r3_stop_on_a_running_row_with_a_stale_worker_loss_code_marks_a_user_stop(db, monkeypatch):
+    """Reviewer round 2: Stop's own USER_STOPPED write, guarded alone. A
+    running row still carrying an old ORPHANED code whose next segment is
+    still queued: Stop aborts the queued job and stops at once; the old
+    code must not make the beat resume it."""
+    _no_dispatch(monkeypatch)
+    co, ac_conn, _ = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    queued = _job(db, co.tenant_id, status="pending")
+    bf = _backfill(db, feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 29), job_id=queued.id)
+    bf.error_code = "ORPHANED"
+    db.commit()
+
+    DocFeedService(db).stop_backfill(co.tenant_id, co.id, DO)
+    db.refresh(bf)
+    assert bf.status == "stopped" and bf.error_code == "USER_STOPPED"
+    assert auto_resume_lost_backfills(db, now=NOW) == 0
