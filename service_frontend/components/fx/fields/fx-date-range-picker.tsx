@@ -171,6 +171,34 @@ export function FxDateRangePicker({ value, onChange, timeZone, className, minDat
             ))}
           </div>
           <div className="flex min-w-0 flex-col">
+            <FxCalendar
+              mode="range"
+              numberOfMonths={wide ? 2 : 1}
+              defaultMonth={value.from || value.to ? parseKey(value.from || value.to) : undefined}
+              month={month}
+              onMonthChange={setMonth}
+              selected={calendarValue}
+              disabled={disabled.length ? disabled : undefined}
+              onDayMouseEnter={(day) => {
+                if (anchorRef.current) setHovered(day);
+              }}
+              onSelect={(_range, day) => {
+                if (!day) return;
+                const first = anchorRef.current;
+                if (!first) {
+                  anchorRef.current = day;
+                  setHovered(day);
+                  const key = localDateKey(day);
+                  onChange({ preset: 'custom', from: key, to: key });
+                  return;
+                }
+                const [start, end] = first <= day ? [first, day] : [day, first];
+                onChange({ preset: 'custom', from: localDateKey(start), to: localDateKey(end) });
+                anchorRef.current = null;
+                setHovered(null);
+                setOpen(false);
+              }}
+            />
             <DateRangeTypedInputs
               className="border-(--fx-line)"
               from={value.from}
@@ -185,34 +213,6 @@ export function FxDateRangePicker({ value, onChange, timeZone, className, minDat
               }}
               onJump={(day) => setMonth(parseKey(day))}
             />
-          <FxCalendar
-            mode="range"
-            numberOfMonths={wide ? 2 : 1}
-            defaultMonth={value.from || value.to ? parseKey(value.from || value.to) : undefined}
-            month={month}
-            onMonthChange={setMonth}
-            selected={calendarValue}
-            disabled={disabled.length ? disabled : undefined}
-            onDayMouseEnter={(day) => {
-              if (anchorRef.current) setHovered(day);
-            }}
-            onSelect={(_range, day) => {
-              if (!day) return;
-              const first = anchorRef.current;
-              if (!first) {
-                anchorRef.current = day;
-                setHovered(day);
-                const key = localDateKey(day);
-                onChange({ preset: 'custom', from: key, to: key });
-                return;
-              }
-              const [start, end] = first <= day ? [first, day] : [day, first];
-              onChange({ preset: 'custom', from: localDateKey(start), to: localDateKey(end) });
-              anchorRef.current = null;
-              setHovered(null);
-              setOpen(false);
-            }}
-          />
           </div>
         </div>
       </PopoverContent>

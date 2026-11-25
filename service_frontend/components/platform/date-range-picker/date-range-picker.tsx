@@ -176,6 +176,7 @@ function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, 
       // Foolproof-UI: don't silently collapse the range to "today" - open the
       // calendar so the user picks the actual custom range next.
       onChange({ ...value, preset: 'custom' });
+      setMonth(undefined);
       setOpen(true);
       return;
     }
@@ -221,18 +222,6 @@ function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, 
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-auto p-0" align="start">
-          <DateRangeTypedInputs
-            from={value.from}
-            to={value.to}
-            minDate={minDate}
-            maxDate={maxDate}
-            today={todayKeyInZone(timeZone)}
-            onChange={(from, to) => {
-              anchorRef.current = null;
-              onChange({ preset: 'custom', from, to });
-            }}
-            onJump={(day) => setMonth(parseKey(day))}
-          />
           <Calendar
             mode="range"
             numberOfMonths={1}
@@ -260,6 +249,18 @@ function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, 
               anchorRef.current = null;
               setOpen(false);
             }}
+          />
+          <DateRangeTypedInputs
+            from={value.from}
+            to={value.to}
+            minDate={minDate}
+            maxDate={maxDate}
+            today={todayKeyInZone(timeZone)}
+            onChange={(from, to) => {
+              anchorRef.current = null;
+              onChange({ preset: 'custom', from, to });
+            }}
+            onJump={(day) => setMonth(parseKey(day))}
           />
         </PopoverContent>
       </Popover>

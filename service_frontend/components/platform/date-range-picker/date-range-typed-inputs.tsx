@@ -63,35 +63,51 @@ export function DateRangeTypedInputs({
     from: show(from),
     to: show(to),
   });
-  const [message, setMessage] = useState<string | null>(null);
+  // One message per field: fixing one end never hides the other's problem.
+  const [messages, setMessages] = useState<Record<End, string | null>>({
+    from: null,
+    to: null,
+  });
   const messageId = useId();
 
+  // Resync an end only when ITS stored value changes, so a pending bad entry
+  // in the other field is never silently replaced.
   useEffect(() => {
-    setText({ from: show(from), to: show(to) });
-  }, [from, to]);
+    setText((t) => ({ ...t, from: show(from) }));
+    setMessages((m) => ({ ...m, from: null }));
+  }, [from]);
+  useEffect(() => {
+    setText((t) => ({ ...t, to: show(to) }));
+    setMessages((m) => ({ ...m, to: null }));
+  }, [to]);
+
+  const setMessage = (end: End, value: string | null) =>
+    setMessages((m) => ({ ...m, [end]: value }));
 
   const commit = (end: End) => {
     const typed = text[end].trim();
     const current = end === 'from' ? from : to;
-    if (!typed) {
+    // Unchanged text (e.g. a blur on the way to a calendar click) is a no-op:
+    // no jump, so the calendar never moves under the pointer.
+    if (!typed || typed === show(current)) {
       setText((t) => ({ ...t, [end]: show(current) }));
-      setMessage(null);
+      setMessage(end, null);
       return;
     }
     const day = parseTypedDate(typed, today);
     if (!day) {
-      setMessage('Enter a date like 05/11/2026');
+      setMessage(end, 'Enter a date like 05/11/2026');
       return;
     }
     const bounds = rangeBoundsMessage(day, minDate, maxDate);
     if (bounds) {
-      setMessage(bounds);
+      setMessage(end, bounds);
       return;
     }
-    setMessage(null);
+    setMessage(end, null);
     setText((t) => ({ ...t, [end]: show(day) }));
-    onJump?.(day);
     if (day === current) return;
+    onJump?.(day);
     if (end === 'from') onChange(day, !to || to < day ? day : to);
     else onChange(!from || from > day ? day : from, day);
   };
@@ -105,8 +121,8 @@ export function DateRangeTypedInputs({
         autoComplete="off"
         placeholder="dd/mm/yyyy"
         aria-label={label}
-        aria-invalid={message ? true : undefined}
-        aria-describedby={message ? messageId : undefined}
+        aria-invalid={messages[end] ? true : undefined}
+        aria-describedby={messages[end] ? `${messageId}-${end}` : undefined}
         data-testid={`date-range-typed-${end}`}
         value={text[end]}
         onChange={(e) => setText((t) => ({ ...t, [end]: e.target.value }))}
@@ -125,7 +141,7 @@ export function DateRangeTypedInputs({
   return (
     <div
       className={cn(
-        'flex flex-col gap-1 border-b border-border p-3',
+        'flex flex-col gap-1 border-t border-border p-3',
         className,
       )}
     >
@@ -133,10 +149,17 @@ export function DateRangeTypedInputs({
         {field('from', 'From')}
         {field('to', 'To')}
       </div>
-      {message && (
-        <p id={messageId} role="alert" className="text-xs text-destructive">
-          {message}
-        </p>
+      {(['from', 'to'] as const).map((end) =>
+        messages[end] ? (
+          <p
+            key={end}
+            id={`${messageId}-${end}`}
+            role="alert"
+            className="text-xs text-destructive"
+          >
+            {messages[end]}
+          </p>
+        ) : null,
       )}
     </div>
   );
