@@ -116,6 +116,11 @@ describe('parity (switch off): toast wrapper output', () => {
       toast.info('Export started');
     });
     await screen.findByText('Export started');
+    // Sonner mounts each toast on a later frame; on a slow runner the newest
+    // one can still read data-mounted="false" (and a pre-mount offset) here.
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-sonner-toast][data-mounted="true"]')).toHaveLength(3);
+    });
     const toaster = document.querySelector('[data-sonner-toaster]');
     expect(toaster).not.toBeNull();
     expect(parityHtml(toaster!.parentElement!)).toMatchSnapshot();
