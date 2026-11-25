@@ -6,9 +6,10 @@ import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useAutocountDocFeeds } from '@/hooks/use-autocount-doc-feeds';
 import { autocountService } from '@/services/autocount-service';
-import type { DocFeedBackfillStartInput, DocFeedKey, DocFeedUpdateInput } from '@/types/autocount';
+import type { DocFeedBackfillStartInput, DocFeedKey, DocFeedRun, DocFeedUpdateInput } from '@/types/autocount';
 import { DocFeedBackfillDialog } from './doc-feed-backfill-dialog';
 import { DocFeedConfigDialog } from './doc-feed-config-dialog';
+import { DocFeedMonthCountsDialog } from './doc-feed-month-counts-dialog';
 import { useDocFeedIssuesListConfig } from './use-doc-feed-issues-list-config';
 import { useDocFeedRunsListConfig } from './use-doc-feed-runs-list-config';
 import { useDocFeedsListConfig } from './use-doc-feeds-list-config';
@@ -28,6 +29,7 @@ export function DocFeedsTab({ companyId }: { companyId: string }) {
   const { view, reload } = useAutocountDocFeeds(companyId);
   const [configuring, setConfiguring] = useState<DocFeedKey | null>(null);
   const [backfilling, setBackfilling] = useState<DocFeedKey | null>(null);
+  const [monthCountsRun, setMonthCountsRun] = useState<DocFeedRun | null>(null);
   // The Runs/Issues embedded lists own their OWN fetch (the resource-list
   // shell has no cross-list "someone else changed the data" signal) - a
   // bumped key remounts them after any action that could add a run or issue
@@ -104,7 +106,7 @@ export function DocFeedsTab({ companyId }: { companyId: string }) {
     onResumeBackfill: (feed) => void resumeBackfill(feed),
     onDiscardBackfill: (feed) => void discardBackfill(feed),
   });
-  const runsConfig = useDocFeedRunsListConfig(companyId);
+  const runsConfig = useDocFeedRunsListConfig(companyId, { onMonthCounts: setMonthCountsRun });
   const issuesConfig = useDocFeedIssuesListConfig(companyId);
 
   const configuringItem = feeds.find((f) => f.feed === configuring) ?? null;
@@ -188,6 +190,9 @@ export function DocFeedsTab({ companyId }: { companyId: string }) {
           onStart={(input) => startBackfill(backfillingItem.feed, input)}
           onStop={() => stopBackfill(backfillingItem.feed)}
         />
+      )}
+      {monthCountsRun && (
+        <DocFeedMonthCountsDialog run={monthCountsRun} onClose={() => setMonthCountsRun(null)} />
       )}
     </div>
   );

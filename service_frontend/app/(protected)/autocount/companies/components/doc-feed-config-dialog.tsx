@@ -35,7 +35,11 @@ import {
   docFeedWindowErrors,
   readFieldErrors,
 } from '@/lib/autocount-etl';
-import { docFeedGateWarning, docFeedLabel } from '../../components/autocount-meta';
+import {
+  AC_DOC_FEED_DATE_ONLY_KEYS,
+  docFeedGateWarning,
+  docFeedLabel,
+} from '../../components/autocount-meta';
 import {
   ScheduleCadenceCards,
   scheduleCadenceErrors,
@@ -125,6 +129,8 @@ export function DocFeedConfigDialog({
     });
   }, [feed, storedWindow.pollBasis, storedWindow.pollLookbackDays, storedWindow.recheckDays]);
 
+  // Plan 72 - a by-date-only feed has no "Read by" choice to offer.
+  const dateOnly = AC_DOC_FEED_DATE_ONLY_KEYS.includes(feed);
   const windowClientErrors = docFeedWindowErrors(readWindow);
   const windowError = (key: keyof DocFeedWindow): string | undefined =>
     serverErrors[key] ?? windowClientErrors[key];
@@ -241,37 +247,39 @@ export function DocFeedConfigDialog({
               className="grid gap-4 sm:grid-cols-2"
               incrementalExtra={
                 <>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>Read by</Label>
-                    <ToggleGroup
-                      type="single"
-                      size="sm"
-                      variant="outline"
-                      value={readWindow.pollBasis}
-                      onValueChange={(value) => {
-                        if (value === 'last_modified' || value === 'doc_date') {
-                          patchWindow({ pollBasis: value });
-                        }
-                      }}
-                      aria-label="Read by"
-                    >
-                      {DOC_FEED_POLL_BASIS_OPTIONS.map((option) => (
-                        <ToggleGroupItem
-                          key={option.value}
-                          value={option.value}
-                          className={MODE_SEGMENT_CLASS}
-                          data-testid={`doc-feed-window-basis-${option.value}`}
-                        >
-                          {option.label}
-                        </ToggleGroupItem>
-                      ))}
-                    </ToggleGroup>
-                    {windowError('pollBasis') && (
-                      <p className="text-xs text-destructive" data-testid="doc-feed-window-basis-error">
-                        {windowError('pollBasis')}
-                      </p>
-                    )}
-                  </div>
+                  {!dateOnly && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Read by</Label>
+                      <ToggleGroup
+                        type="single"
+                        size="sm"
+                        variant="outline"
+                        value={readWindow.pollBasis}
+                        onValueChange={(value) => {
+                          if (value === 'last_modified' || value === 'doc_date') {
+                            patchWindow({ pollBasis: value });
+                          }
+                        }}
+                        aria-label="Read by"
+                      >
+                        {DOC_FEED_POLL_BASIS_OPTIONS.map((option) => (
+                          <ToggleGroupItem
+                            key={option.value}
+                            value={option.value}
+                            className={MODE_SEGMENT_CLASS}
+                            data-testid={`doc-feed-window-basis-${option.value}`}
+                          >
+                            {option.label}
+                          </ToggleGroupItem>
+                        ))}
+                      </ToggleGroup>
+                      {windowError('pollBasis') && (
+                        <p className="text-xs text-destructive" data-testid="doc-feed-window-basis-error">
+                          {windowError('pollBasis')}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <WindowDaysField
                     id="doc-feed-window-lookback-days"
                     label="Look back"

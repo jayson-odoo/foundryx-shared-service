@@ -187,9 +187,17 @@ class AcCompany(AutocountBase):
     # (db3 only, enforced in code by ``write_back.guard``). NULL = writes
     # disabled; every existing row stays NULL (no backfill needed).
     write_connection_id = Column(String, nullable=True)
+    # Plan 74: core ``connections.id`` of a same-tenant ``sql_database`` connection the PO line notes are read
+    # through (set in the app). NULL = unset; existing rows stay NULL.
+    line_notes_connection_id = Column(String, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+    @property
+    def write_enabled(self) -> bool:
+        """Plan 74: the company is active and has a write connection (a flag only, never the connection)."""
+        return bool(self.is_active and self.write_connection_id)
 
 
 class AcEntityConfig(AutocountBase):
@@ -840,7 +848,10 @@ DOC_FEED_MODES = (DOC_FEED_MODE_OFF, DOC_FEED_MODE_DRY_RUN, DOC_FEED_MODE_PUSH)
 
 DOC_FEED_DELIVERY_ORDERS = "delivery_orders"
 DOC_FEED_GOODS_RECEIVE_NOTES = "goods_receive_notes"
-DOC_FEED_KEYS = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES)
+DOC_FEED_PROJECT_REGISTRATIONS = "project_registrations"  # plan 72
+DOC_FEED_KEYS = (
+    DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES, DOC_FEED_PROJECT_REGISTRATIONS,
+)
 DOC_FEED_DOCUMENT_KEYS = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES)
 
 DOC_FEED_ISSUE_RETRYABLE = "retryable"

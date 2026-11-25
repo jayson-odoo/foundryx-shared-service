@@ -382,7 +382,7 @@ def test_ac_65_07_the_restore_put_carries_the_rtf_note_on_the_new_row_only(h, ri
     assert res.outcome == "done", (res.outcome, res.error_code)
     sent = puts(h)
     new_key = rig.new_key(rig.so_dated)
-    carrying = [(i, r) for i, c in enumerate(sent) for r in c.body["Details"] if "FurtherDescription" in r]
+    carrying = [(i, r) for i, c in enumerate(sent) for r in c.body["Details"] if r.get("FurtherDescription")]
     # plan 66: the new row in the link PUT (DtlKey 0) and the same row in the restore PUT, nothing else
     assert [(i, r.get("DtlKey") or 0) for i, r in carrying] == [(0, 0), (len(sent) - 1, new_key)]
     assert all(r["FurtherDescription"] == rtf(NOTE) for _i, r in carrying)

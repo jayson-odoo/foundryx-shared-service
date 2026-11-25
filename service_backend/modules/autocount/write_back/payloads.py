@@ -7,6 +7,7 @@ rows appear in ``Details``. Quantities are computed in ``Decimal``.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -16,6 +17,7 @@ from modules.autocount.write_back import capabilities
 from modules.autocount.write_back.doc_kinds import DocKind, kind_of
 
 Doc = Dict[str, Any]
+logger = logging.getLogger("foundryx.autocount")
 
 HEADER_KEYS = (
     "DocKey", "DocNo", "DocDate", "CreditorCode", "CreditorName", "Ref", "Description",
@@ -38,6 +40,7 @@ ROW_KEYS = (
     "DtlKey", "ItemCode", "Location", "Description", "ProjNo", "UOM", "UserUOM", "Qty",
     "FOCQty", "UnitPrice", "Discount", "TaxCode", "DeliveryDate", "Desc2", "FromDocType",
     "FromDocNo", "FromDocDtlKey", "FullTransferOption", "FullTransferFromDocList",
+    "FurtherDescription",
 )
 
 
@@ -105,10 +108,13 @@ def _blank_text(value: Any) -> bool:
 
 
 def _pick_header(source: Doc, keys: Sequence[str]) -> Doc:
-    """``_pick`` for a document header: also omits a blank master-reference code."""
+    """``_pick`` for a document header: also omits a blank master-reference code, and in legacy mode (no line notes
+    source set) every text field the read returned blank (hapi blanks stored values, so "" is never sent back)."""
+    legacy = is_legacy(source)
     return {
         k: v for k, v in _pick(source, keys).items()
         if not (k in MASTER_REF_HEADER_KEYS and _blank_text(v))
+        and not (legacy and isinstance(v, str) and v == "")
     }
 
 
@@ -131,11 +137,122 @@ def _row_fields(row: Doc) -> Doc:
     return _pick(row, ROW_KEYS)
 
 
+# Plan 73: the row's Further Description (RTF, may hold pictures). hapi never returns it on a PO GET, so the
+# frame's NotesReader lays the AutoCount database's stored values on every PO / SPO it reads; a row without the key
+# is unread.
+FURTHER_DESC = "FurtherDescription"
+AUTOCOUNT_DB_UNREAD = "AUTOCOUNT_DB_UNREAD"
+AUTOCOUNT_DB_UNREAD_MESSAGE = (
+    "The purchase order could not be read from AutoCount, so the change was not made. Try again."
+)
+_NOTES_KINDS = ("PO", "SPO")
+
+
+DB_UNREAD_MARKER = "_dbUnread"  # set on a PO / SPO the AutoCount DB could not be read for; never in any key list, never sent
+# Set on a PO / SPO read while NO line notes source is set (legacy mode, crew ruling s20): no DB read, no refusal, no
+# Further Description on kept rows, no blank header text. Never in any key list, never sent.
+DB_LEGACY_MARKER = "_dbLegacy"
+
+
+STORED_FIELDS_CHANGED = "STORED_FIELDS_CHANGED"
+
+
+def public_doc(doc: Any) -> Any:
+    """Plan 73: ``doc`` without the internal unread marker, for anything stored or returned (the document shape of
+    contract 57 never carries it). Copies only when the marker is there; anything else is returned as is."""
+    if isinstance(doc, dict) and (DB_UNREAD_MARKER in doc or DB_LEGACY_MARKER in doc):
+        return {k: v for k, v in doc.items() if k not in (DB_UNREAD_MARKER, DB_LEGACY_MARKER)}
+    return doc
+
+
+def is_legacy(doc: Any) -> bool:
+    """True for a PO / SPO read in legacy mode (no line notes source set)."""
+    return isinstance(doc, dict) and bool(doc.get(DB_LEGACY_MARKER))
+
+
+def require_db_read(doc: Mapping[str, Any]) -> None:
+    """Plan 73 H1: a PO / SPO body (any of them, also a header-only one) is built from values read from the AutoCount
+    DB; a document marked unread is refused before any write."""
+    if doc.get(DB_UNREAD_MARKER):
+        raise WriteRefusal(AUTOCOUNT_DB_UNREAD, AUTOCOUNT_DB_UNREAD_MESSAGE, plain=True)
+
+
+def require_line_notes(*rows: Mapping[str, Any]) -> None:
+    """Plan 73 D3: a row we re-send or copy must carry its Further Description (as read). Missing = unknown:
+    refused before any write (resending it blank could erase the note and its pictures)."""
+    if any(FURTHER_DESC not in row for row in rows):
+        raise WriteRefusal(AUTOCOUNT_DB_UNREAD, AUTOCOUNT_DB_UNREAD_MESSAGE, plain=True)
+
+
+def _require_notes(doc: Mapping[str, Any], *rows: Mapping[str, Any]) -> None:
+    """``require_line_notes`` in DB mode; legacy mode (no source set) never requires the note."""
+    if not is_legacy(doc):
+        require_line_notes(*rows)
+
+
+def _resend(kind_name: str, row: Doc, doc: Mapping[str, Any]) -> Doc:
+    """``_row_fields`` of a row that is sent again (not deleted): a PO / SPO row must carry its note (DB mode)."""
+    if kind_name in _NOTES_KINDS:
+        _require_notes(doc, row)
+    return _row_fields(row)
+
+
+def _inherit_note(new: Doc, old: Mapping[str, Any]) -> Doc:
+    """A new row copied from ``old`` keeps ``old``'s Further Description unless the line brought its own."""
+    if FURTHER_DESC not in new and FURTHER_DESC in old:
+        new[FURTHER_DESC] = old[FURTHER_DESC]
+    return new
+
+
 def _is_spo(doc: Doc) -> bool:
     return doc.get("ShippingPO") == "T"
 
 
+SHIPPING_PO = "ShippingPO"
+SHIPPING_PO_CHANGED = "SHIPPING_PO_CHANGED"
+SHIPPING_PO_CHANGED_MESSAGE = "AutoCount changed Shipping Order on this PO"
+SHIPPING_PO_UNKNOWN = "SHIPPING_PO_UNKNOWN"
+SHIPPING_PO_UNKNOWN_MESSAGE = (
+    "Shipping Order on this PO is not set to yes or no in AutoCount, so the change was not made. "
+    "Set Shipping Order on the PO in AutoCount, then try again."
+)
+_SHIPPING_FLAGS = ("T", "F")
+
+
+def _require_known_shipping(doc: Doc) -> None:
+    """SS-SHIPPINGPO-PRESERVE (prod proof, PO 202607-S0083): a read whose ``ShippingPO`` is
+    not exactly "T" or "F" ("\u0000", "", null, missing) is unknown. SS never guesses it and
+    never sends it back: the edit is refused before any write."""
+    value = doc.get(SHIPPING_PO)
+    if value not in _SHIPPING_FLAGS:
+        logger.warning("autocount edit refused: ShippingPO reads %r (DocKey %s, DocNo %s)",
+                       value, doc.get("DocKey"), doc.get("DocNo"))
+        raise WriteRefusal(SHIPPING_PO_UNKNOWN, SHIPPING_PO_UNKNOWN_MESSAGE, plain=True)
+
+
+def keep_shipping_po(body: Doc, doc: Doc) -> Doc:
+    """SS-SHIPPINGPO-PRESERVE: a PO / SPO edit body carries ``ShippingPO`` exactly as SS just
+    read it ("F" stays "F", "T" stays "T"); omitted, the vendor edit writes NUL, which
+    AutoCount shows as ticked (prod 20 Nov). Copied, never computed; unknown is refused."""
+    require_db_read(doc)
+    _require_known_shipping(doc)
+    body[SHIPPING_PO] = doc[SHIPPING_PO]
+    return body
+
+
+def shipping_po_changed(before: Doc, after: Doc) -> bool:
+    """True when the read-back's ``ShippingPO`` is not exactly the pre-write value (a NUL,
+    blank or missing read-back after "F" is a change)."""
+    return before.get(SHIPPING_PO) != after.get(SHIPPING_PO)
+
+
+def shipping_po_values(before: Doc, after: Doc) -> Tuple[str, str]:
+    """``(before, after)`` as printable text for the log line of a ``SHIPPING_PO_CHANGED``."""
+    return repr(before.get(SHIPPING_PO)), repr(after.get(SHIPPING_PO))
+
+
 def _check_doc(doc: Doc, want_spo: bool) -> None:
+    _require_known_shipping(doc)
     if _is_spo(doc) != want_spo:
         raise WriteRefusal("DOC_KIND_MISMATCH", "wrong document kind")
     if doc.get("Cancelled") == "T":
@@ -246,9 +363,10 @@ def build_link(
         "FromDocDtlKey": so_dtl_key,
         "Location": location or so_row.get("Location"),
     }
-    body = _header(po)
-    new = _normal(_row_fields(po_row))
+    body = keep_shipping_po(_header(po), po)
+    new = _normal(_resend("PO", po_row, po))
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
+    with_so_delivery_date(new, _day(so_row.get("DeliveryDate")))  # 16 Nov rule: the SO line's date, never the PO's
     with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
     if qty == free:
         body["Details"] = [_deleted(po_row), new]
@@ -257,6 +375,17 @@ def build_link(
     edited["Qty"] = _num(free - qty)
     body["Details"] = [edited, new]
     return body
+
+
+def with_so_delivery_date(line: Dict[str, Any], so_day: Optional[str]) -> Dict[str, Any]:
+    """PO-LINK-STUCK-RECONCILE-B (owner rule 16 Nov): a NEW tied PO row carries its SO line's delivery date,
+    never the PO row's (that is the PO issue date, the CRM's ``docDate``). No SO line date = no date sent (the
+    restore asks for none either, ``transfer_restore``). The one rule of the split link and the batches."""
+    if so_day:
+        line["DeliveryDate"] = f"{so_day}T00:00:00"
+    else:
+        line.pop("DeliveryDate", None)
+    return line
 
 
 def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref: Optional[str] = None) -> Doc:
@@ -271,9 +400,9 @@ def build_relocate(po: Doc, po_dtl_key: int, location: Optional[str], *, spo_ref
         raise WriteRefusal("DOC_UNKNOWN", "the linked sales order row is not in the synced copy")
     if row.get("Location") == location:
         raise WriteRefusal("ROW_ALREADY_AT_LOCATION", "row is already at that location")
-    moved = _normal(_row_fields(row))
+    moved = _normal(_resend("PO", row, po))
     moved["Location"] = location
-    body = _header(po)
+    body = keep_shipping_po(_header(po), po)
     body["Details"] = [moved]
     return body
 
@@ -330,7 +459,7 @@ def transfer_restore(source: Mapping[str, Any], location: Optional[str],
         wanted["Discount"] = discount
     note = so_link.get("note")
     if note:
-        wanted["FurtherDescription"] = autocount_rtf(str(note))
+        wanted[FURTHER_DESC] = append_note(source.get(FURTHER_DESC), str(note))
     return wanted
 
 
@@ -408,6 +537,64 @@ def autocount_rtf(text: str) -> str:
     return _RTF_HEAD + "".join(_rtf_char(ch) for ch in text) + _RTF_TAIL
 
 
+_RTF_PAD = " \r\n\t\x00"  # bytes that may follow the closing brace of a stored FD
+
+
+def _bare_note(value: Any) -> Optional[str]:
+    """The escaped note text of a value that is exactly ``autocount_rtf(note)``, else None."""
+    if isinstance(value, str) and value.startswith(_RTF_HEAD) and value.endswith(_RTF_TAIL):
+        return value[len(_RTF_HEAD):len(value) - len(_RTF_TAIL)]
+    return None
+
+
+def _merge_bare_note(out: Doc, row: Mapping[str, Any], values: Mapping[str, Any]) -> None:
+    """Plan 73 D4: a restore value that is only a note in AutoCount's wrapper is merged after the row's own
+    FD (idempotent), never sent in place of it. A full FD value is sent as given."""
+    escaped = _bare_note(values.get(FURTHER_DESC))
+    if escaped is not None:
+        out[FURTHER_DESC] = _append_escaped(row.get(FURTHER_DESC), escaped)
+
+
+def _ends_with_note(fd: str, escaped: str) -> bool:
+    """True when ``fd`` already ends with the note (its trailing ``\\par``, blanks and braces ignored)."""
+    tail = fd.rstrip(_RTF_PAD)
+    while True:
+        if tail.endswith("}") or tail.endswith("\\par"):
+            tail = tail[:-1] if tail.endswith("}") else tail[:-4]
+            tail = tail.rstrip(_RTF_PAD)
+            continue
+        return tail.endswith(escaped)
+
+
+def _append_escaped(fd: Any, escaped: str) -> str:
+    text = fd if isinstance(fd, str) else ""
+    if not escaped:
+        return text
+    if not text.strip():
+        return _RTF_HEAD + escaped + _RTF_TAIL
+    if text.lstrip().startswith("{\\rtf"):
+        if _ends_with_note(text, escaped):
+            return text
+        close = text.rstrip(_RTF_PAD).rfind("}")  # the group's last brace; trailing CR LF / NUL / blanks stay after it
+        if close < 0:
+            return text + "\\par " + escaped
+        return text[:close] + "\\par " + escaped + text[close:]
+    return text
+
+
+def append_note(fd: Any, note: str) -> str:
+    """Plan 73 D4: ``note`` appended after the existing Further Description ``fd``. RTF: a paragraph before the
+    final ``}`` (the rest byte for byte, pictures included); plain text: both in AutoCount's wrapper, the note on
+    a new line; empty: the note in the wrapper. Idempotent: an FD that already ends with the note is unchanged."""
+    escaped = "".join(_rtf_char(ch) for ch in str(note or ""))
+    text = fd if isinstance(fd, str) else ""
+    if text.strip() and not text.lstrip().startswith("{\\rtf"):
+        if text.rstrip().endswith(str(note)):
+            return text
+        return autocount_rtf(text + "\n" + str(note))
+    return _append_escaped(text, escaped)
+
+
 def so_link_values(so: Mapping[str, Any], so_row: Mapping[str, Any]) -> Doc:
     """Plan 65 D2 / D4: the ``so_link`` of ``transfer_restore`` for a row newly linked to
     ``so_row``: the SO row's day (None when it has none) and the note text."""
@@ -425,7 +612,7 @@ def with_link_note(new: Doc, line: Mapping[str, Any]) -> Doc:
     17 Nov). Only a row that carries a link and a note; anything else is left as built."""
     note = line.get(LINK_NOTE_KEY)
     if note and new.get("FromDocDtlKey"):
-        new["FurtherDescription"] = autocount_rtf(str(note))
+        new[FURTHER_DESC] = append_note(new.get(FURTHER_DESC), str(note))  # plan 73 D4: after the existing FD
     return new
 
 
@@ -451,11 +638,10 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
     (location, unit price, delivery date) set back to what the split sent."""
     if not values:
         raise WriteRefusal("NO_CHANGE", "nothing to restore")
-    row = _normal(_row_fields(_find_row(po, dtl_key)))
+    row = _normal(_resend("PO", _find_row(po, dtl_key), po))
     row.update(values)
-    body = _header(po)
-    if _is_spo(po):
-        body["ShippingPO"] = "T"
+    _merge_bare_note(row, _find_row(po, dtl_key), values)
+    body = keep_shipping_po(_header(po), po)
     body["Details"] = [row]
     return body
 
@@ -558,7 +744,10 @@ def _same(a: Any, b: Any) -> bool:
     return a == b
 
 
-def _check_kind_doc(kind: DocKind, doc: Doc, *, cancelled_ok: bool = False) -> None:
+def _check_kind_doc(kind: DocKind, doc: Doc, *, cancelled_ok: bool = False, write: bool = True) -> None:
+    """``write`` False = a plain read (``get_doc``): an unknown ``ShippingPO`` is still readable."""
+    if write and kind.name in ("PO", "SPO"):
+        _require_known_shipping(doc)
     if kind.name in ("PO", "SPO") and _is_spo(doc) != (kind.name == "SPO"):
         raise WriteRefusal("DOC_KIND_MISMATCH", "wrong document kind")
     if not cancelled_ok and doc.get("Cancelled") == "T":
@@ -596,9 +785,11 @@ def _vendor_line(line: Mapping[str, Any], dtl_key: Optional[int] = None, kind: s
 
 
 def _doc_header(kind: DocKind, doc: Doc) -> Doc:
+    """The edit header: the document's own header fields; a PO / SPO also carries its
+    ``ShippingPO`` as read (``_check_kind_doc`` already held it to the kind)."""
     body = _pick_header(doc, ("DocKey",) + CREATE_HEADER_KEYS)
-    if kind.name == "SPO":
-        body["ShippingPO"] = "T"
+    if kind.name in ("PO", "SPO"):
+        keep_shipping_po(body, doc)
     return body
 
 
@@ -693,8 +884,9 @@ def build_edit(
         for key in edits:
             if key not in line_keys:
                 raise WriteRefusal("FIELD_NOT_EDITABLE", key)
-        out = _normal(_row_fields(row))
+        out = _normal(_resend(kind.name, row, doc))
         out.update({k: _plain(v) for k, v in edits.items()})
+        _merge_bare_note(out, row, edits)
         price = _num_of(out.get("UnitPrice"))
         if "Qty" in edits:
             validate_qty(_dec(out.get("Qty")))  # QTY_INVALID: not above zero, over 1e9 or over 8 places
@@ -736,7 +928,9 @@ def build_row_replace(kind_name: str, doc: Doc, old_row: Mapping[str, Any], new_
     kind = kind_of(kind_name)
     _check_kind_doc(kind, doc)
     old = _find_row(doc, old_row.get("DtlKey"))  # type: ignore[arg-type]
-    new = _vendor_line(new_row, 0, kind.name)
+    if kind.name in _NOTES_KINDS:
+        _require_notes(doc, old)
+    new = _inherit_note(_vendor_line(new_row, 0, kind.name), old)
     if not new.get("FromDocType"):
         new.update(FromDocType="", FromDocNo="", FromDocDtlKey=0)
     with_link_note(new, new_row)
@@ -765,6 +959,8 @@ def build_link_doc(kind_name: str, doc: Doc,
     added: List[Doc] = []
     for old_key, new_rows in groups:
         old = _find_row(doc, old_key)
+        if kind.name in _NOTES_KINDS:
+            _require_notes(doc, old)
         taken = sum((_dec(r.get("Qty")) for r in new_rows), Decimal(0))
         rest = _dec(old.get("Qty")) - taken
         if rest < 0:
@@ -775,7 +971,7 @@ def build_link_doc(kind_name: str, doc: Doc,
             kept = _normal(_row_fields(old))
             kept["Qty"] = _num(rest)
             details.append(kept)
-        added.extend(with_link_note(_vendor_line(r, 0, kind.name), r) for r in new_rows)
+        added.extend(with_link_note(_inherit_note(_vendor_line(r, 0, kind.name), old), r) for r in new_rows)
     body = _doc_header(kind, doc)
     body["Details"] = details + added
     return VendorRequest("PUT", kind.edit_path, body)
@@ -788,7 +984,7 @@ def build_unlink_merge(kind_name: str, doc: Doc, linked_key: int, free_key: int)
     _check_kind_doc(kind, doc)
     linked = _find_row(doc, linked_key)
     free = _find_row(doc, free_key)
-    raised = _normal(_row_fields(free))
+    raised = _normal(_resend(kind.name, free, doc))
     raised["Qty"] = _num(_dec(free.get("Qty")) + _dec(linked.get("Qty")))
     body = _doc_header(kind, doc)
     body["Details"] = [_deleted(linked), raised]
@@ -1034,6 +1230,33 @@ def verify_row_replace(kind_name: str, before: Doc, old_key: int, line: Mapping[
     return Verdict(DONE)
 
 
+# The kept (cut) row of a link: only its quantity is sent changed; these must read back as before.
+_KEPT_ROW_FIELDS = ("ItemCode", "UOM", "Location", "UnitPrice")
+
+# PO-LINK-STUCK-RECONCILE-B s5 (prod 20 Nov, a qty move on a ~96-row PO): AutoCount recomputes the header's money
+# and tax fields and its audit stamps on every save. Those are derived, never drift; every other header field we
+# read must read back as it was.
+_DERIVED_HEADER_KEYS = frozenset({
+    "Total", "NetTotal", "LocalNetTotal", "Tax", "LocalTax", "ExTax", "LocalExTax", "TotalExTax", "TaxableAmt",
+    "LocalTaxableAmt", "FinalTotal", "RoundAdj", "TaxEntityID",
+})
+_DERIVED_HEADER_PREFIXES = ("LastModified", "Created")
+_DERIVED_HEADER_SUFFIXES = ("Total", "Tax", "ExTax", "TaxAmt", "Amt", "RoundAdj")
+
+
+def vendor_derived_header(key: str) -> bool:
+    """A header field AutoCount derives on a save (totals, tax, stamps): never judged as drift."""
+    return (key in _DERIVED_HEADER_KEYS or key.startswith(_DERIVED_HEADER_PREFIXES)
+            or key.endswith(_DERIVED_HEADER_SUFFIXES))
+
+
+def header_moved(before: Doc, after: Doc, kind_name: str) -> List[str]:
+    """Every header field read before a link that reads back otherwise (derived fields and the Remark mirror
+    aside): the one header rule of the link comparator."""
+    return [key for key in before if key != "Details" and not vendor_derived_header(key)
+            and not _same(before.get(key), after.get(key)) and not _remark_mirror(key, after, kind_name)]
+
+
 def verify_link_batch(
     kind_name: str, before: Doc, old_key: int, lines: Sequence[Mapping[str, Any]], after: Doc
 ) -> Verdict:
@@ -1056,7 +1279,9 @@ def verify_link_doc(
         if rest == 0:
             if now is not None:
                 return Verdict(MISMATCH, "LINE_NOT_DELETED")
-        elif now is None or _dec(now.get("Qty")) != rest:
+        elif now is None or _dec(now.get("Qty")) != rest or not all(
+            _same(old.get(k), now.get(k)) for k in _KEPT_ROW_FIELDS if k in old
+        ):  # PO-LINK-STUCK-RECONCILE-B: the kept row is as sent (its rest), never moved or repriced
             return Verdict(MISMATCH, "ROW_MISMATCH")
         total.extend(lines)
     known = {r.get("DtlKey") for r in before.get("Details") or []}
@@ -1071,13 +1296,43 @@ def verify_link_doc(
         if match is None:
             return Verdict(MISMATCH, "LINK_MISMATCH")
         left.remove(match)
-    if _drifted(before, after, (), [k for k, _ in groups], kind_name):
+    if _drifted(before, after, (), [k for k, _ in groups], kind_name) or header_moved(before, after, kind_name):
         return Verdict(MISMATCH, "COLLATERAL_CHANGE")
     return Verdict(DONE)
 
 
+_NUMERIC_ROW_KEYS = ("UnitPrice",)
+
+
+def _kept_value(field_name: str, before: Any, after: Any) -> bool:
+    """Plan 71 review: the same value however a read spells it - dates by day (``same_row_value``), empty = empty
+    (None / ""), a numeric field by value (``1.5`` == ``"1.50"``); text exactly."""
+    if field_name == "DeliveryDate":
+        return same_row_value(field_name, before, after)
+    if before in (None, "") and after in (None, ""):
+        return True
+    if field_name in _NUMERIC_ROW_KEYS:
+        nb, na = _num_of(before), _num_of(after)
+        if nb is not None and na is not None:
+            return nb == na
+    return _same(before, after)
+
+
+def merge_row_drift(kind_name: str, before_row: Mapping[str, Any], after_row: Mapping[str, Any]) -> List[str]:
+    """Plan 71 (CRM SS contract read-back): the fields of the row a merge raised that moved, other than Qty,
+    compared to THAT row's own before-image (never the tied row or the request). Location, DeliveryDate, price
+    and the rest of ``_COMPARE_LINE``, plus the row's link (it stays untied). ``FurtherDescription`` (the note)
+    is never returned by a read (``UNREADABLE_ROW_KEYS``); a merge sends it as read and never compares it."""
+    out = [k for k in _COMPARE_LINE
+           if k != "Qty" and k in before_row and not _kept_value(k, before_row.get(k), after_row.get(k))]
+    if _link_of_row(kind_name, dict(after_row)) != _link_of_row(kind_name, dict(before_row)):
+        out.append("FromSODtlKey" if kind_name == "PO" else "FromDocDtlKey")
+    return out
+
+
 def verify_unlink_merge(kind_name: str, before: Doc, linked_key: int, free_key: int, after: Doc) -> Verdict:
-    """The linked row is gone, the free row holds the sum, no new row, nothing else moved."""
+    """The linked row is gone, the free row holds the sum and nothing else of it moved, no new row, nothing
+    else moved."""
     kind_of(kind_name)
     if _row_by_key(after, linked_key) is not None:
         return Verdict(MISMATCH, "LINE_NOT_DELETED")
@@ -1085,6 +1340,8 @@ def verify_unlink_merge(kind_name: str, before: Doc, linked_key: int, free_key: 
     want = _dec(_row_by_key(before, free_key).get("Qty")) + _dec(_row_by_key(before, linked_key).get("Qty"))  # type: ignore[union-attr]
     if free is None or _dec(free.get("Qty")) != want:
         return Verdict(MISMATCH, "ROW_MISMATCH")
+    if merge_row_drift(kind_name, _row_by_key(before, free_key) or {}, free):
+        return Verdict(MISMATCH, "ROW_MISMATCH")  # plan 71: only the free row's Qty may change
     known = {r.get("DtlKey") for r in before.get("Details") or []}
     if [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]:
         return Verdict(MISMATCH, "ROWS_UNEXPECTED")

@@ -74,11 +74,12 @@ from modules.autocount.write_back.frame import (  # noqa: F401  (re-exported nam
 )
 from modules.autocount.write_back import guard
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
+from modules.autocount.write_back.line_notes import stored_fields_changed
 from modules.autocount.write_back.link_index import refresh_po_links_from_doc
 from modules.autocount.write_back.link_lock import SoRowBusy, link_locks, so_row_locks
 from modules.autocount.write_back.payloads import WriteRefusal
 from modules.autocount.write_back.reader import AutoCountDocReader, DocReadError
-from modules.autocount.write_back.primitives import vendor_message
+from modules.autocount.write_back.primitives import VENDOR_TIMEOUT, is_vendor_timeout, vendor_class_of, vendor_message
 from modules.autocount.write_back.repository import OUTCOME_IN_FLIGHT, OperationRepository, PoSoLinkRepository
 
 if TYPE_CHECKING:  # operations imports this module
@@ -103,7 +104,8 @@ _VERIFY_FIELDS = ("ItemCode", "Location", "UOM", "Qty")
 # B4: a sent row must also read back with the price and delivery date it was sent with.
 _VERIFY_VALUE_FIELDS = ("UnitPrice", "DeliveryDate")
 ROW_VALUES_NOT_KEPT = "ROW_VALUES_NOT_KEPT"
-_UNTOUCHED_FIELDS = payloads.ROW_KEYS + ("FromSODtlKey",)
+# plan 73: the Further Description is carried on every re-sent row but is not a read-back field (UNREADABLE_ROW_KEYS)
+_UNTOUCHED_FIELDS = tuple(k for k in payloads.ROW_KEYS if k not in payloads.UNREADABLE_ROW_KEYS) + ("FromSODtlKey",)
 _MAX_TEXT = 2000
 
 
@@ -191,7 +193,8 @@ def _header_unchanged(before: Doc, after: Doc, body: Doc) -> bool:
     """Every header field read before the write (and every one we sent) reads
     back unchanged, except the audit stamps, the vendor-computed totals and the
     vendor's Remark1 mirror (plan 65 D1, the one helper every PO verify uses)."""
-    keys = {k for k in list(before) + list(body) if k != "Details"}
+    keys = {k for k in list(before) + list(body) if k != "Details"
+            and k not in (payloads.DB_UNREAD_MARKER, payloads.DB_LEGACY_MARKER)}
     for key in keys:
         if key.startswith(_HEADER_FREE_PREFIXES) or key in _HEADER_FREE_TOTALS:
             continue
@@ -255,6 +258,26 @@ def verify_readback(
         if got is None or not all(_same(row.get(f), got.get(f)) for f in _UNTOUCHED_FIELDS):
             return False
     return True
+
+
+# PO-LINK-STUCK-RECONCILE-B: one short re-read of a split that did not verify (patched to 0 by tests).
+SPLIT_REREAD_WAIT_SECONDS = 2.0
+
+
+def split_lines(body: Doc) -> List[Doc]:
+    """The new tied rows a split body asked for, in the shape ``payloads.verify_link_batch`` compares."""
+    return [{"FromDocDtlKey": int(r.get("FromDocDtlKey") or 0), "Qty": r.get("Qty"), "ItemCode": r.get("ItemCode"),
+             "UOM": r.get("UOM")} for r in body.get("Details") or [] if not r.get("DtlKey")]
+
+
+def verify_split(before: Doc, after: Doc, body: Doc, po_dtl_key: int) -> bool:
+    """PO-LINK-STUCK-RECONCILE-B s5: the split link's first write, judged by the ONE comparator the link
+    batches use (``payloads.verify_link_batch``): the cut row holds its rest (or is gone when all was taken),
+    exactly one new row per link with its SO line, item, unit and quantity, no other row and no allow-listed
+    header field moved. What AutoCount derives on such a save is not judged: the vendor totals, tax fields and
+    stamps of the header, and the new row's location, price, date and note (the second write restores them and
+    is judged on its own)."""
+    return payloads.verify_link_batch("PO", before, po_dtl_key, split_lines(body), after).outcome == payloads.DONE
 
 
 def verify_relocate(
@@ -435,7 +458,7 @@ class WriteBackService(WriteFrame):
             None, result.outcome, result.error_code, result.message, result.document,
             operation_id=result.operation_id, warnings=result.warnings,
             replaced_lines=result.replaced_lines, doc_key=result.doc_key, doc_no=result.doc_no,
-            detail=result.detail,
+            detail=result.detail, returned_to=result.returned_to,
         )
 
     def unlink(
@@ -451,6 +474,7 @@ class WriteBackService(WriteFrame):
         operations: Optional["OperationService"] = None,
         doc_date: Optional[date] = None,
         pool_location: Optional[str] = None,
+        return_to_dtl_key: Optional[int] = None,
     ) -> WriteActionResult:
         """With ``operations`` (the gateway): the ``unlink_row`` operation runs. Without
         it the plan 55 flow. Both send ONE replace PUT (plan 61 F4): AutoCount never
@@ -462,7 +486,8 @@ class WriteBackService(WriteFrame):
             operations, "unlink_row", tenant_id, company_id, key_id, idempotency_key,
             {"doc_key": po_doc_key, "dtl_key": po_dtl_key, "doc_date": doc_date,
              "expected_last_modified": expected_last_modified,
-             **({"pool_location": pool_location} if pool_location else {})},  # absent = today's hash
+             **({"pool_location": pool_location} if pool_location else {}),  # absent = today's hash
+             **({"return_to_dtl_key": return_to_dtl_key} if return_to_dtl_key is not None else {})},  # plan 71
         )
 
     def spo_unlink(
@@ -617,6 +642,9 @@ class WriteBackService(WriteFrame):
                 dtl_key=plan.dtl_key,
                 outcome=OUTCOME_REFUSED,
                 key_id=key_id,
+                # PO-LINK-STUCK-RECONCILE-B: run by an operation (the split link), the action carries it from its
+                # first commit, so a Resume finds the write even when the worker died before it was attached
+                **({"operation_id": self._operation_id, "step": "split_link"} if self._operation_id else {}),
                 **self._trace_columns(),
             )
         )
@@ -646,7 +674,7 @@ class WriteBackService(WriteFrame):
             so_doc = self._read_fresh(_SO, plan.so_doc_key, company, row, reader, plan.so_doc_date)
             self._log_doc(plan.kind[0], plan.doc_key, doc.get("DocNo"))  # back to the written document
         body = self._build(plan, company, row, doc, so_doc)
-        row.before_json = doc
+        row.before_json = payloads.public_doc(doc)
         row.request_json = body
         self.db.commit()  # in_flight + body committed before any PUT (AC-55-27)
         return self._put_and_verify(plan, company, base_url, row, reader, doc, body, so_doc)
@@ -783,15 +811,19 @@ class WriteBackService(WriteFrame):
         # a failure keeps its status and the redacted text only (AC-57-47); a success as it came
         row.response_json = _safe_body(response.stored) if response.ok else {"text": vendor_message(response.stored, base_url)}
         if not response.ok:  # carry AutoCount's own (redacted, capped) text to the answer
-            return self._finish(
-                row, OUTCOME_VENDOR_ERROR, "VENDOR_ERROR", message=row.response_json["text"]
-            )
+            text = row.response_json["text"]
+            # an AutoCount SQL timeout may commit later: unknown, the operation reads the PO before anything else
+            code = VENDOR_TIMEOUT if is_vendor_timeout(text, vendor_class_of(response.body)) else "VENDOR_ERROR"
+            return self._finish(row, OUTCOME_VENDOR_ERROR, code, message=text)
         self.db.commit()
         self._check_deadline(row)
         after = self._read_back(plan, reader, before)
         if isinstance(after, WriteActionResult):
             return self._finish(row, OUTCOME_PENDING, after.error_code)
-        row.after_json = after  # a read-back in hand is always verified, whatever the clock says
+        row.after_json = payloads.public_doc(after)  # a read-back in hand is always verified, whatever the clock says
+        changed = self._shipping_po_changed(row, before, after)
+        if changed is not None:
+            return changed
         is_split = plan.action == ACTION_LINK and any(
             not r.get("DtlKey") for r in body.get("Details") or []
         )
@@ -799,6 +831,10 @@ class WriteBackService(WriteFrame):
             ok = verify_relocate(
                 before, after, plan.dtl_key, str(body["Details"][0].get("Location")), body
             )
+        elif is_split:
+            # PO-LINK-STUCK-RECONCILE-B s5: the split is judged by the ONE link comparator the batches use
+            ok, after = self._verify_split(plan, reader, before, body, after)
+            row.after_json = payloads.public_doc(after)
         else:
             ok = verify_readback(before, after, body, ignore_new_row_location=is_split)
         if not ok:
@@ -811,8 +847,48 @@ class WriteBackService(WriteFrame):
         if is_split and so_doc is not None and plan.so_dtl_key is not None:
             return self._finish_split(plan, company, client, row, reader, before, after, body, so_doc)
         result = self._finish(row, OUTCOME_DONE, document=after)
+        self._note_stored_changes(result, row, before, after)
         self._stage(company, plan.kind[0], after)
         return result
+
+    @staticmethod
+    def _note_stored_changes(result: WriteActionResult, row: AcWriteAction, before: Doc, after: Doc) -> None:
+        """Plan 73: a landed write that changed a stored field it did not intend to is a warning (names only in the
+        log, the outcome unchanged)."""
+        changed = stored_fields_changed(before, after)
+        if changed:
+            result.warnings.append(payloads.STORED_FIELDS_CHANGED)
+            logger.warning("autocount stored fields changed op=%s doc=%s fields=%s",
+                           row.id, after.get("DocKey"), ",".join(changed))
+
+    def _verify_split(
+        self, plan: _Plan, reader: AutoCountDocReader, before: Doc, body: Doc, after: Doc
+    ) -> Tuple[bool, Doc]:
+        """``(verified, the read judged)``. A read that does not verify is read ONCE more after a short wait
+        (bounded by the action deadline) before it is called a mismatch: AutoCount may still be finishing the
+        save when the first read runs (prod 20 Nov, op split_link)."""
+        if verify_split(before, after, body, plan.dtl_key):
+            return True, after
+        if SPLIT_REREAD_WAIT_SECONDS <= 0 or self._expired():
+            return False, after
+        time.sleep(SPLIT_REREAD_WAIT_SECONDS)
+        if self._expired():
+            return False, after
+        again = self._read_back(plan, reader, before)
+        if isinstance(again, WriteActionResult):
+            return False, after
+        return verify_split(before, again, body, plan.dtl_key), again
+
+    def _shipping_po_changed(self, row: AcWriteAction, before: Doc, after: Doc) -> Optional[WriteActionResult]:
+        """SS-SHIPPINGPO-PRESERVE: a write that turned the PO into an SPO (or back) is never
+        ``done``; both flags are logged."""
+        if not payloads.shipping_po_changed(before, after):
+            return None
+        was, now = payloads.shipping_po_values(before, after)
+        logger.error("autocount write changed ShippingPO %s -> %s (action %s, DocKey %s)",
+                     was, now, row.id, after.get("DocKey"))
+        return self._finish(row, OUTCOME_MISMATCH, payloads.SHIPPING_PO_CHANGED,
+                            message=payloads.SHIPPING_PO_CHANGED_MESSAGE)
 
     def _read_back(
         self, plan: _Plan, reader: AutoCountDocReader, before: Doc
@@ -825,6 +901,18 @@ class WriteBackService(WriteFrame):
             return reader.get_document(plan.kind[0], plan.doc_key, doc_date, doc_no=before.get("DocNo"))
         except DocReadError as exc:
             return WriteActionResult(None, OUTCOME_PENDING, exc.code)
+
+    @staticmethod
+    def _with_sent_note(after: Doc, dtl_key: int, sent_row: Doc) -> Doc:
+        """Plan 73 F2: ``after`` with the Further Description of row ``dtl_key`` taken from the row PUT 1 SENT
+        (it already holds the merged note) when the read-back row lacks it. Never mutates ``after``."""
+        row = next((r for r in after.get("Details") or [] if r.get("DtlKey") == dtl_key), None)
+        if row is None or payloads.FURTHER_DESC in row or payloads.FURTHER_DESC not in sent_row:
+            return after
+        out = dict(after)
+        out["Details"] = [dict(r, **{payloads.FURTHER_DESC: sent_row[payloads.FURTHER_DESC]}) if r is row else r
+                          for r in after["Details"]]
+        return out
 
     def _finish_split(
         self,
@@ -861,6 +949,7 @@ class WriteBackService(WriteFrame):
         restore = payloads.transfer_row_drift(wanted, new_row) if new_row is not None else {}
         if not restore:
             result = self._finish(row, OUTCOME_DONE, document=after1)
+            self._note_stored_changes(result, row, before, after1)
             result.detail = new_row
             self._stage(company, plan.kind[0], after1)
             return result
@@ -869,12 +958,16 @@ class WriteBackService(WriteFrame):
         # the note is never read back (plan 65 P3): sent, never judged
         readable = {k: v for k, v in restore.items() if k not in payloads.UNREADABLE_ROW_KEYS}
         readable_values = {k: v for k, v in values.items() if k not in payloads.UNREADABLE_ROW_KEYS}
-        body2 = payloads.build_restore_transfer_row(after1, new_key, restore)
+        try:
+            body2 = payloads.build_restore_transfer_row(self._with_sent_note(after1, new_key, sent_new), new_key, restore)
+        except WriteRefusal:  # plan 73: the link landed, its read-back has no line notes and PUT 1 sent none: no restore
+            self.db.commit()
+            return self._finish(row, OUTCOME_MISMATCH, ROW_VALUES_NOT_KEPT, document=after1)
         first_status = row.response_status
         row.request_json = [body1, body2]
         row.response_json = [row.response_json, None]
         row.response_status = [first_status, None]
-        row.after_json = [after1, None]
+        row.after_json = [payloads.public_doc(after1), None]
         self.db.commit()  # no transaction open during the second write
         final, code = after1, LOCATION_NOT_MOVED
         verified = False
@@ -899,7 +992,11 @@ class WriteBackService(WriteFrame):
                 self.db.commit()
                 after2 = self._read_back(plan, reader, before)
                 if not isinstance(after2, WriteActionResult):
-                    row.after_json = [after1, after2]
+                    row.after_json = [payloads.public_doc(after1), payloads.public_doc(after2)]
+                    changed = self._shipping_po_changed(row, after1, after2)
+                    if changed is not None:
+                        self.db.commit()
+                        return changed
                     final = after2
                     verified = True
                     if verify_relocate(after1, after2, new_key, restore.get("Location"), body2, values):
@@ -912,6 +1009,7 @@ class WriteBackService(WriteFrame):
             self.db.commit()  # restored, but something else moved
             return self._finish(row, OUTCOME_MISMATCH, "READBACK_MISMATCH")
         result = self._finish(row, OUTCOME_DONE, code, document=final)
+        self._note_stored_changes(result, row, before, final)
         result.detail = row_of(final, new_key)
         self._stage(company, plan.kind[0], final)
         return result

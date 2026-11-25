@@ -32,9 +32,21 @@ and is resumable (section 4.0a); the single part-row link keeps `done` + `LOCATI
 the pool (merged into a free pool row of the same item and unit, else the row is moved there) and the answer
 carries `detail` (section 4.2). Without it nothing changes.
 
+2026-11-20 (plan 71): `po-links/unlink` takes an optional `returnToDtlKey`; when that PO row can take it, the freed
+quantity goes back into it in ONE PUT (section 4.2 "Return to the source row"), else the unlink runs as before and
+`warnings` says why. Without it nothing changes.
+
 2026-11-17 (plan 65 part B): unlink and relink refuse `FOC_ON_ROW` for a row with a free quantity; Resume clears a
 stale `in_progress` run on the same PO first (section 4.0a). A resend under the key of any `recovered`
 operation runs fresh (the key is released), not only `OPERATION_NOT_APPLIED`.
+
+2026-11-24 (plan 73, `73-po-link-keep-further-desc.md`): every PO / SPO write (link, batch link, unlink, relink,
+relocate, edit, add line, delete line, restore) is now read-modify-write from the AutoCount DB: the header fields
+and every existing line field, including `FurtherDescription`, are sent back as stored. The S/O note goes into
+`FurtherDescription` of the new linked row, after the source line's text. New refusal `AUTOCOUNT_DB_UNREAD`
+(`refused`, 409, nothing sent to AutoCount, retry-safe, key released) with the plain `message` "The purchase order could not be read from AutoCount, so the change was not made. Try again." when the
+DB read fails. A split link whose restore cannot read the DB ends `mismatch` `ROW_VALUES_NOT_KEPT` (resumable).
+Additive: no other field, status or route changes.
 
 2026-11-19 (plan 69, `69-autocount-bulk-link-fast.md`): new `POST /api/v1/autocount/po-links/doc-batch` links
 EVERY listed row of ONE PO document in one call, with one result per line (section 4.1b); SS sends one link
@@ -127,6 +139,9 @@ resend does:
 | `refused` (any code), or `vendor_error` with `errorCode` `VENDOR_REFUSED` (AutoCount itself said no) | Nothing reached AutoCount, so the key is released: the resend runs fresh, with the same or a corrected body |
 | `recovered`, any `errorCode` (the PO is back as it was: a resume found the write never landed, or a failed write was undone; plan 65 B3) | The key is released, like the first row: the resend runs fresh |
 | `pending_verification` and the same body | Reconciles: the server re-reads the document. If the first call landed, it is finished and answered (`done`); if it provably never landed, the key is released and the resend runs fresh. Never a second write |
+| a split link (`po-links`, part of a row) that is `pending_verification` or `needs_attention`, same body (PO-LINK-STUCK-RECONCILE-B) | Re-verified like a Resume (section 4.0a): `done` when the tied row stands, `refused` `OPERATION_NOT_APPLIED` when nothing of it is in AutoCount (key released; the NEXT resend runs fresh), else `needs_attention`. The resend itself never writes the link again |
+| `vendor_error` `VENDOR_TIMEOUT`, or `needs_attention` `VENDOR_TIMEOUT`, same body (PO-LINK-STUCK-RECONCILE-B) | AutoCount's own SQL timeout: unknown. The resend reads the PO: landed = `done`; nothing yet and the save may still be running (under 7 minutes since the write) = `vendor_error` `VENDOR_TIMEOUT` again, keep the key and look again; nothing after that = `refused` `OPERATION_NOT_APPLIED` (key released); unreadable = `needs_attention` `VENDOR_TIMEOUT`. Never a second write from a look-up |
+| `refused` `SUPERSEDED` (an operator closed it, section 4.0a) | The stored answer is replayed under the same key, nothing is written. A new press uses a new key |
 | `done` | Locked: the stored answer is replayed (same `operationId`), nothing is written again |
 | `mismatch`, `needs_attention`, or any other `vendor_error` (no `VENDOR_REFUSED`; the write may have landed) | Locked: the stored answer is replayed |
 | any stored outcome, but a DIFFERENT body or route | `409 IDEMPOTENCY_CONFLICT` (`outcome` `refused`) unless the stored outcome released the key (first two rows) |
@@ -145,7 +160,24 @@ expected quantity (or gone when the links took all of it) and one new row per li
 SO rows; if the stored link write still reads back as a mismatch, or the PO is not in that shape, it stays
 `needs_attention` and nothing is sent. For a `link_row` or `relink_row` whose link write landed it reads the
 current PO and the SO row (an operation stored before plan 65 re-reads the SO). It then sends ONE restore write on
-the new rows only and verifies it; the operation ends `done`. The single part-row link (split) is not resumable.
+the new rows only and verifies it; the operation ends `done`.
+
+The single part-row link (split) is resumable since PO-LINK-STUCK-RECONCILE-B. Resume re-verifies it against
+AutoCount now, never re-sending the link write: the tied row stands as the split made it (its SO row, item, unit
+and quantity; the cut row at its rest; nothing else moved; judged by the same comparator as the batch link) ->
+`done` with `document` (and ONE restore write first, only when the tied row's location, unit price or delivery
+date is not as asked; a value AutoCount already set, e.g. the delivery date and note taken from the SO line, needs
+none); nothing of it in AutoCount -> `refused` `OPERATION_NOT_APPLIED` (key released: the hold can go), but only
+once the write had time to finish saving (about 7 minutes; before that it stays as it was); anything else ->
+`needs_attention` with a plain `message`, nothing sent.
+
+`POST /write-operations/{id}/close-superseded` (body `{companyCode}`, scope `write_back`; PO-LINK-STUCK-RECONCILE-B):
+an operator closes a parked operation (`pending_verification`, `needs_attention`, or a `VENDOR_TIMEOUT`
+`vendor_error`) after fixing the document by hand. It becomes a final `refused` / `SUPERSEDED` (HTTP 200), nothing is
+sent to AutoCount, and the CRM's next look-up with the same key gets that answer back. While the operation's write
+may still be saving (under about 7 minutes since it was sent) it is not closed: the answer is the operation as it
+stands, with a "not confirmed yet" message; close again later. A final or running operation is answered as it stands
+(unchanged). Unknown id: `404 UNKNOWN_OPERATION`.
 Before it claims the operation, Resume clears a stale run on the same PO: an operation left `in_progress` for longer
 than the busy window (600 s, a request that died mid-way) becomes `pending_verification`, so it no longer holds the
 PO; a Resume of that stale operation itself is then answered like any `pending_verification` one. An operation
@@ -235,7 +267,8 @@ the write (`vendor_error`, `VENDOR_REFUSED`) is still the whole request: nothing
 the lines skipped before the write, and the key is released.
 
 **Two writes.** The first write is ONE edit of the PO: the PO row is kept with the quantity
-that is left (or removed when the links take all of it) and one new linked row is added per linked line. AutoCount
+that is left (or removed when the links take all of it) and one new linked row is added per linked line (it is sent
+with the SO ROW's delivery date, never the PO's date; PO-LINK-STUCK-RECONCILE-B, the same for the split). AutoCount
 accepts or rejects that edit as a whole, so either every valid line is linked or none is. Each new row arrives at
 the default location (HQ), unit price 0, no delivery date and no discount; a second write (always sent: the
 note cannot be read back) restores all the new rows in one edit with the values of section 4.1 (the SO row's
@@ -380,6 +413,32 @@ matches `BRW-BB`. It is part of the idempotency body (a resend under the same ke
 { "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12017, "poolLocation": "BRW" }
 ```
 
+**Return to the source row (plan 71, optional `returnToDtlKey`).** Send `"returnToDtlKey": 12009` (integer, the
+`DtlKey` of the PO row the quantity was linked FROM, e.g. the HQ row). Absent or `null` = everything above,
+unchanged. Not a positive integer = `422 INVALID_REQUEST`, nothing sent. It is part of the idempotency body. The
+row is used when it is on the same PO, has the same item and unit of measure, is not tied to an SO row (and is not
+the row being unlinked), has no SPO row pointing at it, is not covered by an unresolved link operation, and is not
+fully received (a partly received row still takes it). Then:
+- ONE PUT: the unlinked row is deleted and the source row's quantity goes up by its quantity. The source row keeps
+  its own Location, unit price and delivery date; `poolLocation` and the same-location merge are not used.
+- `replacedLines` = `[]`; `detail` = the source row (its new Qty); `returnedTo` =
+  `{"fromDtlKey": <unlinked>, "toDtlKey": <returnToDtlKey>, "qty": <the unlinked qty>, "location": <detail.Location>}`.
+  Show "Unlinked. Qty returned to <returnedTo.location>.".
+- Read-back is exact: the unlinked row is gone; the source row's Qty = its Qty before + the unlinked Qty (decimal
+  exact); its Location, DeliveryDate, unit price and link (`FromSODtlKey` 0/null) equal ITS OWN values before the
+  write (never the tied row's or the request's); every other row is unchanged. Anything else is `needs_attention`
+  (nothing re-sent; retry semantics as sorento-crm#2603). The note (`FurtherDescription`) is never returned by an
+  AutoCount read and is not sent by the merge, so it is not compared.
+- When the row cannot be used (not found or not open, by the rule above; or the unlinked row itself is partly
+  received, so the received part must stay), the unlink runs exactly as without the field (pool, or same location),
+  is still `done`, carries `"warnings": ["RETURN_SOURCE_NOT_OPEN"]` and has no `returnedTo`.
+  `detail` is then the row that holds the quantity (pool row merged into, or the moved row). `po-links/relink`
+  ignores the field.
+
+```json
+{ "companyCode": "SRT", "poDocKey": 12008, "poDtlKey": 12017, "poolLocation": "BRW", "returnToDtlKey": 12009 }
+```
+
 ### 4.3 `POST /api/v1/autocount/spo-links/unlink`
 
 ```json
@@ -451,22 +510,28 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 
 | outcome | HTTP | errorCode | Meaning |
 |---|---|---|---|
-| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged. `LOCATION_NOT_MOVED` only on the single part-row link |
+| `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged. `LOCATION_NOT_MOVED` only on the single part-row link. The header money and tax fields and stamps AutoCount recomputes on a save (totals, tax, `TaxEntityID`, `LastModified`) are not judged. Plan 73: `warnings` may carry `STORED_FIELDS_CHANGED` when, after a landed PO / SPO write, a stored field the change did not intend (a header field, or a kept line's Further Description) reads back different; the outcome stays `done` |
 | `needs_attention` | 502 | `RESTORE_NOT_LANDED` | Batch link, whole-row link or relink: the links stand but the restore of the new rows (location, unit price, delivery date, discount, note) did not land. Resumable (section 4.0a) |
 | `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` | The write may or may not have happened; the server could not confirm it |
 | `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
 | `refused` | 422 | `LOCATION_UNKNOWN` | Plan 70: a `location` the request names is not in AutoCount's Location master; nothing written, key released. `message` is a plain reason to show as is ("Location X does not exist in AutoCount, so nothing was changed. ...") |
+| `refused` | 409 | `AUTOCOUNT_DB_UNREAD` | Plan 73: only when a line notes database is set for the company and it cannot be read (a company with none set writes as before); nothing sent to AutoCount, retry-safe. `message` is plain text to show as is: "The purchase order could not be read from AutoCount, so the change was not made. Try again." |
 | `refused` | 409 | any code below | Refused before anything was written |
 | `mismatch` | 502 | `READBACK_MISMATCH` | AutoCount accepted the write but the document read back differently from what was sent |
 | `mismatch` | 502 | `ROW_VALUES_NOT_KEPT` | Split link: the link landed, but the new row's unit price or delivery date could not be put back to the PO row's values (section 5) |
 | `vendor_error` | 502 | `VENDOR_ERROR` | AutoCount answered the write with an error; nothing is assumed written |
 | `vendor_error` | 502 | `VENDOR_REFUSED` | AutoCount refused the write by its own rules; nothing was written and the key is released (section 4.0) |
+| `vendor_error` | 502 | `VENDOR_TIMEOUT` | AutoCount's SQL command timed out ("Timeout expired", "The wait operation timed out"). The write may still be saved: unknown, the key is kept; a same-key look-up or Resume reads the PO and decides (section 4.0). A lock wait ("Lock request time out period exceeded") rolls back and stays `VENDOR_REFUSED` |
+| `needs_attention` | 502 | `VENDOR_TIMEOUT` | AutoCount timed out and the PO could not be read back: a person checks; Resume reads again |
+| `refused` | 409 | `ROW_ALREADY_LINKED` | Split link or batch line: SS already tied this quantity of this PO row to this SO row and that tied row still stands (a Change whose unlink did not free it, or a resend); nothing written |
+| `refused` | 200 (close) / replay | `SUPERSEDED` | Closed by an operator (`close-superseded`); nothing was written by the close |
 
 `refused` 409 codes (nothing was changed in AutoCount):
 
 | errorCode | Meaning | CRM action |
 |---|---|---|
+| `AUTOCOUNT_DB_UNREAD` | Plan 73: a company with a line notes database set reads the document from it first (read-modify-write) and could not | Retry later; the message is plain text to show |
 | `DOC_BUSY` | Another write on the same document is in flight, or ended `pending_verification` less than 10 minutes ago | Wait and retry; after 10 minutes an unfinished action no longer blocks |
 | `DOC_UNKNOWN` | The document is not in the synced copy, so its date is unknown | Run or wait for the doc sync, then retry |
 | `DOC_STALE` | `expectedLastModified` no longer matches: the document changed in AutoCount | Refresh the document, re-check the row, retry with the new `LastModified` |

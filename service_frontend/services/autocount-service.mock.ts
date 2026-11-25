@@ -77,6 +77,7 @@ import type {
   AutocountPullSnapshotRowsPage,
   AutocountSimulateFieldResult,
   AutocountSimulateResult,
+  AutocountLineNotesInput,
   AutocountSinkTargetInput,
   AutocountSorentoField,
   AutocountSourceImpl,
@@ -133,6 +134,8 @@ function mockCompany(overrides: Partial<AutocountCompany> = {}): AutocountCompan
     createdAt: '2026-07-01T00:00:00Z',
     sourceKind: 'api',
     documentPrerequisites: [],
+    lineNotesConnectionId: null,
+    writeEnabled: true,
     ...overrides,
   };
 }
@@ -623,6 +626,7 @@ interface EtlTaskOverlay {
 
 const etlOverlays = new Map<string, EtlTaskOverlay>();
 const companyCodes = new Map<string, string | null>();
+const mockLineNotes = new Map<string, string | null>();
 /** Pure-mock only: the persisted sink target per company (the overlay reads
  * the REAL company's sink instead). */
 const mockSinks = new Map<string, Pick<AutocountCompany, 'sinkImpl' | 'sinkConnectionId'>>();
@@ -921,7 +925,8 @@ function mockCompanyState(id: string): AutocountCompany {
       sinkConnectionId: legacy ? 'conn-9' : null,
     });
   }
-  return sink ? { ...base, sinkImpl: sink.sinkImpl, sinkConnectionId: sink.sinkConnectionId } : base;
+  const withSink = sink ? { ...base, sinkImpl: sink.sinkImpl, sinkConnectionId: sink.sinkConnectionId } : base;
+  return mockLineNotes.has(id) ? { ...withSink, lineNotesConnectionId: mockLineNotes.get(id) ?? null } : withSink;
 }
 
 function applyCompanyOverlay(company: AutocountCompany): AutocountCompany {
@@ -2265,7 +2270,7 @@ function mockPreviewJobClaimChange(input: AutocountPreviewJobStartInput) {
 // clears it.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
+const DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes', 'project_registrations'];
 
 /** D4 - the consumer contract version every doc feed gate checks against. */
 const DOC_FEED_GATE_REQUIRED_VERSION = 2.7;
@@ -2316,6 +2321,7 @@ function docFeedsFor(companyId: string): Record<DocFeedKey, MockDocFeedState> {
     existing = {
       delivery_orders: defaultDocFeedState(),
       goods_receive_notes: defaultDocFeedState(),
+      project_registrations: { ...defaultDocFeedState(), window: { ...DEFAULT_DOC_FEED_WINDOW, pollBasis: 'doc_date' } },
     };
     docFeeds.set(companyId, existing);
   }
@@ -2704,6 +2710,7 @@ export function resetEtlMockState(): void {
   etlOverlays.clear();
   companyCodes.clear();
   mockSinks.clear();
+  mockLineNotes.clear();
   sourceImpls.clear();
   previewColumnsByQuery.clear();
   httpPreviewColumnsByKey.clear();
@@ -2957,6 +2964,14 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
       sinkImpl: input.sinkImpl,
       sinkConnectionId: input.sinkImpl === 'sorento' ? input.sinkConnectionId ?? null : null,
     });
+    return Promise.resolve(applyCompanyOverlay(mockCompanyState(companyId)));
+  },
+
+  updateLineNotesConnection(
+    companyId: string,
+    input: AutocountLineNotesInput,
+  ): Promise<AutocountCompany> {
+    mockLineNotes.set(companyId, input.connectionId);
     return Promise.resolve(applyCompanyOverlay(mockCompanyState(companyId)));
   },
 

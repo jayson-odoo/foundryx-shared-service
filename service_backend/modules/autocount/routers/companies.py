@@ -25,6 +25,7 @@ from ..schemas import (
     CompanyCreate,
     CompanyDetailResponse,
     CompanyItem,
+    CompanyLineNotesUpdate,
     CompanyListResponse,
     CompanySinkUpdate,
     ContractGate,
@@ -73,6 +74,7 @@ from ..services import (
     MappingView,
     MappingWriteRow,
     PreviewUnavailable,
+    LineNotesConnectionInvalid,
     SinkTargetValidationError,
     document_prerequisites,
 )
@@ -242,6 +244,27 @@ def set_sink_target(
     except AutocountServiceError as exc:
         _raise(exc)
     return CompanyItem.model_validate(company)
+
+
+@router.patch("/{company_id}/line-notes-connection", response_model=CompanyItem)
+def set_line_notes_connection(
+    company_id: str,
+    body: CompanyLineNotesUpdate,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> CompanyItem:
+    """Plan 74: set or clear the company's line notes database connection (a same-tenant ``sql_database``
+    connection). Reuses ``autocount.companies.manage``: no new permission, no grant sweep."""
+    service = CompanyService(db)
+    try:
+        company = service.set_line_notes_connection(
+            current_user.tenant_id, company_id, body.connectionId
+        )
+    except LineNotesConnectionInvalid as exc:
+        return _field_errors({"connectionId": exc.message}, exc.message)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return _company_item(company, source_kind=service.source_kind_for(current_user.tenant_id, company))
 
 
 @router.patch(

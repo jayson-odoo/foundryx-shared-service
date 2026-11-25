@@ -195,6 +195,29 @@ class Settings(BaseSettings):
     def autocount_write_allowed_books_list(self) -> List[str]:
         return [b.strip() for b in self.autocount_write_allowed_books.split(",") if b.strip()]
 
+    # Plan 72 (AUTOCOUNT-PROJECT-SYNC S0): comma list of books the project
+    # registrations feed may read. Default the test book only (owner: db3,
+    # never db1 / db2 while the feed is being proven); widen per environment.
+    autocount_project_registrations_feed_books: str = "db3"
+
+    @property
+    def autocount_project_registrations_feed_books_list(self) -> List[str]:
+        return [
+            b.strip() for b in self.autocount_project_registrations_feed_books.split(",")
+            if b.strip()
+        ]
+
+    # Plan 72 - the pause between two backfill days of the project
+    # registrations feed (contract 2.15 section 2: one call in flight per book
+    # with a pause between days), so a 20-year walk never hammers the book.
+    autocount_project_registrations_day_pause_seconds: float = 1.0
+    # SS-BACKFILL-CHUNKED - one doc-feed backfill JOB reads days for at most
+    # this long, then saves `next_day` and queues the next segment, so a
+    # multi-year backfill never meets `jobs.run`'s soft time limit
+    # (`background_job_soft_time_limit_seconds`, 7200). 30 minutes also frees
+    # the shared `jobs` slot between segments for the other AutoCount jobs.
+    autocount_doc_feed_backfill_segment_seconds: int = 1800
+
     # AutoCount project registration (plan 71): the admin switch of the four
     # /api/v1/autocount/project-registrations routes. OFF = every route refuses
     # VENDOR_UNSUPPORTED with no AutoCount call, and the capability feed says so.

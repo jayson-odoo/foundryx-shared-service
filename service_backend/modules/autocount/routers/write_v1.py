@@ -126,7 +126,7 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
         "errorCode": result.error_code, "message": _camel_names(_camel_message(result.message)),
         "warnings": [_camel_names(w) for w in result.warnings], "docKey": result.doc_key or doc_key, "docNo": result.doc_no,
         "replacedLines": [{"oldDtlKey": o, "newDtlKey": n} for o, n in result.replaced_lines],
-        "document": result.document,
+        "document": payloads.public_doc(result.document),
         "requestedAt": result.requested_at, "linkedAt": result.linked_at, "finishedAt": result.finished_at,
     }
     if result.batch is not None and "lines" in result.batch:  # link_doc_batch (plan 69 D1): one result per line
@@ -138,6 +138,8 @@ def operation_answer(result: OperationResult, doc_key: Optional[int]) -> Dict[st
 
 
 def _respond(answer: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    if isinstance(answer.get("document"), dict):
+        answer = dict(answer, document=payloads.public_doc(answer["document"]))
     if answer.get("errorCode") in _FIELD_CODES:
         answer = dict(answer, message=_camel_message(str(answer.get("message") or "")))
     answer = dict(
@@ -641,6 +643,28 @@ def resume_write_operation(
         return (200 if result.outcome in ("done", "recovered") else status), answer
 
     return _frame(request, db, raw_body, "write_operation_resume", run, services=(ops,))
+
+
+@router.post("/write-operations/{operationId}/close-superseded")
+def close_superseded_write_operation(
+    operationId: str, request: Request, db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+    ops: OperationService = Depends(get_operation_service),
+) -> JSONResponse:
+    """PO-LINK-STUCK-RECONCILE-B s2: an operator closes a parked operation as superseded (a person fixed the
+    document in AutoCount). Final ``refused`` / ``SUPERSEDED``; nothing is sent to AutoCount; the key is kept,
+    so a same-key look-up gets this answer back. Not closed while its write may still be saving. A final or
+    running operation is answered as it stands."""
+    def run(raw: WriteBody, key: AcPullApiKey, company: AcCompany, idem: Optional[str]):
+        try:
+            result = ops.close_superseded(tenant_id=key.tenant_id, company_id=company.id, operation_id=operationId)
+        except LookupError:
+            raise PullGatewayError(404, "UNKNOWN_OPERATION", "No such operation.") from None
+        status, answer = _respond(operation_answer(result, None))
+        # closed now (or already closed) = the action succeeded
+        return (200 if result.error_code == "SUPERSEDED" else status), answer
+
+    return _frame(request, db, raw_body, "write_operation_close", run, services=(ops,))
 
 
 @router.get("/write-capabilities")
