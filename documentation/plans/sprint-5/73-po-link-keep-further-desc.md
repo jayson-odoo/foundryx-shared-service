@@ -32,6 +32,10 @@ never trusted alone.
   locked. Exception: the recover of a failed operation re-adds a row the operation already deleted; refusing would strand
   it, so it proceeds (a warning with the code only is logged).
 - R3 Never flip PO / SPO: `keep_shipping_po` stays on every body.
+- R4a (owner 25 Nov) A split's new linked line carries ONLY the S/O note (`autocount_rtf(note)`), also in the restore PUT; the
+  original that keeps a rest keeps its FD byte for byte. Only when the original goes away (rest 0: whole link, a fully taken
+  batch row) the FIRST new row carries the original FD + note (R4); later new rows of it are note only. One helper decides
+  it (`payloads.inherits_original_note`). Relink, unlink, relocate and edit are unchanged.
 - R4 The S/O link note stays in the FurtherDescription of the NEW linked row, appended after the stored FD (RTF: before
   the final `}`; plain text: new line; empty: AutoCount's wrapper). Idempotent. A relink appends the new note; unlink keeps
   the FD as is.

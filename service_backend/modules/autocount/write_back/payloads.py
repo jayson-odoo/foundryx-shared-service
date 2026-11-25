@@ -202,6 +202,19 @@ def _resend(kind_name: str, row: Doc, doc: Mapping[str, Any]) -> Doc:
     return _row_fields(row)
 
 
+def inherits_original_note(rest: Decimal, index: int = 0) -> bool:
+    """Owner rule 25 Nov: a NEW linked row carries the original row's Further Description only when the original goes
+    away (nothing of it is left: ``rest == 0``) and only on the FIRST new row of it; a split's new rows (the original
+    keeps a rest) and every later new row carry only their own S/O note. The one decision."""
+    return rest == 0 and index == 0
+
+
+def _note_only(new: Doc) -> Doc:
+    """``new`` without any Further Description of the original (its S/O note is added by ``with_link_note``)."""
+    new.pop(FURTHER_DESC, None)
+    return new
+
+
 def _inherit_note(new: Doc, old: Mapping[str, Any]) -> Doc:
     """A new row copied from ``old`` keeps ``old``'s Further Description unless the line brought its own."""
     if FURTHER_DESC not in new and FURTHER_DESC in old:
@@ -370,6 +383,8 @@ def build_link(
     }
     body = keep_shipping_po(_header(po), po)
     new = _normal(_resend("PO", po_row, po))
+    if not inherits_original_note(free - qty):
+        _note_only(new)  # a split: the new row carries only the S/O note, the original keeps its own
     new.update(link, DtlKey=0, Qty=_num(qty), FOCQty=0)
     with_so_delivery_date(new, _day(so_row.get("DeliveryDate")))  # 16 Nov rule: the SO line's date, never the PO's
     with_link_note(new, {LINK_NOTE_KEY: note})  # plan 66: the note on the new row in the link PUT
@@ -976,7 +991,14 @@ def build_link_doc(kind_name: str, doc: Doc,
             kept = _normal(_row_fields(old))
             kept["Qty"] = _num(rest)
             details.append(kept)
-        added.extend(with_link_note(_inherit_note(_vendor_line(r, 0, kind.name), old), r) for r in new_rows)
+        for index, r in enumerate(new_rows):
+            line = _vendor_line(r, 0, kind.name)
+            if inherits_original_note(rest, index):
+                line.pop(FURTHER_DESC, None)
+                _inherit_note(line, old)
+            else:
+                _note_only(line)
+            added.append(with_link_note(line, r))
     body = _doc_header(kind, doc)
     body["Details"] = details + added
     return VendorRequest("PUT", kind.edit_path, body)

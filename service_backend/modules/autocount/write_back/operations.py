@@ -1284,7 +1284,10 @@ class OperationService:
         self._step("cut", cut)
         self._abort_unless_done(cut)
         add = self.prims.add_line(
-            **self._call(row, company, snap, "add"), line=self._line_of(snap, snap["newLink"], qty - received),
+            **self._call(row, company, snap, "add"),
+            # the cut row keeps its Further Description: the new row carries only the S/O note (owner 25 Nov)
+            line={k: v for k, v in self._line_of(snap, snap["newLink"], qty - received).items()
+                  if k != payloads.FURTHER_DESC},
         )
         self._step("add", add)
         if add.error_code == VENDOR_TIMEOUT:  # the add may still be saving: unknown, never undone straight away
@@ -1421,6 +1424,11 @@ class OperationService:
             new_key, location, so_link = move[0], move[1], move[2]
             source = move[3] if len(move) > 3 else snap["row"]  # plan 69: a document batch's own row per move
             landed = next((r for r in document.get("Details") or [] if r.get("DtlKey") == new_key), {})
+            # the note of the NEW row is what it holds now (note only for a split, original + note for a whole
+            # link): the restore appends the S/O note to that, never merges the original row's note back in
+            source = {k: v for k, v in source.items() if k != payloads.FURTHER_DESC}
+            if payloads.FURTHER_DESC in landed:
+                source[payloads.FURTHER_DESC] = landed[payloads.FURTHER_DESC]
             changes = payloads.transfer_row_drift(payloads.transfer_restore(source, location, so_link), landed)
             if changes:
                 changes_by_key[new_key] = changes

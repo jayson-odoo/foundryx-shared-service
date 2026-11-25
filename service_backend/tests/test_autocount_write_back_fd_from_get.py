@@ -66,14 +66,14 @@ def assert_source_plus_note(new_fd: str, source: str) -> None:
     assert "S/O:" in tail and len(new_fd) > len(source)
 
 
-def test_partial_link_cut_row_identical_and_new_row_is_source_plus_note(h, world):
+def test_partial_link_cut_row_identical_and_new_row_is_note_only(h, world):
     res = h.run("split_link", dict(po_doc_key=7001, po_dtl_key=world.p_free, so_doc_key=7002, so_dtl_key=world.so_a,
                                    qty=2), key="k-part")
     assert res.outcome == "done", (res.outcome, res.error_code)
     first = puts(h)[0]
     assert row_in(first, world.p_free)["FurtherDescription"] == world.fd  # the cut row, byte for byte
     (new,) = new_rows(first)
-    assert_source_plus_note(new["FurtherDescription"], world.fd)
+    assert world.fd[:40] not in new["FurtherDescription"] and "S/O:" in new["FurtherDescription"]  # note only
 
 
 def test_whole_link_re_added_row_is_source_plus_note(h, world):
@@ -120,14 +120,14 @@ def test_unlink_merge_raised_row_fd_identical(h, world):
     assert row_in(first, world.p_free)["FurtherDescription"] == world.fd
 
 
-def test_batch_link_cut_row_identical_and_new_row_is_source_plus_note(h, world):
+def test_batch_link_cut_row_identical_and_new_row_is_note_only(h, world):
     res = h.run("link_batch", dict(doc_key=7001, dtl_key=world.p_free, links=[
         dict(so_doc_key=7002, so_dtl_key=world.so_a, qty=2)]), key="k-batch")
     assert res.outcome == "done", (res.outcome, res.error_code)
     first = puts(h)[0]
     assert row_in(first, world.p_free)["FurtherDescription"] == world.fd
     (new,) = new_rows(first)
-    assert_source_plus_note(new["FurtherDescription"], world.fd)
+    assert world.fd[:40] not in new["FurtherDescription"] and "S/O:" in new["FurtherDescription"]
 
 
 # ---- one row without the key: legacy as today ---------------------------------------------------------

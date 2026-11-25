@@ -243,14 +243,14 @@ def test_link_whole_qty_without_a_note_copies_fd_byte_identical():
     assert _new(body)[0]["FurtherDescription"] == FD1
 
 
-def test_link_partial_edited_row_and_new_row_both_carry_fd():
+def test_link_partial_edited_row_keeps_fd_and_new_row_is_note_only():
     po, so = _po(), _so()
     k0 = _keys(po)[0]
     body = P.build_link(po, k0, so, _keys(so)[0], Decimal(1), note=NOTE)
     (edited,) = [r for r in body["Details"] if r["DtlKey"] == k0]
     (new,) = _new(body)
     assert edited["FurtherDescription"] == FD1
-    assert new["FurtherDescription"] == P.append_note(FD1, NOTE)
+    assert new["FurtherDescription"] == P.autocount_rtf(NOTE)  # owner 25 Nov: a split's new row carries only the note
 
 
 @pytest.mark.parametrize("qty", [Decimal(4), Decimal(1)])
@@ -378,14 +378,14 @@ def test_add_line_copy_sends_the_fd_it_is_given_byte_identical():
     assert _new(body)[0]["FurtherDescription"] == FD1
 
 
-def test_link_doc_whole_row_new_rows_each_copy_the_old_fd_with_their_own_note():
+def test_link_doc_whole_row_first_new_row_copies_the_old_fd_the_others_are_note_only():
     po = _po()
     k0 = _keys(po)[0]
     src = po["Details"][0]
     rows = [_link_line(src, qty=3, soNote=NOTE), _link_line(src, so_dtl=800102, qty=1, soNote="**OTHER S/O: 2")]
     body = P.build_link_doc("PO", po, [(k0, rows)]).body
     fds = [r["FurtherDescription"] for r in _new(body)]
-    assert fds == [P.append_note(FD1, NOTE), P.append_note(FD1, "**OTHER S/O: 2")]
+    assert fds == [P.append_note(FD1, NOTE), P.autocount_rtf("**OTHER S/O: 2")]
 
 
 def test_link_doc_rest_kept_row_keeps_its_fd():
@@ -394,7 +394,7 @@ def test_link_doc_rest_kept_row_keeps_its_fd():
     body = P.build_link_doc("PO", po, [(k0, [_link_line(po["Details"][0], qty=1, soNote=NOTE)])]).body
     (kept,) = [r for r in body["Details"] if r["DtlKey"] == k0]
     assert kept["FurtherDescription"] == FD1 and kept.get("FullTransferOption") != "D"
-    assert _new(body)[0]["FurtherDescription"] == P.append_note(FD1, NOTE)
+    assert _new(body)[0]["FurtherDescription"] == P.autocount_rtf(NOTE)  # the original keeps a rest: note only
 
 
 def test_link_batch_new_row_keeps_fd():
