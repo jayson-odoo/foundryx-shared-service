@@ -290,17 +290,16 @@ def test_restore_transfer_row_keeps_fd_when_the_values_carry_none():
     assert body["Details"][0]["FurtherDescription"] == FD1
 
 
-def test_restore_transfer_row_note_value_is_merged_never_replaces_the_fd():
+def test_restore_transfer_row_sends_the_note_value_exactly_as_given_never_rebuilt_from_the_read():
+    """AutoCount reads a new SO-linked row back with an empty note (live db3 25 Nov): the caller's value is the intended
+    one (what PUT 1 sent), so the restore sends it byte for byte and never merges it into the read-back note."""
     po = _po()
-    body = P.build_restore_transfer_row(po, _keys(po)[0], {"FurtherDescription": P.autocount_rtf(NOTE)})
-    sent = body["Details"][0]["FurtherDescription"]
-    assert PICT1 in sent and "Special finish" in sent and NOTE in sent
-
-
-def test_restore_transfer_row_resending_the_merged_value_is_idempotent():
-    po = _po(fds=(P.append_note(FD1, NOTE), FD2, FD3))
-    body = P.build_restore_transfer_row(po, _keys(po)[0], {"FurtherDescription": P.autocount_rtf(NOTE)})
-    assert body["Details"][0]["FurtherDescription"] == P.append_note(FD1, NOTE)
+    given = P.append_note(FD1, NOTE)
+    body = P.build_restore_transfer_row(po, _keys(po)[0], {"FurtherDescription": given})
+    assert body["Details"][0]["FurtherDescription"] == given
+    note_only = P.autocount_rtf(NOTE)
+    body = P.build_restore_transfer_row(po, _keys(po)[0], {"FurtherDescription": note_only})
+    assert body["Details"][0]["FurtherDescription"] == note_only  # a bare value is a split's intended note, not a merge
 
 
 def test_restore_transfer_row_unknown_fd_refused():

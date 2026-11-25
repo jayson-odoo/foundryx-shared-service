@@ -363,6 +363,10 @@ class FakeAutoCountVendor:
             stored["Location"] = "HQ"  # db3 forces HQ on a new row linked to an SO row
             stored["DeliveryDate"] = "0001-01-01T00:00:00"  # and clears the delivery date (F5)
             stored["UnitPrice"] = 0.0  # and resets the unit price to 0 (F5); a later edit PUT can set it
+            if "FurtherDescription" in sent:  # live db3 25 Nov: it also reads the new row back with an EMPTY RTF note
+                from modules.autocount.write_back.payloads import autocount_rtf
+
+                stored["FurtherDescription"] = autocount_rtf("")
 
     def _inherit(self, stored: Dict[str, Any], sent: Dict[str, Any]) -> None:
         for qt in self.docs["QT"]:

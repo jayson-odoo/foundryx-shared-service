@@ -567,14 +567,6 @@ def _bare_note(value: Any) -> Optional[str]:
     return None
 
 
-def _merge_bare_note(out: Doc, row: Mapping[str, Any], values: Mapping[str, Any]) -> None:
-    """Plan 73 D4: a restore value that is only a note in AutoCount's wrapper is merged after the row's own
-    FD (idempotent), never sent in place of it. A full FD value is sent as given."""
-    escaped = _bare_note(values.get(FURTHER_DESC))
-    if escaped is not None:
-        out[FURTHER_DESC] = _append_escaped(row.get(FURTHER_DESC), escaped)
-
-
 def _ends_with_note(fd: str, escaped: str) -> bool:
     """True when ``fd`` already ends with the note (its trailing ``\\par``, blanks and braces ignored)."""
     tail = fd.rstrip(_RTF_PAD)
@@ -660,7 +652,6 @@ def build_restore_transfer_row(po: Doc, dtl_key: int, values: Mapping[str, Any])
         raise WriteRefusal("NO_CHANGE", "nothing to restore")
     row = _normal(_resend("PO", _find_row(po, dtl_key), po))
     row.update(values)
-    _merge_bare_note(row, _find_row(po, dtl_key), values)
     body = keep_shipping_po(_header(po), po)
     body["Details"] = [row]
     return body
@@ -906,7 +897,6 @@ def build_edit(
                 raise WriteRefusal("FIELD_NOT_EDITABLE", key)
         out = _normal(_resend(kind.name, row, doc))
         out.update({k: _plain(v) for k, v in edits.items()})
-        _merge_bare_note(out, row, edits)
         price = _num_of(out.get("UnitPrice"))
         if "Qty" in edits:
             validate_qty(_dec(out.get("Qty")))  # QTY_INVALID: not above zero, over 1e9 or over 8 places
