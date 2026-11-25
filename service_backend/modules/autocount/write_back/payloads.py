@@ -209,6 +209,11 @@ def inherits_original_note(rest: Decimal, index: int = 0) -> bool:
     return rest == 0 and index == 0
 
 
+# A line of ``build_link_doc`` may carry the planner's decision (a row whose links span chunks: the first new line OVERALL
+# inherits, whatever its chunk sees). Plain bool, never a vendor key, never sent.
+INHERIT_NOTE_KEY = "_inheritNote"
+
+
 def _note_only(new: Doc) -> Doc:
     """``new`` without any Further Description of the original (its S/O note is added by ``with_link_note``)."""
     new.pop(FURTHER_DESC, None)
@@ -983,7 +988,7 @@ def build_link_doc(kind_name: str, doc: Doc,
             details.append(kept)
         for index, r in enumerate(new_rows):
             line = _vendor_line(r, 0, kind.name)
-            if inherits_original_note(rest, index):
+            if r.get(INHERIT_NOTE_KEY, inherits_original_note(rest, index)):
                 line.pop(FURTHER_DESC, None)
                 _inherit_note(line, old)
             else:
