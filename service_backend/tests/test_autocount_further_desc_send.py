@@ -433,3 +433,113 @@ def test_sql_so_notes_select_is_read_only_and_keyed_by_docno():
     sql = str(line_notes._SO_NOTES_SELECT)
     assert sql.startswith("SELECT ") and ":k" in sql and ":n" in sql
     assert not re.search(r"\b(UPDATE|INSERT|DELETE|MERGE|EXEC)\b", sql, re.I)
+
+
+# ═════════════════════════ review round: end-to-end, cap, chunking ═══════════
+
+
+def _engine_from_preset(entity, preset):
+    from modules.autocount.mapping import MappingEngine, MappingRow, build_mapping_rows_for_run, flat_profile
+
+    rows = [MappingRow(f.source_path, f.canonical_field, f.transform, SCOPE_LINE,
+                       is_required=f.required) for f in preset.line if f.formula is None]
+    header = {
+        ENTITY_SALES_ORDER: [("DocKey", "source_ref"), ("DocNo", "so_number"), ("Status", "status")],
+        ENTITY_PURCHASE_ORDER: [("DocKey", "source_ref"), ("DocNo", "po_number"), ("Status", "status")],
+    }[entity]
+    from modules.autocount.mapping import SCOPE_HEADER
+
+    rows = [MappingRow(s, c, "string", SCOPE_HEADER) for s, c in header] + rows
+    rows = build_mapping_rows_for_run(entity, rows, is_sql_db_source=True, source_config={})
+    return MappingEngine(rows, entity_type=entity, profile=flat_profile(entity, ["DocKey"]), database_name="AED_X")
+
+
+def _raw_doc(note):
+    return {
+        "DocKey": "D1", "DocNo": "X-1", "Status": "open",
+        "_lines": [{"DtlKey": "L1", "ItemAutoKey": "P1", "Qty": "2", "Seq": "1", "FurtherDescription": note}],
+    }
+
+
+def _posted_line(entity, preset, advertised, note=RTF):
+    import httpx
+
+    from modules.autocount.sinks_sorento import SorentoSink
+
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        refs = [r["source_ref"] for r in json.loads(request.content)["records"]]
+        return httpx.Response(200, json={"results": [{"source_ref": r, "status": "created"} for r in refs]})
+
+    mapped = _engine_from_preset(entity, preset).map_document(_raw_doc(note))
+    assert mapped.ok, [e.message() for e in mapped.errors]
+    sink = SorentoSink(base_url="http://x", api_key="k", entity_type=entity, company_code="ABC",
+                       contract_version=2, transport=httpx.MockTransport(handle))
+    sink.advertised_contract_version = advertised
+    sink.write_batch([mapped.record], request_id="t")
+    [line] = json.loads(seen[0].content)["records"][0]["lines"]
+    return line
+
+
+@pytest.mark.parametrize("entity, preset", [(ENTITY_SALES_ORDER, SO_PRESET), (ENTITY_PURCHASE_ORDER, PO_PRESET)])
+def test_end_to_end_the_preset_sends_the_stored_bytes_at_2_16(entity, preset):
+    line = _posted_line(entity, preset, AT_GATE)
+    assert line[FIELD] == RTF
+    if entity == ENTITY_SALES_ORDER:
+        assert line["line_remark"] == RTF.strip()  # line_remark keeps its own (stripped) meaning
+
+
+@pytest.mark.parametrize("entity, preset", [(ENTITY_SALES_ORDER, SO_PRESET), (ENTITY_PURCHASE_ORDER, PO_PRESET)])
+def test_end_to_end_nothing_new_below_the_gate(entity, preset):
+    line = _posted_line(entity, preset, BELOW_GATE)
+    assert FIELD not in line
+    if entity == ENTITY_PURCHASE_ORDER:
+        assert "line_remark" not in line
+
+
+@pytest.mark.parametrize("make", [_so_line, _po_line])
+def test_an_over_cap_note_is_omitted_not_nulled_and_survives_restaging(make):
+    huge = "x" * (FURTHER_DESC_RTF_MAX_BYTES + 1)
+    line = make(further_description_rtf=huge)
+    assert FIELD not in line.sink_payload(contract_version=2, advertised_contract=AT_GATE)
+    again = type(line).model_validate(json.loads(line.model_dump_json()))
+    assert FIELD not in again.sink_payload(contract_version=2, advertised_contract=AT_GATE)
+
+
+def _doc_with_rtf(n, size):
+    from modules.autocount.canonical.documents import CanonicalSalesOrder
+
+    return CanonicalSalesOrder(
+        source_ref=f"AED:SO:{n}", so_number=f"SO-{n}", status="open",
+        lines=[_so_line(further_description_rtf="r" * size)] if size else [_so_line()],
+    )
+
+
+def test_chunks_close_on_rtf_bytes_and_keep_order():
+    from modules.autocount.sinks_sorento import FURTHER_DESC_RTF_CHUNK_BYTES, chunk_by_rtf_bytes
+
+    mb = 1024 * 1024
+    docs = [_doc_with_rtf(i, int(1.5 * mb)) for i in range(10)]  # 15 MB of RTF
+    chunks = chunk_by_rtf_bytes(docs, 200)
+    assert [d for c in chunks for d in c] == docs
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert sum(len(l.further_description_rtf) for d in chunk for l in d.lines) <= FURTHER_DESC_RTF_CHUNK_BYTES
+
+
+def test_chunks_without_rtf_are_the_plain_batch_slices():
+    from modules.autocount.sinks_sorento import chunk_by_rtf_bytes
+
+    docs = [_doc_with_rtf(i, 0) for i in range(5)]
+    assert chunk_by_rtf_bytes(docs, 2) == [docs[0:2], docs[2:4], docs[4:5]]
+    assert chunk_by_rtf_bytes([], 2) == []
+
+
+def test_backfill_skips_a_task_with_no_line_query(db):
+    company = _company(db, "AED_FD_HTTP")
+    cfg = _task(db, company, ENTITY_PURCHASE_ORDER, None)
+    assert _helper()(db, schema=None) == 0
+    assert _rows(db, company.id, ENTITY_PURCHASE_ORDER) == []
+    assert cfg.id

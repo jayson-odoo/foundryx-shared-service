@@ -549,11 +549,11 @@ class PrimitiveService(WriteFrame):
         except WriteRefusal as exc:
             return PrimitiveResult(None, frame.OUTCOME_REFUSED, exc.code)
         if kind_def.name == "SO":
-            # SS-FURTHER-DESC-SEND: hapi's SO GET has no FurtherDescription; the read (only the read) adds each
-            # row's stored text, raw, through the company's line-notes source (PO / SPO already get it from
-            # ``NotesReader``). A second, read-only SELECT after the vendor GET; no write path calls this.
+            # SS-FURTHER-DESC-SEND: hapi's SO GET has no FurtherDescription; this read adds each row's stored
+            # text, raw, through the company's line-notes source (PO / SPO already get it from ``NotesReader``).
+            # One read-only SELECT on its own connection. No write body is ever built from it (the live suite's
+            # reads use only DtlKey, which the overlay never changes).
             doc = attach_so_notes(doc, self._notes_extra)
-            self.db.rollback()
         return PrimitiveResult(
             None, frame.OUTCOME_DONE, doc_key=doc.get("DocKey"), doc_no=doc.get("DocNo"), document=doc,
         )

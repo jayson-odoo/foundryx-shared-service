@@ -257,8 +257,11 @@ def advertises_further_desc_rtf(advertised: Any) -> bool:
 
 # SS-FURTHER-DESC-SEND: the cap on one line's raw Further Description (RTF with
 # embedded images; the largest seen on db3 is about 1.2 MB). Measured in UTF-8
-# bytes. A value over the cap is DROPPED (sent as null), never cut: a cut RTF
-# document is a broken one. Every drop is logged with its line ref.
+# bytes. A value over the cap is DROPPED, never cut (a cut RTF document is a
+# broken one), and the key is then OMITTED from the wire (never an explicit
+# null, which would clear the CRM's stored copy). Every drop is logged with its
+# line ref. The flag rides `extras` so it survives a staged-JSON round trip.
+FURTHER_DESC_RTF_OVER_CAP = "further_description_rtf_over_cap"
 FURTHER_DESC_RTF_MAX_BYTES = 2 * 1024 * 1024
 
 
@@ -369,7 +372,10 @@ class CanonicalSalesOrderLine(CanonicalDocumentLine):
 
     @model_validator(mode="after")
     def _cap_further_description_rtf(self) -> "CanonicalSalesOrderLine":
-        self.further_description_rtf = capped_further_desc_rtf(self.further_description_rtf, self.source_ref)
+        capped = capped_further_desc_rtf(self.further_description_rtf, self.source_ref)
+        if capped is None and self.further_description_rtf is not None:
+            self.extras[FURTHER_DESC_RTF_OVER_CAP] = True
+        self.further_description_rtf = capped
         return self
 
     # Plan 57 S5: ``{db}:{DocKey}:{DtlKey}`` of the row this line replaced (delete + add
@@ -397,7 +403,7 @@ class CanonicalSalesOrderLine(CanonicalDocumentLine):
         )
         # SS-FURTHER-DESC-SEND contract gate. Past it, an empty note is an
         # explicit null (AutoCount cleared it), like `line_remark`.
-        if not advertises_further_desc_rtf(advertised_contract):
+        if not advertises_further_desc_rtf(advertised_contract) or self.extras.get(FURTHER_DESC_RTF_OVER_CAP):
             payload.pop("further_description_rtf", None)
         return payload
 
@@ -420,7 +426,10 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
 
     @model_validator(mode="after")
     def _cap_further_description_rtf(self) -> "CanonicalPurchaseOrderLine":
-        self.further_description_rtf = capped_further_desc_rtf(self.further_description_rtf, self.source_ref)
+        capped = capped_further_desc_rtf(self.further_description_rtf, self.source_ref)
+        if capped is None and self.further_description_rtf is not None:
+            self.extras[FURTHER_DESC_RTF_OVER_CAP] = True
+        self.further_description_rtf = capped
         return self
 
     #     !!  LINE LINKAGE (sprint-5/06, AC-06-02) - INPUT then WIRE.  !!
@@ -479,7 +488,7 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
             contract_version=contract_version, advertised_contract=advertised_contract,
         )
         # SS-FURTHER-DESC-SEND contract gate (same rule as the SO line's).
-        if not advertises_further_desc_rtf(advertised_contract):
+        if not advertises_further_desc_rtf(advertised_contract) or self.extras.get(FURTHER_DESC_RTF_OVER_CAP):
             payload.pop("further_description_rtf", None)
         return payload
 

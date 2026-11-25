@@ -375,9 +375,9 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     if parse_version(from_version) < (0, 23, 0):
         backfill_customer_display_term(db, schema=schema, tenant_id=tenant_id)
     # 0.23.0 -> 0.24.0 (SS-FURTHER-DESC-SEND, partner of sorento-crm #2766):
-    # SO `line_remark` rows move to the byte-for-byte `raw_text` transform and
-    # every existing `purchase_order` task gets the raw `FurtherDescription ->
-    # line_remark` line row (query rewritten when it is the preset text).
+    # every existing `sales_order` / `purchase_order` task gets a
+    # `FurtherDescription -> further_description_rtf` (`raw_text`) line row (PO
+    # query rewritten when it is the preset text). `line_remark` untouched.
     # Module Alembic 0050 runs the same repair once on deploy.
     if parse_version(from_version) < (0, 24, 0):
         backfill_further_desc_fields(db, schema=schema, tenant_id=tenant_id)

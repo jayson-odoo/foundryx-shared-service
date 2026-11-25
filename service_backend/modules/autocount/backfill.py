@@ -3836,6 +3836,8 @@ def backfill_further_desc_fields(
         if database_name is None:
             continue
         stored = (source_config or {}).get("lineQuery")
+        if not stored:
+            continue  # not a SQL task (the vendor API carries no Further Description)
         selects_it = connectable.execute(
             sa.select(field_mapping.c.id).where(
                 field_mapping.c.tenant_id == cfg_tenant,
@@ -3870,6 +3872,8 @@ def backfill_further_desc_fields(
         fresh = dict(source_config or {})
         columns = list(line_columns or [])
         stored = fresh.get("lineQuery")
+        if not stored:
+            continue  # not a SQL task (the vendor API carries no Further Description)
         old_text = _PRE_FURTHER_DESC_PO_LINE_QUERY.replace("{database}", database_name)
         new_text = _FURTHER_DESC_PO_LINE_QUERY.replace("{database}", database_name)
         if stored == new_text:
