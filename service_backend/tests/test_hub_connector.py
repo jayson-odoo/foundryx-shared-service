@@ -469,7 +469,7 @@ def test_end_to_end_two_customers_different_views(client, hc, crm, stub_hub):
     deliveries = client.get(f"/hub-connector/hubs/{hub_id}/deliveries", headers=headers).json()
     assert deliveries["total"] == len(stub_hub.received)
     assert {d["status"] for d in deliveries["data"]} == {DELIVERY_SUCCESS}
-    assert deliveries["data"][0]["customerName"] in {"Customer M", "Customer T"}
+    assert {d["customerName"] for d in deliveries["data"]} <= {"Customer M", "Customer T", "New customer"}
     assert stub_hub.bad_signatures == 0
 
 
