@@ -39,10 +39,15 @@ import httpx
 
 from app.database import release_read_transactions
 
-from ..canonical.masters import ENTITY_BRANCH, NO_DELETION_ENTITY_TYPES
+from ..canonical.masters import ENTITY_BRANCH, ENTITY_STOCK_BALANCE, NO_DELETION_ENTITY_TYPES
 from ..client import parse_last_modified
 from ..mapping import IdentityError, flat_source_ref
-from ..models import RUN_MODE_MANUAL, RUN_MODE_RECONCILE, SOURCE_IMPL_AUTOCOUNT_HTTP
+from ..models import (
+    RUN_MODE_INCREMENTAL,
+    RUN_MODE_MANUAL,
+    RUN_MODE_RECONCILE,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
+)
 from ..repositories import ConnectionRepository, RowHashRepository
 from ..provider import PROVIDER_KEY, is_open_connection
 from ..write_back.auth import AuthConfigInvalid, read_headers as auth_read_headers
@@ -67,6 +72,7 @@ from .client import (
 from .combine import apply_combine, combine_output_columns
 from .envelope import ENVELOPE_LIST, ENVELOPE_PAGED, EnvelopePage, parse_page
 from .errors import HttpSourceError
+from . import gentle
 from .lookups import AliasCollisionError, build_index, effective_result_columns, merge_onto_rows
 from .preview import validate_http_path
 
@@ -349,6 +355,10 @@ class HttpApiSource:
         # ceiling (1..8, default 1 = byte-identical to today); read ONCE here
         # exactly like ``self._page_size``, never re-read mid-walk.
         self._page_concurrency = sizing.max_concurrent_pages
+        # SS-STOCK-BAL-SOOTHE - pause between pages + stock lookup cache.
+        self._gentle = gentle.gentle_settings(conn_config)
+        self._connection_id = connection_id
+        self._base_url = base_url
         try:
             read_auth = auth_read_headers(conn)
         except AuthConfigInvalid:
@@ -550,6 +560,13 @@ class HttpApiSource:
             if page == 1 and prefetched is not None:
                 response, parsed = prefetched
             else:
+                if (
+                    page > 1
+                    and self._current_stage == "source"
+                    and self._gentle.page_pause_seconds > 0
+                ):
+                    # SS-STOCK-BAL-SOOTHE - a trickle, never a burst.
+                    gentle.sleep_between_pages(self._gentle.page_pause_seconds)
                 response = self._fetch_page(path, page, page_size)
                 parsed = self._parse_envelope(response, page=page, path=path)
 
@@ -964,7 +981,7 @@ class HttpApiSource:
                 # sprint-5/11 S5 - THIS lookup's own stage name, read back by
                 # ``_walk_path``'s heartbeat call for the duration of its walk.
                 self._current_stage = f"lookup:{alias_name}"
-                lookup_rows, lookup_total, lookup_kind = self._walk_endpoint(path)
+                lookup_rows, lookup_total, lookup_kind = self._walk_lookup(path, alias_name)
             except HttpSourceError as exc:
                 raise HttpSourceError(
                     f"The '{alias_name}' lookup endpoint '{path}' failed: {exc.message}",
@@ -1018,6 +1035,46 @@ class HttpApiSource:
                     f"unset for them.",
                     ok=False,
                 )
+
+    def _lookup_cache_applies(self) -> bool:
+        """BL-SS-353 - only stock lookups are cached; every other entity
+        always reads them fresh."""
+        return (
+            self.entity_type == ENTITY_STOCK_BALANCE
+            and self._gentle.lookup_cache_minutes > 0
+        )
+
+    def _walk_lookup(
+        self, path: str, alias_name: str
+    ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
+        """``_walk_endpoint`` for a lookup, through the 1 h cache when it
+        applies. Only a SCHEDULED run reuses a cached walk; a manual or
+        reconcile run reads fresh and refreshes the cache. Only a VERIFIED
+        walk is cached, so a reused lookup is always a complete one."""
+        if not self._lookup_cache_applies():
+            return self._walk_endpoint(path)
+        key = gentle.lookup_cache_key(
+            self._ctx.tenant_id, self._connection_id, self._base_url, path
+        )
+        hit = (
+            gentle.get_cached_lookup(key, ttl_minutes=self._gentle.lookup_cache_minutes)
+            if self.mode == RUN_MODE_INCREMENTAL
+            else None
+        )
+        if hit is not None:
+            age_minutes = max(int((gentle._monotonic() - hit.stored_at) // 60), 0)
+            age = "just now" if age_minutes < 1 else f"{age_minutes} min ago"
+            self._client.record_note(
+                f"Reused the '{alias_name}' lookup ({len(hit.rows)} row(s)) read {age}.",
+                ok=True,
+            )
+            return hit.rows, hit.reported_total, hit.envelope_kind
+        rows, total, kind = self._walk_endpoint(path)
+        if kind == ENVELOPE_LIST or (total is not None and len(rows) == total):
+            gentle.store_cached_lookup(
+                key, rows, total, kind, ttl_minutes=self._gentle.lookup_cache_minutes
+            )
+        return rows, total, kind
 
     # ── de-dup / distinctOf ───────────────────────────────────────────────
 

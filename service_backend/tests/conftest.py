@@ -508,6 +508,20 @@ _HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_|s11_)")
 
 
 @pytest.fixture(autouse=True)
+def _gentle_autocount_walks_in_tests(monkeypatch):
+    """SS-STOCK-BAL-SOOTHE - every open-REST walk pauses between pages by
+    default (1 s) and stock lookups are cached per process. Suite-wide: no
+    real pause, and each test starts with an empty lookup cache. A test that
+    pins the pause monkeypatches ``sleep_between_pages`` itself."""
+    import modules.autocount.http_source.gentle as gentle
+
+    monkeypatch.setattr(gentle, "sleep_between_pages", lambda seconds: None)
+    gentle.clear_lookup_cache()
+    yield
+    gentle.clear_lookup_cache()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_sleep_in_autocount_http_tests(request, monkeypatch):
     """sprint-5/10 S1 review round 1 (should-fix 6) - AC-10-75's bounded
     retry ladder makes a genuine ``time.sleep`` call on a real timeout/5xx;
