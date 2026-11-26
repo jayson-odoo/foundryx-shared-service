@@ -41,7 +41,7 @@ security add-generic-password -a planner3d -s huggingface-read-token -w
 ```
 
 Shared Service stores only the sha256. The worker sends the token only to an `https` base URL
-(plain `http` is accepted for `localhost` and `127.0.0.1` only).
+(plain `http` is accepted only for `localhost`, `127.0.0.1`, `testserver` and `.test` hosts).
 
 `PLANNER3D_WORKER_TOKEN` in the environment overrides the keychain item.
 

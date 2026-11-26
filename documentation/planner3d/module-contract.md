@@ -252,6 +252,7 @@ Multipart, one part named `file`. Stores an input image for a later job.
   against the `scene` and `mask` it sent, and any non-zero product diff fails the job with
   `product_changed`. A render with an altered product is never delivered; `unchanged: true` per product is
   set only from SS's own result (crew ruling 26/11/2026).
+- Staff render jobs (section 6.2): `scene`, `mask` and `depth` are PNGs of at most 4096 px per side, else `422` at submit.
 - Checks SS makes on the captures at Save (a failure answers `422`): the three PNGs of a view have the
   same size, at most 1536 px on the long side; every colour in the `mask` belongs to a line of the
   saved design; every line that is in the view has pixels in the `mask`.
@@ -600,7 +601,7 @@ Outputs allowed per kind (any other name answers `422`):
 | Kind | Output names |
 |---|---|
 | `model` | `candidate-N.glb` with N 1 to 3, and optionally `candidate-N.json` |
-| `render` | `render.png` and `diff.json` |
+| `render` | `render.png` (at most 4096 px per side, else `422` on upload) and `diff.json` |
 | `convert` | `model.glb`, `model.gltf`, `model.obj`, `model.mtl`, `model.fbx`, `model.stl` |
 
 `finish` with `succeeded` needs: for `model`, 2 or 3 candidate GLBs; for `convert`, all six files; for
