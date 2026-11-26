@@ -81,3 +81,4 @@ Thumbs.db
 
 # blue/green deploy host lock (scripts/blue_green_deploy.sh)
 .blue_green_deploy.lock
+planner3d_worker/.venv/

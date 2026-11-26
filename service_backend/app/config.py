@@ -461,6 +461,11 @@ class Settings(BaseSettings):
     # verified the app for the Google Ads scope (plan 68 risk 1); ON without a
     # client id = simulated sign-in for dev / test copies.
     lead_capture_google_signin: bool = False
+    # Planner 3D GPU worker (pull API). SS keeps ONLY the sha256 hex of the
+    # worker token; unset = every worker call is 401. A job whose worker stops
+    # heart-beating for this many minutes is handed out again.
+    planner3d_worker_token_sha256: str = ""
+    planner3d_lease_minutes: int = 10
     # Fernet key for encrypting channel credentials at rest. A throwaway dev
     # key is generated per-process if unset (NEVER rely on that in prod - set
     # OMNICHANNEL_FERNET_KEY so encrypted credentials survive a restart).

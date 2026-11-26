@@ -1,0 +1,15 @@
+# Model stack for --engine triposr (on top of requirements.txt). Pins follow the
+# proof's README (documentation/plans/PLANNER-3D-PROOF). Not installed in CI.
+torch
+torchvision
+transformers>=4.48,<4.53
+huggingface-hub<1.0
+omegaconf
+einops
+rembg[cpu]
+onnxruntime
+scikit-image
+xatlas
+imageio
+fast-simplification
+numpy<2.3

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.foundryx.planner3d-worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/WORKER_USER/planner3d/venv/bin/python</string>
+    <string>-m</string>
+    <string>planner3d_worker</string>
+    <string>--base-url</string>
+    <string>https://SHARED_SERVICE_HOST</string>
+    <string>--name</string>
+    <string>mac-mini</string>
+    <string>--engine</string>
+    <string>triposr</string>
+    <string>--loop</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/WORKER_USER/planner3d/foundryx-shared-service</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/WORKER_USER/planner3d/worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/WORKER_USER/planner3d/worker.log</string>
+</dict>
+</plist>

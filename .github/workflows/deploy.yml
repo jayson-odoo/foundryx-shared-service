@@ -261,6 +261,30 @@ jobs:
         working-directory: service_frontend
         run: npm test -- --run --minWorkers=2 --maxWorkers=2 --testTimeout=20000
 
+  test-planner-worker:
+    name: Test planner3d worker (pytest)
+    # Same skip_tests gate as the jobs above. The worker package is pure Python
+    # (numpy, pillow, trimesh, psutil); assimp-utils provides the `assimp`
+    # binary the FBX convert tests need, so they run here and are not skipped.
+    if: github.event_name != 'workflow_dispatch' || !inputs.skip_tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: planner3d_worker/requirements.txt
+      - name: Install assimp CLI (FBX export)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y assimp-utils
+      - name: Install worker dependencies
+        run: pip install -r planner3d_worker/requirements.txt
+      - name: Run worker tests
+        run: python -m pytest -q planner3d_worker/tests
+
   # SS-DEPLOY-SKIP-TESTS: runs only on a skip_tests release, in place of the
   # six gates above. Passes only when this exact sha already has a green run
   # of every gate (newest attempt, skipped runs ignored); otherwise it fails
@@ -292,6 +316,7 @@ jobs:
         validate-frontend,
         test-backend,
         test-frontend,
+        test-planner-worker,
       ]
     # RELEASES ARE BATCHED (owner ruling 5 Nov 2026: "Don't deploy shared
     # service on every merge"). A push to main runs the CI jobs above only;
@@ -312,7 +337,8 @@ jobs:
       needs.validate-backend.result == 'success' &&
       needs.validate-frontend.result == 'success' &&
       needs.test-backend.result == 'success' &&
-      needs.test-frontend.result == 'success'))
+      needs.test-frontend.result == 'success' &&
+      needs.test-planner-worker.result == 'success'))
     # ONE prod deploy at a time. Two main pushes a minute apart used to run two
     # blue/green deploys at once (both read the same .active_color and brought
     # up the same standby colour). Queue, never cancel: cancelling a run
@@ -548,6 +574,7 @@ jobs:
         validate-frontend,
         test-backend,
         test-frontend,
+        test-planner-worker,
         build-and-deploy,
       ]
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
