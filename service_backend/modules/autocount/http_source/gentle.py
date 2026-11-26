@@ -1,17 +1,17 @@
 """SS-STOCK-BAL-SOOTHE - keep the open REST wrapper's load low and even
 (``documentation/plans/sprint-5/ss-stock-bal-soothe.md``).
 
-Three per-connection knobs, all ON by default (a connection saved before
-this lane carries none of the keys and gets the defaults):
+Two per-connection knobs, both ON by default (a connection saved before
+this lane carries neither key and gets the defaults):
 
 * ``pagePauseSeconds`` - a pause between two page requests of one walk, so a
-  69-page stock walk is a trickle instead of a burst.
-* ``stockSkipWhenUnchanged`` + ``stockFullWalkMinutes`` - a scheduled stock
-  run first reads the byLastModified day lists (DO, GRN, SO, PO); no document
-  modified since the last full walk started means the walk is skipped, but a
-  full walk always runs once the last one is ``stockFullWalkMinutes`` old.
+  70-page stock walk is a trickle instead of a burst.
 * ``lookupCacheMinutes`` - a scheduled stock run reuses the item / item-UOM
   lookup rows of the last verified walk for this long (BL-SS-353).
+
+Every scheduled stock run still walks the balance endpoint in full (owner
+26 Nov: transfers, write-offs and adjustments move stock without any
+DO/GRN/SO/PO, so "no document changed" is never a reason to skip).
 
 The lookup cache lives in the worker process (no table): each worker
 process walks a lookup at most once per TTL.
@@ -27,36 +27,14 @@ PAGE_PAUSE_FIELD_DEFAULT = 1.0
 PAGE_PAUSE_FIELD_MIN = 0.0
 PAGE_PAUSE_FIELD_MAX = 10.0
 
-STOCK_SKIP_FIELD_DEFAULT = "yes"
-
-STOCK_FULL_WALK_FIELD_DEFAULT = 60
-STOCK_FULL_WALK_FIELD_MIN = 5
-STOCK_FULL_WALK_FIELD_MAX = 1440
-
 LOOKUP_CACHE_FIELD_DEFAULT = 60
 LOOKUP_CACHE_FIELD_MIN = 0
 LOOKUP_CACHE_FIELD_MAX = 1440
-
-# The day doors read before a scheduled stock walk, stock movers first so a
-# busy day usually stops after the first GET.
-STOCK_PROBE_PATHS: Tuple[str, ...] = (
-    "/deliveryorderbyLastModified",
-    "/goodsreceivenotebyLastModified",
-    "/salesorderbyLastModified",
-    "/purchaseorderbyLastModified",
-)
-# More days than this since the last full walk -> walk (no long probe).
-STOCK_PROBE_MAX_DAYS = 3
-# Clock-skew margin: a document stamped up to this long BEFORE the last walk
-# started still counts as a change.
-STOCK_PROBE_MARGIN_SECONDS = 120
 
 
 @dataclass(frozen=True)
 class GentleSettings:
     page_pause_seconds: float
-    skip_when_unchanged: bool
-    full_walk_minutes: int
     lookup_cache_minutes: int
 
 
@@ -72,7 +50,7 @@ def _int_in_range(raw: Any, default: int, low: int, high: int) -> int:
 
 
 def gentle_settings(config: Optional[Dict[str, Any]]) -> GentleSettings:
-    """The ONE reader of the four keys. A stored value is never trusted
+    """The ONE reader of the two keys. A stored value is never trusted
     outright: blank/junk falls back to the default, a pause past the max is
     clamped to the max."""
     cfg = config or {}
@@ -85,14 +63,8 @@ def gentle_settings(config: Optional[Dict[str, Any]]) -> GentleSettings:
         except (TypeError, ValueError):
             pause = PAGE_PAUSE_FIELD_DEFAULT
 
-    skip_raw = str(cfg.get("stockSkipWhenUnchanged") or STOCK_SKIP_FIELD_DEFAULT).strip().lower()
     return GentleSettings(
         page_pause_seconds=pause,
-        skip_when_unchanged=skip_raw != "no",
-        full_walk_minutes=_int_in_range(
-            cfg.get("stockFullWalkMinutes"), STOCK_FULL_WALK_FIELD_DEFAULT,
-            STOCK_FULL_WALK_FIELD_MIN, STOCK_FULL_WALK_FIELD_MAX,
-        ),
         lookup_cache_minutes=_int_in_range(
             cfg.get("lookupCacheMinutes"), LOOKUP_CACHE_FIELD_DEFAULT,
             LOOKUP_CACHE_FIELD_MIN, LOOKUP_CACHE_FIELD_MAX,
@@ -114,11 +86,7 @@ def validate_gentle_config(config: Optional[Dict[str, Any]]) -> Optional[str]:
                 f"pagePauseSeconds must be between {PAGE_PAUSE_FIELD_MIN:g} and "
                 f"{PAGE_PAUSE_FIELD_MAX:g}."
             )
-    skip_raw = str(cfg.get("stockSkipWhenUnchanged") or "").strip().lower()
-    if skip_raw and skip_raw not in ("yes", "no"):
-        return "stockSkipWhenUnchanged must be yes or no."
     for key, low, high in (
-        ("stockFullWalkMinutes", STOCK_FULL_WALK_FIELD_MIN, STOCK_FULL_WALK_FIELD_MAX),
         ("lookupCacheMinutes", LOOKUP_CACHE_FIELD_MIN, LOOKUP_CACHE_FIELD_MAX),
     ):
         raw = str(cfg.get(key) if cfg.get(key) is not None else "").strip()

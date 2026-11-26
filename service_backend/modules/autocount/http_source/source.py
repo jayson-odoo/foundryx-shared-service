@@ -355,7 +355,7 @@ class HttpApiSource:
         # ceiling (1..8, default 1 = byte-identical to today); read ONCE here
         # exactly like ``self._page_size``, never re-read mid-walk.
         self._page_concurrency = sizing.max_concurrent_pages
-        # SS-STOCK-BAL-SOOTHE - pause between pages, skip probe, lookup cache.
+        # SS-STOCK-BAL-SOOTHE - pause between pages + stock lookup cache.
         self._gentle = gentle.gentle_settings(conn_config)
         self._connection_id = connection_id
         self._base_url = base_url
@@ -1067,53 +1067,6 @@ class HttpApiSource:
                 key, rows, total, kind, ttl_minutes=self._gentle.lookup_cache_minutes
             )
         return rows, total, kind
-
-    # ── skip probe (SS-STOCK-BAL-SOOTHE) ───────────────────────────────────
-
-    @property
-    def gentle_settings(self) -> "gentle.GentleSettings":
-        return self._gentle
-
-    def stock_unchanged_since(self, since: datetime, *, now: Optional[datetime] = None) -> bool:
-        """True ONLY when every byLastModified day door (DO, GRN, SO, PO) for
-        the days from ``since`` to now answered cleanly and none lists a
-        document modified at or after ``since`` (less a clock-skew margin).
-        Any doubt - a failed or odd answer, an unreadable stamp, too many
-        days - is False, so the caller walks. Every GET is a ``CallRecord``
-        on this source's own activity trail."""
-        from datetime import timedelta
-
-        from ..doc_feed.clock import myt_date, yyyymmdd
-        from ..doc_feed.records import vendor_modified_at
-
-        now = now or datetime.now(timezone.utc)
-        threshold = since - timedelta(seconds=gentle.STOCK_PROBE_MARGIN_SECONDS)
-        first_day, last_day = myt_date(threshold), myt_date(now)
-        day_count = (last_day - first_day).days + 1
-        if day_count < 1 or day_count > gentle.STOCK_PROBE_MAX_DAYS:
-            return False
-        days = [first_day + timedelta(days=n) for n in range(day_count)]
-        for path in gentle.STOCK_PROBE_PATHS:
-            for day in days:
-                try:
-                    response = self._client.get(path, {"lastModified": yyyymmdd(day)})
-                except Exception:  # noqa: BLE001 - any fault means "walk"
-                    return False
-                if not (200 <= response.status_code < 300):
-                    return False
-                try:
-                    body = response.json()
-                except ValueError:
-                    return False
-                if not isinstance(body, list):
-                    return False
-                for row in body:
-                    if not isinstance(row, dict):
-                        return False
-                    stamp = vendor_modified_at(row)
-                    if stamp is None or stamp >= threshold:
-                        return False
-        return True
 
     # ── de-dup / distinctOf ───────────────────────────────────────────────
 
