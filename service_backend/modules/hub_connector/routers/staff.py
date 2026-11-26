@@ -109,13 +109,14 @@ def update_hub(
     hub_id: str, body: schemas.HubUpdate, user: User = Depends(_MANAGE), db: Session = Depends(get_db)
 ) -> schemas.HubItem:
     try:
-        hub, resync = hub_service.update_hub(db, user.tenant_id, hub_id, body.model_dump(exclude_unset=True))
-        if resync and hub.active and hub.callback_url:
-            ids = delivery_service.resync_hub(db, user.tenant_id, hub.id)
-            db.commit()
-            delivery_service.enqueue(ids)
+        hub, resync = hub_service.update_hub(db, user.tenant_id, hub_id, body.model_dump(exclude_unset=True), commit=False)
+        ids = delivery_service.resync_hub(db, user.tenant_id, hub.id) if resync and hub.active and hub.callback_url else []
     except HubError as exc:
+        db.rollback()
         raise _http(exc)
+    db.commit()
+    db.refresh(hub)
+    delivery_service.enqueue(ids)
     return _hub_item(hub, hub_service.customer_counts(db, user.tenant_id, [hub.id]).get(hub.id, 0))
 
 
@@ -176,13 +177,21 @@ def add_customer(
 ) -> schemas.HubCustomerItem:
     try:
         row = hub_service.add_customer(
-            db, user.tenant_id, hub_id, customer_code=body.customerCode, location_codes=body.locationCodes, brand_codes=body.brandCodes
+            db,
+            user.tenant_id,
+            hub_id,
+            customer_code=body.customerCode,
+            location_codes=body.locationCodes,
+            brand_codes=body.brandCodes,
+            commit=False,
         )
         hub = hub_service.get_hub(db, user.tenant_id, hub_id)
     except HubError as exc:
+        db.rollback()
         raise _http(exc)
     delivery_id = delivery_service.resync_customer(db, hub, row)
     db.commit()
+    db.refresh(row)
     delivery_service.enqueue([delivery_id] if delivery_id else [])
     return _one_customer(db, user.tenant_id, row)
 
@@ -196,12 +205,16 @@ def update_customer(
     db: Session = Depends(get_db),
 ) -> schemas.HubCustomerItem:
     try:
-        row = hub_service.update_customer(db, user.tenant_id, hub_id, hub_customer_id, body.model_dump(exclude_unset=True))
+        row = hub_service.update_customer(
+            db, user.tenant_id, hub_id, hub_customer_id, body.model_dump(exclude_unset=True), commit=False
+        )
         hub = hub_service.get_hub(db, user.tenant_id, hub_id)
     except HubError as exc:
+        db.rollback()
         raise _http(exc)
     delivery_id = delivery_service.resync_customer(db, hub, row) if row.active else delivery_service.hide_customer(db, hub, row)
     db.commit()
+    db.refresh(row)
     delivery_service.enqueue([delivery_id] if delivery_id else [])
     return _one_customer(db, user.tenant_id, row)
 
@@ -214,10 +227,11 @@ def remove_customer(
         hub = hub_service.get_hub(db, user.tenant_id, hub_id)
         row = hub_service.get_hub_customer(db, user.tenant_id, hub_id, hub_customer_id)
         delivery_id = delivery_service.hide_customer(db, hub, row)
-        db.commit()
-        hub_service.remove_customer(db, user.tenant_id, hub_id, hub_customer_id)
+        hub_service.remove_customer(db, user.tenant_id, hub_id, hub_customer_id, commit=False)
     except HubError as exc:
+        db.rollback()
         raise _http(exc)
+    db.commit()
     delivery_service.enqueue([delivery_id] if delivery_id else [])
     return Response(status_code=204)
 
@@ -276,10 +290,10 @@ def list_deliveries(
 @router.post("/deliveries/{delivery_id}/redeliver", response_model=schemas.QueuedOut)
 def redeliver(delivery_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.QueuedOut:
     try:
-        delivery_service.redeliver(db, user.tenant_id, delivery_id)
+        new_id = delivery_service.redeliver(db, user.tenant_id, delivery_id)
     except HubError as exc:
         raise _http(exc)
-    return schemas.QueuedOut(queued=1)
+    return schemas.QueuedOut(queued=1 if new_id else 0)
 
 
 # ── picker options ──────────────────────────────────────────────────────────

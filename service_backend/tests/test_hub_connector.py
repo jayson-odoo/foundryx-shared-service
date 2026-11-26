@@ -115,7 +115,8 @@ class StubHub:
         if self.secret is not None and not delivery_service.verify(self.secret, headers["X-Hub-Connector-Signature"], content):
             self.bad_signatures += 1
             return delivery_service.webhook_post.PostReply(401)
-        self.received.append({"url": url, "headers": dict(headers), "body": json.loads(content)})
+        if 200 <= self.status < 300:  # a refused POST is not something the hub holds
+            self.received.append({"url": url, "headers": dict(headers), "body": json.loads(content)})
         return delivery_service.webhook_post.PostReply(self.status)
 
     def by_customer(self, code):
@@ -444,31 +445,151 @@ def test_removing_a_customer_tells_the_hub_to_drop_everything(client, hc, stub_h
     assert last["items"] == [] and last["removed"] == ["I-1", "I-2"]
 
 
-def test_failed_delivery_retries_then_fails_and_can_be_sent_again(client, hc, stub_hub):
+def _force_due(db, delivery_id):
+    from datetime import datetime, timedelta, timezone
+
+    db.query(HcDelivery).filter(HcDelivery.id == delivery_id).update(
+        {"next_at": datetime.now(timezone.utc) - timedelta(seconds=1)}
+    )
+    db.commit()
+
+
+def test_failed_delivery_retries_then_fails_recovers_and_can_be_sent_again(client, hc, stub_hub):
     headers = _login(client)
-    _seed_facts(client, _crm_key(client, headers))
+    crm = _crm_key(client, headers)
+    _seed_facts(client, crm)
     hub_id = _hub(client, headers)["hub"]["id"]
-    stub_hub.status = 500
     _add_customer(client, headers, hub_id, "C-TOUCH", ["WH-S"], ["BR-A"])
+    stub_hub.status = 500
+    moved = json.loads(json.dumps(ITEMS[0]))
+    moved["locations"][1]["onHand"] = 1  # south: 1 - 1 = 0, no stock
+    assert client.put("/api/v1/hub-connector/items", json={"items": [moved]}, headers=crm).json()["queued"] == 1
     db = hc()
     try:
-        row = db.query(HcDelivery).filter(HcDelivery.hub_id == hub_id).one()
+        row = db.query(HcDelivery).filter(HcDelivery.hub_id == hub_id, HcDelivery.full.is_(False)).one()
         assert row.status == "PENDING" and row.attempt == 1 and row.last_code == 500
         for _ in range(delivery_service.MAX_ATTEMPTS - 1):
-            db.query(HcDelivery).filter(HcDelivery.id == row.id).update({"next_at": row.created_at})
-            db.commit()
+            _force_due(db, row.id)
             delivery_service.dispatch(db, row.id)
         db.expire_all()
         row = db.query(HcDelivery).filter(HcDelivery.id == row.id).one()
         assert row.status == DELIVERY_FAILED and row.attempt == delivery_service.MAX_ATTEMPTS
-        delivery_id = row.id
+        # The change never arrived: the customer's FULL view is queued once.
+        recovery = db.query(HcDelivery).filter(HcDelivery.hub_id == hub_id, HcDelivery.seq > row.seq).one()
+        assert recovery.full is True and recovery.status == "PENDING"
+        stub_hub.status = 200
+        _force_due(db, recovery.id)
+        assert delivery_service.dispatch(db, recovery.id) == "success"
+        dead_id = row.id
     finally:
         db.close()
-    stub_hub.status = 200
-    res = client.post(f"/hub-connector/deliveries/{delivery_id}/redeliver", headers=headers)
-    assert res.status_code == 200
-    page = client.get(f"/hub-connector/hubs/{hub_id}/deliveries", params={"status": ["SUCCESS"]}, headers=headers).json()
+    last = stub_hub.by_customer("C-TOUCH")[-1]
+    assert last["full"] is True and last["items"][0]["gotStock"] is False
+    # "Send again" sends the CURRENT full view, not the old body.
+    res = client.post(f"/hub-connector/deliveries/{dead_id}/redeliver", headers=headers)
+    assert res.status_code == 200 and res.json()["queued"] == 1
+    again = stub_hub.by_customer("C-TOUCH")[-1]
+    assert again["full"] is True and again["sequence"] > last["sequence"]
+    page = client.get(f"/hub-connector/hubs/{hub_id}/deliveries", params={"status": ["FAILED"]}, headers=headers).json()
     assert page["total"] == 1
+
+
+def test_a_newer_delivery_waits_for_an_older_retry(client, hc, stub_hub):
+    """A late retry can never overwrite newer state at the hub."""
+    headers = _login(client)
+    crm = _crm_key(client, headers)
+    _seed_facts(client, crm)
+    hub_id = _hub(client, headers)["hub"]["id"]
+    _add_customer(client, headers, hub_id, "C-TOUCH", ["WH-S"], ["BR-A"])
+    stub_hub.status = 500
+    first = json.loads(json.dumps(ITEMS[0]))
+    first["locations"][1]["onHand"] = 1
+    client.put("/api/v1/hub-connector/items", json={"items": [first]}, headers=crm)
+    stub_hub.status = 200
+    second = json.loads(json.dumps(ITEMS[0]))
+    second["locations"][1]["onHand"] = 9
+    client.put("/api/v1/hub-connector/items", json={"items": [second]}, headers=crm)
+    db = hc()
+    try:
+        older, newer = db.query(HcDelivery).filter(HcDelivery.hub_id == hub_id, HcDelivery.full.is_(False)).order_by(HcDelivery.seq).all()
+        assert newer.status == "PENDING" and newer.attempt == 0  # held back
+        _force_due(db, older.id)
+        assert delivery_service.dispatch(db, older.id) == "success"
+        _force_due(db, newer.id)
+        assert delivery_service.dispatch(db, newer.id) == "success"
+    finally:
+        db.close()
+    sent = stub_hub.by_customer("C-TOUCH")
+    assert [d["items"][0]["gotStock"] for d in sent] == [True, False, True]
+    assert [d["sequence"] for d in sent] == sorted(d["sequence"] for d in sent)
+
+
+def test_discontinued_item_is_removed_at_the_hub(client, hc, stub_hub):
+    headers = _login(client)
+    crm = _crm_key(client, headers)
+    _seed_facts(client, crm)
+    hub_id = _hub(client, headers)["hub"]["id"]
+    _add_customer(client, headers, hub_id, "C-TOUCH", ["WH-S"], ["BR-A", "BR-B"])
+    res = client.put("/api/v1/hub-connector/items", json={"items": [{"code": "I-2", "active": False}]}, headers=crm).json()
+    assert res["stored"] == 1 and res["queued"] == 1
+    last = stub_hub.by_customer("C-TOUCH")[-1]
+    assert last["items"] == [] and last["removed"] == ["I-2"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"code": "I-X", "name": "Huge", "locations": [{"code": "WH-N", "onHand": "1E400"}]},
+        {"code": "I-X", "name": "Rich", "price": "1E30"},
+        {"code": True, "name": "Bool code"},
+        {"code": "I-X", "name": "Many", "locations": [{"code": f"L{i}"} for i in range(501)]},
+    ],
+)
+def test_out_of_range_values_skip_only_that_item(client, hc, bad):
+    headers = _login(client)
+    crm = _crm_key(client, headers)
+    res = client.put("/api/v1/hub-connector/items", json={"items": [ITEMS[0], bad]}, headers=crm)
+    assert res.status_code == 200, res.text
+    assert res.json()["stored"] == 1 and len(res.json()["skipped"]) == 1
+
+
+def test_pausing_a_customer_keeps_codes_the_crm_stopped_sending(client, hc, stub_hub):
+    headers = _login(client)
+    crm = _crm_key(client, headers)
+    _seed_facts(client, crm)
+    hub_id = _hub(client, headers)["hub"]["id"]
+    cid = _add_customer(client, headers, hub_id, "C-TOUCH", ["WH-S"], ["BR-A"])["id"]
+    gone = json.loads(json.dumps(ITEMS))
+    for item in gone:
+        item["locations"] = [loc for loc in item["locations"] if loc["code"] != "WH-S"]
+    client.put("/api/v1/hub-connector/items", json={"items": gone}, headers=crm)
+    res = client.patch(f"/hub-connector/hubs/{hub_id}/customers/{cid}", json={"active": False}, headers=headers)
+    assert res.status_code == 200, res.text
+    last = stub_hub.by_customer("C-TOUCH")[-1]
+    assert last["items"] == [] and last["removed"] == ["I-1"]
+    res = client.patch(f"/hub-connector/hubs/{hub_id}/customers/{cid}", json={"locationCodes": ["WH-Z"]}, headers=headers)
+    assert res.status_code == 422
+
+
+def test_price_switch_off_drops_price_again(client, hc, stub_hub):
+    headers = _login(client)
+    _seed_facts(client, _crm_key(client, headers))
+    hub_id = _hub(client, headers, exposePrice=True)["hub"]["id"]
+    _add_customer(client, headers, hub_id, "C-TOUCH", ["WH-S"], ["BR-A"])
+    assert stub_hub.by_customer("C-TOUCH")[-1]["items"][0]["price"] == "120.00"
+    client.patch(f"/hub-connector/hubs/{hub_id}", json={"exposePrice": False}, headers=headers)
+    last = stub_hub.by_customer("C-TOUCH")[-1]
+    assert last["full"] is True and "price" not in last["items"][0]
+
+
+def test_push_key_has_a_request_budget(client, hc, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "throttle_hub_push_key_max_requests", 2)
+    headers = _login(client)
+    crm = _crm_key(client, headers)
+    codes = [client.put("/api/v1/hub-connector/items", json={"items": []}, headers=crm).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]
 
 
 def test_receiver_is_rechecked_before_every_attempt(client, hc, monkeypatch):

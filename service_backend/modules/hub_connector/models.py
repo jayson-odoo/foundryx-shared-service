@@ -153,6 +153,10 @@ class HcDelivery(HubConnectorBase):
     hub_customer_id = Column(String, nullable=True)
     customer_code = Column(String(64), nullable=True)
     event = Column(String(32), nullable=False)
+    # Per hub customer, increasing: deliveries to one customer go out in this
+    # order, and the hub can ignore anything older than what it applied.
+    seq = Column(Integer, nullable=False, default=0)
+    full = Column(Boolean, nullable=False, default=False, server_default="false")
     body_encrypted = Column(Text, nullable=False)
     item_count = Column(Integer, nullable=False, default=0)
     attempt = Column(Integer, nullable=False, default=0)

@@ -463,6 +463,7 @@ def lead_capture_deliveries_due() -> dict:
 def hub_connector_deliver(delivery_id: str) -> str:
     """One hub delivery attempt; a retry reschedules itself (the due tick is
     the backstop after a crash). Eager dev runs one attempt inline."""
+    import math
     from datetime import datetime, timezone
 
     from app.database import SessionLocal
@@ -475,11 +476,12 @@ def hub_connector_deliver(delivery_id: str) -> str:
     db = SessionLocal()
     try:
         outcome = dispatch(db, delivery_id)
-        if outcome == "retry" and not settings.celery_task_always_eager:
+        if outcome in ("retry", "waiting") and not settings.celery_task_always_eager:
             row = db.query(HcDelivery).filter(HcDelivery.id == delivery_id).first()
             if row is not None and row.next_at is not None:
+                # Round UP: the claim needs next_at <= now, an early wake skips.
                 delay = (row.next_at - datetime.now(timezone.utc)).total_seconds()
-                hub_connector_deliver.apply_async((delivery_id,), countdown=max(1, int(delay)))
+                hub_connector_deliver.apply_async((delivery_id,), countdown=max(1, math.ceil(delay)))
         return outcome
     except Exception:  # noqa: BLE001
         logger.exception("hub_connector delivery %s failed", delivery_id)

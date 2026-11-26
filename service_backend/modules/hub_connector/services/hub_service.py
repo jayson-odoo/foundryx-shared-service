@@ -2,8 +2,8 @@
 
 Every query is tenant-scoped from the caller; a stored code is resolved inside
 the tenant (polymorphic-target_id rule). Policy edits never commit half: the
-caller's transaction owns the write, then a full resync is queued for that
-customer so the hub drops what it may no longer show.
+mutating functions take ``commit=False`` so the router queues the customer's
+resync in the SAME transaction and commits once.
 """
 from __future__ import annotations
 
@@ -56,6 +56,14 @@ def _clean_url(url: Optional[str]) -> Optional[str]:
 
 def _codes(values: Optional[Sequence[str]]) -> List[str]:
     return list(dict.fromkeys(str(v).strip() for v in values or [] if isinstance(v, str) and v.strip()))
+
+
+def _finish(db: Session, row: Any, commit: bool) -> None:
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()
 
 
 # ── hubs ────────────────────────────────────────────────────────────────────
@@ -152,7 +160,9 @@ def list_hubs(
     return [h for h, _ in rows], {h.id: int(c or 0) for h, c in rows}, total
 
 
-def update_hub(db: Session, tenant_id: str, hub_id: str, changes: Dict[str, Any]) -> Tuple[HcHub, bool]:
+def update_hub(
+    db: Session, tenant_id: str, hub_id: str, changes: Dict[str, Any], *, commit: bool = True
+) -> Tuple[HcHub, bool]:
     """Returns ``(hub, resync_needed)`` - a price switch or reactivation
     changes every customer's view."""
     hub = get_hub(db, tenant_id, hub_id)
@@ -175,8 +185,7 @@ def update_hub(db: Session, tenant_id: str, hub_id: str, changes: Dict[str, Any]
         if bool(changes["active"]) != bool(hub.active):
             hub.active = bool(changes["active"])
             resync = resync or hub.active
-    db.commit()
-    db.refresh(hub)
+    _finish(db, hub, commit)
     return hub, resync
 
 
@@ -221,9 +230,21 @@ def _known_codes(db: Session, tenant_id: str) -> Tuple[set, set]:
     return locations, brands
 
 
-def _validate_policy(db: Session, tenant_id: str, location_codes: List[str], brand_codes: List[str]) -> None:
-    """Only offer valid options: a code the CRM never pushed is refused."""
+def _validate_policy(
+    db: Session,
+    tenant_id: str,
+    location_codes: List[str],
+    brand_codes: List[str],
+    *,
+    kept_locations: Sequence[str] = (),
+    kept_brands: Sequence[str] = (),
+) -> None:
+    """Only offer valid options: a code the CRM never pushed is refused. Codes
+    the policy already held are kept even if the CRM stopped sending them, so
+    an unrelated edit (e.g. pausing) never trips on them."""
     known_locations, known_brands = _known_codes(db, tenant_id)
+    known_locations |= set(kept_locations)
+    known_brands |= set(kept_brands)
     bad_loc = [c for c in location_codes if c not in known_locations]
     if bad_loc:
         raise HubError(422, "unknown_location", f"Unknown location: {bad_loc[0]}.")
@@ -248,7 +269,14 @@ def get_hub_customer(db: Session, tenant_id: str, hub_id: str, hub_customer_id: 
 
 
 def add_customer(
-    db: Session, tenant_id: str, hub_id: str, *, customer_code: str, location_codes: Sequence[str], brand_codes: Sequence[str]
+    db: Session,
+    tenant_id: str,
+    hub_id: str,
+    *,
+    customer_code: str,
+    location_codes: Sequence[str],
+    brand_codes: Sequence[str],
+    commit: bool = True,
 ) -> HcHubCustomer:
     hub = get_hub(db, tenant_id, hub_id)
     code = (customer_code or "").strip()
@@ -272,26 +300,29 @@ def add_customer(
         active=True,
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    _finish(db, row, commit)
     return row
 
 
-def update_customer(db: Session, tenant_id: str, hub_id: str, hub_customer_id: str, changes: Dict[str, Any]) -> HcHubCustomer:
+def update_customer(
+    db: Session, tenant_id: str, hub_id: str, hub_customer_id: str, changes: Dict[str, Any], *, commit: bool = True
+) -> HcHubCustomer:
     row = get_hub_customer(db, tenant_id, hub_id, hub_customer_id)
-    locs = _codes(changes["locationCodes"]) if changes.get("locationCodes") is not None else list(row.location_codes_json or [])
-    brands = _codes(changes["brandCodes"]) if changes.get("brandCodes") is not None else list(row.brand_codes_json or [])
-    _validate_policy(db, tenant_id, locs, brands)
+    old_locs, old_brands = list(row.location_codes_json or []), list(row.brand_codes_json or [])
+    locs = _codes(changes["locationCodes"]) if changes.get("locationCodes") is not None else old_locs
+    brands = _codes(changes["brandCodes"]) if changes.get("brandCodes") is not None else old_brands
+    _validate_policy(db, tenant_id, locs, brands, kept_locations=old_locs, kept_brands=old_brands)
     row.location_codes_json = locs
     row.brand_codes_json = brands
     if changes.get("active") is not None:
         row.active = bool(changes["active"])
-    db.commit()
-    db.refresh(row)
+    _finish(db, row, commit)
     return row
 
 
-def remove_customer(db: Session, tenant_id: str, hub_id: str, hub_customer_id: str) -> HcHubCustomer:
+def remove_customer(
+    db: Session, tenant_id: str, hub_id: str, hub_customer_id: str, *, commit: bool = True
+) -> HcHubCustomer:
     """Removed customers get nothing more; the hub is told to drop every item
     the customer could see (queued by the caller before the row goes)."""
     from ..models import HcSentView
@@ -301,7 +332,10 @@ def remove_customer(db: Session, tenant_id: str, hub_id: str, hub_customer_id: s
         synchronize_session=False
     )
     db.delete(row)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return row
 
 

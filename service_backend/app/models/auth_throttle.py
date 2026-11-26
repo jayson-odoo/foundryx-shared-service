@@ -84,6 +84,9 @@ THROTTLE_SCOPE_CHANNEL_TOKEN = "channel_token"
 # pattern: per IP counts 401s only; per key counts every authenticated call.
 THROTTLE_SCOPE_LEAD_GATEWAY = "lead_gateway"
 THROTTLE_SCOPE_LEAD_GATEWAY_KEY = "lead_gateway_key"
+# Hub Connector CRM push: failed keys per IP, and the request budget per key.
+THROTTLE_SCOPE_HUB_PUSH = "hub_push"
+THROTTLE_SCOPE_HUB_PUSH_KEY = "hub_push_key"
 
 
 class AuthThrottle(Base):

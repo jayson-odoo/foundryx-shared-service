@@ -13,7 +13,14 @@ before and may no longer see. The view is decided by ``availability.view_for``
 ``app/services/webhook_post.py`` (same as Lead Capture / omnichannel): the
 receiver URL is re-checked before EVERY attempt and the connection only opens to
 an address that passed the check. Retry ladder 1 min, 5 min, 30 min, 2 h, 6 h,
-24 h, then FAILED; "Send again" restarts it with the same body.
+24 h, then FAILED.
+
+Ordering: every delivery carries ``sequence`` (increasing per hub customer) and
+deliveries to one customer go out oldest first - a newer one waits while an
+older one is still retrying, so a late retry can never overwrite newer state.
+A delivery that fails for good queues that customer's FULL view once (a full
+view replaces everything the hub holds for the customer), and "Send again"
+also sends the customer's CURRENT full view, never a stale body.
 """
 from __future__ import annotations
 
@@ -26,6 +33,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.database import release_read_transactions
@@ -86,6 +94,13 @@ def _iso_z(dt: datetime) -> str:
 
 # ── queue (flushes, never commits - the caller owns the transaction) ────────
 
+def tenant_lock(db: Session, tenant_id: str) -> None:
+    """Serialise this tenant's pushes / policy edits until the transaction
+    ends (Postgres), so two writers never diff against the same sent view."""
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"hub_connector:{tenant_id}"})
+
+
 def _sent_map(db: Session, tenant_id: str, hub_customer_id: str, codes: Optional[Iterable[str]]) -> Dict[str, HcSentView]:
     q = db.query(HcSentView).filter(HcSentView.tenant_id == tenant_id, HcSentView.hub_customer_id == hub_customer_id)
     if codes is not None:
@@ -104,13 +119,16 @@ def _queue_customer(
     *,
     full: bool,
     hide_all: bool = False,
+    removed_codes: Sequence[str] = (),
 ) -> Optional[str]:
     """Queue ONE delivery carrying this customer's changed view, or nothing
     when nothing changed. ``full`` sends every visible item (resync);
     ``hide_all`` tells the hub to drop everything (customer removed)."""
     tenant_id = hub.tenant_id
     policy = hub_service.policy_for(hub, customer)
-    sent = _sent_map(db, tenant_id, customer.id, None if (full or hide_all) else [i.code for i in items])
+    sent = _sent_map(
+        db, tenant_id, customer.id, None if (full or hide_all) else [i.code for i in items] + list(removed_codes)
+    )
     shown: List[Dict[str, Any]] = []
     removed: List[str] = []
     seen = set()
@@ -130,19 +148,26 @@ def _queue_customer(
                 db.add(HcSentView(tenant_id=tenant_id, hub_customer_id=customer.id, item_code=item.code, view_hash=new_hash))
         elif before.view_hash != new_hash:
             before.view_hash = new_hash
-    if full or hide_all:
+    if full or hide_all or removed_codes:
         # Items the customer saw that no longer exist in the facts.
         for code, row in sent.items():
             if code not in seen and row.view_hash != HIDDEN_HASH:
                 removed.append(code)
                 row.view_hash = HIDDEN_HASH
-    if not shown and not removed:
+    if not shown and not removed and not full:
         db.flush()
         return None
+    seq = (
+        db.query(func.max(HcDelivery.seq))
+        .filter(HcDelivery.tenant_id == tenant_id, HcDelivery.hub_customer_id == customer.id)
+        .scalar()
+        or 0
+    ) + 1
     data = {
         "hub": {"code": hub.code},
         "customer": {"code": customer.customer_code, "name": hub_service.customer_name(db, tenant_id, customer.customer_code)},
-        "full": bool(full),
+        "sequence": seq,
+        "full": bool(full or hide_all),
         "items": shown,
         "removed": sorted(removed),
     }
@@ -154,6 +179,8 @@ def _queue_customer(
         hub_customer_id=customer.id,
         customer_code=customer.customer_code,
         event=EVENT_AVAILABILITY,
+        seq=seq,
+        full=bool(full or hide_all),
         body_encrypted=encrypt_secret({"body": body}),
         item_count=len(shown) + len(removed),
         attempt=0,
@@ -182,16 +209,22 @@ def _active_customers(db: Session, tenant_id: str, hub_id: str) -> List[HcHubCus
     )
 
 
-def queue_item_changes(db: Session, tenant_id: str, item_codes: Sequence[str]) -> List[str]:
+def queue_item_changes(
+    db: Session, tenant_id: str, item_codes: Sequence[str], *, removed_codes: Sequence[str] = ()
+) -> List[str]:
     """After a CRM push: one delivery per hub customer whose view of any of
-    these items changed."""
-    if not item_codes:
+    these items changed (``removed_codes`` = discontinued items)."""
+    if not item_codes and not removed_codes:
         return []
-    items = db.query(HcItem).filter(HcItem.tenant_id == tenant_id, HcItem.code.in_(list(item_codes))).all()
+    items = (
+        db.query(HcItem).filter(HcItem.tenant_id == tenant_id, HcItem.code.in_(list(item_codes))).all()
+        if item_codes
+        else []
+    )
     ids: List[str] = []
     for hub in _deliverable_hubs(db, tenant_id):
         for customer in _active_customers(db, tenant_id, hub.id):
-            delivery_id = _queue_customer(db, hub, customer, items, full=False)
+            delivery_id = _queue_customer(db, hub, customer, items, full=False, removed_codes=removed_codes)
             if delivery_id:
                 ids.append(delivery_id)
     return ids
@@ -205,6 +238,7 @@ def resync_customer(db: Session, hub: HcHub, customer: HcHubCustomer) -> Optiona
     """The customer's FULL view (policy change / Resync / new customer)."""
     if not hub.active or not hub.callback_url or not customer.active:
         return None
+    tenant_lock(db, hub.tenant_id)
     return _queue_customer(db, hub, customer, _all_items(db, hub.tenant_id), full=True)
 
 
@@ -212,6 +246,7 @@ def hide_customer(db: Session, hub: HcHub, customer: HcHubCustomer) -> Optional[
     """Tell the hub to drop everything this customer saw (removed / paused)."""
     if not hub.active or not hub.callback_url:
         return None
+    tenant_lock(db, hub.tenant_id)
     return _queue_customer(db, hub, customer, _all_items(db, hub.tenant_id), full=False, hide_all=True)
 
 
@@ -221,6 +256,7 @@ def resync_hub(db: Session, tenant_id: str, hub_id: str) -> List[str]:
         raise HubError(409, "hub_inactive", "This hub is switched off.")
     if not hub.callback_url:
         raise HubError(409, "no_receiver", "Add a receiver URL first.")
+    tenant_lock(db, tenant_id)
     items = _all_items(db, tenant_id)
     ids = [d for d in (_queue_customer(db, hub, c, items, full=True) for c in _active_customers(db, tenant_id, hub.id)) if d]
     return ids
@@ -269,8 +305,41 @@ def _fail(db: Session, delivery: HcDelivery, message: str) -> None:
     db.commit()
 
 
+def _older_pending(db: Session, delivery: HcDelivery) -> Optional[HcDelivery]:
+    if not delivery.hub_customer_id:
+        return None
+    return (
+        db.query(HcDelivery)
+        .filter(
+            HcDelivery.tenant_id == delivery.tenant_id,
+            HcDelivery.hub_customer_id == delivery.hub_customer_id,
+            HcDelivery.status == DELIVERY_PENDING,
+            HcDelivery.seq < delivery.seq,
+        )
+        .order_by(HcDelivery.seq.asc())
+        .first()
+    )
+
+
+def _recover_after_dead(db: Session, delivery: HcDelivery) -> Optional[str]:
+    """A change the hub never got: queue the customer's full view ONCE (not
+    after a failed full view, so a hub that stays down is not re-queued
+    forever - the admin's "Send again" takes over)."""
+    if delivery.full or not delivery.hub_customer_id:
+        return None
+    hub = db.query(HcHub).filter(HcHub.id == delivery.hub_id, HcHub.tenant_id == delivery.tenant_id).first()
+    customer = (
+        db.query(HcHubCustomer)
+        .filter(HcHubCustomer.id == delivery.hub_customer_id, HcHubCustomer.tenant_id == delivery.tenant_id)
+        .first()
+    )
+    if hub is None or customer is None:
+        return None
+    return resync_customer(db, hub, customer)
+
+
 def dispatch(db: Session, delivery_id: str) -> str:
-    """Run ONE attempt. Returns 'success' | 'retry' | 'dead' | 'skip'."""
+    """Run ONE attempt. Returns 'success' | 'retry' | 'waiting' | 'dead' | 'skip'."""
     delivery = db.query(HcDelivery).filter(HcDelivery.id == delivery_id).first()
     if delivery is None or delivery.status != DELIVERY_PENDING:
         return "skip"
@@ -282,6 +351,12 @@ def dispatch(db: Session, delivery_id: str) -> str:
     if not _service_enabled(db, tenant_id):
         _fail(db, delivery, "Hub Connector is not enabled for this tenant.")
         return "skip"
+    older = _older_pending(db, delivery)
+    if older is not None:
+        # Oldest first per customer: wait just past the older one's next try.
+        delivery.next_at = max(older.next_at or datetime.now(timezone.utc), datetime.now(timezone.utc)) + timedelta(seconds=1)
+        db.commit()
+        return "waiting"
     try:
         body = decrypt_secret(delivery.body_encrypted)["body"].encode("utf-8")
         secret = decrypt_secret(hub.secret_encrypted)["secret"]
@@ -352,22 +427,37 @@ def dispatch(db: Session, delivery_id: str) -> str:
         db.commit()
         return "retry"
     delivery.status, delivery.next_at = DELIVERY_FAILED, None
+    recovery = _recover_after_dead(db, delivery)
     db.commit()
+    if recovery:
+        enqueue([recovery])
     return "dead"
 
 
-def redeliver(db: Session, tenant_id: str, delivery_id: str) -> HcDelivery:
-    """Send the SAME body again (a fresh signature at send time), ladder restarted."""
+def redeliver(db: Session, tenant_id: str, delivery_id: str) -> Optional[str]:
+    """"Send again": the customer's CURRENT full view (never the old body, which
+    may be older than what the hub already holds). Returns the new delivery id."""
     row = db.query(HcDelivery).filter(HcDelivery.id == delivery_id, HcDelivery.tenant_id == tenant_id).first()
     if row is None:
         raise HubError(404, "delivery_not_found", "Delivery not found.")
     if row.status == DELIVERY_PENDING:
         raise HubError(409, "delivery_pending", "This delivery is still being sent.")
-    row.status, row.attempt, row.next_at, row.last_error = DELIVERY_PENDING, 0, datetime.now(timezone.utc), None
+    hub = hub_service.get_hub(db, tenant_id, row.hub_id)
+    customer = (
+        db.query(HcHubCustomer)
+        .filter(HcHubCustomer.id == row.hub_customer_id, HcHubCustomer.tenant_id == tenant_id)
+        .first()
+        if row.hub_customer_id
+        else None
+    )
+    if customer is None:
+        raise HubError(409, "customer_removed", "This customer is no longer on the hub.")
+    if not hub.active or not hub.callback_url or not customer.active:
+        raise HubError(409, "hub_inactive", "Switch the hub and the customer on, and add a receiver URL first.")
+    new_id = resync_customer(db, hub, customer)
     db.commit()
-    enqueue([row.id])
-    db.refresh(row)
-    return row
+    enqueue([new_id] if new_id else [])
+    return new_id
 
 
 def run_due(db: Session, limit: int = 100) -> int:

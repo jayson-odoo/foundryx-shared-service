@@ -16,6 +16,9 @@ from ..models import HcCustomer, HcItem
 from . import delivery_service
 
 MAX_BATCH = 1000
+MAX_LINES = 500  # locations and incoming lines per item
+MAX_QTY = Decimal("1e12")
+MAX_PRICE = Decimal("1e14")  # Numeric(18, 4): 14 integer digits
 
 
 class Skip(Exception):
@@ -27,7 +30,7 @@ def _text(value: Any, field: str, limit: int, required: bool = True) -> Optional
         if required:
             raise Skip(f"{field} is missing")
         return None
-    if not isinstance(value, (str, int)):
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise Skip(f"{field} is not text")
     clean = str(value).strip()
     if len(clean) > limit:
@@ -46,6 +49,8 @@ def _qty(value: Any, field: str) -> float:
         raise Skip(f"{field} is not a number") from None
     if not number.is_finite():
         raise Skip(f"{field} is not a number")
+    if abs(number) >= MAX_QTY:
+        raise Skip(f"{field} is too large")
     return float(number)
 
 
@@ -58,17 +63,24 @@ def _price(value: Any) -> Optional[Decimal]:
         number = Decimal(str(value))
     except (InvalidOperation, ValueError):
         raise Skip("price is not a number") from None
-    if not number.is_finite() or number < 0:
+    if not number.is_finite() or number < 0 or number >= MAX_PRICE:
         raise Skip("price is not a valid amount")
-    return number
+    return number.quantize(Decimal("0.0001"))
 
 
 def _clean_item(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise Skip("not an object")
+    if raw.get("active") is False:
+        # Discontinued in the CRM: only the code matters; hubs are told to drop it.
+        return {"code": _text(raw.get("code"), "code", 64), "discontinued": True}
     brand = raw.get("brand") or {}
     if not isinstance(brand, dict):
         raise Skip("brand is not an object")
+    if not isinstance(raw.get("locations") or [], list) or not isinstance(raw.get("incoming") or [], list):
+        raise Skip("locations and incoming must be lists")
+    if len(raw.get("locations") or []) > MAX_LINES or len(raw.get("incoming") or []) > MAX_LINES:
+        raise Skip(f"more than {MAX_LINES} locations or incoming lines")
     locations: List[Dict[str, Any]] = []
     seen = set()
     for loc in raw.get("locations") or []:
@@ -116,7 +128,9 @@ def _ref(raw: Any) -> str:
 
 
 def push_items(db: Session, tenant_id: str, raw_items: Sequence[Any]) -> Tuple[int, List[Dict[str, str]], List[str]]:
-    """Upsert the items; returns ``(stored, skipped, delivery_ids)``. Commits once."""
+    """Upsert the items (``active: false`` = discontinued, removed); returns
+    ``(stored, skipped, delivery_ids)``. Commits once."""
+    delivery_service.tenant_lock(db, tenant_id)
     skipped: List[Dict[str, str]] = []
     clean: Dict[str, Dict[str, Any]] = {}
     for raw in list(raw_items)[:MAX_BATCH]:
@@ -133,7 +147,13 @@ def push_items(db: Session, tenant_id: str, raw_items: Sequence[Any]) -> Tuple[i
         for row in db.query(HcItem).filter(HcItem.tenant_id == tenant_id, HcItem.code.in_(list(clean))).all()
     } if clean else {}
     now = datetime.now(timezone.utc)
+    discontinued = [code for code, item in clean.items() if item.get("discontinued")]
+    for code in discontinued:
+        if code in existing:
+            db.delete(existing[code])
     for code, item in clean.items():
+        if item.get("discontinued"):
+            continue
         row = existing.get(code)
         if row is None:
             row = HcItem(tenant_id=tenant_id, code=code)
@@ -147,7 +167,9 @@ def push_items(db: Session, tenant_id: str, raw_items: Sequence[Any]) -> Tuple[i
         row.incoming_json = item["incoming"]
         row.updated_at = now
     db.flush()
-    delivery_ids = delivery_service.queue_item_changes(db, tenant_id, list(clean))
+    delivery_ids = delivery_service.queue_item_changes(
+        db, tenant_id, [c for c in clean if c not in discontinued], removed_codes=discontinued
+    )
     db.commit()
     return len(clean), skipped, delivery_ids
 
