@@ -7,7 +7,7 @@ vi.mock('@/lib/api-client', () => ({
   ApiError: class ApiError extends Error {},
 }));
 
-import { hubListParams, realHubConnectorService } from './hub-connector-service.real';
+import { filteredParams, hubListParams, realHubConnectorService } from './hub-connector-service.real';
 import { createMockHubConnectorService } from './hub-connector-service.mock';
 
 beforeEach(() => apiFetch.mockReset());
@@ -65,6 +65,52 @@ describe('real hub connector service', () => {
       method: 'POST',
       body: JSON.stringify({ customerCode: 'CU-1', customerName: 'Sample Co', locationCodes: ['L'], brandCodes: ['B'] }),
     });
+  });
+});
+
+const inFilter = (field: string, value: string[]) =>
+  ({ kind: 'condition', id: field, field, operator: 'in', value }) as const;
+const andOf = (...rules: ReturnType<typeof inFilter>[]) => ({ kind: 'group', id: 'root', combinator: 'and', rules }) as const;
+
+describe('hub connector filters', () => {
+  it('sends one repeated param per value, and one per filter', async () => {
+    apiFetch.mockResolvedValue({ data: [], total: 0 });
+    await realHubConnectorService.listHubs({
+      page: 0,
+      pageSize: 10,
+      filter: andOf(inFilter('status', ['active', 'inactive']), inFilter('showPrice', ['yes'])),
+    } as never);
+    const url = String(apiFetch.mock.calls[0][0]);
+    expect(url).toContain('status=active&status=inactive');
+    expect(url).toContain('showPrice=yes');
+  });
+
+  it('maps customer and delivery status, ignoring unknown fields', async () => {
+    apiFetch.mockResolvedValue({ data: [], total: 0 });
+    const filter = andOf(inFilter('status', ['FAILED']), inFilter('showPrice', ['yes']));
+    await realHubConnectorService.listCustomers('h1', { page: 0, pageSize: 10, filter } as never);
+    expect(String(apiFetch.mock.calls[0][0])).toContain('status=FAILED');
+    expect(String(apiFetch.mock.calls[0][0])).not.toContain('showPrice');
+    await realHubConnectorService.listDeliveries('h1', { page: 0, pageSize: 10, filter } as never);
+    expect(String(apiFetch.mock.calls[1][0])).toContain('status=FAILED');
+    expect(filteredParams({ page: 0, pageSize: 5 }, ['status']).has('status')).toBe(false);
+  });
+});
+
+describe('hub history and scheduled tasks', () => {
+  it('reads the hub history from {data}', async () => {
+    const entry = { id: 'e1', at: null, who: 'A', onBehalfOf: null, action: 'Hub created', from: null, to: 'Hub' };
+    apiFetch.mockResolvedValue({ data: [entry] });
+    expect(await realHubConnectorService.hubHistory('h1')).toEqual([entry]);
+    expect(apiFetch).toHaveBeenCalledWith('/hub-connector/hubs/h1/history');
+  });
+
+  it('lists and runs scheduled tasks', async () => {
+    apiFetch.mockResolvedValue({ data: [{ key: 'stock_sync' }] });
+    expect(await realHubConnectorService.listScheduledTasks()).toEqual([{ key: 'stock_sync' }]);
+    expect(apiFetch).toHaveBeenLastCalledWith('/hub-connector/scheduled-tasks');
+    await realHubConnectorService.runScheduledTask('stock_sync');
+    expect(apiFetch).toHaveBeenLastCalledWith('/hub-connector/scheduled-tasks/stock_sync/run', { method: 'POST' });
   });
 });
 

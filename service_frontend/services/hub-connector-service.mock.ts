@@ -10,6 +10,7 @@ import type {
   OptionKind,
   Page,
   PreviewItem,
+  ScheduledTask,
   SyncState,
 } from '@/types/hub-connector';
 import type { ListQuery } from '@/types/resource';
@@ -102,6 +103,9 @@ function seed(): MockState {
 export function createMockHubConnectorService(): HubConnectorService & { state: MockState } {
   const state = seed();
   let n = 100;
+  let tasks: ScheduledTask[] = [
+    { key: 'stock_sync', name: 'Stock sync', schedule: 'Every hour', lastRunAt: NOW, lastError: null },
+  ];
   const nextId = (p: string) => `${p}-${++n}`;
   const hubOf = (id: string): Hub => {
     const h = state.hubs.find((x) => x.id === id);
@@ -232,6 +236,18 @@ export function createMockHubConnectorService(): HubConnectorService & { state: 
     async revokeKey(_hubId, id) {
       const k = state.keys.find((x) => x.id === id);
       if (k) k.revokedAt = NOW;
+    },
+
+    async hubHistory(hubId) {
+      return [{ id: 'h-1', at: NOW, who: 'Sample Admin', onBehalfOf: null, action: 'Hub created', from: null, to: hubOf(hubId).name }];
+    },
+
+    async listScheduledTasks() {
+      return tasks;
+    },
+    async runScheduledTask(key) {
+      tasks = tasks.map((t) => (t.key === key ? { ...t, lastRunAt: NOW, lastError: null } : t));
+      return tasks;
     },
 
     async getSync() {

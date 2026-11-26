@@ -120,6 +120,15 @@ export interface HubCustomerUpdateInput {
 
 export type OptionKind = 'locations' | 'brands';
 
+/** One scheduled background task of the Hub Connector. */
+export interface ScheduledTask {
+  key: string;
+  name: string;
+  schedule: string;
+  lastRunAt: string | null;
+  lastError: string | null;
+}
+
 /** State of the CRM stock feed sync. */
 export interface SyncState {
   configured: boolean;

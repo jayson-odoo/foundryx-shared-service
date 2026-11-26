@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Info, LoaderCircleIcon, RefreshCw, Send, KeyRound, Users, KeySquare } from 'lucide-react';
+import { Info, LoaderCircleIcon, RefreshCw, Send, History, KeyRound, Users, KeySquare } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { RecordHistory } from '@/components/platform/record-history';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { OneTimeSecret } from '@/components/platform/one-time-secret';
 import { FormRow, ResourceForm, type ResourceFormConfig } from '@/components/platform/resource-form';
@@ -55,6 +56,10 @@ export function HubDetailView({ hubId }: { hubId: string }) {
   const [previewing, setPreviewing] = useState<HubCustomer | null>(null);
   const [keysOpen, setKeysOpen] = useState(false);
   const [customersKey, setCustomersKey] = useState(0);
+  // Remounts the History tab after any save or action on this page.
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const bumpHistory = useCallback(() => setHistoryVersion((v) => v + 1), []);
+  const loadHistory = useCallback(() => hubConnectorService.hubHistory(hubId), [hubId]);
 
   const loaded = hub;
   const seed = useCallback((h: Hub) => {
@@ -88,12 +93,13 @@ export function HubDetailView({ hubId }: { hubId: string }) {
       });
       toast.success('Hub saved.');
       reload();
+      bumpHistory();
       return true;
     } catch (err) {
       toast.error(hubConnectorErrorMessage(err, 'Could not save the hub. Please try again.'));
       return false;
     }
-  }, [active, exposePrice, hubId, name, reload, url]);
+  }, [active, bumpHistory, exposePrice, hubId, name, reload, url]);
 
   const onCancel = useCallback(() => {
     if (loaded) seed(loaded);
@@ -131,6 +137,7 @@ export function HubDetailView({ hubId }: { hubId: string }) {
           try {
             const res = await hubConnectorService.rotateSecret(hubId);
             setSecret(res.signingSecret);
+            bumpHistory();
           } catch (err) {
             toast.error(hubConnectorErrorMessage(err, 'Could not rotate the secret. Please try again.'));
           }
@@ -145,6 +152,7 @@ export function HubDetailView({ hubId }: { hubId: string }) {
         run: async () => {
           try {
             const res = await hubConnectorService.resync(hubId);
+            bumpHistory();
             toast.success(`Queued ${res.queued} customer${res.queued === 1 ? '' : 's'} to send again.`);
           } catch (err) {
             toast.error(hubConnectorErrorMessage(err, 'Could not resync. Please try again.'));
@@ -235,6 +243,12 @@ export function HubDetailView({ hubId }: { hubId: string }) {
             </div>
           ),
         },
+        {
+          id: 'history',
+          label: 'History',
+          icon: History,
+          render: () => <RecordHistory key={historyVersion} viewKey="hub-connector.hub.history" load={loadHistory} />,
+        },
       ],
       initialTabId: 'details',
       actions,
@@ -246,7 +260,7 @@ export function HubDetailView({ hubId }: { hubId: string }) {
       onSave,
       onCancel,
     };
-  }, [active, customersConfig, deliveriesConfig, dirty, exposePrice, hubId, loaded, name, onCancel, onSave, reload, url]);
+  }, [active, bumpHistory, customersConfig, deliveriesConfig, dirty, exposePrice, historyVersion, hubId, loadHistory, loaded, name, onCancel, onSave, reload, url]);
 
   if (isLoading && !hub) {
     return (
@@ -283,10 +297,15 @@ export function HubDetailView({ hubId }: { hubId: string }) {
         onOpenChange={setCustomerOpen}
         onSaved={() => {
           setCustomersKey((k) => k + 1);
+          bumpHistory();
           reload();
         }}
       />
-      <HubKeysDialog hubId={hubId} open={keysOpen} onOpenChange={setKeysOpen} />
+      <HubKeysDialog hubId={hubId} open={keysOpen} onOpenChange={(o) => {
+          setKeysOpen(o);
+          if (!o) bumpHistory();
+        }}
+      />
       <PreviewDialog hubId={hubId} customer={previewing} showPrice={loaded?.exposePrice ?? false} onClose={() => setPreviewing(null)} />
       <Dialog open={secret !== null} onOpenChange={(o) => !o && setSecret(null)}>
         <DialogContent className="max-w-lg" aria-describedby={undefined}>

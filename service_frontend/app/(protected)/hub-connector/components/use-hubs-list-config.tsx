@@ -12,7 +12,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import { hubConnectorService } from '@/services/hub-connector-service';
 import type { Hub } from '@/types/hub-connector';
 import type { ListQuery, ListResult } from '@/types/resource';
-import { HUB_ACTIVE_REGISTRY, HUB_MANAGE, hubActiveStatus, hubHref } from './hub-meta';
+import { ACTIVE_FILTER, HUB_ACTIVE_REGISTRY, HUB_MANAGE, SHOW_PRICE_FILTER, hubActiveStatus, hubHref } from './hub-meta';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -152,7 +152,7 @@ export function useHubsListConfig(onCreate: () => void, refreshKey = 0): Resourc
       getRowId: (h) => h.id,
       rowHref: (h) => hubHref(h.id),
       fetcher,
-      filterFields: [],
+      filterFields: [ACTIVE_FILTER, SHOW_PRICE_FILTER],
       exportColumns: [],
       actions,
       searchPlaceholder: 'Search hubs…',

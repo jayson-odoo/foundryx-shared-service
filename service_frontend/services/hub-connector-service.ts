@@ -4,6 +4,7 @@
  * (`hub-connector-service.mock.ts`) stays for tests and a dev toggle. Every
  * call is the signed-in company's own data (the backend scopes by the JWT).
  */
+import type { HistoryEntry } from '@/types/record-history';
 import type {
   ApiKey,
   ApiKeyCreated,
@@ -20,6 +21,7 @@ import type {
   Option,
   OptionKind,
   Page,
+  ScheduledTask,
   SyncState,
 } from '@/types/hub-connector';
 import type { ListQuery } from '@/types/resource';
@@ -53,6 +55,13 @@ export interface HubConnectorService {
   /** Returns the full key ONCE. */
   createKey(hubId: string, name: string): Promise<ApiKeyCreated>;
   revokeKey(hubId: string, id: string): Promise<void>;
+
+  /** The hub's History tab. */
+  hubHistory(hubId: string): Promise<HistoryEntry[]>;
+
+  listScheduledTasks(): Promise<ScheduledTask[]>;
+  /** Runs one task now; answers the refreshed list. */
+  runScheduledTask(key: string): Promise<ScheduledTask[]>;
 
   getSync(): Promise<SyncState>;
   /** Runs one sync now; rejects (409) when no feed is configured. */

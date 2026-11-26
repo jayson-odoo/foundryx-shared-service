@@ -19,6 +19,7 @@ import { useCan } from '@/hooks/use-can';
 import { hubConnectorErrorMessage, useSyncNow } from '@/hooks/use-hub-connector';
 import { CreateHubDialog } from './components/create-hub-dialog';
 import { HUB_MANAGE, HUB_VIEW } from './components/hub-meta';
+import { ScheduledTasksDialog } from './components/scheduled-tasks-dialog';
 import { useHubsListConfig } from './components/use-hubs-list-config';
 
 /** Hub Connector > Hubs: the partner platforms that see our availability. */
@@ -28,6 +29,7 @@ export default function HubConnectorPage() {
   const [nonce, setNonce] = useState(0);
   const onCreate = useCallback(() => setCreating(true), []);
   const config = useHubsListConfig(onCreate, nonce);
+  const [tasksOpen, setTasksOpen] = useState(false);
   const router = useRouter();
   const { syncing, sync } = useSyncNow();
 
@@ -58,6 +60,7 @@ export default function HubConnectorPage() {
                   <DropdownMenuItem disabled={syncing} onSelect={() => void syncNow()}>
                     Sync now
                   </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setTasksOpen(true)}>Scheduled tasks</DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => router.push('/settings/integrations')}>
                     CRM stock feed
                   </DropdownMenuItem>
@@ -69,6 +72,7 @@ export default function HubConnectorPage() {
         <ResourceList config={config} hideHeader restoreFromCtx />
       </Container>
       <CreateHubDialog open={creating} onOpenChange={setCreating} onCreated={() => setNonce((n) => n + 1)} />
+      <ScheduledTasksDialog open={tasksOpen} onOpenChange={setTasksOpen} />
     </RequirePermission>
   );
 }

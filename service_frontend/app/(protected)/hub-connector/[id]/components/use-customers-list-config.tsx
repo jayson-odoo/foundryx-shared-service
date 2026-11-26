@@ -15,7 +15,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import { hubConnectorService } from '@/services/hub-connector-service';
 import type { HubCustomer, Option } from '@/types/hub-connector';
 import type { ListQuery, ListResult } from '@/types/resource';
-import { HUB_ACTIVE_REGISTRY, HUB_MANAGE, hubActiveStatus } from '../../components/hub-meta';
+import { ACTIVE_FILTER, HUB_ACTIVE_REGISTRY, HUB_MANAGE, hubActiveStatus } from '../../components/hub-meta';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -196,6 +196,7 @@ export function useCustomersListConfig({
         onCreate,
         actions,
       }),
+      filterFields: [ACTIVE_FILTER],
       onRowSelect: (row) => onEdit(row),
       onDeferredCommitted: () => undefined,
     };

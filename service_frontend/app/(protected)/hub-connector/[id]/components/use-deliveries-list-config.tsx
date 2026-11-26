@@ -15,7 +15,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import { hubConnectorService } from '@/services/hub-connector-service';
 import type { HubDelivery } from '@/types/hub-connector';
 import type { ListQuery, ListResult } from '@/types/resource';
-import { DELIVERY_STATUS_REGISTRY, HUB_MANAGE } from '../../components/hub-meta';
+import { DELIVERY_STATUS_FILTER, DELIVERY_STATUS_REGISTRY, HUB_MANAGE } from '../../components/hub-meta';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -167,6 +167,7 @@ export function useDeliveriesListConfig(hubId: string): ResourceListConfig<HubDe
         defaultSort: { id: 'createdAt', desc: true },
         actions,
       }),
+      filterFields: [DELIVERY_STATUS_FILTER],
     };
   }, [formatDmyDateTime, hubId]);
 }

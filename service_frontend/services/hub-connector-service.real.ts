@@ -13,9 +13,11 @@ import type {
   HubDelivery,
   Option,
   Page,
+  ScheduledTask,
   SyncState,
 } from '@/types/hub-connector';
-import type { ListQuery } from '@/types/resource';
+import type { HistoryEntry } from '@/types/record-history';
+import type { FilterGroup, FilterRule, ListQuery } from '@/types/resource';
 import type { HubConnectorService } from './hub-connector-service';
 
 const BASE = '/hub-connector';
@@ -33,6 +35,30 @@ export function hubListParams(query: ListQuery): URLSearchParams {
   return p;
 }
 
+function conditions(group: FilterGroup | null | undefined): FilterRule[] {
+  if (!group || group.combinator !== 'and') return [];
+  return group.rules.flatMap((r) => (r.kind === 'group' ? conditions(r) : [r]));
+}
+
+function values(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String);
+  return v === null || v === undefined || v === '' ? [] : [String(v)];
+}
+
+/** The list query plus its whitelisted multi-select filters: one repeated param per value. */
+export function filteredParams(query: ListQuery, fields: readonly string[]): URLSearchParams {
+  const p = hubListParams(query);
+  for (const rule of conditions(query.filter)) {
+    if (rule.kind !== 'condition' || !fields.includes(rule.field)) continue;
+    values(rule.value).forEach((v) => p.append(rule.field, v));
+  }
+  return p;
+}
+
+const HUB_FILTERS = ['status', 'showPrice'] as const;
+const CUSTOMER_FILTERS = ['status'] as const;
+const DELIVERY_FILTERS = ['status'] as const;
+
 const enc = encodeURIComponent;
 const json = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
 const patch = (body: unknown): RequestInit => ({ method: 'PATCH', body: JSON.stringify(body) });
@@ -44,7 +70,7 @@ function rows<T>(res: T[] | { data: T[] }): T[] {
 
 export const realHubConnectorService: HubConnectorService = {
   listHubs(query) {
-    return apiFetch<Page<Hub>>(`${BASE}/hubs?${hubListParams(query).toString()}`);
+    return apiFetch<Page<Hub>>(`${BASE}/hubs?${filteredParams(query, HUB_FILTERS).toString()}`);
   },
   createHub(input) {
     return apiFetch<HubCreated>(`${BASE}/hubs`, json(input));
@@ -67,7 +93,7 @@ export const realHubConnectorService: HubConnectorService = {
 
   listCustomers(hubId, query) {
     return apiFetch<Page<HubCustomer>>(
-      `${BASE}/hubs/${enc(hubId)}/customers?${hubListParams(query).toString()}`,
+      `${BASE}/hubs/${enc(hubId)}/customers?${filteredParams(query, CUSTOMER_FILTERS).toString()}`,
     );
   },
   createCustomer(hubId, input) {
@@ -84,7 +110,7 @@ export const realHubConnectorService: HubConnectorService = {
   },
 
   listDeliveries(hubId, query, statuses = []) {
-    const p = hubListParams(query);
+    const p = filteredParams(query, DELIVERY_FILTERS);
     statuses.forEach((s) => p.append('status', s));
     return apiFetch<Page<HubDelivery>>(`${BASE}/hubs/${enc(hubId)}/deliveries?${p.toString()}`);
   },
@@ -105,6 +131,21 @@ export const realHubConnectorService: HubConnectorService = {
   },
   async revokeKey(hubId, id) {
     await apiFetch(`${BASE}/hubs/${enc(hubId)}/keys/${enc(id)}`, { method: 'DELETE' });
+  },
+
+  async hubHistory(hubId) {
+    return rows(await apiFetch<HistoryEntry[] | { data: HistoryEntry[] }>(`${BASE}/hubs/${enc(hubId)}/history`));
+  },
+
+  async listScheduledTasks() {
+    return rows(await apiFetch<ScheduledTask[] | { data: ScheduledTask[] }>(`${BASE}/scheduled-tasks`));
+  },
+  async runScheduledTask(key) {
+    return rows(
+      await apiFetch<ScheduledTask[] | { data: ScheduledTask[] }>(`${BASE}/scheduled-tasks/${enc(key)}/run`, {
+        method: 'POST',
+      }),
+    );
   },
 
   getSync() {

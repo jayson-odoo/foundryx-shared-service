@@ -10,6 +10,8 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { deliveryResult, useDeliveriesListConfig } from './use-deliveries-list-config';
 import { useCustomersListConfig } from './use-customers-list-config';
+import { useScheduledTasksListConfig, RUN_TASK_ACTION } from '../../components/use-scheduled-tasks-list-config';
+import { useHubsListConfig } from '../../components/use-hubs-list-config';
 
 const delivery = (over: Partial<HubDelivery>): HubDelivery => ({
   id: 'd', event: 'availability.updated', customerCode: 'C', customerName: 'Customer', status: 'SUCCESS',
@@ -46,5 +48,27 @@ describe('customers list config', () => {
     result.current.onRowSelect?.(row, 0, [row]);
     expect(onEdit).toHaveBeenCalledWith(row);
     expect(result.current.actions.map((a) => a.id)).toEqual(['edit', 'preview', 'remove']);
+  });
+});
+
+describe('list filters', () => {
+  it('offers the agreed filter fields on each list', () => {
+    const hubs = renderHook(() => useHubsListConfig(vi.fn())).result.current;
+    expect(hubs.filterFields.map((f) => f.field)).toEqual(['status', 'showPrice']);
+    const customers = renderHook(() =>
+      useCustomersListConfig({ hubId: 'h1', onCreate: vi.fn(), onEdit: vi.fn(), onPreview: vi.fn(), refreshKey: 0 }),
+    ).result.current;
+    expect(customers.filterFields.map((f) => f.field)).toEqual(['status']);
+    const deliveries = renderHook(() => useDeliveriesListConfig('h1')).result.current;
+    expect(deliveries.filterFields[0].options?.map((o) => o.label)).toEqual(['Waiting', 'Delivered', 'Failed']);
+  });
+});
+
+describe('scheduled tasks list config', () => {
+  it('has the agreed columns and a Run now row action', () => {
+    const { result } = renderHook(() => useScheduledTasksListConfig());
+    expect(result.current.columns.map((c) => c.id)).toEqual(['name', 'schedule', 'lastRunAt', 'lastError', 'actions']);
+    expect(result.current.actions.map((a) => a.id)).toEqual(['run-now']);
+    expect(RUN_TASK_ACTION.permission).toBe('hub_connector.manage');
   });
 });
