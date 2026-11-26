@@ -50,3 +50,8 @@ class SleepEngine(FakeEngine):
     def run(self, kind, inputs, params, out_dir):
         time.sleep(30)
         return []
+
+
+class PathMessageEngine(FakeEngine):
+    def run(self, kind, inputs, params, out_dir):
+        raise RuntimeError("cannot open /Users/someone/private/model.bin")
