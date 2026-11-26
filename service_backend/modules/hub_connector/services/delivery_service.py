@@ -263,11 +263,16 @@ def resync_hub(db: Session, tenant_id: str, hub_id: str) -> List[str]:
     return ids
 
 
-def remove_customer(db: Session, tenant_id: str, hub_id: str, hub_customer_id: str) -> None:
+def remove_customer(db: Session, tenant_id: str, hub_id: str, hub_customer_id: str, *, actor=None) -> None:
     """Take a customer off a hub: the hub is told to drop everything it showed,
     in the same transaction as the removal (staff route AND grace-window undo)."""
+    from . import history_service
+
     hub = hub_service.get_hub(db, tenant_id, hub_id)
     row = hub_service.get_hub_customer(db, tenant_id, hub_id, hub_customer_id)
+    history_service.record(
+        db, tenant_id, hub.id, actor or history_service.SYSTEM, "Customer removed", history_service.customer_label(row), None
+    )
     delivery_id = hide_customer(db, hub, row)
     hub_service.remove_customer(db, tenant_id, hub_id, hub_customer_id, commit=False)
     db.commit()
@@ -472,19 +477,18 @@ def redeliver(db: Session, tenant_id: str, delivery_id: str) -> Optional[str]:
     return new_id
 
 
-def run_due(db: Session, limit: int = 100) -> int:
-    """Re-drive PENDING deliveries whose time has come (beat tick)."""
+def run_due(db: Session, limit: int = 100, *, tenant_id: Optional[str] = None) -> int:
+    """Re-drive PENDING deliveries whose time has come. The beat tick runs it
+    for every tenant and stamps the task's last run; ``tenant_id`` (Run now)
+    limits it to one tenant."""
     now = datetime.now(timezone.utc)
-    due = [
-        r
-        for (r,) in db.query(HcDelivery.id)
-        .filter(HcDelivery.status == DELIVERY_PENDING, HcDelivery.next_at <= now)
-        .order_by(HcDelivery.next_at.asc())
-        .limit(limit)
-        .all()
-    ]
+    q = db.query(HcDelivery.id).filter(HcDelivery.status == DELIVERY_PENDING, HcDelivery.next_at <= now)
+    if tenant_id is not None:
+        q = q.filter(HcDelivery.tenant_id == tenant_id)
+    due = [r for (r,) in q.order_by(HcDelivery.next_at.asc()).limit(limit).all()]
     deadline = time.monotonic() + DUE_RUN_BUDGET_SECONDS
     attempted = 0
+    failed = 0
     for delivery_id in due:
         if time.monotonic() >= deadline:
             break
@@ -494,6 +498,11 @@ def run_due(db: Session, limit: int = 100) -> int:
         except Exception:  # noqa: BLE001 - one bad row never stops the rest
             logger.exception("hub delivery %s failed in the due run", delivery_id)
             db.rollback()
+            failed += 1
+    if tenant_id is None:
+        from . import jobs_service
+
+        jobs_service.stamp(db, jobs_service.JOB_RETRIES, f"{failed} deliveries could not be sent." if failed else None)
     return attempted
 
 

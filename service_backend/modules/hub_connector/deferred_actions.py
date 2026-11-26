@@ -56,8 +56,12 @@ def _customer_remove(db: Session, tenant_id: str, entity_id: str, payload: dict,
     )
     if row is None:
         raise ValueError("This customer was already removed.")
+    from .services import history_service
+
     try:
-        delivery_service.remove_customer(db, tenant_id, row.hub_id, row.id)
+        delivery_service.remove_customer(
+            db, tenant_id, row.hub_id, row.id, actor=history_service.actor_for(db, tenant_id, actor_user_id, actor_user_id)
+        )
     except HubError as exc:
         raise ValueError(exc.message) from None
 
@@ -74,12 +78,17 @@ def _key_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
 
 
 def _key_revoke(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
-    from .services import key_service
+    from .services import history_service, key_service
 
     try:
-        key_service.revoke(db, tenant_id, entity_id)
+        row = key_service.revoke(db, tenant_id, entity_id)
     except key_service.KeyNotFound:
         raise ValueError("Key no longer exists.") from None
+    history_service.record(
+        db, tenant_id, row.hub_id, history_service.actor_for(db, tenant_id, actor_user_id, actor_user_id),
+        "Hub key revoked", row.name, None,
+    )
+    db.commit()
 
 
 HUB_DELETE = DeferredActionDef(

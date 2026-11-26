@@ -155,3 +155,31 @@ class SyncStateOut(ApiModel):
     lastError: Optional[str] = None
     products: int = 0
     queued: int = 0
+
+
+class HistoryItem(ApiModel):
+    model_config = {"populate_by_name": True}
+
+    id: str
+    at: Optional[datetime] = None
+    who: Optional[str] = None
+    onBehalfOf: Optional[str] = None
+    action: str
+    from_: Optional[str] = Field(default=None, alias="from")
+    to: Optional[str] = None
+
+
+class HistoryList(BaseModel):
+    data: List[HistoryItem]
+
+
+class ScheduledTask(ApiModel):
+    key: str
+    name: str
+    schedule: str
+    lastRunAt: Optional[datetime] = None
+    lastError: Optional[str] = None
+
+
+class ScheduledTaskList(BaseModel):
+    data: List[ScheduledTask]

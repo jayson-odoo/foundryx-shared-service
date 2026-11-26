@@ -764,3 +764,110 @@ def test_plain_http_crm_address_is_refused_outside_development(monkeypatch):
     with pytest.raises(crm_feed.FeedError):
         crm_feed.config_from({"baseUrl": "http://crm.example", "company": "CO-1"}, {"apiKey": "k"})
     assert crm_feed.config_from({"baseUrl": "https://crm.example", "company": "CO-1"}, {"apiKey": "k"}).company == "CO-1"
+
+
+# ── standing rules: filters, history, scheduled tasks, assistant actions ───
+
+def test_lists_filter_on_the_server(client, hc, crm, stub_hub):
+    headers = _ready(client)
+    hub_id = _hub(client, headers)["hub"]["id"]
+    _hub(client, headers, name="Priced", code="priced", exposePrice=True, callbackUrl=None)
+    off = _hub(client, headers, name="Off", code="off", callbackUrl=None)["hub"]["id"]
+    client.patch(f"/hub-connector/hubs/{off}", json={"active": False}, headers=headers)
+    names = lambda res: sorted(h["name"] for h in res.json()["data"])  # noqa: E731
+    assert names(client.get("/hub-connector/hubs", params={"status": "inactive"}, headers=headers)) == ["Off"]
+    assert names(client.get("/hub-connector/hubs", params={"showPrice": "yes"}, headers=headers)) == ["Priced"]
+    both = client.get("/hub-connector/hubs", params=[("status", "active"), ("status", "inactive")], headers=headers)
+    assert names(both) == ["EcoHub", "Off", "Priced"]
+    combined = client.get("/hub-connector/hubs", params={"status": "active", "showPrice": "no"}, headers=headers)
+    assert names(combined) == ["EcoHub"]
+    paused = _add_customer(client, headers, hub_id, "C-P", "Paused one", [], [])["id"]
+    _add_customer(client, headers, hub_id, "C-T", "Customer T", ["WH-S"], ["BR-A"])
+    client.patch(f"/hub-connector/hubs/{hub_id}/customers/{paused}", json={"active": False}, headers=headers)
+    res = client.get(f"/hub-connector/hubs/{hub_id}/customers", params={"status": "inactive"}, headers=headers)
+    assert [c["customerCode"] for c in res.json()["data"]] == ["C-P"]
+
+
+def test_hub_history_records_who_what_old_and_new(client, hc, crm, stub_hub):
+    headers = _ready(client)
+    hub_id = _hub(client, headers)["hub"]["id"]
+    cid = _add_customer(client, headers, hub_id, "C-T", "Customer T", ["WH-S"], ["BR-A"])["id"]
+    client.patch(f"/hub-connector/hubs/{hub_id}", json={"exposePrice": True}, headers=headers)
+    client.patch(f"/hub-connector/hubs/{hub_id}/customers/{cid}", json={"locationCodes": ["WH-N", "WH-S"]}, headers=headers)
+    key_id = client.post(f"/hub-connector/hubs/{hub_id}/keys", json={"name": "EcoHub"}, headers=headers).json()["id"]
+    client.delete(f"/hub-connector/hubs/{hub_id}/keys/{key_id}", headers=headers)
+    client.delete(f"/hub-connector/hubs/{hub_id}/customers/{cid}", headers=headers)
+    rows = client.get(f"/hub-connector/hubs/{hub_id}/history", headers=headers).json()["data"]
+    by_action = {r["action"]: r for r in rows}
+    assert by_action["Show price changed"]["from"] == "No" and by_action["Show price changed"]["to"] == "Yes"
+    loc = by_action["Customer locations changed: C-T"]
+    assert loc["from"] == "South warehouse" and loc["to"] == "North warehouse, South warehouse"
+    assert {"Hub created", "Customer added", "Hub key created", "Hub key revoked", "Customer removed"} <= set(by_action)
+    assert all(r["who"] and r["at"].endswith("Z") for r in rows)
+    assert all(r["onBehalfOf"] is None for r in rows)
+    assert rows[0]["action"] == "Customer removed"  # newest first
+
+
+def test_scheduled_tasks_show_last_run_error_and_run_now(client, hc, crm, stub_hub):
+    headers = _login(client)
+    tasks = client.get("/hub-connector/scheduled-tasks", headers=headers).json()["data"]
+    assert [t["key"] for t in tasks] == ["crm-sync", "delivery-retries"]
+    assert tasks[0]["lastRunAt"] is None and tasks[0]["schedule"] == "Every 10 minutes"
+    _connect_feed(client, headers)
+    crm.status = 403
+    res = client.post("/hub-connector/scheduled-tasks/crm-sync/run", headers=headers)
+    assert res.status_code == 200
+    sync = res.json()["data"][0]
+    assert sync["lastRunAt"] and "grant" in sync["lastError"]
+    crm.status = 200
+    sync = client.post("/hub-connector/scheduled-tasks/crm-sync/run", headers=headers).json()["data"][0]
+    assert sync["lastError"] is None
+    db = hc()
+    try:
+        delivery_service.run_due(db)  # the beat tick stamps the platform task
+    finally:
+        db.close()
+    retries = client.get("/hub-connector/scheduled-tasks", headers=headers).json()["data"][1]
+    assert retries["lastRunAt"] and retries["lastError"] is None
+    assert client.post("/hub-connector/scheduled-tasks/delivery-retries/run", headers=headers).status_code == 200
+    assert client.post("/hub-connector/scheduled-tasks/nope/run", headers=headers).status_code == 404
+
+
+def test_assistant_can_read_a_customer_view_and_run_a_sync(client, hc, crm, stub_hub):
+    """The workflow actions behind "what does Customer T see?" and "sync the
+    hub stock now" on WhatsApp (AI Agent -> action -> reply)."""
+    from app.workflow_engine.registry import get_action
+    from modules.hub_connector import workflow_nodes
+
+    workflow_nodes.register_workflow_nodes()
+    headers = _ready(client)
+    hub_id = _hub(client, headers, exposePrice=True)["hub"]["id"]
+    _add_customer(client, headers, hub_id, "C-T", "Customer T", ["WH-S"], ["BR-A", "BR-B"])
+    view = get_action("hub_connector.customer_view")
+    assert view.module == "hub_connector" and view.permission == "hub_connector.view"
+    db = hc()
+    try:
+        # Eval prompt 1: "what does Customer T see on EcoHub?"
+        out = view.executor(db, DEFAULT_TENANT_ID, {"hubCode": "{{ trigger.hub }}", "customerCode": "{{ trigger.customer }}"},
+                            {"trigger.hub": "ECOHUB", "trigger.customer": "C-T"})
+        assert out["customerName"] == "Customer T" and out["total"] == 2 and out["inStockCount"] == 1
+        assert out["summary"].splitlines()[:5] == ["SR-1001", "Name: Basin mixer", "Brand: Brand A", "In stock: Yes", "Incoming: Yes"]
+        assert "Price: MYR 120.00" in out["summary"] and "·" not in out["summary"]
+        # Eval prompt 2: "is SR-1002 in stock for Customer T?"
+        one = view.executor(db, DEFAULT_TENANT_ID, {"hubCode": "ecohub", "customerCode": "C-T", "productCodes": "SR-1002"}, {})
+        assert [r["code"] for r in one["rows"]] == ["SR-1002"] and one["rows"][0]["in_stock"] is False
+        with pytest.raises(workflow_nodes.ActionError, match="Couldn't find that customer"):
+            view.executor(db, DEFAULT_TENANT_ID, {"hubCode": "ecohub", "customerCode": "NOPE"}, {})
+        synced = get_action("hub_connector.sync_now").executor(db, DEFAULT_TENANT_ID, {}, {})
+        assert synced["products"] == 2
+    finally:
+        db.close()
+
+
+def test_summary_caps_with_a_more_line():
+    from modules.hub_connector.workflow_nodes import summary
+
+    rows = [{"code": f"SR-{i}", "name": f"P{i}", "brand_name": "B", "in_stock": True, "incoming": False} for i in range(12)]
+    text = summary(rows, 12, limit=10)
+    assert text.endswith('Reply "more" to see the next 2.') and "SR-10" not in text
+    assert summary([], 0) == "No products to show for this customer."

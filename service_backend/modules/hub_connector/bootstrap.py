@@ -33,9 +33,11 @@ def register_engine_entities() -> None:
 
     from .crm_feed import HubSourceProvider
     from .deferred_actions import register_hub_connector_deferred_actions
+    from .workflow_nodes import register_workflow_nodes
 
     register_provider(HubSourceProvider())
     register_hub_connector_deferred_actions()
+    register_workflow_nodes()
 
 
 def create_schema_and_tables(engine: Engine) -> None:

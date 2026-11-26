@@ -13,7 +13,7 @@ from app.models.user import User
 
 from .. import schemas
 from ..models import HcHub, HcHubCustomer
-from ..services import delivery_service, hub_service, key_service, sync_service
+from ..services import delivery_service, history_service, hub_service, jobs_service, key_service, sync_service
 from ..services.hub_service import HubError
 
 router = APIRouter()
@@ -21,6 +21,10 @@ router = APIRouter()
 _VIEW = require_permission("hub_connector.view")
 _MANAGE = require_permission("hub_connector.manage")
 _KEYS = require_permission("hub_connector.keys.manage")
+
+
+def _actor(db: Session, user: User, actor_id: str) -> history_service.Actor:
+    return history_service.actor_for(db, user.tenant_id, actor_id, user.id)
 
 
 def _http(exc: HubError) -> HTTPException:
@@ -69,6 +73,8 @@ def _one_customer(db: Session, tenant_id: str, row: HcHubCustomer) -> schemas.Hu
 @router.get("/hubs", response_model=schemas.HubPage)
 def list_hubs(
     search: Optional[str] = Query(default=None, max_length=200),
+    status: Optional[List[str]] = Query(default=None),
+    showPrice: Optional[List[str]] = Query(default=None),
     sort: Optional[str] = Query(default=None, max_length=32),
     order: str = Query(default="asc", pattern="^(asc|desc)$"),
     page: int = Query(default=0, ge=0),
@@ -77,19 +83,27 @@ def list_hubs(
     db: Session = Depends(get_db),
 ) -> schemas.HubPage:
     rows, counts, total = hub_service.list_hubs(
-        db, user.tenant_id, search=search, sort=sort, order=order, page=page, page_size=pageSize
+        db, user.tenant_id, search=search, statuses=status, show_price=showPrice,
+        sort=sort, order=order, page=page, page_size=pageSize,
     )
     return schemas.HubPage(data=[_hub_item(h, counts.get(h.id, 0)) for h in rows], total=total)
 
 
 @router.post("/hubs", response_model=schemas.HubCreated, status_code=201)
-def create_hub(body: schemas.HubCreate, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.HubCreated:
+def create_hub(
+    body: schemas.HubCreate,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.HubCreated:
     try:
         hub, secret = hub_service.create_hub(
             db, user.tenant_id, name=body.name, code=body.code, callback_url=body.callbackUrl, expose_price=body.exposePrice
         )
     except HubError as exc:
         raise _http(exc)
+    history_service.record(db, user.tenant_id, hub.id, _actor(db, user, actor_id), "Hub created", None, hub.name)
+    db.commit()
     return schemas.HubCreated(hub=_hub_item(hub), signingSecret=secret)
 
 
@@ -104,10 +118,16 @@ def get_hub(hub_id: str, user: User = Depends(_VIEW), db: Session = Depends(get_
 
 @router.patch("/hubs/{hub_id}", response_model=schemas.HubItem)
 def update_hub(
-    hub_id: str, body: schemas.HubUpdate, user: User = Depends(_MANAGE), db: Session = Depends(get_db)
+    hub_id: str,
+    body: schemas.HubUpdate,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
 ) -> schemas.HubItem:
     try:
+        before = history_service.hub_snapshot(hub_service.get_hub(db, user.tenant_id, hub_id))
         hub, resync = hub_service.update_hub(db, user.tenant_id, hub_id, body.model_dump(exclude_unset=True), commit=False)
+        history_service.record_hub_changes(db, hub, _actor(db, user, actor_id), before)
         ids = delivery_service.resync_hub(db, user.tenant_id, hub.id) if resync and hub.active and hub.callback_url else []
     except HubError as exc:
         db.rollback()
@@ -119,19 +139,27 @@ def update_hub(
 
 
 @router.post("/hubs/{hub_id}/rotate-secret", response_model=schemas.SecretOut)
-def rotate_secret(hub_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.SecretOut:
+def rotate_secret(
+    hub_id: str, user: User = Depends(_MANAGE), actor_id: str = Depends(get_actor_user_id), db: Session = Depends(get_db)
+) -> schemas.SecretOut:
     try:
-        return schemas.SecretOut(signingSecret=hub_service.rotate_secret(db, user.tenant_id, hub_id))
+        secret = hub_service.rotate_secret(db, user.tenant_id, hub_id)
     except HubError as exc:
         raise _http(exc)
+    history_service.record(db, user.tenant_id, hub_id, _actor(db, user, actor_id), "Signing secret rotated")
+    db.commit()
+    return schemas.SecretOut(signingSecret=secret)
 
 
 @router.post("/hubs/{hub_id}/resync", response_model=schemas.QueuedOut)
-def resync_hub(hub_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.QueuedOut:
+def resync_hub(
+    hub_id: str, user: User = Depends(_MANAGE), actor_id: str = Depends(get_actor_user_id), db: Session = Depends(get_db)
+) -> schemas.QueuedOut:
     try:
         ids = delivery_service.resync_hub(db, user.tenant_id, hub_id)
     except HubError as exc:
         raise _http(exc)
+    history_service.record(db, user.tenant_id, hub_id, _actor(db, user, actor_id), "All customers resent", None, f"{len(ids)} deliveries")
     db.commit()
     delivery_service.enqueue(ids)
     return schemas.QueuedOut(queued=len(ids))
@@ -152,6 +180,7 @@ def delete_hub(hub_id: str, user: User = Depends(_MANAGE), db: Session = Depends
 def list_customers(
     hub_id: str,
     search: Optional[str] = Query(default=None, max_length=200),
+    status: Optional[List[str]] = Query(default=None),
     sort: Optional[str] = Query(default=None, max_length=32),
     order: str = Query(default="asc", pattern="^(asc|desc)$"),
     page: int = Query(default=0, ge=0),
@@ -161,7 +190,7 @@ def list_customers(
 ) -> schemas.HubCustomerPage:
     try:
         rows, total = hub_service.list_customers(
-            db, user.tenant_id, hub_id, search=search, sort=sort, order=order, page=page, page_size=pageSize
+            db, user.tenant_id, hub_id, search=search, statuses=status, sort=sort, order=order, page=page, page_size=pageSize
         )
     except HubError as exc:
         raise _http(exc)
@@ -171,7 +200,11 @@ def list_customers(
 
 @router.post("/hubs/{hub_id}/customers", response_model=schemas.HubCustomerItem, status_code=201)
 def add_customer(
-    hub_id: str, body: schemas.HubCustomerCreate, user: User = Depends(_MANAGE), db: Session = Depends(get_db)
+    hub_id: str,
+    body: schemas.HubCustomerCreate,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
 ) -> schemas.HubCustomerItem:
     try:
         row = hub_service.add_customer(
@@ -188,6 +221,12 @@ def add_customer(
     except HubError as exc:
         db.rollback()
         raise _http(exc)
+    locations, brands = hub_service.name_maps(db, user.tenant_id)
+    after = history_service.customer_snapshot(row, locations, brands)
+    history_service.record(
+        db, user.tenant_id, hub.id, _actor(db, user, actor_id), "Customer added", None,
+        f"{history_service.customer_label(row)}; locations: {after['locations']}; brands: {after['brands']}",
+    )
     delivery_id = delivery_service.resync_customer(db, hub, row)
     db.commit()
     db.refresh(row)
@@ -201,9 +240,14 @@ def update_customer(
     hub_customer_id: str,
     body: schemas.HubCustomerUpdate,
     user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ) -> schemas.HubCustomerItem:
+    locations, brands = hub_service.name_maps(db, user.tenant_id)
     try:
+        before = history_service.customer_snapshot(
+            hub_service.get_hub_customer(db, user.tenant_id, hub_id, hub_customer_id), locations, brands
+        )
         row = hub_service.update_customer(
             db, user.tenant_id, hub_id, hub_customer_id, body.model_dump(exclude_unset=True), commit=False
         )
@@ -211,6 +255,9 @@ def update_customer(
     except HubError as exc:
         db.rollback()
         raise _http(exc)
+    history_service.record_customer_changes(
+        db, row, _actor(db, user, actor_id), before, history_service.customer_snapshot(row, locations, brands)
+    )
     delivery_id = delivery_service.resync_customer(db, hub, row) if row.active else delivery_service.hide_customer(db, hub, row)
     db.commit()
     db.refresh(row)
@@ -220,10 +267,14 @@ def update_customer(
 
 @router.delete("/hubs/{hub_id}/customers/{hub_customer_id}", status_code=204)
 def remove_customer(
-    hub_id: str, hub_customer_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)
+    hub_id: str,
+    hub_customer_id: str,
+    user: User = Depends(_MANAGE),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
 ) -> Response:
     try:
-        delivery_service.remove_customer(db, user.tenant_id, hub_id, hub_customer_id)
+        delivery_service.remove_customer(db, user.tenant_id, hub_id, hub_customer_id, actor=_actor(db, user, actor_id))
     except HubError as exc:
         db.rollback()
         raise _http(exc)
@@ -374,12 +425,59 @@ def create_key(
     except HubError as exc:
         raise _http(exc)
     row, full_key = key_service.issue(db, user.tenant_id, hub_id, name=body.name, created_by=actor_id)
+    history_service.record(db, user.tenant_id, hub_id, _actor(db, user, actor_id), "Hub key created", None, row.name)
+    db.commit()
     return schemas.KeyCreated(**_key_item(row).model_dump(), key=full_key)
 
 
 @router.delete("/hubs/{hub_id}/keys/{key_id}", response_model=schemas.KeyItem)
-def revoke_key(hub_id: str, key_id: str, user: User = Depends(_KEYS), db: Session = Depends(get_db)) -> schemas.KeyItem:
+def revoke_key(
+    hub_id: str,
+    key_id: str,
+    user: User = Depends(_KEYS),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.KeyItem:
     rows = [k for k in key_service.list_keys(db, user.tenant_id, hub_id) if k.id == key_id]
     if not rows:
         raise HTTPException(status_code=404, detail={"code": "key_not_found", "message": "This key does not exist."})
-    return _key_item(key_service.revoke(db, user.tenant_id, key_id))
+    was_active = rows[0].revoked_at is None
+    row = key_service.revoke(db, user.tenant_id, key_id)
+    if was_active:
+        history_service.record(db, user.tenant_id, hub_id, _actor(db, user, actor_id), "Hub key revoked", row.name, None)
+        db.commit()
+    return _key_item(row)
+
+
+# ── history (owner standing rule) ───────────────────────────────────────────
+
+@router.get("/hubs/{hub_id}/history", response_model=schemas.HistoryList)
+def hub_history(hub_id: str, user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.HistoryList:
+    try:
+        hub_service.get_hub(db, user.tenant_id, hub_id)
+    except HubError as exc:
+        raise _http(exc)
+    return schemas.HistoryList(
+        data=[
+            schemas.HistoryItem(
+                id=r.id, at=r.at, who=r.who, onBehalfOf=r.on_behalf_of, action=r.action, **{"from": r.from_text}, to=r.to_text
+            )
+            for r in history_service.list_for_hub(db, user.tenant_id, hub_id)
+        ]
+    )
+
+
+# ── scheduled tasks (owner standing rule: last run, last error, Run now) ────
+
+@router.get("/scheduled-tasks", response_model=schemas.ScheduledTaskList)
+def scheduled_tasks(user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.ScheduledTaskList:
+    return schemas.ScheduledTaskList(data=[schemas.ScheduledTask(**t) for t in jobs_service.list_jobs(db, user.tenant_id)])
+
+
+@router.post("/scheduled-tasks/{job}/run", response_model=schemas.ScheduledTaskList)
+def run_scheduled_task(job: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.ScheduledTaskList:
+    try:
+        jobs_service.run_now(db, user.tenant_id, job)
+    except HubError as exc:
+        raise _http(exc)
+    return schemas.ScheduledTaskList(data=[schemas.ScheduledTask(**t) for t in jobs_service.list_jobs(db, user.tenant_id)])

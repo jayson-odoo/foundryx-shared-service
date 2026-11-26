@@ -129,11 +129,21 @@ _HUB_SORT = {
 }
 
 
+def _flags(values: Optional[Sequence[str]], yes: str, no: str) -> Optional[List[bool]]:
+    """Multi-select filter values -> booleans; None/empty/unknown = no filter."""
+    picked = {v for v in values or [] if v in (yes, no)}
+    if not picked or len(picked) == 2:
+        return None
+    return [yes in picked]
+
+
 def list_hubs(
     db: Session,
     tenant_id: str,
     *,
     search: Optional[str] = None,
+    statuses: Optional[Sequence[str]] = None,
+    show_price: Optional[Sequence[str]] = None,
     sort: Optional[str] = None,
     order: str = "asc",
     page: int = 0,
@@ -152,6 +162,12 @@ def list_hubs(
     if search and search.strip():
         pattern = _like(search.strip())
         q = q.filter(or_(func.lower(HcHub.name).like(pattern, escape="\\"), func.lower(HcHub.code).like(pattern, escape="\\")))
+    active = _flags(statuses, "active", "inactive")
+    if active is not None:
+        q = q.filter(HcHub.active.is_(active[0]))
+    price = _flags(show_price, "yes", "no")
+    if price is not None:
+        q = q.filter(HcHub.expose_price.is_(price[0]))
     total = q.count()
     offset, size = _page(page, page_size)
     column = n if sort == "customerCount" else _HUB_SORT.get(sort or "", HcHub.name)
@@ -210,6 +226,9 @@ def delete_hub(db: Session, tenant_id: str, hub_id: str) -> None:
         )
     db.query(HcDelivery).filter(HcDelivery.tenant_id == tenant_id, HcDelivery.hub_id == hub.id).delete(synchronize_session=False)
     db.query(HcApiKey).filter(HcApiKey.tenant_id == tenant_id, HcApiKey.hub_id == hub.id).delete(synchronize_session=False)
+    from ..models import HcHistory
+
+    db.query(HcHistory).filter(HcHistory.tenant_id == tenant_id, HcHistory.hub_id == hub.id).delete(synchronize_session=False)
     db.query(HcHubCustomer).filter(HcHubCustomer.tenant_id == tenant_id, HcHubCustomer.hub_id == hub.id).delete(
         synchronize_session=False
     )
@@ -362,6 +381,7 @@ def list_customers(
     hub_id: str,
     *,
     search: Optional[str] = None,
+    statuses: Optional[Sequence[str]] = None,
     sort: Optional[str] = None,
     order: str = "asc",
     page: int = 0,
@@ -377,6 +397,9 @@ def list_customers(
                 func.lower(HcHubCustomer.customer_name).like(pattern, escape="\\"),
             )
         )
+    active = _flags(statuses, "active", "inactive")
+    if active is not None:
+        q = q.filter(HcHubCustomer.active.is_(active[0]))
     total = q.count()
     offset, size = _page(page, page_size)
     column = _CUSTOMER_SORT.get(sort or "", HcHubCustomer.customer_name)

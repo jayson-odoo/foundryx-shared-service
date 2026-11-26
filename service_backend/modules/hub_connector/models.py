@@ -205,3 +205,32 @@ class HcDelivery(HubConnectorBase):
     last_error = Column(String(500), nullable=True)
     last_attempt_at = Column(UTCDateTime(), nullable=True)
     created_at = _created()
+
+
+class HcHistory(HubConnectorBase):
+    """One tracked action on a hub (owner standing rule: who, on behalf of,
+    when, plain action, old -> new). Display text only, written at the time
+    of the action so a later rename never rewrites history."""
+
+    __tablename__ = "hc_history"
+    __table_args__ = (Index("ix_hc_history_hub_at", "tenant_id", "hub_id", "at"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    hub_id = Column(String, nullable=False)
+    at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    who = Column(String(300), nullable=True)
+    on_behalf_of = Column(String(300), nullable=True)
+    action = Column(String(200), nullable=False)
+    from_text = Column(String(1000), nullable=True)
+    to_text = Column(String(1000), nullable=True)
+
+
+class HcJobRun(HubConnectorBase):
+    """Last run of a platform-wide tick (no tenant data in it)."""
+
+    __tablename__ = "hc_job_runs"
+
+    job = Column(String(64), primary_key=True)
+    last_run_at = Column(UTCDateTime(), nullable=True)
+    last_error = Column(String(500), nullable=True)
