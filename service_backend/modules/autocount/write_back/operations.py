@@ -1216,7 +1216,18 @@ class OperationService:
             # plan 71: the merge goes back into the source row: its key and before-image (the exact read-back)
             **({"returnTo": plan["merge"], "returnBefore": _without_note(_row_in(doc, plan["merge"]))}
                if self._return_to is not None and plan.get("merge") == self._return_to else {}),
+            **self._unlink_note(company, defn, plan, row),
         })
+
+    def _unlink_note(self, company: AcCompany, defn: _OpDef, plan: Dict[str, Any], row: Doc) -> Doc:
+        """Lane SS-UNLINK-STRIP-SO-NOTE (owner 26 Nov): a PO unlink that REPLACES the linked row (no merge target, no
+        receipt cut) keeps the S/O note text the link wrote, so the new free row is sent without it (and Resume
+        needs no second look-up). Empty for every other op / path, and when the note is unknown."""
+        if defn.kind != "PO" or defn.mode != "unlink" or plan.get("merge") or plan["mode"] == "partial":
+            return {}
+        key = _link_of("PO", row)
+        note = self.prims._so_link_note(company, int(key)) if key else None
+        return {"unlinkNote": note} if note else {}
 
     @staticmethod
     def _so_link_values(so: Doc, so_row: Doc) -> Doc:
@@ -1337,8 +1348,12 @@ class OperationService:
     def _replace_run(self, row: AcWriteOperation, company: AcCompany, snap: Doc, old_key: int) -> OperationResult:
         """Plan 61: ONE PUT [row "D", new row with the new link or none], then the move.
         AutoCount applies the PUT all or nothing (F8): a refusal changed nothing."""
+        line = self._line_of(snap, snap["newLink"])
+        if snap.get("unlinkNote") and payloads.FURTHER_DESC in line:
+            # the new free row of an unlink: the linked row's Further Description without the S/O note (owner 26 Nov)
+            line[payloads.FURTHER_DESC] = payloads.strip_note(line[payloads.FURTHER_DESC], snap["unlinkNote"])
         res = self.prims.replace_line(
-            **self._call(row, company, snap, "replace"), dtl_key=old_key, line=self._line_of(snap, snap["newLink"]),
+            **self._call(row, company, snap, "replace"), dtl_key=old_key, line=line,
         )
         self._step("replace", res)
         if res.outcome == OUTCOME_VENDOR_ERROR:

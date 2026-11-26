@@ -25,6 +25,7 @@ from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back import auth
 from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
+from modules.autocount.write_back import payloads
 from modules.autocount.write_back.line_notes import NotesReader, SqlDocDb
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader
@@ -391,6 +392,27 @@ class WriteFrame:
         locations = {r.location for r in newest}
         ambiguous = any(r.ambiguous for r in newest) or len(locations) > 1
         return str(newest[0].so_doc_no or ""), None if ambiguous else newest[0].location, ambiguous
+
+    def _so_link_note(self, company: AcCompany, so_dtl_key: int) -> Optional[str]:
+        """Lane SS-UNLINK-STRIP-SO-NOTE: the S/O note a link to SO row ``so_dtl_key`` writes, rebuilt with the link's
+        own builder (``payloads.so_link_note``) from the newest good staged copy of that SO (found through the same
+        ``ac_so_row_index`` as ``_so_row``). None when no staged copy holds the row, or equally new copies disagree:
+        the unlink then removes nothing (never a guessed note)."""
+        rows = SoRowIndexRepository(self.db).rows_for(company.tenant_id, company.id, so_dtl_key)
+        if not rows:
+            return None
+        floor = datetime.min.replace(tzinfo=timezone.utc)
+        newest_at = max(r.staged_at or floor for r in rows)
+        notes = set()
+        for ref in sorted({r.so_source_ref for r in rows if (r.staged_at or floor) == newest_at}):
+            staged = self.staged.newest(company.tenant_id, company.id, ENTITY_BY_KIND["SO"], ref, skip_failed=True)
+            raw = (staged.raw_json if staged else None) or {}
+            line = next((ln for ln in raw.get("_lines") or []
+                         if isinstance(ln, dict) and ln.get("DtlKey") == so_dtl_key), None)
+            if line is None:
+                return None
+            notes.add(payloads.so_link_note(raw, line))
+        return notes.pop() if len(notes) == 1 else None
 
     @contextlib.contextmanager
     def staged_memo(self) -> Iterator[None]:
