@@ -584,9 +584,9 @@ it with `PLANNER3D_WORKER_TOKEN_SHA256` in constant time; a missing or wrong tok
 
 | Call | Purpose |
 |---|---|
-| `POST /planner3d/worker/claim` | body `{"kinds": ["model","render","convert"]}`. Answer `200 {"jobId", "kind", "params", "inputs": [{"role", "name", "mime", "size", "sha256"}]}`, or `204` when nothing waits. Takes the oldest `queued` job of an accepted kind, fairly across tenants (section 4), with `FOR UPDATE SKIP LOCKED` and a guarded `UPDATE`; sets `running`, the worker name and `claimed_at`. |
+| `POST /planner3d/worker/claim` | body `{"kinds": ["model","render","convert"]}`. Answer `200 {"jobId", "kind", "params", "inputs": [{"role", "name", "mime", "size", "sha256"}]}`, or `204` when nothing waits. Takes the oldest `queued` job of an accepted kind across all tenants (per-tenant fairness and the queue caps of section 4 are S1 scope), with `FOR UPDATE SKIP LOCKED` and a guarded `UPDATE`; sets `running`, the worker name and `claimed_at`. |
 | `GET /planner3d/worker/jobs/{id}/inputs/{name}` | the input bytes. `404` unless the job is `running` and held by this worker name. |
-| `POST /planner3d/worker/jobs/{id}/heartbeat` | body `{"progress": 0-100}`; the worker sends it about every 15 seconds. `200`, or `409 {"code": "cancelled"}` when the job was cancelled (the worker stops). |
+| `POST /planner3d/worker/jobs/{id}/heartbeat` | body `{"progress": 0-100}`; the worker sends it about every 15 seconds. `200`, or `409 {"detail": {"code": "cancelled", "message": "..."}}` (the house error envelope) when the job was cancelled (the worker stops). |
 | `PUT /planner3d/worker/jobs/{id}/outputs/{name}?role=<role>` | raw body. `201 {"name", "size", "sha256"}`. |
 | `POST /planner3d/worker/jobs/{id}/finish` | body `{"status": "succeeded"\|"failed", "error": {"code", "message"}, "gpuSeconds", "peakRssMb"}`. Answer: the job. |
 
