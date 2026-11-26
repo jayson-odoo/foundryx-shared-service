@@ -32,7 +32,7 @@ UAC: `planner3d-s3-gpu-worker-acceptance-criteria.md`. Size L. Branch `crew/plan
   gpu_seconds, peak_rss_mb, attempts, worker_name, claimed_at, heartbeat_at, approved_candidate,
   source_job_id, created_by_user_id, created/started/finished_at; `P3JobFile`: id, tenant_id, job_id,
   direction in|out, role, name, mime, size, sha256, storage_key).
-- `permissions/permissions.csv`: `planner3d.jobs.view`, `planner3d.jobs.manage`; grant sweep to Admin in
+- `permissions/permissions.csv`: `planner3d.jobs.read`, `planner3d.jobs.manage`; grant sweep to Admin in
   `bootstrap.install_tenant` + the migration backfill for tenants that already have the module.
 - `repositories/job_repository.py` (claim = select oldest queued `FOR UPDATE SKIP LOCKED` + guarded UPDATE;
   stale-lease requeue), `services/job_service.py`, `services/worker_auth.py`, `services/sniff.py`
@@ -76,7 +76,7 @@ Job JSON (camelCase): `id, kind (model|render|convert), status (queued|running|s
 engine, progress, params, error {code, message} | null, gpuSeconds, peakRssMb, attempts, approvedCandidate,
 sourceJobId, files [{direction (in|out), role, name, mime, size, sha256}], createdAt, startedAt, finishedAt`.
 
-Staff router `/planner3d` (session JWT; `planner3d.jobs.view` for reads, `planner3d.jobs.manage` for writes):
+Staff router `/planner3d` (session JWT; `planner3d.jobs.read` for reads, `planner3d.jobs.manage` for writes):
 - `POST /planner3d/jobs/models` multipart: `photos` (1-3 files, PNG/JPEG/WebP by magic bytes, 20 MB each),
   `lengthMm`, `widthMm`, `heightMm` (positive ints) -> 202 job. Inputs stored as `photo-N.<png|jpg|webp>`,
   role `photo`; `params = {dimensionsMm: {length, width, height}}`.

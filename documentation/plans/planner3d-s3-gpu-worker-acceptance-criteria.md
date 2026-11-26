@@ -7,7 +7,7 @@ Proof: sorento-crm#2632 `documentation/plans/PLANNER-3D-PROOF/BUILD-SPLIT-INPUT.
 ## SS job store and worker pull API (backend, module `planner3d`)
 
 - AC-S3-01 A staff user with `planner3d.jobs.manage` submits 1 to 3 product photos (PNG, JPEG or WebP by magic bytes, 20 MB each) plus `dimensionsMm {length,width,height}` and gets 202 with a job in `queued`. A 4th photo, a non-image file renamed `.png`, or a missing dimension answers 422 and stores nothing.
-- AC-S3-02 Without `planner3d.jobs.manage` the submit answers 403; without `planner3d.jobs.view` the list/detail/download answer 403. Every read is tenant-scoped: tenant B never sees, downloads or approves tenant A's job (404).
+- AC-S3-02 Without `planner3d.jobs.manage` the submit answers 403; without `planner3d.jobs.read` the list/detail/download answer 403. Every read is tenant-scoped: tenant B never sees, downloads or approves tenant A's job (404).
 - AC-S3-03 The worker claims work with `POST /planner3d/worker/claim` and `Authorization: Bearer <worker token>`. No token, a wrong token, or an unset server token answers 401 and claims nothing. SS holds only the sha256 hash of the token (`PLANNER3D_WORKER_TOKEN_SHA256`, operator config like `GPU_WORKER_URL`), compares in constant time and never logs it.
 - AC-S3-04 Claim hands out the OLDEST queued job, moves it to `running` and stamps the worker name; two concurrent claims never get the same job (guarded UPDATE, rowcount 1). An empty queue answers 204.
 - AC-S3-05 Jobs submitted while no worker polls (Mac off) stay `queued` and are handed out in order once a worker claims again.
