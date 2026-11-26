@@ -23,6 +23,8 @@ def _token() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info < (3, 11):
+        raise SystemExit("planner3d_worker needs Python 3.11 or newer (found %d.%d)." % sys.version_info[:2])
     parser = argparse.ArgumentParser(prog="planner3d_worker")
     parser.add_argument("--base-url", required=True, help="Shared Service API origin")
     parser.add_argument("--name", required=True, help="this worker's name")

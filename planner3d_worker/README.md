@@ -10,7 +10,8 @@ unchanged), `convert` (one GLB to glb, gltf, obj+mtl, fbx, stl).
 ## Setup
 
 ```bash
-python3 -m venv ~/planner3d/venv
+# Python 3.11 or newer (for example `brew install python@3.13`, then python3.13)
+python3.13 -m venv ~/planner3d/venv
 ~/planner3d/venv/bin/pip install -r planner3d_worker/requirements.txt
 # model jobs only:
 ~/planner3d/venv/bin/pip install -r planner3d_worker/requirements-model.txt

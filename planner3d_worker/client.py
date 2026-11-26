@@ -15,6 +15,7 @@ import threading
 import uuid
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -215,7 +216,7 @@ class Worker:
             while True:
                 try:
                     return future.result(timeout=self.heartbeat_s)
-                except TimeoutError:
+                except FutureTimeout:
                     pass
                 except Exception:
                     if cancelled:
