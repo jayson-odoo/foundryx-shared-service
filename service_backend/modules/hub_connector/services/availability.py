@@ -1,14 +1,20 @@
 """The ONE function that decides what a hub customer sees of an item.
 
-Owner rulings (26 Nov ~21:27):
-- got stock = on hand minus reserved > 0 in at least one of the customer's
-  allowed locations (a location outside the policy never counts);
-- got incoming = any not-yet-arrived remainder > 0, in an allowed location OR on
-  a line not yet allocated to any location (crew Q-A (a));
-- brands: only items whose brand the customer may see;
-- price: only when the HUB's expose switch is on (default OFF).
+Rules (owner rulings 26 Nov ~21:27, frozen with the CRM feed contract #2801):
+- in_stock = SUM of ``available_qty`` (on hand minus reserved) over the
+  customer's chosen locations > 0; a location outside the policy never counts;
+- incoming = any not-yet-arrived line with an outstanding allocation to one of
+  the customer's locations, OR a line not yet allocated to any location (crew
+  Q-A (a)); yes/no only, no date or quantity in S1;
+- brands: only items whose brand the customer may see (a new customer sees
+  nothing until the admin picks);
+- price: only when the HUB's Show price switch is on (default OFF).
 
-Pure: no DB, no I/O, so preview, webhook and tests share it exactly.
+Hub-facing row: ``{code, name, brand_name, in_stock, incoming}`` (+
+``list_price`` / ``currency`` behind the switch).
+
+Pure: no DB, no I/O, so preview, the hub read API, the webhook and the tests
+share it exactly.
 """
 from __future__ import annotations
 
@@ -34,17 +40,18 @@ class ItemFacts:
     brand_name: Optional[str]
     price: Optional[Decimal]
     currency: Optional[str]
-    locations: List[Dict[str, Any]]
-    incoming: List[Dict[str, Any]]
+    locations: List[Dict[str, Any]]  # [{code, available}]
+    incoming: List[Dict[str, Any]]  # [{eta, qty, locations: [{code, qty}]}]
 
 
 def _num(value: Any) -> Decimal:
     if value is None or isinstance(value, bool):
         return Decimal(0)
     try:
-        return Decimal(str(value))
+        number = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return Decimal(0)
+    return number if number.is_finite() else Decimal(0)
 
 
 def make_policy(location_codes: Iterable[str], brand_codes: Iterable[str], expose_price: bool) -> Policy:
@@ -55,20 +62,24 @@ def visible(item: ItemFacts, policy: Policy) -> bool:
     return bool(item.brand_code) and item.brand_code in policy.brand_codes
 
 
-def got_stock(item: ItemFacts, policy: Policy) -> bool:
-    for loc in item.locations or ():
-        if loc.get("code") in policy.location_codes and _num(loc.get("onHand")) - _num(loc.get("reserved")) > 0:
-            return True
-    return False
+def in_stock(item: ItemFacts, policy: Policy) -> bool:
+    total = sum(
+        (_num(loc.get("available")) for loc in item.locations or () if loc.get("code") in policy.location_codes),
+        Decimal(0),
+    )
+    return total > 0
 
 
-def got_incoming(item: ItemFacts, policy: Policy) -> bool:
+def incoming(item: ItemFacts, policy: Policy) -> bool:
     for line in item.incoming or ():
-        if _num(line.get("remaining")) <= 0:
+        allocations = line.get("locations") or []
+        if not allocations:
+            if _num(line.get("qty")) > 0:
+                return True  # not yet allocated to any location
             continue
-        loc = line.get("locationCode")
-        if loc is None or loc == "" or loc in policy.location_codes:
-            return True
+        for alloc in allocations:
+            if alloc.get("code") in policy.location_codes and _num(alloc.get("qty")) > 0:
+                return True
     return False
 
 
@@ -80,18 +91,18 @@ def money(value: Decimal) -> str:
 
 
 def view_for(item: ItemFacts, policy: Policy) -> Optional[Dict[str, Any]]:
-    """The item as this customer sees it, or None when it is hidden."""
+    """The hub-facing row for this customer, or None when it is hidden."""
     if not visible(item, policy):
         return None
     view: Dict[str, Any] = {
         "code": item.code,
         "name": item.name,
-        "brand": {"code": item.brand_code, "name": item.brand_name or item.brand_code},
-        "gotStock": got_stock(item, policy),
-        "gotIncoming": got_incoming(item, policy),
+        "brand_name": item.brand_name or item.brand_code,
+        "in_stock": in_stock(item, policy),
+        "incoming": incoming(item, policy),
     }
     if policy.expose_price and item.price is not None:
-        view["price"] = money(item.price)
+        view["list_price"] = money(item.price)
         view["currency"] = item.currency
     return view
 

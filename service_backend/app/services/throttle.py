@@ -45,8 +45,8 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_LEAD_GATEWAY,
     THROTTLE_SCOPE_LEAD_GATEWAY_KEY,
-    THROTTLE_SCOPE_HUB_PUSH,
-    THROTTLE_SCOPE_HUB_PUSH_KEY,
+    THROTTLE_SCOPE_HUB_API,
+    THROTTLE_SCOPE_HUB_API_KEY,
     THROTTLE_SCOPE_PORTAL,
     THROTTLE_SCOPE_PULL,
     THROTTLE_SCOPE_PULL_KEY,
@@ -197,16 +197,16 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
             timedelta(minutes=settings.throttle_lead_gateway_key_window_minutes),
             None,
         )
-    if scope == THROTTLE_SCOPE_HUB_PUSH:
+    if scope == THROTTLE_SCOPE_HUB_API:
         return (
-            settings.throttle_hub_push_max_fails,
-            timedelta(minutes=settings.throttle_hub_push_window_minutes),
+            settings.throttle_hub_api_max_fails,
+            timedelta(minutes=settings.throttle_hub_api_window_minutes),
             None,
         )
-    if scope == THROTTLE_SCOPE_HUB_PUSH_KEY:
+    if scope == THROTTLE_SCOPE_HUB_API_KEY:
         return (
-            settings.throttle_hub_push_key_max_requests,
-            timedelta(minutes=settings.throttle_hub_push_key_window_minutes),
+            settings.throttle_hub_api_key_max_requests,
+            timedelta(minutes=settings.throttle_hub_api_key_window_minutes),
             None,
         )
     if scope == THROTTLE_SCOPE_PULL_KEY:

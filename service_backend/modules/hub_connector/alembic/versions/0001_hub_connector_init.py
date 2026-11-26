@@ -1,7 +1,7 @@
 """hub_connector init - creates every ``app_hub_connector`` table.
 
-Tables: hc_hubs, hc_hub_customers, hc_customers, hc_items, hc_sent_views,
-hc_api_keys, hc_deliveries. Postgres-only (per-module Alembic is a no-op on the
+Tables: hc_hubs, hc_hub_customers, hc_locations, hc_brands, hc_items,
+hc_sync_state, hc_sent_views, hc_api_keys, hc_deliveries. Postgres-only (per-module Alembic is a no-op on the
 SQLite test engine).
 
 Revision ID: 0001_hub_connector_init
@@ -20,8 +20,10 @@ depends_on = None
 _TABLES = (
     "hc_hubs",
     "hc_hub_customers",
-    "hc_customers",
+    "hc_locations",
+    "hc_brands",
     "hc_items",
+    "hc_sync_state",
     "hc_sent_views",
     "hc_api_keys",
     "hc_deliveries",

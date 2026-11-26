@@ -26,9 +26,6 @@ JSON_BODY_CAP = 256 * 1024
 # module code, so this is a core constant; tests keep it >= the module ceiling.
 MULTIPART_BODY_CAP = 100 * 1024 * 1024 + 1024 * 1024
 SEND_PATH = "/api/v1/omnichannel/messages"
-# Other API-key gateways capped by the same middleware: prefix -> JSON cap.
-# Hub Connector's CRM push carries up to 1000 items per call.
-EXTRA_JSON_CAPS = {"/api/v1/hub-connector/": 8 * 1024 * 1024}
 TOO_LARGE = "Request body is too large."
 
 
@@ -67,8 +64,7 @@ class GatewayBodyCapMiddleware:
             await self.app(scope, receive, send)
             return
         path = _route_path(scope)  # root_path stripped, so a configured root cannot skip the cap
-        extra = next((c for prefix, c in EXTRA_JSON_CAPS.items() if path.startswith(prefix)), None)
-        if extra is None and not path.startswith(GATEWAY_PREFIX):
+        if not path.startswith(GATEWAY_PREFIX):
             await self.app(scope, receive, send)
             return
 
@@ -76,10 +72,7 @@ class GatewayBodyCapMiddleware:
         # content type never raises the cap of any other route.
         is_send = scope.get("method") == "POST" and path.rstrip("/") == SEND_PATH
         multipart = is_send and is_multipart(_header(scope, b"content-type"))
-        if extra is not None:
-            cap = extra
-        else:
-            cap = MULTIPART_BODY_CAP if multipart else JSON_BODY_CAP
+        cap = MULTIPART_BODY_CAP if multipart else JSON_BODY_CAP
 
         declared = _header(scope, b"content-length")
         if declared is not None:

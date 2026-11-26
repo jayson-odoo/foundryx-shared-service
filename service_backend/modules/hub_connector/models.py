@@ -7,6 +7,10 @@ BL-030). Hub signing secrets and delivery bodies are Fernet-encrypted with core
 A hub = a partner platform (first: EcoHub) that shows our availability to its
 own customer companies. What each customer sees is decided HERE, per
 (hub, customer company): locations, brands; the hub decides price exposure.
+
+The facts come from the CRM connector feed (sorento-crm #2801, frozen): this
+module PULLS ``/locations``, ``/brands``, ``/products`` and ``/availability``
+into ``hc_locations`` / ``hc_brands`` / ``hc_items`` on a sync tick.
 """
 
 from __future__ import annotations
@@ -59,7 +63,8 @@ class HcHub(HubConnectorBase):
 
 
 class HcHubCustomer(HubConnectorBase):
-    """The transparency policy for ONE customer company on ONE hub."""
+    """The transparency policy for ONE customer company on ONE hub. A new
+    customer sees nothing until the admin picks its locations and brands."""
 
     __tablename__ = "hc_hub_customers"
     __table_args__ = (UniqueConstraint("hub_id", "customer_code", name="uq_hc_hub_customers_hub_customer"),)
@@ -68,6 +73,7 @@ class HcHubCustomer(HubConnectorBase):
     tenant_id = Column(String, nullable=False, index=True)
     hub_id = Column(String, ForeignKey("hc_hubs.id", ondelete="CASCADE"), nullable=False, index=True)
     customer_code = Column(String(64), nullable=False)
+    customer_name = Column(String(300), nullable=False, default="")
     location_codes_json = Column(_JSON, nullable=True)
     brand_codes_json = Column(_JSON, nullable=True)
     active = Column(Boolean, nullable=False, default=True, server_default="true")
@@ -75,11 +81,25 @@ class HcHubCustomer(HubConnectorBase):
     updated_at = _updated()
 
 
-class HcCustomer(HubConnectorBase):
-    """Customer company catalogue pushed by the CRM (picker source)."""
+class HcLocation(HubConnectorBase):
+    """Active dealer locations from the CRM feed ``GET /locations``."""
 
-    __tablename__ = "hc_customers"
-    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_hc_customers_tenant_code"),)
+    __tablename__ = "hc_locations"
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_hc_locations_tenant_code"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    code = Column(String(64), nullable=False)
+    name = Column(String(300), nullable=False)
+    sellable = Column(Boolean, nullable=False, default=True, server_default="true")
+    updated_at = _updated()
+
+
+class HcBrand(HubConnectorBase):
+    """Dealer-open brands from the CRM feed ``GET /brands``."""
+
+    __tablename__ = "hc_brands"
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_hc_brands_tenant_code"),)
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
@@ -89,11 +109,12 @@ class HcCustomer(HubConnectorBase):
 
 
 class HcItem(HubConnectorBase):
-    """Latest availability facts for one item, as the CRM last pushed them.
+    """One product as the CRM feed last described it.
 
-    ``locations_json`` = ``[{code, name, onHand, reserved}]``;
-    ``incoming_json`` = ``[{ref, locationCode|None, remaining}]`` (a line not yet
-    allocated to a location has ``locationCode`` None).
+    ``locations_json`` = ``[{code, available}]`` (``available_qty`` = on hand
+    minus reserved, a real 0 stays 0); ``incoming_json`` =
+    ``[{eta|None, qty, locations: [{code, qty}]}]`` - not-yet-arrived
+    remainders, an empty ``locations`` list = not yet allocated.
     """
 
     __tablename__ = "hc_items"
@@ -109,7 +130,21 @@ class HcItem(HubConnectorBase):
     currency = Column(String(8), nullable=True)
     locations_json = Column(_JSON, nullable=True)
     incoming_json = Column(_JSON, nullable=True)
+    as_of = Column(String(40), nullable=True)
     updated_at = _updated()
+
+
+class HcSyncState(HubConnectorBase):
+    """Last CRM feed sync per tenant (shown on the screen, read by the tick)."""
+
+    __tablename__ = "hc_sync_state"
+
+    tenant_id = Column(String, primary_key=True)
+    last_run_at = Column(UTCDateTime(), nullable=True)
+    last_success_at = Column(UTCDateTime(), nullable=True)
+    last_error = Column(String(500), nullable=True)
+    products = Column(Integer, nullable=False, default=0)
+    queued = Column(Integer, nullable=False, default=0)
 
 
 class HcSentView(HubConnectorBase):
@@ -129,10 +164,13 @@ class HcSentView(HubConnectorBase):
 
 
 class HcApiKey(HubConnectorBase):
+    """A hub's key for the hub-facing read API (one hub per key)."""
+
     __tablename__ = "hc_api_keys"
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
+    hub_id = Column(String, ForeignKey("hc_hubs.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(200), nullable=False, default="")
     key_prefix = Column(String(16), nullable=False, index=True)
     key_hash = Column(String(64), nullable=False)
@@ -152,6 +190,7 @@ class HcDelivery(HubConnectorBase):
     hub_id = Column(String, ForeignKey("hc_hubs.id", ondelete="CASCADE"), nullable=False, index=True)
     hub_customer_id = Column(String, nullable=True)
     customer_code = Column(String(64), nullable=True)
+    customer_name = Column(String(300), nullable=True)
     event = Column(String(32), nullable=False)
     # Per hub customer, increasing: deliveries to one customer go out in this
     # order, and the hub can ignore anything older than what it applied.

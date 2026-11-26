@@ -13,7 +13,7 @@ from app.models.user import User
 
 from .. import schemas
 from ..models import HcHub, HcHubCustomer
-from ..services import delivery_service, hub_service, key_service
+from ..services import delivery_service, hub_service, key_service, sync_service
 from ..services.hub_service import HubError
 
 router = APIRouter()
@@ -42,16 +42,14 @@ def _hub_item(hub: HcHub, count: int = 0) -> schemas.HubItem:
     )
 
 
-def _customer_item(
-    row: HcHubCustomer, name: Optional[str], locations: Dict[str, str], brands: Dict[str, str]
-) -> schemas.HubCustomerItem:
+def _customer_item(row: HcHubCustomer, locations: Dict[str, str], brands: Dict[str, str]) -> schemas.HubCustomerItem:
     locs = list(row.location_codes_json or [])
     brs = list(row.brand_codes_json or [])
     return schemas.HubCustomerItem(
         id=row.id,
         hubId=row.hub_id,
         customerCode=row.customer_code,
-        customerName=name,
+        customerName=row.customer_name,
         locationCodes=locs,
         brandCodes=brs,
         locations=[schemas.Option(code=c, name=locations.get(c, c)) for c in locs],
@@ -63,7 +61,7 @@ def _customer_item(
 
 def _one_customer(db: Session, tenant_id: str, row: HcHubCustomer) -> schemas.HubCustomerItem:
     locations, brands = hub_service.name_maps(db, tenant_id)
-    return _customer_item(row, hub_service.customer_name(db, tenant_id, row.customer_code), locations, brands)
+    return _customer_item(row, locations, brands)
 
 
 # ── hubs ────────────────────────────────────────────────────────────────────
@@ -168,7 +166,7 @@ def list_customers(
     except HubError as exc:
         raise _http(exc)
     locations, brands = hub_service.name_maps(db, user.tenant_id)
-    return schemas.HubCustomerPage(data=[_customer_item(r, n, locations, brands) for r, n in rows], total=total)
+    return schemas.HubCustomerPage(data=[_customer_item(r, locations, brands) for r in rows], total=total)
 
 
 @router.post("/hubs/{hub_id}/customers", response_model=schemas.HubCustomerItem, status_code=201)
@@ -181,6 +179,7 @@ def add_customer(
             user.tenant_id,
             hub_id,
             customer_code=body.customerCode,
+            customer_name=body.customerName,
             location_codes=body.locationCodes,
             brand_codes=body.brandCodes,
             commit=False,
@@ -267,7 +266,7 @@ def list_deliveries(
                 id=d.id,
                 event=d.event,
                 customerCode=d.customer_code,
-                customerName=name,
+                customerName=d.customer_name,
                 itemCount=d.item_count or 0,
                 status=d.status,
                 attempt=d.attempt,
@@ -276,7 +275,7 @@ def list_deliveries(
                 createdAt=d.created_at,
                 lastAttemptAt=d.last_attempt_at,
             )
-            for d, name in rows
+            for d in rows
         ],
         total=total,
     )
@@ -306,7 +305,41 @@ def options(
         raise _http(exc)
 
 
-# ── CRM push keys ───────────────────────────────────────────────────────────
+# ── CRM feed sync ───────────────────────────────────────────────────────────
+
+def _sync_out(db: Session, tenant_id: str) -> schemas.SyncStateOut:
+    try:
+        configured = sync_service.feed_config(db, tenant_id) is not None
+    except Exception:  # noqa: BLE001 - a stored-but-unreadable key still counts as configured
+        configured = True
+    state = sync_service.get_state(db, tenant_id)
+    if state is None:
+        return schemas.SyncStateOut(configured=configured)
+    return schemas.SyncStateOut(
+        configured=configured,
+        lastRunAt=state.last_run_at,
+        lastSuccessAt=state.last_success_at,
+        lastError=state.last_error,
+        products=state.products or 0,
+        queued=state.queued or 0,
+    )
+
+
+@router.get("/sync", response_model=schemas.SyncStateOut)
+def sync_state(user: User = Depends(_VIEW), db: Session = Depends(get_db)) -> schemas.SyncStateOut:
+    return _sync_out(db, user.tenant_id)
+
+
+@router.post("/sync", response_model=schemas.SyncStateOut)
+def sync_now(user: User = Depends(_MANAGE), db: Session = Depends(get_db)) -> schemas.SyncStateOut:
+    try:
+        sync_service.sync_tenant(db, user.tenant_id)
+    except HubError as exc:
+        raise _http(exc)
+    return _sync_out(db, user.tenant_id)
+
+
+# ── hub read-API keys (one hub per key) ─────────────────────────────────────
 
 def _key_item(row) -> schemas.KeyItem:
     return schemas.KeyItem(
@@ -319,26 +352,34 @@ def _key_item(row) -> schemas.KeyItem:
     )
 
 
-@router.get("/keys", response_model=schemas.KeyList)
-def list_keys(user: User = Depends(_KEYS), db: Session = Depends(get_db)) -> schemas.KeyList:
-    return schemas.KeyList(data=[_key_item(r) for r in key_service.list_keys(db, user.tenant_id)])
+@router.get("/hubs/{hub_id}/keys", response_model=schemas.KeyList)
+def list_keys(hub_id: str, user: User = Depends(_KEYS), db: Session = Depends(get_db)) -> schemas.KeyList:
+    try:
+        hub_service.get_hub(db, user.tenant_id, hub_id)
+    except HubError as exc:
+        raise _http(exc)
+    return schemas.KeyList(data=[_key_item(r) for r in key_service.list_keys(db, user.tenant_id, hub_id)])
 
 
-@router.post("/keys", response_model=schemas.KeyCreated, status_code=201)
+@router.post("/hubs/{hub_id}/keys", response_model=schemas.KeyCreated, status_code=201)
 def create_key(
+    hub_id: str,
     body: schemas.KeyCreate,
     user: User = Depends(_KEYS),
     actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ) -> schemas.KeyCreated:
-    row, full_key = key_service.issue(db, user.tenant_id, name=body.name, created_by=actor_id)
+    try:
+        hub_service.get_hub(db, user.tenant_id, hub_id)
+    except HubError as exc:
+        raise _http(exc)
+    row, full_key = key_service.issue(db, user.tenant_id, hub_id, name=body.name, created_by=actor_id)
     return schemas.KeyCreated(**_key_item(row).model_dump(), key=full_key)
 
 
-@router.delete("/keys/{key_id}", response_model=schemas.KeyItem)
-def revoke_key(key_id: str, user: User = Depends(_KEYS), db: Session = Depends(get_db)) -> schemas.KeyItem:
-    try:
-        row = key_service.revoke(db, user.tenant_id, key_id)
-    except key_service.KeyNotFound:
+@router.delete("/hubs/{hub_id}/keys/{key_id}", response_model=schemas.KeyItem)
+def revoke_key(hub_id: str, key_id: str, user: User = Depends(_KEYS), db: Session = Depends(get_db)) -> schemas.KeyItem:
+    rows = [k for k in key_service.list_keys(db, user.tenant_id, hub_id) if k.id == key_id]
+    if not rows:
         raise HTTPException(status_code=404, detail={"code": "key_not_found", "message": "This key does not exist."})
-    return _key_item(row)
+    return _key_item(key_service.revoke(db, user.tenant_id, key_id))

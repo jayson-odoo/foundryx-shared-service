@@ -26,9 +26,15 @@ def register_capabilities() -> None:
 
 
 def register_engine_entities() -> None:
-    """Idempotent boot registration of the grace-window delete actions."""
+    """Idempotent boot registration: the CRM stock feed provider (configured on
+    Settings, Integrations like every other connection) and the grace-window
+    delete actions."""
+    from app.integrations import register_provider
+
+    from .crm_feed import HubSourceProvider
     from .deferred_actions import register_hub_connector_deferred_actions
 
+    register_provider(HubSourceProvider())
     register_hub_connector_deferred_actions()
 
 

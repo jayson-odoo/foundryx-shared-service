@@ -67,7 +67,7 @@ class HubCustomerItem(ApiModel):
     id: str
     hubId: str
     customerCode: str
-    customerName: Optional[str] = None
+    customerName: str
     locationCodes: List[str]
     brandCodes: List[str]
     locations: List[Option]
@@ -83,11 +83,13 @@ class HubCustomerPage(BaseModel):
 
 class HubCustomerCreate(BaseModel):
     customerCode: str = Field(max_length=64)
+    customerName: str = Field(max_length=300)
     locationCodes: List[str] = Field(default_factory=list, max_length=500)
     brandCodes: List[str] = Field(default_factory=list, max_length=500)
 
 
 class HubCustomerUpdate(BaseModel):
+    customerName: Optional[str] = Field(default=None, max_length=300)
     locationCodes: Optional[List[str]] = Field(default=None, max_length=500)
     brandCodes: Optional[List[str]] = Field(default=None, max_length=500)
     active: Optional[bool] = None
@@ -137,24 +139,19 @@ class KeyCreate(BaseModel):
     name: str = Field(default="", max_length=200)
 
 
-# ── inbound (CRM push) ──────────────────────────────────────────────────────
-# The items/customers arrive as loose dicts on purpose: one bad entry must be
-# SKIPPED and named, not 422 the whole batch (catalog_service validates each).
+# ── hub read API ────────────────────────────────────────────────────────────
 
-class ItemsPush(BaseModel):
-    items: List[Any] = Field(max_length=5000)
-
-
-class CustomersPush(BaseModel):
-    customers: List[Any] = Field(max_length=5000)
+class HubProductPage(BaseModel):
+    data: List[Dict[str, Any]]
+    total: int
+    limit: int
+    offset: int
 
 
-class Skipped(BaseModel):
-    code: str
-    reason: str
-
-
-class PushResult(BaseModel):
-    stored: int
-    skipped: List[Skipped]
+class SyncStateOut(ApiModel):
+    configured: bool
+    lastRunAt: Optional[datetime] = None
+    lastSuccessAt: Optional[datetime] = None
+    lastError: Optional[str] = None
+    products: int = 0
     queued: int = 0

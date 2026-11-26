@@ -111,6 +111,9 @@ celery_app.conf.beat_schedule = {
     # Hub Connector availability webhooks (AC-18) - re-drives PENDING rows
     # whose retry time passed (a lost self-reschedule). Module-absence safe.
     "hub-connector-deliveries-due": {"task": "hub_connector.deliveries_due", "schedule": 60.0},
+    # Hub Connector CRM stock feed pull (AC-17) - one run per tenant with the
+    # module on and a feed connection. Module-absence safe.
+    "hub-connector-sync-due": {"task": "hub_connector.sync_due", "schedule": 600.0},
     # Resume workflow runs parked by an omnichannel Ask-a-question / Wait step
     # whose deadline passed (plan sprint-4/31 S4, D-A5-10/F8). Module-owned
     # work, defined + scheduled HERE (the sole beat host) and guarded exactly
@@ -487,6 +490,25 @@ def hub_connector_deliver(delivery_id: str) -> str:
         logger.exception("hub_connector delivery %s failed", delivery_id)
         db.rollback()
         return "error"
+    finally:
+        db.close()
+
+
+@celery_app.task(name="hub_connector.sync_due")
+def hub_connector_sync_due() -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.hub_connector.services.sync_service import run_due
+    except ImportError:
+        return {"tenants": 0}
+    db = SessionLocal()
+    try:
+        return {"tenants": run_due(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("hub_connector sync_due failed")
+        db.rollback()
+        return {"tenants": 0}
     finally:
         db.close()
 

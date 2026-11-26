@@ -1,4 +1,4 @@
-"""CRM push keys (AC-17) - ``fxh_live_`` + secret, returned ONCE.
+"""Hub read-API keys (one hub per key) - ``fxh_live_`` + secret, returned ONCE.
 
 Only a sha256 hash and an 8-char lookup prefix are stored; matching uses
 ``hmac.compare_digest``. Mirrors autocount's ``PullKeyService`` (cross-module
@@ -41,11 +41,12 @@ def masked(row: HcApiKey) -> str:
     return f"{KEY_SCHEME}****{row.key_last4}"
 
 
-def issue(db: Session, tenant_id: str, *, name: str, created_by: Optional[str]) -> Tuple[HcApiKey, str]:
+def issue(db: Session, tenant_id: str, hub_id: str, *, name: str, created_by: Optional[str]) -> Tuple[HcApiKey, str]:
     full_key = KEY_SCHEME + secrets.token_urlsafe(32)
     row = HcApiKey(
         tenant_id=tenant_id,
-        name=(name or "").strip()[:200] or "CRM key",
+        hub_id=hub_id,
+        name=(name or "").strip()[:200] or "Hub key",
         key_prefix=_prefix(full_key),
         key_hash=_hash(full_key),
         key_last4=full_key[-4:],
@@ -91,10 +92,10 @@ def revoke(db: Session, tenant_id: str, key_id: str, *, calling_key_id: Optional
     return row
 
 
-def list_keys(db: Session, tenant_id: str) -> List[HcApiKey]:
+def list_keys(db: Session, tenant_id: str, hub_id: str) -> List[HcApiKey]:
     return (
         db.query(HcApiKey)
-        .filter(HcApiKey.tenant_id == tenant_id)
+        .filter(HcApiKey.tenant_id == tenant_id, HcApiKey.hub_id == hub_id)
         .order_by(HcApiKey.created_at.desc(), HcApiKey.id.asc())
         .all()
     )

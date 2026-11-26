@@ -1,67 +1,53 @@
 # Hub Connector - integration guide
 
-Two parties integrate with the Hub Connector service:
+Hub Connector shows a partner platform (a **hub**, e.g. EcoHub) what each of its customer companies may see of our
+stock. What a customer sees is decided in the shared service, per hub and per customer company: which locations
+count, which brands are visible, and (per hub) whether price is shown. Price is OFF by default. A new customer sees
+nothing until its locations and brands are picked.
 
-1. **The CRM** pushes availability facts and the customer company list into the shared service.
-2. **A hub** (a partner platform, e.g. EcoHub) receives signed webhooks with what each of its customer
-   companies may see.
+## 1. Where the facts come from: the CRM connector feed
 
-What each hub customer sees is decided in the shared service, per hub and per customer company:
-which locations count, which brands are visible, and (per hub) whether price is shown. Price is OFF by default.
+The shared service PULLS the CRM connector feed (sorento-crm #2801, contract frozen):
+`GET <crm>/api/v1/external/connector/v1/{locations,brands,products,availability}?company=<code>` with `X-API-Key`.
 
-## 1. CRM push API
+Set it up on **Settings -> Integrations -> CRM stock feed**: CRM address, company code, connector key (the key's
+user needs the explicit `integration.connector.read` grant and the company). "Test connection" reads `/locations`.
 
-Base: `https://<api host>/api/v1/hub-connector`. Auth: `Authorization: Bearer fxh_live_...` (an admin creates
-the key in Hub Connector, gear menu, CRM keys; it is shown once). The key decides the tenant; nothing in the body
-does. Errors: `{"error": {"code", "message"}}`; `401 invalid_api_key`, `403 service_not_enabled`, `429 rate_limited`
-(with `Retry-After`, after repeated bad keys from one address).
+A sync runs every 10 minutes and on **Sync now** (Hub Connector, gear menu). One run reads the locations, the
+brands, every `/products` page (limit 200) and `/availability` for those codes in chunks of 200. Products the feed no
+longer lists are removed and hubs are told to drop them. A feed error (bad key, missing grant, rate limit,
+unreachable) changes nothing and shows its reason; the next run tries again. Each feed request costs the CRM two
+rate-limit hits, so size the CRM integration's `rate_limit_per_minute` at twice the calls per run.
 
-### `PUT /customers`
+## 2. Rules
 
-```json
-{"customers": [{"code": "C-001", "name": "Customer company"}]}
-```
+- `in_stock`: the SUM of `available_qty` (on hand minus reserved) over the customer's chosen locations is above 0.
+- `incoming`: any not-yet-arrived line with an outstanding allocation to one of the customer's locations, or a line
+  not yet allocated to any location. Yes / no only.
+- A product whose brand the customer may not see is absent.
+- `list_price` / `currency` appear only while the hub's Show price switch is on.
 
-Upserts by `code`. Reply `{"stored": 1, "skipped": [], "queued": 0}`.
+Row: `{"code": "SR-1001", "name": "Basin mixer", "brand_name": "Brand A", "in_stock": true, "incoming": false}`.
 
-### `PUT /items`
+## 3. Hub read API
 
-```json
-{
-  "items": [
-    {
-      "code": "I-1",
-      "name": "Basin mixer",
-      "brand": {"code": "BR-A", "name": "Brand A"},
-      "price": "120.00",
-      "currency": "MYR",
-      "locations": [{"code": "WH-N", "name": "North warehouse", "onHand": 10, "reserved": 2}],
-      "incoming": [{"ref": "PO-1/3", "locationCode": null, "remaining": 6}]
-    }
-  ]
-}
-```
+Base `https://<api host>/api/v1/hub-connector`. Auth `Authorization: Bearer fxh_live_...` - a key created on the hub
+(Hub Connector -> hub -> Hub keys), shown once, bound to that hub. Errors: `{"error": {"code", "message"}}`;
+`401 invalid_api_key`, `403 service_not_enabled` / `hub_inactive`, `404 customer_not_found` (unknown, paused, or
+another hub's customer - all the same), `422 too_many_codes`, `429 rate_limited` with `Retry-After`.
 
-- Each item replaces the last copy of that `code` (send the item's full `locations` and `incoming` each time).
-- `incoming` = not-yet-arrived remainders; `locationCode: null` = not yet allocated to a location.
-- Up to 1000 items per call. One bad item never fails the batch: the reply names it.
+`GET /products?customer=<customer code>&codes=<comma list, max 200>&limit=1..200&offset=0`
+-> `{"data": [ROW, ...], "total": N, "limit": 100, "offset": 0}`, ordered by product name.
 
-Reply: `{"stored": 1, "skipped": [{"code": "I-9", "reason": "on hand is not a number"}], "queued": 2}`
-(`queued` = webhooks queued to hubs because a customer's view changed).
+## 4. Hub webhook
 
-## 2. Hub webhook
-
-`POST <receiver URL>` (public https only; re-checked before every attempt).
-
-Headers:
+`POST <receiver URL>` (public https only; re-checked before every attempt). Headers:
 
 - `X-Hub-Connector-Event: availability.updated`
-- `X-Hub-Connector-Delivery: <delivery id>` (same id on a retry)
+- `X-Hub-Connector-Delivery: <delivery id>`
 - `X-Hub-Connector-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(secret, t + "." + raw body)>`
 
-Verify with the hub's signing secret (shown once at create / rotate) and reject a `t` more than 5 minutes old.
-
-Body:
+Verify with the hub's signing secret (shown once at create / rotate); reject a `t` more than 5 minutes old.
 
 ```json
 {
@@ -71,21 +57,19 @@ Body:
   "data": {
     "hub": {"code": "ecohub"},
     "customer": {"code": "C-001", "name": "Customer company"},
+    "sequence": 7,
     "full": false,
-    "items": [
-      {"code": "I-1", "name": "Basin mixer", "brand": {"code": "BR-A", "name": "Brand A"},
-       "gotStock": true, "gotIncoming": true}
-    ],
-    "removed": ["I-7"]
+    "items": [{"code": "SR-1001", "name": "Basin mixer", "brand_name": "Brand A", "in_stock": true, "incoming": true}],
+    "removed": ["SR-1007"]
   }
 }
 ```
 
-- One webhook per customer whose view changed. `full: true` = the customer's complete view (after a policy change,
-  a new customer, the price switch or "Resync"); `false` = only the changed items.
-- `removed` = items this customer saw before and may no longer see: drop them.
-- `gotStock`: on hand minus reserved > 0 in at least one of the customer's locations.
-- `gotIncoming`: a not-yet-arrived remainder in one of the customer's locations or not yet allocated to a location.
-- `price` / `currency` appear only when the hub's Show price switch is on.
+- One webhook per customer whose view changed. `sequence` increases per customer; ignore one older than the last
+  you applied. Deliveries to one customer are sent oldest first.
+- `full: true` is the customer's COMPLETE view (new customer, policy change, Show price switch, Resync, Send again):
+  replace everything you hold for that customer. `full: false` lists only changed items.
+- `removed`: items this customer may no longer see, or that left the feed: drop them.
 - Answer any 2xx within 10 seconds. Anything else is retried after 1 min, 5 min, 30 min, 2 h, 6 h and 24 h, then
-  marked failed (an admin can send it again from the hub's Deliveries tab).
+  marked failed and the customer's full view is queued once. "Send again" on the Deliveries tab sends the current
+  full view.

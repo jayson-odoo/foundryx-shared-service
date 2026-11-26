@@ -165,7 +165,7 @@ def _queue_customer(
     ) + 1
     data = {
         "hub": {"code": hub.code},
-        "customer": {"code": customer.customer_code, "name": hub_service.customer_name(db, tenant_id, customer.customer_code)},
+        "customer": {"code": customer.customer_code, "name": customer.customer_name},
         "sequence": seq,
         "full": bool(full or hide_all),
         "items": shown,
@@ -178,6 +178,7 @@ def _queue_customer(
         hub_id=hub.id,
         hub_customer_id=customer.id,
         customer_code=customer.customer_code,
+        customer_name=customer.customer_name,
         event=EVENT_AVAILABILITY,
         seq=seq,
         full=bool(full or hide_all),
@@ -519,14 +520,8 @@ def list_deliveries(
 ):
     from sqlalchemy import func, or_
 
-    from ..models import HcCustomer
-
     hub_service.get_hub(db, tenant_id, hub_id)
-    q = (
-        db.query(HcDelivery, HcCustomer.name)
-        .outerjoin(HcCustomer, (HcCustomer.code == HcDelivery.customer_code) & (HcCustomer.tenant_id == tenant_id))
-        .filter(HcDelivery.tenant_id == tenant_id, HcDelivery.hub_id == hub_id)
-    )
+    q = db.query(HcDelivery).filter(HcDelivery.tenant_id == tenant_id, HcDelivery.hub_id == hub_id)
     status_list = [s for s in statuses or [] if s in (DELIVERY_PENDING, DELIVERY_SUCCESS, DELIVERY_FAILED)]
     if status_list:
         q = q.filter(HcDelivery.status.in_(status_list))
@@ -535,12 +530,12 @@ def list_deliveries(
         q = q.filter(
             or_(
                 func.lower(func.coalesce(HcDelivery.customer_code, "")).like(pattern, escape="\\"),
-                func.lower(func.coalesce(HcCustomer.name, "")).like(pattern, escape="\\"),
+                func.lower(func.coalesce(HcDelivery.customer_name, "")).like(pattern, escape="\\"),
             )
         )
     total = q.count()
     offset, size = hub_service._page(page, page_size)
-    column = HcCustomer.name if sort == "customerName" else _DELIVERY_SORT.get(sort or "", HcDelivery.created_at)
+    column = HcDelivery.customer_name if sort == "customerName" else _DELIVERY_SORT.get(sort or "", HcDelivery.created_at)
     primary = column.asc() if order == "asc" else column.desc()
     rows = q.order_by(primary, HcDelivery.id.asc()).offset(offset).limit(size).all()
     return rows, total

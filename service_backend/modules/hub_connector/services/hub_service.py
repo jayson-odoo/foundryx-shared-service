@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.secrets import encrypt_secret
 from app.services.url_guard import UnparseableUrlError, UrlGuardError, validate_public_https_url
 
-from ..models import HcCustomer, HcHub, HcHubCustomer, HcItem
+from ..models import HcApiKey, HcBrand, HcHub, HcHubCustomer, HcItem, HcLocation
 from . import availability
 
 SECRET_SCHEME = "whsec_"
@@ -209,6 +209,7 @@ def delete_hub(db: Session, tenant_id: str, hub_id: str) -> None:
             synchronize_session=False
         )
     db.query(HcDelivery).filter(HcDelivery.tenant_id == tenant_id, HcDelivery.hub_id == hub.id).delete(synchronize_session=False)
+    db.query(HcApiKey).filter(HcApiKey.tenant_id == tenant_id, HcApiKey.hub_id == hub.id).delete(synchronize_session=False)
     db.query(HcHubCustomer).filter(HcHubCustomer.tenant_id == tenant_id, HcHubCustomer.hub_id == hub.id).delete(
         synchronize_session=False
     )
@@ -219,14 +220,9 @@ def delete_hub(db: Session, tenant_id: str, hub_id: str) -> None:
 # ── hub customers (the policy) ──────────────────────────────────────────────
 
 def _known_codes(db: Session, tenant_id: str) -> Tuple[set, set]:
-    """Location + brand codes the CRM has pushed for this tenant."""
-    locations, brands = set(), set()
-    for locs, brand in db.query(HcItem.locations_json, HcItem.brand_code).filter(HcItem.tenant_id == tenant_id):
-        for loc in locs or []:
-            if isinstance(loc, dict) and loc.get("code"):
-                locations.add(loc["code"])
-        if brand:
-            brands.add(brand)
+    """Location + brand codes the CRM feed currently lists for this tenant."""
+    locations = {c for (c,) in db.query(HcLocation.code).filter(HcLocation.tenant_id == tenant_id)}
+    brands = {c for (c,) in db.query(HcBrand.code).filter(HcBrand.tenant_id == tenant_id)}
     return locations, brands
 
 
@@ -268,21 +264,31 @@ def get_hub_customer(db: Session, tenant_id: str, hub_id: str, hub_customer_id: 
     return row
 
 
+def _customer_identity(customer_code: Optional[str], customer_name: Optional[str]) -> Tuple[str, str]:
+    code = (customer_code or "").strip()
+    name = (customer_name or "").strip()
+    if not code or len(code) > 64:
+        raise HubError(422, "invalid_customer_code", "Enter the customer code (up to 64 characters).")
+    if not name or len(name) > 300:
+        raise HubError(422, "invalid_customer_name", "Enter the customer name.")
+    return code, name
+
+
 def add_customer(
     db: Session,
     tenant_id: str,
     hub_id: str,
     *,
     customer_code: str,
+    customer_name: str,
     location_codes: Sequence[str],
     brand_codes: Sequence[str],
     commit: bool = True,
 ) -> HcHubCustomer:
+    """A customer company on this hub. It sees nothing until locations AND
+    brands are picked (empty lists are allowed)."""
     hub = get_hub(db, tenant_id, hub_id)
-    code = (customer_code or "").strip()
-    customer = db.query(HcCustomer).filter(HcCustomer.tenant_id == tenant_id, HcCustomer.code == code).first()
-    if customer is None:
-        raise HubError(422, "unknown_customer", "Choose a customer company.")
+    code, name = _customer_identity(customer_code, customer_name)
     if (
         db.query(HcHubCustomer.id)
         .filter(HcHubCustomer.tenant_id == tenant_id, HcHubCustomer.hub_id == hub.id, HcHubCustomer.customer_code == code)
@@ -295,6 +301,7 @@ def add_customer(
         tenant_id=tenant_id,
         hub_id=hub.id,
         customer_code=code,
+        customer_name=name,
         location_codes_json=locs,
         brand_codes_json=brands,
         active=True,
@@ -314,6 +321,8 @@ def update_customer(
     _validate_policy(db, tenant_id, locs, brands, kept_locations=old_locs, kept_brands=old_brands)
     row.location_codes_json = locs
     row.brand_codes_json = brands
+    if changes.get("customerName") is not None:
+        _, row.customer_name = _customer_identity(row.customer_code, changes["customerName"])
     if changes.get("active") is not None:
         row.active = bool(changes["active"])
     _finish(db, row, commit)
@@ -341,7 +350,7 @@ def remove_customer(
 
 _CUSTOMER_SORT = {
     "customerCode": HcHubCustomer.customer_code,
-    "customerName": HcCustomer.name,
+    "customerName": HcHubCustomer.customer_name,
     "active": HcHubCustomer.active,
     "updatedAt": HcHubCustomer.updated_at,
 }
@@ -357,46 +366,29 @@ def list_customers(
     order: str = "asc",
     page: int = 0,
     page_size: int = 25,
-) -> Tuple[List[Tuple[HcHubCustomer, Optional[str]]], int]:
+) -> Tuple[List[HcHubCustomer], int]:
     get_hub(db, tenant_id, hub_id)
-    q = (
-        db.query(HcHubCustomer, HcCustomer.name)
-        .outerjoin(HcCustomer, (HcCustomer.code == HcHubCustomer.customer_code) & (HcCustomer.tenant_id == tenant_id))
-        .filter(HcHubCustomer.tenant_id == tenant_id, HcHubCustomer.hub_id == hub_id)
-    )
+    q = db.query(HcHubCustomer).filter(HcHubCustomer.tenant_id == tenant_id, HcHubCustomer.hub_id == hub_id)
     if search and search.strip():
         pattern = _like(search.strip())
         q = q.filter(
             or_(
                 func.lower(HcHubCustomer.customer_code).like(pattern, escape="\\"),
-                func.lower(func.coalesce(HcCustomer.name, "")).like(pattern, escape="\\"),
+                func.lower(HcHubCustomer.customer_name).like(pattern, escape="\\"),
             )
         )
     total = q.count()
     offset, size = _page(page, page_size)
-    column = _CUSTOMER_SORT.get(sort or "", HcCustomer.name)
+    column = _CUSTOMER_SORT.get(sort or "", HcHubCustomer.customer_name)
     primary = column.desc() if order == "desc" else column.asc()
     rows = q.order_by(primary, HcHubCustomer.id.asc()).offset(offset).limit(size).all()
-    return [(r, name) for r, name in rows], total
-
-
-def customer_name(db: Session, tenant_id: str, code: str) -> Optional[str]:
-    row = db.query(HcCustomer.name).filter(HcCustomer.tenant_id == tenant_id, HcCustomer.code == code).first()
-    return row[0] if row else None
+    return rows, total
 
 
 def name_maps(db: Session, tenant_id: str) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Location + brand code -> name, from the pushed facts (display only)."""
-    locations: Dict[str, str] = {}
-    brands: Dict[str, str] = {}
-    for locs, bcode, bname in db.query(HcItem.locations_json, HcItem.brand_code, HcItem.brand_name).filter(
-        HcItem.tenant_id == tenant_id
-    ):
-        for loc in locs or []:
-            if isinstance(loc, dict) and loc.get("code"):
-                locations.setdefault(loc["code"], loc.get("name") or loc["code"])
-        if bcode:
-            brands.setdefault(bcode, bname or bcode)
+    """Location + brand code -> name, from the synced catalogues (display only)."""
+    locations = {c: n for c, n in db.query(HcLocation.code, HcLocation.name).filter(HcLocation.tenant_id == tenant_id)}
+    brands = {c: n for c, n in db.query(HcBrand.code, HcBrand.name).filter(HcBrand.tenant_id == tenant_id)}
     return locations, brands
 
 
@@ -419,21 +411,66 @@ def policy_for(hub: HcHub, customer: HcHubCustomer) -> availability.Policy:
     return availability.make_policy(customer.location_codes_json or [], customer.brand_codes_json or [], hub.expose_price)
 
 
-def preview(db: Session, tenant_id: str, hub_id: str, hub_customer_id: str) -> List[Dict[str, Any]]:
-    """What this customer sees right now - the same function the webhook uses."""
-    hub = get_hub(db, tenant_id, hub_id)
-    customer = get_hub_customer(db, tenant_id, hub_id, hub_customer_id)
+def customer_rows(
+    db: Session,
+    hub: HcHub,
+    customer: HcHubCustomer,
+    *,
+    codes: Optional[Sequence[str]] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """The rows this customer sees (the same function the webhook uses), ordered
+    by item name. Visibility is the brand filter, so paging runs in SQL."""
     policy = policy_for(hub, customer)
     brands = list(policy.brand_codes)
-    if not brands:
-        return []
-    rows = (
-        db.query(HcItem)
-        .filter(HcItem.tenant_id == tenant_id, HcItem.brand_code.in_(brands))
-        .order_by(HcItem.name.asc(), HcItem.code.asc())
-        .all()
+    if not brands or not customer.active:
+        return [], 0
+    q = db.query(HcItem).filter(HcItem.tenant_id == hub.tenant_id, HcItem.brand_code.in_(brands))
+    if codes:
+        q = q.filter(HcItem.code.in_(list(codes)))
+    total = q.count()
+    q = q.order_by(HcItem.name.asc(), HcItem.code.asc()).offset(max(0, offset))
+    if limit is not None:
+        q = q.limit(limit)
+    rows = [v for v in (availability.view_for(item_facts(r), policy) for r in q.all()) if v is not None]
+    return rows, total
+
+
+def preview(db: Session, tenant_id: str, hub_id: str, hub_customer_id: str) -> List[Dict[str, Any]]:
+    """What this customer sees right now (admin Preview)."""
+    hub = get_hub(db, tenant_id, hub_id)
+    customer = get_hub_customer(db, tenant_id, hub_id, hub_customer_id)
+    rows, _ = customer_rows(db, hub, customer)
+    return rows
+
+
+MAX_API_CODES = 200
+
+
+def hub_api_rows(
+    db: Session, tenant_id: str, hub_id: str, customer_code: str, *, codes: Optional[str], limit: int, offset: int
+) -> Tuple[List[Dict[str, Any]], int]:
+    """The hub read API: one customer of THIS hub. An unknown, removed or
+    paused customer is a uniform 404 (the key never learns other hubs'
+    customers)."""
+    hub = get_hub(db, tenant_id, hub_id)
+    customer = (
+        db.query(HcHubCustomer)
+        .filter(
+            HcHubCustomer.tenant_id == tenant_id,
+            HcHubCustomer.hub_id == hub.id,
+            HcHubCustomer.customer_code == (customer_code or "").strip(),
+            HcHubCustomer.active.is_(True),
+        )
+        .first()
     )
-    return [v for v in (availability.view_for(item_facts(r), policy) for r in rows) if v is not None]
+    if customer is None:
+        raise HubError(404, "customer_not_found", "This customer is not on this hub.")
+    code_list = [c.strip() for c in (codes or "").split(",") if c.strip()]
+    if len(code_list) > MAX_API_CODES:
+        raise HubError(422, "too_many_codes", f"At most {MAX_API_CODES} codes per call.")
+    return customer_rows(db, hub, customer, codes=code_list or None, limit=limit, offset=offset)
 
 
 # ── picker options (fed by what the CRM pushed) ─────────────────────────────
@@ -453,12 +490,6 @@ def _filter_options(pairs: Dict[str, str], search: Optional[str]) -> List[Dict[s
 
 
 def options(db: Session, tenant_id: str, kind: str, search: Optional[str] = None) -> List[Dict[str, str]]:
-    if kind == "customers":
-        q = db.query(HcCustomer.code, HcCustomer.name).filter(HcCustomer.tenant_id == tenant_id)
-        if search and search.strip():
-            pattern = _like(search.strip())
-            q = q.filter(or_(func.lower(HcCustomer.code).like(pattern, escape="\\"), func.lower(HcCustomer.name).like(pattern, escape="\\")))
-        return [{"code": c, "name": n} for c, n in q.order_by(HcCustomer.name.asc(), HcCustomer.code.asc()).limit(OPTION_LIMIT)]
     locations, brands = name_maps(db, tenant_id)
     if kind == "locations":
         return _filter_options(locations, search)
