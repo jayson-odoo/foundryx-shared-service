@@ -12,14 +12,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { MultiSelect } from '@/components/platform/multi-select';
-import { SearchSelect } from '@/components/platform/search-select';
-import {
-  hubConnectorErrorMessage,
-  useCustomerSearch,
-  useHubOptions,
-} from '@/hooks/use-hub-connector';
+import { hubConnectorErrorMessage, useHubOptions } from '@/hooks/use-hub-connector';
 import { hubConnectorService } from '@/services/hub-connector-service';
 import type { HubCustomer, Option } from '@/types/hub-connector';
 
@@ -43,27 +39,22 @@ function withSelected(options: Option[], selected: Option[]): Option[] {
 /** Add or edit one customer's policy: which locations and brands it sees. */
 export function CustomerDialog({ hubId, open, customer, onOpenChange, onSaved }: CustomerDialogProps) {
   const editing = customer !== null;
-  const customers = useCustomerSearch(open && !editing);
   const locationOptions = useHubOptions('locations', open);
   const brandOptions = useHubOptions('brands', open);
-  const [customerCode, setCustomerCode] = useState<string | null>(null);
+  const [customerCode, setCustomerCode] = useState('');
+  const [customerName, setCustomerName] = useState('');
   const [locationCodes, setLocationCodes] = useState<string[]>([]);
   const [brandCodes, setBrandCodes] = useState<string[]>([]);
-  const [picked, setPicked] = useState<Option | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setCustomerCode(customer?.customerCode ?? null);
+    setCustomerCode(customer?.customerCode ?? '');
+    setCustomerName(customer?.customerName ?? '');
     setLocationCodes(customer?.locationCodes ?? []);
     setBrandCodes(customer?.brandCodes ?? []);
-    setPicked(null);
   }, [open, customer]);
 
-  const customerItems = useMemo(
-    () => withSelected(customers.options, picked ? [picked] : []).map(toItems),
-    [customers.options, picked],
-  );
   const locationItems = useMemo(
     () => withSelected(locationOptions, customer?.locations ?? []).map(toItems),
     [locationOptions, customer],
@@ -73,14 +64,25 @@ export function CustomerDialog({ hubId, open, customer, onOpenChange, onSaved }:
     [brandOptions, customer],
   );
 
+  const valid = customerName.trim() !== '' && (editing || customerCode.trim() !== '');
+
   const save = async () => {
-    if (saving || (!editing && !customerCode)) return;
+    if (saving || !valid) return;
     setSaving(true);
     try {
       if (customer) {
-        await hubConnectorService.updateCustomer(hubId, customer.id, { locationCodes, brandCodes });
-      } else if (customerCode) {
-        await hubConnectorService.createCustomer(hubId, { customerCode, locationCodes, brandCodes });
+        await hubConnectorService.updateCustomer(hubId, customer.id, {
+          customerName: customerName.trim(),
+          locationCodes,
+          brandCodes,
+        });
+      } else {
+        await hubConnectorService.createCustomer(hubId, {
+          customerCode: customerCode.trim(),
+          customerName: customerName.trim(),
+          locationCodes,
+          brandCodes,
+        });
       }
       onSaved();
       onOpenChange(false);
@@ -98,23 +100,26 @@ export function CustomerDialog({ hubId, open, customer, onOpenChange, onSaved }:
           <DialogTitle>{editing ? customer.customerName : 'Add customer'}</DialogTitle>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-4">
-          {!editing && (
-            <div className="flex flex-col gap-2">
-              <Label>Customer *</Label>
-              <SearchSelect
-                ariaLabel="Customer"
-                options={customerItems}
-                value={customerCode}
-                onChange={(code) => {
-                  setCustomerCode(code);
-                  setPicked(customers.options.find((o) => o.code === code) ?? null);
-                }}
-                onQueryChange={customers.setQuery}
-                placeholder="Select customer"
-                searchPlaceholder="Search customers…"
-              />
-            </div>
-          )}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="hub-customer-code">Customer code{editing ? '' : ' *'}</Label>
+            <Input
+              id="hub-customer-code"
+              maxLength={100}
+              value={customerCode}
+              readOnly={editing}
+              disabled={editing}
+              onChange={(e) => setCustomerCode(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="hub-customer-name">Customer name *</Label>
+            <Input
+              id="hub-customer-name"
+              maxLength={200}
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+            />
+          </div>
           <div className="flex flex-col gap-2">
             <Label>Locations</Label>
             <MultiSelect
@@ -142,7 +147,7 @@ export function CustomerDialog({ hubId, open, customer, onOpenChange, onSaved }:
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={save} disabled={saving || (!editing && !customerCode)}>
+          <Button variant="primary" onClick={save} disabled={saving || !valid}>
             {saving && <Loader2 className="size-4 animate-spin" />}
             {editing ? 'Save' : 'Add'}
           </Button>

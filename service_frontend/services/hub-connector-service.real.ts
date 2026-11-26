@@ -13,6 +13,7 @@ import type {
   HubDelivery,
   Option,
   Page,
+  SyncState,
 } from '@/types/hub-connector';
 import type { ListQuery } from '@/types/resource';
 import type { HubConnectorService } from './hub-connector-service';
@@ -96,13 +97,20 @@ export const realHubConnectorService: HubConnectorService = {
     return rows(await apiFetch<Option[] | { data: Option[] }>(`${BASE}/options/${kind}${q}`));
   },
 
-  async listKeys() {
-    return rows(await apiFetch<ApiKey[] | { data: ApiKey[] }>(`${BASE}/keys`));
+  async listKeys(hubId) {
+    return rows(await apiFetch<ApiKey[] | { data: ApiKey[] }>(`${BASE}/hubs/${enc(hubId)}/keys`));
   },
-  async createKey(name) {
-    return apiFetch<ApiKeyCreated>(`${BASE}/keys`, json({ name }));
+  async createKey(hubId, name) {
+    return apiFetch<ApiKeyCreated>(`${BASE}/hubs/${enc(hubId)}/keys`, json({ name }));
   },
-  async revokeKey(id) {
-    await apiFetch(`${BASE}/keys/${enc(id)}`, { method: 'DELETE' });
+  async revokeKey(hubId, id) {
+    await apiFetch(`${BASE}/hubs/${enc(hubId)}/keys/${enc(id)}`, { method: 'DELETE' });
+  },
+
+  getSync() {
+    return apiFetch<SyncState>(`${BASE}/sync`);
+  },
+  syncNow() {
+    return apiFetch<SyncState>(`${BASE}/sync`, { method: 'POST' });
   },
 };

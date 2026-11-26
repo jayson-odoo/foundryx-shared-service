@@ -71,13 +71,14 @@ export interface Page<T> {
   pageSize?: number;
 }
 
+/** One row of the hub-facing view (snake_case: it is the hub contract). */
 export interface PreviewItem {
   code: string;
   name: string;
-  brand: Option;
-  gotStock: boolean;
-  gotIncoming: boolean;
-  price?: number | null;
+  brand_name: string;
+  in_stock: boolean;
+  incoming: boolean;
+  list_price?: number | null;
   currency?: string | null;
 }
 
@@ -105,14 +106,26 @@ export interface HubUpdateInput {
 
 export interface HubCustomerCreateInput {
   customerCode: string;
+  customerName: string;
   locationCodes: string[];
   brandCodes: string[];
 }
 
 export interface HubCustomerUpdateInput {
+  customerName?: string;
   locationCodes?: string[];
   brandCodes?: string[];
   active?: boolean;
 }
 
-export type OptionKind = 'customers' | 'locations' | 'brands';
+export type OptionKind = 'locations' | 'brands';
+
+/** State of the CRM stock feed sync. */
+export interface SyncState {
+  configured: boolean;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  products: number;
+  queued: number;
+}

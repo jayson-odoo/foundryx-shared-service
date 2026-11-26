@@ -10,6 +10,7 @@ import type {
   OptionKind,
   Page,
   PreviewItem,
+  SyncState,
 } from '@/types/hub-connector';
 import type { ListQuery } from '@/types/resource';
 import type { HubConnectorService } from './hub-connector-service';
@@ -27,7 +28,6 @@ const BRANDS: Option[] = [
 const CUSTOMERS: Option[] = [
   { code: 'CU-001', name: 'Sample Trading Co' },
   { code: 'CU-002', name: 'Example Supplies Ltd' },
-  { code: 'CU-003', name: 'Demo Hardware Sdn' },
 ];
 
 const NOW = '2026-11-20T08:00:00Z';
@@ -57,6 +57,7 @@ export interface MockState {
   customers: HubCustomer[];
   deliveries: Record<string, HubDelivery[]>;
   keys: ApiKey[];
+  sync: SyncState;
 }
 
 function seed(): MockState {
@@ -93,7 +94,8 @@ function seed(): MockState {
         { id: 'd-2', event: 'availability.updated', customerCode: 'CU-002', customerName: 'Example Supplies Ltd', status: 'FAILED', attempt: 4, lastCode: 503, lastError: 'Receiver unavailable', createdAt: NOW, lastAttemptAt: NOW },
       ],
     },
-    keys: [{ id: 'k-1', name: 'CRM sync', masked: 'fxh_live_****abcd', createdAt: NOW, lastUsedAt: null, revokedAt: null }],
+    sync: { configured: true, lastRunAt: NOW, lastSuccessAt: NOW, lastError: null, products: 3, queued: 0 },
+    keys: [{ id: 'k-1', name: 'Hub key', masked: 'fxh_live_****abcd', createdAt: NOW, lastUsedAt: null, revokedAt: null }],
   };
 }
 
@@ -150,13 +152,11 @@ export function createMockHubConnectorService(): HubConnectorService & { state: 
         (c as unknown as Record<string, unknown>)[f]);
     },
     async createCustomer(hubId, input) {
-      const cu = CUSTOMERS.find((c) => c.code === input.customerCode);
-      if (!cu) throw new Error('Customer not found');
       const row: HubCustomer = {
         id: nextId('hc'),
         hubId,
-        customerCode: cu.code,
-        customerName: cu.name,
+        customerCode: input.customerCode,
+        customerName: input.customerName,
         locationCodes: input.locationCodes,
         brandCodes: input.brandCodes,
         locations: pick(LOCATIONS, input.locationCodes),
@@ -170,6 +170,7 @@ export function createMockHubConnectorService(): HubConnectorService & { state: 
     },
     async updateCustomer(hubId, cid, input) {
       const row = customerOf(hubId, cid);
+      if (input.customerName !== undefined) row.customerName = input.customerName;
       if (input.locationCodes) {
         row.locationCodes = input.locationCodes;
         row.locations = pick(LOCATIONS, input.locationCodes);
@@ -191,10 +192,10 @@ export function createMockHubConnectorService(): HubConnectorService & { state: 
       const items: PreviewItem[] = row.brands.map((b, i) => ({
         code: `ITM-${b.code}-${i + 1}`,
         name: `${b.name} sample item`,
-        brand: b,
-        gotStock: i % 2 === 0,
-        gotIncoming: true,
-        ...(hub.exposePrice ? { price: 10 + i, currency: 'MYR' } : {}),
+        brand_name: b.name,
+        in_stock: i % 2 === 0,
+        incoming: true,
+        ...(hub.exposePrice ? { list_price: 10 + i, currency: 'MYR' } : {}),
       }));
       return { items };
     },
@@ -215,7 +216,7 @@ export function createMockHubConnectorService(): HubConnectorService & { state: 
     },
 
     async listOptions(kind: OptionKind, search) {
-      const all = kind === 'customers' ? CUSTOMERS : kind === 'locations' ? LOCATIONS : BRANDS;
+      const all = kind === 'locations' ? LOCATIONS : BRANDS;
       const term = (search ?? '').trim().toLowerCase();
       return term ? all.filter((o) => `${o.name} ${o.code}`.toLowerCase().includes(term)) : all;
     },
@@ -223,14 +224,23 @@ export function createMockHubConnectorService(): HubConnectorService & { state: 
     async listKeys() {
       return state.keys;
     },
-    async createKey(name) {
+    async createKey(_hubId, name) {
       const key = { id: nextId('k'), name, masked: 'fxh_live_****wxyz', createdAt: NOW, lastUsedAt: null, revokedAt: null };
       state.keys.push(key);
       return { ...key, key: 'fxh_live_mock_0123456789wxyz' };
     },
-    async revokeKey(id) {
+    async revokeKey(_hubId, id) {
       const k = state.keys.find((x) => x.id === id);
       if (k) k.revokedAt = NOW;
+    },
+
+    async getSync() {
+      return state.sync;
+    },
+    async syncNow() {
+      if (!state.sync.configured) throw new Error('No feed configured');
+      state.sync = { ...state.sync, lastRunAt: NOW, lastSuccessAt: NOW };
+      return state.sync;
     },
   };
 }

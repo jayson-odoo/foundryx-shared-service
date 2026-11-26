@@ -20,6 +20,7 @@ import type {
   Option,
   OptionKind,
   Page,
+  SyncState,
 } from '@/types/hub-connector';
 import type { ListQuery } from '@/types/resource';
 import { realHubConnectorService } from './hub-connector-service.real';
@@ -47,10 +48,15 @@ export interface HubConnectorService {
 
   listOptions(kind: OptionKind, search?: string): Promise<Option[]>;
 
-  listKeys(): Promise<ApiKey[]>;
+  /** Read-API keys of one hub. */
+  listKeys(hubId: string): Promise<ApiKey[]>;
   /** Returns the full key ONCE. */
-  createKey(name: string): Promise<ApiKeyCreated>;
-  revokeKey(id: string): Promise<void>;
+  createKey(hubId: string, name: string): Promise<ApiKeyCreated>;
+  revokeKey(hubId: string, id: string): Promise<void>;
+
+  getSync(): Promise<SyncState>;
+  /** Runs one sync now; rejects (409) when no feed is configured. */
+  syncNow(): Promise<SyncState>;
 }
 
 export const hubConnectorService: HubConnectorService = realHubConnectorService;

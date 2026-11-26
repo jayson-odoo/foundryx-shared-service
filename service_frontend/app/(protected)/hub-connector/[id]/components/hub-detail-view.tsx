@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Info, LoaderCircleIcon, RefreshCw, Send, KeyRound, Users } from 'lucide-react';
+import { Info, LoaderCircleIcon, RefreshCw, Send, KeyRound, Users, KeySquare } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
@@ -30,10 +30,12 @@ import type { Hub, HubCustomer } from '@/types/hub-connector';
 import {
   HUBS_PATH,
   HUB_ACTIVE_REGISTRY,
+  HUB_KEYS_MANAGE,
   HUB_MANAGE,
   hubActiveStatus,
 } from '../../components/hub-meta';
 import { HUB_DELETE_ACTION } from '../../components/use-hubs-list-config';
+import { HubKeysDialog } from '../../components/hub-keys-dialog';
 import { CustomerDialog } from './customer-dialog';
 import { PreviewDialog } from './preview-dialog';
 import { useCustomersListConfig } from './use-customers-list-config';
@@ -51,6 +53,7 @@ export function HubDetailView({ hubId }: { hubId: string }) {
   const [customerOpen, setCustomerOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<HubCustomer | null>(null);
   const [previewing, setPreviewing] = useState<HubCustomer | null>(null);
+  const [keysOpen, setKeysOpen] = useState(false);
   const [customersKey, setCustomersKey] = useState(0);
 
   const loaded = hub;
@@ -147,6 +150,14 @@ export function HubDetailView({ hubId }: { hubId: string }) {
             toast.error(hubConnectorErrorMessage(err, 'Could not resync. Please try again.'));
           }
         },
+      },
+      {
+        id: 'hub-keys',
+        label: 'Hub keys',
+        icon: KeySquare,
+        permission: HUB_KEYS_MANAGE,
+        surfaces: { form: true },
+        run: () => setKeysOpen(true),
       },
       HUB_DELETE_ACTION,
     ];
@@ -275,6 +286,7 @@ export function HubDetailView({ hubId }: { hubId: string }) {
           reload();
         }}
       />
+      <HubKeysDialog hubId={hubId} open={keysOpen} onOpenChange={setKeysOpen} />
       <PreviewDialog hubId={hubId} customer={previewing} showPrice={loaded?.exposePrice ?? false} onClose={() => setPreviewing(null)} />
       <Dialog open={secret !== null} onOpenChange={(o) => !o && setSecret(null)}>
         <DialogContent className="max-w-lg" aria-describedby={undefined}>

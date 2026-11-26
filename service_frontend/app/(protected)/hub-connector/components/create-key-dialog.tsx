@@ -18,14 +18,15 @@ import { OneTimeSecret } from '@/components/platform/one-time-secret';
 import { hubConnectorErrorMessage, useCreateHubKey } from '@/hooks/use-hub-connector';
 
 export interface CreateKeyDialogProps {
+  hubId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
 }
 
 /** Name the key, then show the full key ONCE. Closing clears it. */
-export function CreateKeyDialog({ open, onOpenChange, onCreated }: CreateKeyDialogProps) {
-  const { creating, create } = useCreateHubKey();
+export function CreateKeyDialog({ hubId, open, onOpenChange, onCreated }: CreateKeyDialogProps) {
+  const { creating, create } = useCreateHubKey(hubId);
   const [name, setName] = useState('');
   const [fullKey, setFullKey] = useState<string | null>(null);
 
@@ -68,11 +69,12 @@ export function CreateKeyDialog({ open, onOpenChange, onCreated }: CreateKeyDial
         ) : (
           <>
             <DialogBody className="flex flex-col gap-2">
-              <Label htmlFor="hub-key-name">Name *</Label>
+              <Label htmlFor="hub-key-name">Hub key name *</Label>
               <Input
                 id="hub-key-name"
                 autoFocus
                 maxLength={200}
+                placeholder="Hub key"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => {

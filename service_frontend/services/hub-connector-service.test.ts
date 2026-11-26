@@ -42,23 +42,45 @@ describe('real hub connector service', () => {
     expect(await realHubConnectorService.listOptions('brands', 'al')).toEqual([{ code: 'A', name: 'Alpha' }]);
     expect(apiFetch).toHaveBeenCalledWith('/hub-connector/options/brands?search=al');
     apiFetch.mockResolvedValueOnce({ data: [{ id: 'k1' }] });
-    expect(await realHubConnectorService.listKeys()).toEqual([{ id: 'k1' }]);
+    expect(await realHubConnectorService.listKeys('h1')).toEqual([{ id: 'k1' }]);
+    expect(apiFetch).toHaveBeenLastCalledWith('/hub-connector/hubs/h1/keys');
   });
 
   it('returns the created key with its secret value', async () => {
     apiFetch.mockResolvedValue({ id: 'k1', name: 'CRM', masked: 'x', key: 'fxh_live_abc' });
-    const created = await realHubConnectorService.createKey('CRM');
+    const created = await realHubConnectorService.createKey('h1', 'CRM');
     expect(created.key).toBe('fxh_live_abc');
-    expect(apiFetch).toHaveBeenCalledWith('/hub-connector/keys', { method: 'POST', body: JSON.stringify({ name: 'CRM' }) });
+    expect(apiFetch).toHaveBeenCalledWith('/hub-connector/hubs/h1/keys', { method: 'POST', body: JSON.stringify({ name: 'CRM' }) });
   });
 
   it('posts a customer policy', async () => {
     apiFetch.mockResolvedValue({ id: 'c1' });
-    await realHubConnectorService.createCustomer('h1', { customerCode: 'CU-1', locationCodes: ['L'], brandCodes: ['B'] });
+    await realHubConnectorService.createCustomer('h1', {
+      customerCode: 'CU-1',
+      customerName: 'Sample Co',
+      locationCodes: ['L'],
+      brandCodes: ['B'],
+    });
     expect(apiFetch).toHaveBeenCalledWith('/hub-connector/hubs/h1/customers', {
       method: 'POST',
-      body: JSON.stringify({ customerCode: 'CU-1', locationCodes: ['L'], brandCodes: ['B'] }),
+      body: JSON.stringify({ customerCode: 'CU-1', customerName: 'Sample Co', locationCodes: ['L'], brandCodes: ['B'] }),
     });
+  });
+});
+
+describe('hub connector sync and keys', () => {
+  it('reads and runs the sync on /sync', async () => {
+    apiFetch.mockResolvedValue({ configured: true, products: 3 });
+    await realHubConnectorService.getSync();
+    expect(apiFetch).toHaveBeenLastCalledWith('/hub-connector/sync');
+    await realHubConnectorService.syncNow();
+    expect(apiFetch).toHaveBeenLastCalledWith('/hub-connector/sync', { method: 'POST' });
+  });
+
+  it('revokes a key under its hub', async () => {
+    apiFetch.mockResolvedValue(undefined);
+    await realHubConnectorService.revokeKey('h1', 'k1');
+    expect(apiFetch).toHaveBeenCalledWith('/hub-connector/hubs/h1/keys/k1', { method: 'DELETE' });
   });
 });
 
@@ -70,9 +92,9 @@ describe('mock hub connector service', () => {
     const page = await svc.listHubs({ page: 0, pageSize: 10, search: 'two' });
     expect(page.total).toBe(1);
     const preview = await svc.previewCustomer('hub-1', 'hc-1');
-    expect(preview.items.every((i) => i.price === undefined)).toBe(true);
+    expect(preview.items.every((i) => i.list_price === undefined)).toBe(true);
     await svc.updateHub('hub-1', { exposePrice: true });
     const withPrice = await svc.previewCustomer('hub-1', 'hc-1');
-    expect(withPrice.items.every((i) => typeof i.price === 'number')).toBe(true);
+    expect(withPrice.items.every((i) => typeof i.list_price === 'number')).toBe(true);
   });
 });

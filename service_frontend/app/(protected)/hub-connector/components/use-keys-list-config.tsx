@@ -48,11 +48,11 @@ const spec: ClientListSpec<ApiKey> = {
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 /**
- * CRM keys inside the gear dialog. A company holds a handful, so the fetcher
+ * Hub keys inside the hub's keys dialog. A company holds a handful, so the fetcher
  * loads them whole and `applyClientQuery` searches/sorts/pages. Revoke is a
  * grace-window action (backend registry key `hub_connector_keys.revoke`).
  */
-export function useKeysListConfig(onCreate: () => void, refreshKey: number): ResourceListConfig<ApiKey> {
+export function useKeysListConfig(hubId: string, onCreate: () => void, refreshKey: number): ResourceListConfig<ApiKey> {
   const { formatDmyDateTime } = useDatetime();
 
   return useMemo<ResourceListConfig<ApiKey>>(() => {
@@ -150,7 +150,7 @@ export function useKeysListConfig(onCreate: () => void, refreshKey: number): Res
     ];
     const fetcher = async (query: ListQuery): Promise<ListResult<ApiKey>> => {
       void refreshKey;
-      return applyClientQuery(await hubConnectorService.listKeys(), query, spec);
+      return applyClientQuery(await hubConnectorService.listKeys(hubId), query, spec);
     };
     return {
       enableStatusViews: false,
@@ -168,5 +168,5 @@ export function useKeysListConfig(onCreate: () => void, refreshKey: number): Res
         actions,
       }),
     };
-  }, [formatDmyDateTime, onCreate, refreshKey]);
+  }, [formatDmyDateTime, hubId, onCreate, refreshKey]);
 }

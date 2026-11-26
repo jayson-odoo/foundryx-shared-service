@@ -21,7 +21,7 @@ import type { HubCustomer, PreviewItem } from '@/types/hub-connector';
 import type { ListQuery, ListResult } from '@/types/resource';
 
 const spec: ClientListSpec<PreviewItem> = {
-  searchText: (i) => [i.name, i.code, i.brand.name],
+  searchText: (i) => [i.name, i.code, i.brand_name],
   value: (i, field) => {
     switch (field) {
       case 'item':
@@ -29,13 +29,13 @@ const spec: ClientListSpec<PreviewItem> = {
       case 'code':
         return i.code.toLowerCase();
       case 'brand':
-        return i.brand.name.toLowerCase();
-      case 'gotStock':
-        return i.gotStock ? 1 : 0;
-      case 'gotIncoming':
-        return i.gotIncoming ? 1 : 0;
+        return i.brand_name.toLowerCase();
+      case 'inStock':
+        return i.in_stock ? 1 : 0;
+      case 'incoming':
+        return i.incoming ? 1 : 0;
       case 'price':
-        return i.price ?? null;
+        return i.list_price ?? null;
       default:
         return null;
     }
@@ -70,15 +70,15 @@ export function usePreviewListConfig(
     const columns: ColumnDef<PreviewItem>[] = [
       col('item', 'Item', 220, ({ row }) => <ClampedText text={row.original.name} lines={1} className="font-medium" />),
       col('code', 'Code', 130, ({ row }) => <ClampedText text={row.original.code} lines={1} className="font-mono text-sm" />),
-      col('brand', 'Brand', 160, ({ row }) => <ClampedText text={row.original.brand.name} lines={1} className="text-sm" />),
-      col('gotStock', 'Got stock', 110, ({ row }) => <YesNo yes={row.original.gotStock} />),
-      col('gotIncoming', 'Got incoming', 130, ({ row }) => <YesNo yes={row.original.gotIncoming} />),
+      col('brand', 'Brand', 160, ({ row }) => <ClampedText text={row.original.brand_name} lines={1} className="text-sm" />),
+      col('inStock', 'In stock', 110, ({ row }) => <YesNo yes={row.original.in_stock} />),
+      col('incoming', 'Incoming', 130, ({ row }) => <YesNo yes={row.original.incoming} />),
     ];
     if (showPrice) {
       columns.push(
         col('price', 'Price', 120, ({ row }) => (
           <span className="text-sm">
-            {row.original.price == null ? '-' : `${row.original.currency ?? ''} ${row.original.price}`.trim()}
+            {row.original.list_price == null ? '-' : `${row.original.currency ?? ''} ${row.original.list_price}`.trim()}
           </span>
         )),
       );

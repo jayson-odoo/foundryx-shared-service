@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
 import { hubConnectorService } from '@/services/hub-connector-service';
 import type {
@@ -10,6 +10,7 @@ import type {
   HubCreated,
   Option,
   OptionKind,
+  SyncState,
 } from '@/types/hub-connector';
 
 /**
@@ -50,9 +51,16 @@ export function useCreateHub(): { creating: boolean; create: (input: HubCreateIn
   return { creating: busy, create: run };
 }
 
-export function useCreateHubKey(): { creating: boolean; create: (name: string) => Promise<ApiKeyCreated> } {
-  const { busy, run } = useBusy(hubConnectorService.createKey);
+export function useCreateHubKey(hubId: string): { creating: boolean; create: (name: string) => Promise<ApiKeyCreated> } {
+  const create = useCallback((name: string) => hubConnectorService.createKey(hubId, name), [hubId]);
+  const { busy, run } = useBusy(create);
   return { creating: busy, create: run };
+}
+
+/** Run one CRM stock sync now. */
+export function useSyncNow(): { syncing: boolean; sync: () => Promise<SyncState> } {
+  const { busy, run } = useBusy(hubConnectorService.syncNow);
+  return { syncing: busy, sync: run };
 }
 
 export interface UseHubResult {
@@ -112,29 +120,4 @@ export function useHubOptions(kind: OptionKind, enabled: boolean): Option[] {
     };
   }, [kind, enabled]);
   return options;
-}
-
-/** Customer picker: searched on the server as the user types (debounced). */
-export function useCustomerSearch(enabled: boolean): { options: Option[]; setQuery: (q: string) => void } {
-  const [options, setOptions] = useState<Option[]>([]);
-  const [query, setQuery] = useState('');
-  const seq = useRef(0);
-
-  useEffect(() => {
-    if (!enabled) return;
-    const mine = ++seq.current;
-    const timer = setTimeout(() => {
-      hubConnectorService
-        .listOptions('customers', query)
-        .then((rows) => {
-          if (seq.current === mine) setOptions(rows);
-        })
-        .catch(() => {
-          if (seq.current === mine) setOptions([]);
-        });
-    }, query ? 250 : 0);
-    return () => clearTimeout(timer);
-  }, [query, enabled]);
-
-  return { options, setQuery };
 }

@@ -12,31 +12,32 @@ import { ResourceList } from '@/components/platform/resource-list';
 import { CreateKeyDialog } from './create-key-dialog';
 import { useKeysListConfig } from './use-keys-list-config';
 
-export interface CrmKeysDialogProps {
+export interface HubKeysDialogProps {
+  hubId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-/** The company's CRM keys: list, create (shown once) and revoke. */
-export function CrmKeysDialog({ open, onOpenChange }: CrmKeysDialogProps) {
+/** One hub's keys: list, create (shown once) and revoke. */
+export function HubKeysDialog({ hubId, open, onOpenChange }: HubKeysDialogProps) {
   const [creating, setCreating] = useState(false);
   const [nonce, setNonce] = useState(0);
   const onCreate = useCallback(() => setCreating(true), []);
-  const config = useKeysListConfig(onCreate, nonce);
+  const config = useKeysListConfig(hubId, onCreate, nonce);
 
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-3xl" aria-describedby={undefined}>
           <DialogHeader>
-            <DialogTitle>CRM keys</DialogTitle>
+            <DialogTitle>Hub keys</DialogTitle>
           </DialogHeader>
           <DialogBody>
             {open && <ResourceList config={config} hideHeader />}
           </DialogBody>
         </DialogContent>
       </Dialog>
-      <CreateKeyDialog open={creating} onOpenChange={setCreating} onCreated={() => setNonce((n) => n + 1)} />
+      <CreateKeyDialog hubId={hubId} open={creating} onOpenChange={setCreating} onCreated={() => setNonce((n) => n + 1)} />
     </>
   );
 }
