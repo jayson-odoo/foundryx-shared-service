@@ -15,13 +15,15 @@ MASK_RULE = "red > 0"
 
 
 def product_diff(original_png: bytes, final_png: bytes, mask_png: bytes) -> dict:
-    original = Image.open(io.BytesIO(original_png)).convert("RGB")
-    final = Image.open(io.BytesIO(final_png)).convert("RGB")
-    mask = Image.open(io.BytesIO(mask_png)).convert("RGB")
+    # Image.open reads the header only: sizes are compared before any decode.
+    original = Image.open(io.BytesIO(original_png))
+    final = Image.open(io.BytesIO(final_png))
+    mask = Image.open(io.BytesIO(mask_png))
     if original.size != final.size:
         raise ValueError(f"images differ in size: {original.size} and {final.size}")
     if mask.size != original.size:
         raise ValueError(f"mask {mask.size} does not match image {original.size}")
+    original, final, mask = original.convert("RGB"), final.convert("RGB"), mask.convert("RGB")
 
     product = mask.getchannel("R").point(lambda v: 255 if v > 0 else 0)
     diff = ImageChops.difference(original, final)
