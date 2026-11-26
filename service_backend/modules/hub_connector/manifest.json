@@ -1,0 +1,19 @@
+{
+  "module_name": "hub_connector",
+  "version": "0.1.0",
+  "author": "Foundryx",
+  "title": "Hub Connector",
+  "description": "Share stock availability with partner hubs. Choose, per hub and per customer company, which locations and brands each customer sees and whether price is shown.",
+  "icon": "share-2",
+  "required_core_version": ">=1.0.0",
+  "schema": "app_hub_connector",
+  "alembic_version_table": "alembic_version_hub_connector",
+  "requires": [],
+  "optional": [],
+  "provides": [],
+  "routers": [
+    {"name": "staff", "prefix": "/hub-connector"},
+    {"name": "inbound", "prefix": "/api/v1/hub-connector", "public": true}
+  ],
+  "permissions_csv": "permissions/permissions.csv"
+}

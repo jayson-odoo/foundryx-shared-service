@@ -1,0 +1,4 @@
+resource,resource_label,action,action_label,description
+hub_connector,Hub Connector,view,View,"View hubs, hub customers and deliveries"
+hub_connector,Hub Connector,manage,Manage,"Create and edit hubs and what each hub customer sees"
+hub_connector.keys,Hub Connector keys,manage,Manage,Create and revoke the keys the CRM pushes availability with

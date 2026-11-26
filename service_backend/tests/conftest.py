@@ -175,6 +175,7 @@ def _session_factory_template():
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
+    from modules.hub_connector.db import HUB_CONNECTOR_SCHEMA
     from modules.planner3d.db import PLANNER3D_SCHEMA
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -197,6 +198,7 @@ def _session_factory_template():
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
+        HUB_CONNECTOR_SCHEMA: "connector",
         PLANNER3D_SCHEMA: "connector",
     }
     engine = create_engine(
@@ -334,6 +336,7 @@ def _ideation_session_factory_template():
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
+    from modules.hub_connector.db import HUB_CONNECTOR_SCHEMA
     from modules.planner3d.db import PLANNER3D_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
@@ -350,6 +353,7 @@ def _ideation_session_factory_template():
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
+        HUB_CONNECTOR_SCHEMA: "connector",
         PLANNER3D_SCHEMA: "connector",
     }
     engine = create_engine(
@@ -668,6 +672,7 @@ def _meetings_session_factory_template():
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
+    from modules.hub_connector.db import HUB_CONNECTOR_SCHEMA
     from modules.planner3d.db import PLANNER3D_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
@@ -683,6 +688,7 @@ def _meetings_session_factory_template():
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
+        HUB_CONNECTOR_SCHEMA: "connector",
         PLANNER3D_SCHEMA: "connector",
     }
     engine = create_engine(
@@ -781,6 +787,7 @@ def connector_session_factory():
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
+    from modules.hub_connector.db import HUB_CONNECTOR_SCHEMA
     from modules.planner3d.db import PLANNER3D_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
@@ -798,6 +805,7 @@ def connector_session_factory():
             MEETINGS_SCHEMA: "meetings",
             CONNECTOR_SCHEMA: "connector",
             LEAD_CAPTURE_SCHEMA: "connector",
+            HUB_CONNECTOR_SCHEMA: "connector",
             PLANNER3D_SCHEMA: "connector",
         }
     )
