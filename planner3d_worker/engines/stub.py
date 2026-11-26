@@ -6,6 +6,7 @@ input always yields byte-identical files.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import trimesh
@@ -23,3 +24,25 @@ def generate(photos: list[Path], dims_mm: dict, out_dir: Path, n: int = 3) -> li
         path.write_bytes(mesh.export(file_type="glb"))
         paths.append(path)
     return paths
+
+
+class StubEngine:
+    """Model jobs on the CPU, no model: deterministic boxes of the right size."""
+
+    kinds = ["model"]
+
+    def run(self, kind: str, inputs: dict, params: dict, out_dir) -> list[tuple[str, str]]:
+        if kind != "model":
+            raise ValueError(f"stub engine cannot run {kind}")
+        dims = params["dimensionsMm"]
+        paths = generate(
+            [Path(p) for p in inputs.values()],
+            {"lengthMm": dims["length"], "widthMm": dims["width"], "heightMm": dims["height"]},
+            Path(out_dir),
+        )
+        produced: list[tuple[str, str]] = []
+        for path in paths:
+            report = path.with_suffix(".json")
+            report.write_text(json.dumps({"engine": "stub", "dimensionsMm": dims}) + "\n")
+            produced += [(path.name, "candidate"), (report.name, "report")]
+        return produced
