@@ -10,7 +10,7 @@ from planner3d_worker.tests.fake_engines import FakeEngine, HogEngine, SleepEngi
 
 TOKEN = "s3cr3t-token-value-xyz"
 NAME = "mac-mini-1"
-JOB = "job-1"
+JOB = "6f1c2a3e-4b5d-4e7f-8a9b-0c1d2e3f4a5b"
 
 INPUTS = {
     "model": [{"role": "photo", "name": "photo-1.png", "mime": "image/png", "size": 4, "sha256": "x"}],
