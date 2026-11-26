@@ -150,6 +150,16 @@ def sync_tenant(db: Session, tenant_id: str, *, client: Optional[crm_feed.FeedCl
     except crm_feed.FeedError as exc:
         return _record_failure(db, tenant_id, exc.message, started=started)
 
+    # An empty list where there was data is far more likely a wrong company code
+    # or a CRM misconfiguration than a real "everything is gone": refuse it, so
+    # hubs never see all stock vanish. (Starting from nothing, empty is fine.)
+    had_items = db.query(HcItem.id).filter(HcItem.tenant_id == tenant_id).first() is not None
+    had_locations = db.query(HcLocation.id).filter(HcLocation.tenant_id == tenant_id).first() is not None
+    if (had_items and not codes) or (had_locations and not locations):
+        return _record_failure(
+            db, tenant_id, "The CRM listed no products or no locations; nothing was changed.", started=started
+        )
+
     delivery_service.tenant_lock(db, tenant_id)
     _upsert_catalog(db, HcLocation, tenant_id, locations, extra=lambda row, raw: setattr(row, "sellable", raw.get("sellable") is not False))
     _upsert_catalog(db, HcBrand, tenant_id, brands)

@@ -14,7 +14,9 @@ an admin-typed base URL must never reach an internal address.
 """
 from __future__ import annotations
 
+import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -33,6 +35,9 @@ FEED_PATH = "/api/v1/external/connector/v1"
 CODES_PER_CALL = 200  # /availability cap (422 above)
 PAGE_LIMIT = 200  # /products limit 1..200
 TIMEOUT_SECONDS = 30.0
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # one feed answer
+MAX_PAGES = 500  # 100k products
+RUN_DEADLINE_SECONDS = 600.0  # one sync run, every call included
 
 
 class FeedError(Exception):
@@ -72,8 +77,10 @@ def _explain(status: int, body: Dict[str, Any]) -> str:
         return "The CRM rate limit was reached."
     if status == 422:
         detail = body.get("detail")
-        if isinstance(detail, dict) and detail.get("message"):
-            return f"The CRM refused the request: {detail['message']}"
+        message = detail.get("message") if isinstance(detail, dict) else None
+        if isinstance(message, str) and message.strip():
+            clean = "".join(ch for ch in message if ch.isprintable())[:200]
+            return f"The CRM refused the request: {clean}"
         return "The CRM refused the request."
     if status >= 500:
         return f"The CRM answered with an internal error ({status})."
@@ -84,29 +91,41 @@ class FeedClient:
     def __init__(self, cfg: FeedConfig, client: Optional[httpx.Client] = None):
         self.cfg = cfg
         self._client = client
+        self._deadline = time.monotonic() + RUN_DEADLINE_SECONDS
 
     def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        if time.monotonic() > self._deadline:
+            raise FeedError("The CRM took too long to answer this sync.")
         url = f"{self.cfg.base_url.rstrip('/')}{FEED_PATH}{path}"
         query = {"company": self.cfg.company, **{k: v for k, v in params.items() if v is not None}}
         release_read_transactions()
         client = self._client or _http()
         try:
-            response = client.get(url, params=query, headers={"X-API-Key": self.cfg.api_key, "Accept": "application/json"})
+            with client.stream(
+                "GET", url, params=query, headers={"X-API-Key": self.cfg.api_key, "Accept": "application/json"}
+            ) as response:
+                status, retry = response.status_code, response.headers.get("Retry-After")
+                raw = bytearray()
+                for chunk in response.iter_bytes():
+                    raw.extend(chunk)
+                    if len(raw) > MAX_RESPONSE_BYTES:
+                        raise FeedError("The CRM answer was too large.")
+                    if time.monotonic() > self._deadline:
+                        raise FeedError("The CRM took too long to answer this sync.")
         except httpx.HTTPError as exc:
             raise FeedError("Could not reach the CRM.") from exc
         finally:
             if self._client is None:
                 client.close()
         try:
-            body = response.json() if response.content else {}
+            body = json.loads(bytes(raw)) if raw else {}
         except ValueError:
             body = {}
-        if response.status_code != 200:
-            retry = response.headers.get("Retry-After")
+        if status != 200:
             raise FeedError(
-                _explain(response.status_code, body if isinstance(body, dict) else {}),
+                _explain(status, body if isinstance(body, dict) else {}),
                 retry_after=int(retry) if retry and retry.isdigit() else None,
-                status=response.status_code,
+                status=status,
             )
         if not isinstance(body, dict) or not isinstance(body.get("data"), list):
             raise FeedError("The CRM answered in an unexpected shape.")
@@ -119,17 +138,21 @@ class FeedClient:
         return self._get("/brands", {})["data"]
 
     def products(self) -> List[Dict[str, Any]]:
-        """Every product the feed offers, paged by ``limit``/``offset``."""
+        """Every product the feed offers, paged by ``limit``/``offset``. A page
+        larger than asked for, or more than ``MAX_PAGES`` pages, is refused."""
         rows: List[Dict[str, Any]] = []
         offset = 0
-        while True:
+        for _ in range(MAX_PAGES):
             body = self._get("/products", {"limit": PAGE_LIMIT, "offset": offset})
             page = body["data"]
+            if len(page) > PAGE_LIMIT:
+                raise FeedError("The CRM sent more products than asked for.")
             rows.extend(page)
             total = body.get("total")
             offset += len(page)
-            if not page or (isinstance(total, int) and offset >= total) or len(page) < PAGE_LIMIT:
+            if not page or len(page) < PAGE_LIMIT or (isinstance(total, int) and offset >= total):
                 return rows
+        raise FeedError("The CRM lists more products than one sync can read.")
 
     def availability(self, codes: Sequence[str]) -> Dict[str, Dict[str, Any]]:
         """``code -> row`` for the given codes (chunks of 200); a code in
@@ -149,7 +172,8 @@ def config_from(config: Dict[str, Any], credentials: Dict[str, Any]) -> FeedConf
     base_url = str(config.get("baseUrl") or "").strip()
     company = str(config.get("company") or "").strip()
     api_key = str(credentials.get("apiKey") or "").strip()
-    if not base_url.lower().startswith(("https://", "http://")):
+    allowed = ("https://", "http://") if settings.environment == "development" else ("https://",)
+    if not base_url.lower().startswith(allowed):
         raise FeedError("Enter the CRM address (https://...).")
     if not company or len(company) > 50:
         raise FeedError("Enter the CRM company code.")

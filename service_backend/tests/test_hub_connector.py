@@ -719,3 +719,48 @@ def test_deferred_remove_customer_tells_the_hub_and_delete_hub_and_revoke(client
         assert db.query(HcHub).filter(HcHub.id == hub_id).first() is None
     finally:
         db.close()
+
+
+# ── feed hardening (security review) ────────────────────────────────────────
+
+def test_an_empty_feed_never_wipes_what_hubs_see(client, hc, crm, stub_hub):
+    headers = _ready(client)
+    hub_id = _hub(client, headers)["hub"]["id"]
+    _add_customer(client, headers, hub_id, "C-T", "Customer T", ["WH-S"], ["BR-A"])
+    before = len(stub_hub.received)
+    crm.products = []
+    state = _sync(client, headers)
+    assert state["lastError"] == "The CRM listed no products or no locations; nothing was changed."
+    assert state["products"] == 2 and len(stub_hub.received) == before
+
+
+def test_a_feed_that_never_stops_paging_is_cut_off(client, hc, crm, monkeypatch):
+    monkeypatch.setattr(crm_feed, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(crm_feed, "MAX_PAGES", 3)
+    original = crm.handler
+
+    def endless(request):
+        if request.url.path.endswith("/products"):
+            return httpx.Response(200, json={"data": [_product("SR-9", "Loop", "BR-A", None)]})
+        return original(request)
+
+    monkeypatch.setattr(crm_feed, "_http", lambda: httpx.Client(transport=httpx.MockTransport(endless)))
+    headers = _login(client)
+    _connect_feed(client, headers)
+    assert _sync(client, headers)["lastError"] == "The CRM lists more products than one sync can read."
+
+
+def test_an_oversized_feed_answer_is_refused(client, hc, crm, monkeypatch):
+    monkeypatch.setattr(crm_feed, "MAX_RESPONSE_BYTES", 200)
+    headers = _login(client)
+    _connect_feed(client, headers)
+    assert _sync(client, headers)["lastError"] == "The CRM answer was too large."
+
+
+def test_plain_http_crm_address_is_refused_outside_development(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "environment", "production")
+    with pytest.raises(crm_feed.FeedError):
+        crm_feed.config_from({"baseUrl": "http://crm.example", "company": "CO-1"}, {"apiKey": "k"})
+    assert crm_feed.config_from({"baseUrl": "https://crm.example", "company": "CO-1"}, {"apiKey": "k"}).company == "CO-1"
