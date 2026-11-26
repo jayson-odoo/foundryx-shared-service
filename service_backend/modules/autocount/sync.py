@@ -62,6 +62,7 @@ from .canonical.masters import (
     NO_DELETION_ENTITY_TYPES,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
+    ENTITY_STOCK_BALANCE,
     ENTITY_SUPPLIER,
     VENDOR_ENTITY_CUSTOMER,
     VENDOR_ENTITY_SUPPLIER,
@@ -96,9 +97,11 @@ from .models import (
     RUN_MODE_INCREMENTAL,
     RUN_MODE_MANUAL,
     RUN_MODE_RECONCILE,
+    RUN_MODE_SKIPPED,
     RUN_MODE_SNAPSHOT,
     RUN_SUCCESS,
     SOURCE_IMPL_AUTOCOUNT_HTTP,
+    STOCK_UNCHANGED_REASON,
     SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_FAILED,
@@ -280,6 +283,44 @@ def _advance_mark_and_key(
             pass
         return existing_mark, existing_last_key
     return existing_mark, existing_last_key
+
+
+def _stock_walk_skippable(
+    db: Session,
+    source: Any,
+    *,
+    mode: str,
+    tenant_id: str,
+    company_id: str,
+    entity_type: str,
+) -> bool:
+    """SS-STOCK-BAL-SOOTHE - True when a SCHEDULED stock push run may skip
+    its full balance walk: the connection allows it, a clean full walk
+    started less than ``stockFullWalkMinutes`` ago, and the byLastModified
+    probe confirms no document moved since that walk started. Any doubt
+    (no earlier walk, a probe fault, a manual/reconcile run) walks."""
+    if entity_type != ENTITY_STOCK_BALANCE or mode != RUN_MODE_INCREMENTAL:
+        return False
+    settings = getattr(source, "gentle_settings", None)
+    probe = getattr(source, "stock_unchanged_since", None)
+    if settings is None or probe is None or not settings.skip_when_unchanged:
+        return False
+    last_walk = SyncRunRepository(db).last_full_walk_started_at(
+        tenant_id, company_id, entity_type,
+        (RUN_MODE_MANUAL, RUN_MODE_INCREMENTAL, RUN_MODE_RECONCILE),
+    )
+    if last_walk is None:
+        return False
+    if last_walk.tzinfo is None:
+        last_walk = last_walk.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if now - last_walk >= timedelta(minutes=settings.full_walk_minutes):
+        return False
+    try:
+        return bool(probe(last_walk, now=now))
+    except Exception:  # noqa: BLE001 - a probe fault is never a reason to skip
+        logger.warning("stock skip probe failed; walking", exc_info=True)
+        return False
 
 
 def _aborted(db: Session, job_id: str) -> bool:
@@ -479,6 +520,41 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
             mode=mode, started=started, trace_id=trace_id, company=company,
         )
+        return
+
+    #     !!  A SCHEDULED STOCK RUN SKIPS ITS WALK WHEN NOTHING MOVED
+    #         (SS-STOCK-BAL-SOOTHE).  !!
+    if _stock_walk_skippable(
+        db, source, mode=mode, tenant_id=tenant_id, company_id=company_id,
+        entity_type=entity_type,
+    ):
+        try:
+            record_client_calls(
+                db, source, tenant_id=tenant_id, trace_id=trace_id,
+                external_ref=company.database_name,
+            )
+        finally:
+            source.close()
+        now = datetime.now(timezone.utc)
+        run.mode = RUN_MODE_SKIPPED
+        run.skip_reason = (
+            f"{STOCK_UNCHANGED_REASON}, so the stock walk was skipped. "
+            "A full check still runs at least every "
+            f"{source.gentle_settings.full_walk_minutes} min."
+        )
+        run.finished_at = now
+        run.duration_ms = int((time.monotonic() - started) * 1000)
+        service.finish(
+            job,
+            status=JOB_DONE,
+            result={
+                "companyId": company_id,
+                "entityType": entity_type,
+                "mode": mode,
+                "skipped": "stock_unchanged",
+            },
+        )
+        db.commit()
         return
 
     # S9 (fix/job-lease-orphan-sweep): the non-paged path has no page loop, so

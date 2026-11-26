@@ -46,6 +46,19 @@ from .write_back.auth import (
     auth_headers,
     settings_problem,
 )
+from .http_source.gentle import (
+    LOOKUP_CACHE_FIELD_DEFAULT,
+    LOOKUP_CACHE_FIELD_MAX,
+    LOOKUP_CACHE_FIELD_MIN,
+    PAGE_PAUSE_FIELD_DEFAULT,
+    PAGE_PAUSE_FIELD_MAX,
+    PAGE_PAUSE_FIELD_MIN,
+    STOCK_FULL_WALK_FIELD_DEFAULT,
+    STOCK_FULL_WALK_FIELD_MAX,
+    STOCK_FULL_WALK_FIELD_MIN,
+    STOCK_SKIP_FIELD_DEFAULT,
+    validate_gentle_config,
+)
 from .http_source.client import (
     MAX_CONCURRENT_PAGES_FIELD_DEFAULT,
     MAX_CONCURRENT_PAGES_FIELD_MAX,
@@ -230,6 +243,54 @@ class AutoCountProvider:
                 "max": MAX_CONCURRENT_PAGES_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
+            # SS-STOCK-BAL-SOOTHE - keep the wrapper's load low and even
+            # (`http_source/gentle.py`); all on by default.
+            {
+                "key": "pagePauseSeconds",
+                "label": "Pause between pages (seconds)",
+                "type": "number",
+                "required": False,
+                "default": PAGE_PAUSE_FIELD_DEFAULT,
+                "defaultValue": f"{PAGE_PAUSE_FIELD_DEFAULT:g}",
+                "min": PAGE_PAUSE_FIELD_MIN,
+                "max": PAGE_PAUSE_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "stockSkipWhenUnchanged",
+                "label": "Skip stock check when no document changed",
+                "type": "select",
+                "required": False,
+                "default": STOCK_SKIP_FIELD_DEFAULT,
+                "defaultValue": STOCK_SKIP_FIELD_DEFAULT,
+                "options": [
+                    {"value": "yes", "label": "Yes"},
+                    {"value": "no", "label": "No"},
+                ],
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "stockFullWalkMinutes",
+                "label": "Full stock check at least every (minutes)",
+                "type": "number",
+                "required": False,
+                "default": STOCK_FULL_WALK_FIELD_DEFAULT,
+                "defaultValue": str(STOCK_FULL_WALK_FIELD_DEFAULT),
+                "min": STOCK_FULL_WALK_FIELD_MIN,
+                "max": STOCK_FULL_WALK_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "lookupCacheMinutes",
+                "label": "Reuse stock item lookups for (minutes)",
+                "type": "number",
+                "required": False,
+                "default": LOOKUP_CACHE_FIELD_DEFAULT,
+                "defaultValue": str(LOOKUP_CACHE_FIELD_DEFAULT),
+                "min": LOOKUP_CACHE_FIELD_MIN,
+                "max": LOOKUP_CACHE_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
             # plan 63 - the optional AutoCount API key. Blank key = no auth
             # header at all (a connection saved before this has none of these
             # keys and behaves as "no key"). Defaults apply only once a key is set.
@@ -342,6 +403,10 @@ class AutoCountProvider:
                     f"{MAX_CONCURRENT_PAGES_FIELD_MIN} and "
                     f"{MAX_CONCURRENT_PAGES_FIELD_MAX}."
                 )
+
+        gentle_problem = validate_gentle_config(config)
+        if gentle_problem:
+            return gentle_problem
 
         auth_problem = settings_problem(config)
         if auth_problem:

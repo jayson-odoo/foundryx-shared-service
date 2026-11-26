@@ -43,6 +43,7 @@ from ..models import (
     PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_READY,
     RUN_MODE_SKIPPED,
+    STOCK_UNCHANGED_REASON,
     STAGED,
     STAGED_DISCARDED,
     STAGED_FAILED,
@@ -1446,8 +1447,32 @@ class SyncRunRepository:
             self.db.query(func.max(AcSyncRun.finished_at))
             .filter(
                 *self._scope(tenant_id, company_id, entity_type),
-                AcSyncRun.mode.in_(tuple(clean_modes)),
+                or_(
+                    and_(AcSyncRun.mode.in_(tuple(clean_modes)), self._clean_clause()),
+                    # SS-STOCK-BAL-SOOTHE - a stock run skipped because
+                    # nothing moved is a successful check, not a stale gap.
+                    and_(
+                        AcSyncRun.mode == RUN_MODE_SKIPPED,
+                        AcSyncRun.skip_reason.startswith(STOCK_UNCHANGED_REASON, autoescape=True),
+                    ),
+                ),
+            )
+            .scalar()
+        )
+
+    def last_full_walk_started_at(
+        self, tenant_id: str, company_id: str, entity_type: str, walk_modes: Sequence[str]
+    ) -> Optional[datetime]:
+        """SS-STOCK-BAL-SOOTHE - start time of the latest clean run that
+        really walked the source (a skip is never one), with no failed row:
+        the point a "did anything move since?" probe reads from."""
+        return (
+            self.db.query(func.max(AcSyncRun.started_at))
+            .filter(
+                *self._scope(tenant_id, company_id, entity_type),
+                AcSyncRun.mode.in_(tuple(walk_modes)),
                 self._clean_clause(),
+                AcSyncRun.failed_count == 0,
             )
             .scalar()
         )

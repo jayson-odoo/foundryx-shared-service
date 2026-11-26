@@ -124,6 +124,11 @@ RUN_MODE_MANUAL = "manual"
 RUN_MODE_INCREMENTAL = "incremental"
 RUN_MODE_RECONCILE = "reconcile"
 RUN_MODE_SKIPPED = "skipped"
+# SS-STOCK-BAL-SOOTHE - the ``skip_reason`` prefix of a scheduled stock run
+# skipped because no document moved since the last full walk. Unlike an
+# overlap skip it IS a successful check, so the stale-sync alert counts it as
+# a clean run (``SyncRunRepository.last_clean_finished_at``).
+STOCK_UNCHANGED_REASON = "Nothing changed in AutoCount since the last full stock check"
 # sprint-5/10 (AC-10-21) - a pull snapshot build. Writes NO staged record, NO
 # row hash and advances NO watermark; it still records ONE ``AcSyncRun`` so
 # the Runs tab shows a pull build exactly as it shows a push run.
