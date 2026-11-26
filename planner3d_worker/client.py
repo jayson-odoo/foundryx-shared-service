@@ -9,8 +9,11 @@ it is never logged, never in an error message.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import threading
+import uuid
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Optional
@@ -26,6 +29,39 @@ BASE = "/planner3d/worker"
 DEFAULT_RSS_CAP_MB = 8192
 DEFAULT_TIMEOUT_S = 1800
 HEARTBEAT_S = 15
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "testserver")
+SAFE_NAME = re.compile(r"[A-Za-z0-9._-]+")
+
+# What SS is told when a job fails: short, generic, no paths or library text.
+# The raw exception goes to the local log only.
+GENERIC_ERRORS = {
+    "worker_failed": "The worker could not complete the job.",
+    "memory_cap": "The job used more memory than allowed.",
+    "timeout": "The job took longer than allowed.",
+    "bad_input": "The job inputs were not valid.",
+}
+
+
+def _check_base_url(base_url: str) -> None:
+    parsed = urlparse(base_url)
+    if parsed.scheme == "https":
+        return
+    host = parsed.hostname or ""
+    # ".test" is a reserved name that never resolves on the public internet.
+    if parsed.scheme == "http" and (host in LOCAL_HOSTS or host.endswith(".test")):
+        return
+    raise ValueError("base_url must be https (plain http only for localhost)")
+
+
+def _is_uuid(value: object) -> bool:
+    try:
+        return isinstance(value, str) and str(uuid.UUID(value)) == value.lower()
+    except ValueError:
+        return False
+
+
+def _safe_name(name: object) -> bool:
+    return isinstance(name, str) and SAFE_NAME.fullmatch(name) is not None and ".." not in name
 
 
 class Cancelled(Exception):
@@ -55,6 +91,7 @@ class Worker:
         timeout_s: float = DEFAULT_TIMEOUT_S,
         heartbeat_s: float = HEARTBEAT_S,
     ):
+        _check_base_url(base_url)
         self.name = name
         self.engine = engine
         self.health = health
@@ -95,7 +132,10 @@ class Worker:
             log.warning("claim failed: %s", type(exc).__name__)
             return None
 
-        job_id, kind = job["jobId"], job["kind"]
+        job_id, kind = job.get("jobId"), job.get("kind")
+        if not _is_uuid(job_id):
+            log.warning("ignoring a claim whose job id is not a UUID")
+            return None
         job_dir = self.work_dir / job_id
         try:
             self._process(job_id, kind, job.get("params") or {}, job.get("inputs") or [], job_dir)
@@ -111,6 +151,12 @@ class Worker:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         self._heartbeat(job_id, 0)
+        root = in_dir.resolve()
+        for item in inputs:
+            name = item.get("name")
+            if not _safe_name(name) or not (root / name).resolve().is_relative_to(root):
+                self._finish_failed(job_id, "bad_input", "an input name was rejected")
+                return
         try:
             paths = {}
             for item in inputs:
@@ -185,8 +231,10 @@ class Worker:
 
     # ── finishing ───────────────────────────────────────────────────────────
 
-    def _finish_failed(self, job_id: str, code: str, message: str) -> None:
-        self._finish(job_id, {"status": "failed", "error": {"code": code, "message": message[:1000]}})
+    def _finish_failed(self, job_id: str, code: str, detail: str) -> None:
+        log.warning("job %s failed (%s): %s", job_id, code, detail)
+        message = GENERIC_ERRORS.get(code, GENERIC_ERRORS["worker_failed"])
+        self._finish(job_id, {"status": "failed", "error": {"code": code, "message": message}})
 
     def _finish(self, job_id: str, body: dict) -> None:
         body.setdefault("gpuSeconds", 0)

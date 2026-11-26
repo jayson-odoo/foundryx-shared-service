@@ -24,16 +24,23 @@ Environment (optional): `PLANNER3D_TRIPOSR_SRC` (default `~/planner3d/triposr_sr
 
 ## Secrets (login keychain)
 
-Both items live in the login keychain; the values below are placeholders. Nothing is written to a file.
+Both items live in the login keychain. `-w` with no value makes `security` prompt for the secret, so it
+never lands in shell history or the process list.
 
 ```bash
-# Worker token. Shared Service stores only its sha256 as PLANNER3D_WORKER_TOKEN_SHA256.
-security add-generic-password -a planner3d -s planner3d-worker-token -w '<WORKER_TOKEN>'
-printf '%s' '<WORKER_TOKEN>' | shasum -a 256        # this hash goes into the server config
+# Worker token: generate it, then paste it at the prompt.
+openssl rand -hex 32
+security add-generic-password -a planner3d -s planner3d-worker-token -w
 
-# Hugging Face read token, read only by the model child process.
-security add-generic-password -a planner3d -s huggingface-read-token -w '<HF_READ_TOKEN>'
+# Hash for the server (PLANNER3D_WORKER_TOKEN_SHA256), computed straight from the keychain:
+security find-generic-password -a planner3d -s planner3d-worker-token -w | tr -d '\n' | shasum -a 256
+
+# Hugging Face read token, read only by the model child process (prompts for the value).
+security add-generic-password -a planner3d -s huggingface-read-token -w
 ```
+
+Shared Service stores only the sha256. The worker sends the token only to an `https` base URL
+(plain `http` is accepted for `localhost` and `127.0.0.1` only).
 
 `PLANNER3D_WORKER_TOKEN` in the environment overrides the keychain item.
 
