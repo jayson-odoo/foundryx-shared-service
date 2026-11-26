@@ -262,6 +262,17 @@ def resync_hub(db: Session, tenant_id: str, hub_id: str) -> List[str]:
     return ids
 
 
+def remove_customer(db: Session, tenant_id: str, hub_id: str, hub_customer_id: str) -> None:
+    """Take a customer off a hub: the hub is told to drop everything it showed,
+    in the same transaction as the removal (staff route AND grace-window undo)."""
+    hub = hub_service.get_hub(db, tenant_id, hub_id)
+    row = hub_service.get_hub_customer(db, tenant_id, hub_id, hub_customer_id)
+    delivery_id = hide_customer(db, hub, row)
+    hub_service.remove_customer(db, tenant_id, hub_id, hub_customer_id, commit=False)
+    db.commit()
+    enqueue([delivery_id] if delivery_id else [])
+
+
 def enqueue(delivery_ids: Sequence[str]) -> None:
     """Hand each delivery to the worker (eager dev runs it inline). Never raises."""
     for delivery_id in delivery_ids:

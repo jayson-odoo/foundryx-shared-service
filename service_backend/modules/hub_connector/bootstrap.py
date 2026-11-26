@@ -26,7 +26,10 @@ def register_capabilities() -> None:
 
 
 def register_engine_entities() -> None:
-    return None
+    """Idempotent boot registration of the grace-window delete actions."""
+    from .deferred_actions import register_hub_connector_deferred_actions
+
+    register_hub_connector_deferred_actions()
 
 
 def create_schema_and_tables(engine: Engine) -> None:

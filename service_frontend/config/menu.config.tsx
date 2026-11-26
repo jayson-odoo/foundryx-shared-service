@@ -414,6 +414,15 @@ export const MENU_SIDEBAR: MenuConfig = [
       { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
     ],
   },
+  // Hub Connector - module menu block (same tags in all three menu copies).
+  {
+    title: 'Hub Connector',
+    icon: Network,
+    module: 'hub_connector',
+    children: [
+      { title: 'Hubs', path: '/hub-connector', permission: 'hub_connector.view' },
+    ],
+  },
   // Meetings (sprint-5 S0) - module menu block, visible only while the
   // `meetings` module is ACTIVE for the tenant AND the user holds the key its
   // page gates on (filterMenu prunes at every level). No clickable parent.
@@ -614,6 +623,18 @@ export const MENU_MEGA: MenuConfig = [
               { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
               { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
               { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
+            ],
+          },
+        ],
+      },
+      // Hub Connector - desktop mega copy.
+      {
+        title: 'Hub Connector',
+        module: 'hub_connector',
+        children: [
+          {
+            children: [
+              { title: 'Hubs', path: '/hub-connector', permission: 'hub_connector.view' },
             ],
           },
         ],
@@ -830,6 +851,15 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
       { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
       { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
       { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
+    ],
+  },
+  // Hub Connector - module menu block (same tags in all three menu copies).
+  {
+    title: 'Hub Connector',
+    icon: Network,
+    module: 'hub_connector',
+    children: [
+      { title: 'Hubs', path: '/hub-connector', permission: 'hub_connector.view' },
     ],
   },
   // Meetings (sprint-5 S0) - third menu copy; same module + permission tags so

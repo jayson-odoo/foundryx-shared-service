@@ -224,15 +224,10 @@ def remove_customer(
     hub_id: str, hub_customer_id: str, user: User = Depends(_MANAGE), db: Session = Depends(get_db)
 ) -> Response:
     try:
-        hub = hub_service.get_hub(db, user.tenant_id, hub_id)
-        row = hub_service.get_hub_customer(db, user.tenant_id, hub_id, hub_customer_id)
-        delivery_id = delivery_service.hide_customer(db, hub, row)
-        hub_service.remove_customer(db, user.tenant_id, hub_id, hub_customer_id, commit=False)
+        delivery_service.remove_customer(db, user.tenant_id, hub_id, hub_customer_id)
     except HubError as exc:
         db.rollback()
         raise _http(exc)
-    db.commit()
-    delivery_service.enqueue([delivery_id] if delivery_id else [])
     return Response(status_code=204)
 
 

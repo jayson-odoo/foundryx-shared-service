@@ -634,3 +634,58 @@ def test_hub_switched_off_sends_nothing(client, hc, stub_hub):
         assert db.query(HcHub).filter(HcHub.id == hub_id).one().active is False
     finally:
         db.close()
+
+
+# ── grace-window deletes (the screens' Delete / Remove / Revoke) ────────────
+
+def _park_and_lapse(db, action_key, entity_type, entity_id, payload=None):
+    from datetime import datetime, timedelta, timezone
+
+    from app.deferred_actions.service import PendingActionService
+    from app.models import User
+    from app.models.pending_action import PendingAction
+
+    admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key=action_key, entity_type=entity_type, entity_id=entity_id, payload=payload,
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+    return svc.commit_one(row)
+
+
+def test_deferred_actions_registered_with_route_permissions():
+    from app.deferred_actions.registry import deferred_action_for
+
+    assert deferred_action_for("hub_connector_hubs.delete").permission == "hub_connector.manage"
+    assert deferred_action_for("hub_connector_customers.remove").permission == "hub_connector.manage"
+    assert deferred_action_for("hub_connector_keys.revoke").permission == "hub_connector.keys.manage"
+
+
+def test_deferred_remove_customer_tells_the_hub_and_delete_hub_and_revoke(client, hc, stub_hub):
+    from modules.hub_connector.models import HcApiKey, HcHubCustomer
+
+    headers = _login(client)
+    _seed_facts(client, _crm_key(client, headers))
+    hub_id = _hub(client, headers)["hub"]["id"]
+    cid = _add_customer(client, headers, hub_id, "C-TOUCH", ["WH-S"], ["BR-A"])["id"]
+    db = hc()
+    try:
+        result = _park_and_lapse(db, "hub_connector_customers.remove", "hub_connector_customer", cid, {"hubId": hub_id})
+        assert result.status == "committed", result.error_text
+        assert db.query(HcHubCustomer).filter(HcHubCustomer.id == cid).first() is None
+        last = stub_hub.by_customer("C-TOUCH")[-1]
+        assert last["items"] == [] and last["removed"] == ["I-1"]
+        result = _park_and_lapse(db, "hub_connector_hubs.delete", "hub_connector_hub", hub_id)
+        assert result.status == "committed", result.error_text
+        assert db.query(HcHub).filter(HcHub.id == hub_id).first() is None
+        key_id = db.query(HcApiKey.id).filter(HcApiKey.tenant_id == DEFAULT_TENANT_ID).first()[0]
+        result = _park_and_lapse(db, "hub_connector_keys.revoke", "hub_connector_key", key_id)
+        assert result.status == "committed", result.error_text
+        db.expire_all()
+        assert db.get(HcApiKey, key_id).revoked_at is not None
+    finally:
+        db.close()
