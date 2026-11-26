@@ -1,0 +1,6 @@
+httpx
+numpy
+pillow
+trimesh
+psutil
+pytest
