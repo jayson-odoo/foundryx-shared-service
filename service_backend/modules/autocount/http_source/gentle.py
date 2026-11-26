@@ -116,10 +116,10 @@ class CachedLookup:
     reported_total: Optional[int]
     envelope_kind: Optional[str]
     stored_at: float
-    expires_at: float
 
 
 _monotonic = time.monotonic
+MAX_ENTRY_AGE_SECONDS = LOOKUP_CACHE_FIELD_MAX * 60
 _lock = threading.Lock()
 _cache: Dict[Tuple[str, ...], CachedLookup] = {}
 
@@ -128,13 +128,17 @@ def lookup_cache_key(tenant_id: str, connection_id: str, base_url: str, path: st
     return (str(tenant_id), str(connection_id), str(base_url), str(path))
 
 
-def get_cached_lookup(key: Tuple[str, ...]) -> Optional[CachedLookup]:
+def get_cached_lookup(key: Tuple[str, ...], *, ttl_minutes: int) -> Optional[CachedLookup]:
+    """The entry for ``key`` when it is younger than the CURRENT ``ttl_minutes``
+    (so lowering the setting takes effect on the very next run)."""
+    if ttl_minutes <= 0:
+        return None
     now = _monotonic()
     with _lock:
         hit = _cache.get(key)
         if hit is None:
             return None
-        if now >= hit.expires_at:
+        if now - hit.stored_at >= ttl_minutes * 60:
             _cache.pop(key, None)
             return None
         return hit
@@ -152,9 +156,14 @@ def store_cached_lookup(
         return
     now = _monotonic()
     with _lock:
+        # Sweep entries no run has read for a day (a changed path / base URL /
+        # deleted connection would otherwise stay for the process lifetime).
+        stale = [k for k, v in _cache.items() if now - v.stored_at >= MAX_ENTRY_AGE_SECONDS]
+        for k in stale:
+            _cache.pop(k, None)
         _cache[key] = CachedLookup(
             rows=rows, reported_total=reported_total, envelope_kind=envelope_kind,
-            stored_at=now, expires_at=now + ttl_minutes * 60,
+            stored_at=now,
         )
 
 

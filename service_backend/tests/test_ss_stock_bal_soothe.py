@@ -103,13 +103,20 @@ def _envelope(rows, *, page: int, total_pages: int, total: int) -> Dict[str, Any
 
 
 class Server:
-    """A fake wrapper: a 3-page balance endpoint and a 1-page item lookup."""
+    """A fake wrapper: a 3-page balance endpoint and a 2-page item lookup."""
 
     def __init__(self) -> None:
         self.calls: List[httpx.Request] = []
 
     def count(self, suffix: str) -> int:
         return sum(1 for r in self.calls if r.url.path.endswith(suffix))
+
+    def walks(self, suffix: str) -> int:
+        """Full walks of an endpoint = its page-1 requests."""
+        return sum(
+            1 for r in self.calls
+            if r.url.path.endswith(suffix) and r.url.params.get("page") == "1"
+        )
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
@@ -119,8 +126,9 @@ class Server:
             rows = [{"ItemCode": f"I{page}", "Location": "HQ", "BalQty": page}]
             return httpx.Response(200, json=_envelope(rows, page=page, total_pages=3, total=3))
         if path.endswith("/itembypage"):
-            rows = [{"ItemCode": f"I{n}", "BaseUOM": "UNIT"} for n in (1, 2, 3)]
-            return httpx.Response(200, json=_envelope(rows, page=1, total_pages=1, total=3))
+            codes = (1, 2) if page == 1 else (3,)
+            rows = [{"ItemCode": f"I{n}", "BaseUOM": "UNIT"} for n in codes]
+            return httpx.Response(200, json=_envelope(rows, page=page, total_pages=2, total=3))
         return httpx.Response(404)
 
 
@@ -210,6 +218,20 @@ def test_walk_pauses_between_pages_only(session_factory, server, pauses):
 
     assert server.count(BALANCE_PATH) == 3
     assert pauses == [1.0, 1.0], "two gaps between three pages, none before page 1"
+
+
+def test_lookup_walks_are_not_paused(session_factory, server, pauses):
+    """A cache-miss run must still fit the 5-minute tick: only the balance
+    walk is spread out."""
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    config = _stock_config(db, company, conn, lookups=[ITEM_LOOKUP])
+
+    _source(db, company, config).fetch_changes(Watermark())
+
+    assert server.count("/itembypage") == 2
+    assert pauses == [1.0, 1.0], "only the 3-page balance walk pauses"
     db.close()
 
 
@@ -240,16 +262,47 @@ def test_stock_lookup_is_reused_inside_the_ttl_and_walked_again_after(session_fa
     config = _stock_config(db, company, conn, lookups=[ITEM_LOOKUP])
 
     first = _source(db, company, config).fetch_changes(Watermark())
-    assert server.count("/itembypage") == 1
+    assert server.walks("/itembypage") == 1
     clock["now"] += 30 * 60
     second = _source(db, company, config).fetch_changes(Watermark())
-    assert server.count("/itembypage") == 1, "inside 60 min the lookup is not walked again"
+    assert server.walks("/itembypage") == 1, "inside 60 min the lookup is not walked again"
     assert [r.raw.get("ItemBaseUOM") for r in second.records] == ["UNIT"] * 3
     assert second.walk_verified == first.walk_verified is True
 
     clock["now"] += 31 * 60
     _source(db, company, config).fetch_changes(Watermark())
-    assert server.count("/itembypage") == 2, "after the TTL the lookup is walked again"
+    assert server.walks("/itembypage") == 2, "after the TTL the lookup is walked again"
+    db.close()
+
+
+def test_lowering_the_ttl_takes_effect_on_the_next_run(session_factory, server, monkeypatch):
+    import modules.autocount.http_source.gentle as gentle
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(gentle, "_monotonic", lambda: clock["now"])
+    db = session_factory()
+    conn = _open_connection(db, lookupCacheMinutes="1440")
+    company = _company(db, conn.id)
+    config = _stock_config(db, company, conn, lookups=[ITEM_LOOKUP])
+
+    _source(db, company, config).fetch_changes(Watermark())
+    clock["now"] += 20 * 60
+    conn.config_json = {**conn.config_json, "lookupCacheMinutes": "15"}
+    db.commit()
+    _source(db, company, config).fetch_changes(Watermark())
+    assert server.walks("/itembypage") == 2
+    db.close()
+
+
+def test_a_manual_run_refreshes_the_cache_for_the_next_scheduled_run(session_factory, server):
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    config = _stock_config(db, company, conn, lookups=[ITEM_LOOKUP])
+
+    _source(db, company, config, mode=RUN_MODE_MANUAL).fetch_changes(Watermark())
+    _source(db, company, config).fetch_changes(Watermark())
+    assert server.walks("/itembypage") == 1, "the scheduled run reuses the manual run's walk"
     db.close()
 
 
@@ -262,10 +315,10 @@ def test_manual_run_and_other_entities_never_use_the_cache(session_factory, serv
 
     _source(db, company, config).fetch_changes(Watermark())
     _source(db, company, config, mode=RUN_MODE_MANUAL).fetch_changes(Watermark())
-    assert server.count("/itembypage") == 2, "a manual run reads fresh lookups"
+    assert server.walks("/itembypage") == 2, "a manual run reads fresh lookups"
     _source(db, company, product).fetch_changes(Watermark())
     _source(db, company, product).fetch_changes(Watermark())
-    assert server.count("/itembypage") == 4, "only stock_balance lookups are cached"
+    assert server.walks("/itembypage") == 4, "only stock_balance lookups are cached"
     db.close()
 
 
@@ -277,7 +330,7 @@ def test_cache_off_when_minutes_is_zero(session_factory, server):
 
     _source(db, company, config).fetch_changes(Watermark())
     _source(db, company, config).fetch_changes(Watermark())
-    assert server.count("/itembypage") == 2
+    assert server.walks("/itembypage") == 2
     db.close()
 
 
@@ -306,7 +359,7 @@ def test_every_scheduled_stock_run_walks_the_balances_lookups_cached(session_fac
     second = _run_job(db, company)
 
     assert server.count(BALANCE_PATH) == 6, "both runs walk all 3 balance pages"
-    assert server.count("/itembypage") == 1, "the second run reuses the lookup"
+    assert server.walks("/itembypage") == 1, "the second run reuses the lookup"
     assert first.outcome == second.outcome == RUN_SUCCESS
     assert first.mode == second.mode == RUN_MODE_INCREMENTAL
     assert pauses == [1.0] * 4

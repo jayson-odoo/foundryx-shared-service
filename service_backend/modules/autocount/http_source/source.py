@@ -560,7 +560,11 @@ class HttpApiSource:
             if page == 1 and prefetched is not None:
                 response, parsed = prefetched
             else:
-                if page > 1 and self._gentle.page_pause_seconds > 0:
+                if (
+                    page > 1
+                    and self._current_stage == "source"
+                    and self._gentle.page_pause_seconds > 0
+                ):
                     # SS-STOCK-BAL-SOOTHE - a trickle, never a burst.
                     gentle.sleep_between_pages(self._gentle.page_pause_seconds)
                 response = self._fetch_page(path, page, page_size)
@@ -1033,11 +1037,10 @@ class HttpApiSource:
                 )
 
     def _lookup_cache_applies(self) -> bool:
-        """BL-SS-353 - only a SCHEDULED stock run reuses lookups; a manual or
-        reconcile run (and every other entity) always reads them fresh."""
+        """BL-SS-353 - only stock lookups are cached; every other entity
+        always reads them fresh."""
         return (
             self.entity_type == ENTITY_STOCK_BALANCE
-            and self.mode == RUN_MODE_INCREMENTAL
             and self._gentle.lookup_cache_minutes > 0
         )
 
@@ -1045,19 +1048,24 @@ class HttpApiSource:
         self, path: str, alias_name: str
     ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
         """``_walk_endpoint`` for a lookup, through the 1 h cache when it
-        applies. Only a VERIFIED walk is cached, so a reused lookup is always
-        a complete one."""
+        applies. Only a SCHEDULED run reuses a cached walk; a manual or
+        reconcile run reads fresh and refreshes the cache. Only a VERIFIED
+        walk is cached, so a reused lookup is always a complete one."""
         if not self._lookup_cache_applies():
             return self._walk_endpoint(path)
         key = gentle.lookup_cache_key(
             self._ctx.tenant_id, self._connection_id, self._base_url, path
         )
-        hit = gentle.get_cached_lookup(key)
+        hit = (
+            gentle.get_cached_lookup(key, ttl_minutes=self._gentle.lookup_cache_minutes)
+            if self.mode == RUN_MODE_INCREMENTAL
+            else None
+        )
         if hit is not None:
             age_minutes = max(int((gentle._monotonic() - hit.stored_at) // 60), 0)
+            age = "just now" if age_minutes < 1 else f"{age_minutes} min ago"
             self._client.record_note(
-                f"Reused the '{alias_name}' lookup ('{path}', {len(hit.rows)} row(s)) "
-                f"read {age_minutes} min ago.",
+                f"Reused the '{alias_name}' lookup ({len(hit.rows)} row(s)) read {age}.",
                 ok=True,
             )
             return hit.rows, hit.reported_total, hit.envelope_kind
