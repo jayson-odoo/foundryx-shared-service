@@ -193,7 +193,7 @@ def test_a_partial_sha_in_the_list_never_matches_by_prefix(tmp_path):
 
 CI_JOBS = (
     "check-migration-heads", "lint-conventions", "validate-backend",
-    "validate-frontend", "test-backend", "test-frontend",
+    "validate-frontend", "test-backend", "test-frontend", "test-planner-worker",
 )
 
 
