@@ -49,6 +49,7 @@ PNG_CAP = 40 * MB
 GLB_CAP = 100 * MB
 JSON_CAP = 1 * MB
 MAX_PROMPT = 300
+MAX_SIDE_PX = 4096
 
 EXPORT_NAMES = ("model.glb", "model.gltf", "model.obj", "model.mtl", "model.fbx", "model.stl")
 _CANDIDATE = re.compile(r"^candidate-([1-3])\.(glb|json)$")
@@ -193,6 +194,14 @@ def submit_render(
         mask_size = Image.open(io.BytesIO(mask)).size
     except Exception as exc:  # noqa: BLE001 - any decode failure is the client's bad file
         raise P3Error(422, "image_invalid", "A PNG could not be read.") from exc
+    depth_size = None
+    try:
+        depth_size = Image.open(io.BytesIO(depth)).size
+    except Exception as exc:  # noqa: BLE001
+        raise P3Error(422, "image_invalid", "A PNG could not be read.") from exc
+    for size in (scene_size, mask_size, depth_size):
+        if max(size) > MAX_SIDE_PX:
+            raise P3Error(422, "image_too_large", f"Images may be at most {MAX_SIDE_PX} pixels per side.")
     if scene_size != mask_size:
         raise P3Error(422, "mask_size", "The mask must be the same size as the scene.")
     return _create_with_inputs(
@@ -426,6 +435,13 @@ def put_output(
     mime = sniff.sniff_for_name(name, data)
     if mime is None:
         raise P3Error(422, "file_type", "The file content does not match its name.")
+    if name.endswith(".png"):
+        try:
+            side = max(Image.open(io.BytesIO(data)).size)
+        except Exception as exc:  # noqa: BLE001 - unreadable image is a bad upload
+            raise P3Error(422, "file_type", "The image could not be read.") from exc
+        if side > MAX_SIDE_PX:
+            raise P3Error(422, "image_too_large", f"Images may be at most {MAX_SIDE_PX} pixels per side.")
     role = (role or name).strip()
     if not _ROLE.match(role):
         raise P3Error(422, "role", "The role is not valid.")
@@ -516,7 +532,7 @@ def finish(
         values.update(
             status=STATUS_FAILED,
             error_code=(error.code if error else "worker_failed"),
-            error_message=(error.message if error else ""),
+            error_message=(error.message[:200] if error else ""),
         )
     else:
         problem = _success_problem(db, job)

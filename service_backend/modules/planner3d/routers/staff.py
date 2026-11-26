@@ -111,7 +111,8 @@ def download_file(
         data, mime = job_service.download(db, user.tenant_id, job_id, name)
     except P3Error as exc:
         raise _http(exc)
-    return Response(content=data, media_type=mime, headers=_FILE_HEADERS)
+    headers = {**_FILE_HEADERS, "Content-Disposition": f'attachment; filename="{name}"'}
+    return Response(content=data, media_type=mime, headers=headers)
 
 
 @router.post("/jobs/{job_id}/approve", response_model=schemas.JobOut, status_code=202)
