@@ -339,6 +339,8 @@ describe('parity (switch off): find document', () => {
       { wrapper: SettingsProvider },
     );
     await waitFor(() => expect(screen.getByLabelText('Document number *')).toBeTruthy());
+    // the Document type default loads after the first paint: the snapshot is the loaded state
+    await waitFor(() => expect(screen.getByText('Delivery order')).toBeInTheDocument());
     expect(stable(container)).toMatchSnapshot();
   });
 

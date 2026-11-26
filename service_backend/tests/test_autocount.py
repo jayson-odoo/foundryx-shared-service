@@ -141,6 +141,7 @@ def test_provider_fields_have_no_appsecret_and_no_company(client):
     assert keys == [
         "auth", "baseUrl", "appId", "userId", "password",
         "pageSize", "requestTimeoutSeconds", "maxConcurrentPages",
+        "pagePauseSeconds", "lookupCacheMinutes",
         "apiKey", "apiKeyHeader", "apiKeyFormat", "apiKeyOnReads",
     ]
 

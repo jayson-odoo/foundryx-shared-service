@@ -150,9 +150,10 @@ _LINE_FALLBACK_FIELDS: Tuple[str, ...] = (
     "product_code", "product_name", "warehouse_code", "line_number",
 )
 
-# FULFIL-SO-REMARK - SO-line-only wire fields, offered only when the entity's
-# own line model declares them (read off the model, so PO/SPO never gain them).
-_LINE_REMARK_FIELDS: Tuple[str, ...] = ("line_remark", "section_heading")
+# FULFIL-SO-REMARK - line wire fields offered only when the entity's own line
+# model declares them (read off the model). SS-FURTHER-DESC-SEND adds
+# `further_description_rtf`, which SO and PO declare and SPO does not.
+_LINE_REMARK_FIELDS: Tuple[str, ...] = ("line_remark", "section_heading", "further_description_rtf")
 
 # sprint-5/06 (AC-06-10) - the two DIRECTLY-mapped linkage wire fields
 # (`from_so_numbers`, `from_po_number`; never minted). Offered ONLY when the

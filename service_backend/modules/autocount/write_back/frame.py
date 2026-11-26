@@ -25,6 +25,8 @@ from modules.autocount.write_back.client import AutoCountWriteClient
 from modules.autocount.write_back import auth
 from modules.autocount.write_back import call_log as cl
 from modules.autocount.write_back import guard
+from modules.autocount.write_back import payloads
+from modules.autocount.write_back.line_notes import NotesReader, SqlDocDb
 from modules.autocount.write_back.guard import WriteConnectionError, WriteNotAllowed, assert_write_allowed
 from modules.autocount.write_back.reader import AutoCountDocReader
 from modules.autocount.write_back.doc_mapping import ENTITY_BY_KIND
@@ -84,6 +86,8 @@ class WriteActionResult:
     doc_no: Optional[str] = None
     # plan 64: ``po-links`` only - the PO row the link landed on, as read back (None unless done)
     detail: Optional[Doc] = None
+    # plan 71: ``po-links/unlink`` merged back into its source row (``returnedTo``; None otherwise)
+    returned_to: Optional[Dict[str, Any]] = None
 
 
 class _Stop(Exception):
@@ -170,6 +174,7 @@ class WriteFrame:
         self._refused_base_url: Optional[str] = None
         self._write_headers: Dict[str, str] = {}
         self._read_headers: Dict[str, str] = {}
+        self._notes_extra: Optional[Any] = None  # plan 73: the company's AutoCount DB source (None = none set: legacy mode, writes go out as before)
         self.actions = WriteActionRepository(db)
         self.staged = StagedDocRepository(db)
         self.connections = ConnectionRepository(db)
@@ -210,7 +215,9 @@ class WriteFrame:
 
     def _reader_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
         reader = auth.attach_headers(self._reader_factory(base_url), self._read_headers)
-        return cl.attach_call_log(reader, log or self._call_log)
+        reader = cl.attach_call_log(reader, log or self._call_log)
+        # plan 73 D1: every PO / SPO read carries the values stored in the AutoCount DB (header + rows + FurtherDescription)
+        return NotesReader(reader, self._notes_extra)
 
     def _client_for(self, base_url: str, log: Optional[cl.CallLog] = None) -> Any:
         client = auth.attach_headers(self._client_factory(base_url), self._write_headers)
@@ -265,10 +272,23 @@ class WriteFrame:
             )
         return conn if conn is not None and conn.is_active else None
 
+    def _line_notes_source(self, company: AcCompany) -> Optional[Any]:
+        """Plan 73 R1: the company's AutoCount DB source: its explicit ``line_notes_connection_id`` when set, else
+        its own source connection (``company.connection_id``); either must resolve WITH tenant_id as an ACTIVE
+        same-tenant ``sql_database`` connection, else None (none set: legacy mode, nothing refused)."""
+        from modules.autocount.sql_provider import SQL_DATABASE_PROVIDER_KEY
+
+        connection_id = company.line_notes_connection_id or company.connection_id
+        if not connection_id:
+            return None
+        conn = self.connections.get_for_provider(company.tenant_id, connection_id, SQL_DATABASE_PROVIDER_KEY)
+        return SqlDocDb(conn) if conn is not None and conn.is_active else None
+
     def _resolve_write_base_url(self, company: AcCompany) -> "Tuple[Optional[str], Optional[Tuple[str, str]]]":
         """``(url, None)`` or ``(None, (code, message))``: the company's write
         connection URL resolved WITH tenant_id and the write guard applied."""
         self._refused_base_url = None
+        self._notes_extra = self._line_notes_source(company)
         conn = self._write_connection(company)
         if conn is None:
             return None, (WRITE_DISABLED, "")
@@ -372,6 +392,27 @@ class WriteFrame:
         locations = {r.location for r in newest}
         ambiguous = any(r.ambiguous for r in newest) or len(locations) > 1
         return str(newest[0].so_doc_no or ""), None if ambiguous else newest[0].location, ambiguous
+
+    def _so_link_note(self, company: AcCompany, so_dtl_key: int) -> Optional[str]:
+        """Lane SS-UNLINK-STRIP-SO-NOTE: the S/O note a link to SO row ``so_dtl_key`` writes, rebuilt with the link's
+        own builder (``payloads.so_link_note``) from the newest good staged copy of that SO (found through the same
+        ``ac_so_row_index`` as ``_so_row``). None when no staged copy holds the row, or equally new copies disagree:
+        the unlink then removes nothing (never a guessed note)."""
+        rows = SoRowIndexRepository(self.db).rows_for(company.tenant_id, company.id, so_dtl_key)
+        if not rows:
+            return None
+        floor = datetime.min.replace(tzinfo=timezone.utc)
+        newest_at = max(r.staged_at or floor for r in rows)
+        notes = set()
+        for ref in sorted({r.so_source_ref for r in rows if (r.staged_at or floor) == newest_at}):
+            staged = self.staged.newest(company.tenant_id, company.id, ENTITY_BY_KIND["SO"], ref, skip_failed=True)
+            raw = (staged.raw_json if staged else None) or {}
+            line = next((ln for ln in raw.get("_lines") or []
+                         if isinstance(ln, dict) and ln.get("DtlKey") == so_dtl_key), None)
+            if line is None:
+                return None
+            notes.add(payloads.so_link_note(raw, line))
+        return notes.pop() if len(notes) == 1 else None
 
     @contextlib.contextmanager
     def staged_memo(self) -> Iterator[None]:

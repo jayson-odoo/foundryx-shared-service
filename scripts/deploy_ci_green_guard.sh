@@ -4,7 +4,7 @@
 #   deploy_ci_green_guard.sh <sha>
 #
 # A workflow_dispatch release with the `skip_tests` input ticked does NOT
-# re-run the six CI gate jobs (about 18 hosted minutes). That is only safe
+# re-run the seven CI gate jobs (about 18 hosted minutes). That is only safe
 # when the EXACT sha being deployed already passed every one of them in an
 # earlier run (normally the push-to-main run after the merge). This script
 # asks the GitHub API for that sha's check runs and passes only when, for
@@ -25,7 +25,7 @@ set -euo pipefail
 SHA="${1:-}"
 REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
 
-# The six CI gate jobs of .github/workflows/deploy.yml, by their `name:`
+# The seven CI gate jobs of .github/workflows/deploy.yml, by their `name:`
 # (a job's check run carries that name). Pinned against the workflow by
 # service_backend/tests/test_deploy_skip_tests.py.
 REQUIRED=(
@@ -35,6 +35,7 @@ REQUIRED=(
   "Validate frontend (next build)"
   "Test backend (pytest)"
   "Test frontend (lint + vitest)"
+  "Test planner3d worker (pytest)"
 )
 
 if [ -z "$SHA" ] || [ -z "$REPO" ]; then

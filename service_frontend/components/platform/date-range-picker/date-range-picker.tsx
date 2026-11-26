@@ -26,6 +26,7 @@ import { dateKey, formatDmyDate } from '@/lib/datetime';
 import { cn } from '@/lib/utils';
 import { useFx } from '@/hooks/use-fx';
 import { FxDateRangePicker } from '@/components/fx/fields/fx-date-range-picker';
+import { DateRangeTypedInputs } from './date-range-typed-inputs';
 
 export type DateRangePreset =
   | 'last7'
@@ -152,8 +153,16 @@ export function DateRangePicker(props: DateRangePickerProps) {
   return useFx() ? <FxDateRangePicker {...props} /> : <DateRangePickerLegacy {...props} />;
 }
 
+/** Today's `YYYY-MM-DD` in `tz` (the typed fields read "today" / "5 Nov" against it). */
+export function todayKeyInZone(tz: string): string {
+  const { y, m, d } = todayInZone(tz);
+  return toKey(y, m, d);
+}
+
 function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, maxDate }: DateRangePickerProps) {
   const [open, setOpen] = useState(false);
+  // Controlled once a typed day jumps it; `undefined` = open on the value's month.
+  const [month, setMonth] = useState<Date | undefined>(undefined);
   // Our own two-click anchor, rather than trusting react-day-picker's
   // built-in range-merge heuristic (which can hand back a COMPLETE-looking
   // range - `to` still the PREVIOUS selection's end - on the very FIRST
@@ -167,6 +176,7 @@ function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, 
       // Foolproof-UI: don't silently collapse the range to "today" - open the
       // calendar so the user picks the actual custom range next.
       onChange({ ...value, preset: 'custom' });
+      setMonth(undefined);
       setOpen(true);
       return;
     }
@@ -198,6 +208,7 @@ function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, 
         onOpenChange={(next) => {
           setOpen(next);
           anchorRef.current = null;
+          setMonth(undefined);
         }}
       >
         <PopoverTrigger asChild>
@@ -220,6 +231,8 @@ function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, 
             // several months just to see it (Popover content unmounts on
             // close, so this recomputes fresh on every open).
             defaultMonth={value.from || value.to ? parseKey(value.from || value.to) : undefined}
+            month={month}
+            onMonthChange={setMonth}
             selected={calendarValue}
             disabled={disabledMatcher}
             onSelect={(_range, selectedDay) => {
@@ -236,6 +249,18 @@ function DateRangePickerLegacy({ value, onChange, timeZone, className, minDate, 
               anchorRef.current = null;
               setOpen(false);
             }}
+          />
+          <DateRangeTypedInputs
+            from={value.from}
+            to={value.to}
+            minDate={minDate}
+            maxDate={maxDate}
+            today={todayKeyInZone(timeZone)}
+            onChange={(from, to) => {
+              anchorRef.current = null;
+              onChange({ preset: 'custom', from, to });
+            }}
+            onJump={(day) => setMonth(parseKey(day))}
           />
         </PopoverContent>
       </Popover>

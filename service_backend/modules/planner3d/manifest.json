@@ -1,0 +1,22 @@
+{
+  "module_name": "planner3d",
+  "version": "0.1.0",
+  "author": "Foundryx",
+  "title": "Planner 3D",
+  "description": "Turn product photos into 3D models and render saved room designs on a GPU worker.",
+  "icon": "cube",
+  "required_core_version": ">=1.0.0",
+  "schema": "app_planner3d",
+  "alembic_version_table": "alembic_version_planner3d",
+  "requires": [],
+  "optional": [],
+  "provides": [],
+  "routers": [
+    {"name": "staff", "prefix": "/planner3d"},
+    {"name": "worker", "prefix": "/planner3d/worker", "public": true}
+  ],
+  "storage_locations": [
+    {"model": "P3JobFile", "column": "storage_key", "tenantColumn": "tenant_id"}
+  ],
+  "permissions_csv": "permissions/permissions.csv"
+}

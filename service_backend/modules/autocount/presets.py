@@ -289,6 +289,9 @@ SO_PRESET = DocumentPreset(
         # the nearest earlier text-only line's Description of the same document.
         PresetField("FurtherDescription", "line_remark", "string"),
         PresetField("SectionHeading", "section_heading", "string"),
+        # SS-FURTHER-DESC-SEND - the same column, RAW (RTF bytes unchanged),
+        # for the CRM's rich rendering (contract 2.16).
+        PresetField("FurtherDescription", "further_description_rtf", "raw_text"),
     ),
     fingerprint_query=_SO_FINGERPRINT_QUERY,
 )
@@ -378,6 +381,15 @@ _PO_LINE_QUERY = (
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
+# SS-FURTHER-DESC-SEND - the PO task's OWN line query: the shared PO/SPO text
+# plus the raw `FurtherDescription` (RTF; `further_description_rtf`, 2.16). SPO
+# keeps `_PO_LINE_QUERY` unchanged (out of this lane's scope).
+_PO_ONLY_LINE_QUERY = _PO_LINE_QUERY.replace(
+    "sh.DocKey AS FromPODocKey, sh.DocNo AS FromPODocNo ",
+    "sh.DocKey AS FromPODocKey, sh.DocNo AS FromPODocNo, "
+    "d.FurtherDescription AS FurtherDescription ", 1,
+)
+
 # feat/line-fingerprint-sweep - the PO/PODTL equivalent of `_SO_FINGERPRINT_
 # QUERY` above (see that constant's own comment for the mechanism), shared
 # by PO and SPO exactly like their header/line queries already are. Same
@@ -406,7 +418,7 @@ _PO_FILTER_FORMULA = 'not(startswith(upper(trim(DocNo)), "SPO-"))'
 PO_PRESET = DocumentPreset(
     label="AutoCount PO",
     header_query=_PO_HEADER_QUERY,
-    line_query=_PO_LINE_QUERY,
+    line_query=_PO_ONLY_LINE_QUERY,
     key_columns=("DocKey",),
     watermark_column="LastModified",
     doc_date_column="DocDate",
@@ -457,6 +469,9 @@ PO_PRESET = DocumentPreset(
         PresetField("FromPODocKey", "from_po_doc_key", "int"),
         PresetField("FromPODtlKey", "from_po_line_key", "int"),
         PresetField("FromPODocNo", "from_po_number", "string"),
+        # SS-FURTHER-DESC-SEND - the raw line Further Description (RTF, bytes
+        # unchanged), same field as the SO line's (contract 2.16).
+        PresetField("FurtherDescription", "further_description_rtf", "raw_text"),
     ),
     fingerprint_query=_PO_FINGERPRINT_QUERY,
 )

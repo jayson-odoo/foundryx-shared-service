@@ -317,6 +317,10 @@ class CompanyAlreadyExists(AutocountServiceError):
     pass
 
 
+class LineNotesConnectionInvalid(AutocountServiceError):
+    """The chosen line notes connection is not a database connection of this tenant (a 422 with a plain line)."""
+
+
 class SinkTargetValidationError(AutocountServiceError):
     """A sink-target save rejected PER FIELD - the HTTP layer renders
     ``422 {fieldErrors}`` (the same shape the task editor already consumes), so
@@ -1387,6 +1391,23 @@ class CompanyService:
             cache=self._doc_feed_gate_cache,
             cache_key=(tenant_id, company.id, feed),
         )
+
+    def set_line_notes_connection(
+        self, tenant_id: str, company_id: str, connection_id: Optional[str]
+    ) -> AcCompany:
+        """Plan 74: set (or clear with None) the company's line notes connection: a ``sql_database`` connection
+        resolved WITH the tenant (never a bare id). Anything else changes nothing."""
+        company = self.get(tenant_id, company_id)  # tenant-scope guard
+        if connection_id is None:
+            company.line_notes_connection_id = None
+        else:
+            conn = self.connections.get_for_provider(tenant_id, connection_id, SQL_DATABASE_PROVIDER_KEY)
+            if conn is None:
+                raise LineNotesConnectionInvalid("Choose a database connection of this tenant.")
+            company.line_notes_connection_id = conn.id
+        self.db.commit()
+        self.db.refresh(company)
+        return company
 
     def set_sink_target(
         self,

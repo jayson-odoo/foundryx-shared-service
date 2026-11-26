@@ -133,8 +133,9 @@ _SO_FINGERPRINT_QUERY_FINGERPRINT = (
 # move instead. Verified zero row-content change: every SO/PO/SPO row's
 # `.enabled` is `True` (its default) both before and after - see
 # ``test_every_so_po_spo_preset_row_is_enabled`` below.
+# Re-pinned by SS-FURTHER-DESC-SEND (PO line query + `further_description_rtf` row).
 _PO_PRESET_FINGERPRINT = (
-    "b6ef289e74983b4e62525296fbd314b198585375344a90d324e84b07583bfd5c"
+    "8a5139e042749a5d8b2065ebc853149c3d34e05f9ffca33dde329e1557346a0c"
 )
 _SPO_PRESET_FINGERPRINT = (
     "d6474d64f424e5dcd47e0c095caf3a01eef14155d7956c7d837162c479d51678"

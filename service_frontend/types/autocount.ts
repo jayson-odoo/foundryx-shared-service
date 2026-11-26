@@ -179,6 +179,15 @@ export interface AutocountCompany {
    * Populated on `GET /autocount/companies/{id}`; the LIST returns `[]`.
    */
   documentPrerequisites: AutocountDocumentPrerequisite[];
+  /** Core `connections.id` of the `sql_database` connection the PO line notes are read through (plan 74); null = unset. */
+  lineNotesConnectionId: string | null;
+  /** The company is active and has a write connection (a flag only, never the connection). */
+  writeEnabled: boolean;
+}
+
+/** `PATCH /autocount/companies/{id}/line-notes-connection` (plan 74): a connection id sets, `null` clears. */
+export interface AutocountLineNotesInput {
+  connectionId: string | null;
 }
 
 /** `GET /autocount/companies/{id}` - the company plus its entity configs. */
@@ -1699,6 +1708,9 @@ export interface DocFeedBackfill {
   daysTotal: number;
   daysDone: number;
   error: string | null;
+  /** Why a stopped backfill stopped (e.g. `USER_STOPPED`, `ORPHANED`); the
+   * hook keeps polling while a worker-loss stop waits for its auto-resume. */
+  errorCode?: string | null;
 }
 
 /** A cadence - the Entities task schedule shape (`AutocountEtlSourceConfig`'s
@@ -1866,7 +1878,7 @@ export interface DocFeedIssue {
 }
 
 /** `POST /autocount/doc-feeds/{companyId}/{feed}/backfill` body - defaults
- * (2019-01-01 .. today) are resolved server-side; the dialog only sends what
+ * (2000-01-01 .. today) are resolved server-side; the dialog only sends what
  * the operator changed. */
 export interface DocFeedBackfillStartInput {
   dryRun: boolean;

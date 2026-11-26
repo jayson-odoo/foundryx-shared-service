@@ -173,6 +173,18 @@ class CompanyItem(ApiModel):
     # master status of each configured document entity.
     sourceKind: Literal["api", "db", "http"] = "api"
     documentPrerequisites: List[DocumentPrerequisiteOut] = []
+    # Plan 74: the same-tenant ``sql_database`` connection the PO line notes are read through (null = unset) and
+    # whether the company can write at all (active + a write connection). A flag only, never a URL or key.
+    lineNotesConnectionId: Optional[str] = Field(default=None, validation_alias="line_notes_connection_id")
+    writeEnabled: bool = Field(default=False, validation_alias="write_enabled")
+
+
+class CompanyLineNotesUpdate(ApiModel):
+    """Plan 74: set (a connection id) or clear (null) the company's line notes database connection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    connectionId: Optional[str] = Field(...)
 
 
 class CompanySinkUpdate(ApiModel):

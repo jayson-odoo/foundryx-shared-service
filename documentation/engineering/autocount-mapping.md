@@ -178,3 +178,28 @@ rows seeded DISABLED, with one warning naming the config id. Manual operator ste
    whose row hash does not change is not sent again. Then press Repush on the task so every SO is
    re-sent once with the new fields (line columns never enter the row hash, so without a Repush an
    unchanged SO keeps its old line remarks in the CRM).
+
+## 7. Raw line Further Description on SO and PO (SS-FURTHER-DESC-SEND)
+
+`further_description_rtf` carries the line `FurtherDescription` exactly as stored in AutoCount (RTF,
+embedded images included; the `raw_text` transform never trims). It is on SO and PO lines (not
+SPO) and is sent only when the CRM advertises contract 2.16 or later (sorento-crm#2766). Below that
+version the key is left out. `line_remark` is unchanged. A value over 2 MiB (UTF-8) is not sent: the key
+is left out (so the CRM keeps its stored copy) and one warning names the line. It is never cut, because
+cut RTF is broken RTF. An ingest POST also closes early once its documents' RTF reaches 8 MiB.
+
+- SO: the preset line query already selects `FurtherDescription`. The preset adds a second row
+  for it, `FurtherDescription -> further_description_rtf` (`raw_text`).
+- PO: the preset line query adds `d.FurtherDescription AS FurtherDescription`, plus the same row.
+- Module migration `0050_autocount_further_desc` (and `update_tenant` from a pre-0.24.0 version)
+  seeds that row on every existing SO and PO task. It is enabled when the task already reads the
+  column, or when its PO line query was the previous preset text (which is then rewritten).
+  Otherwise it is seeded DISABLED with one warning naming the config id. Manual step for such a
+  task: add `d.FurtherDescription AS FurtherDescription` to the line query, run the query test,
+  and enable the row.
+- Line columns are not part of the row hash, so existing documents are not re-sent by themselves.
+  The CRM re-pull reads each document through `GET /documents/{sales-orders|purchase-orders}/{docKey}`.
+  Each `Details[]` row carries the stored `FurtherDescription` unchanged, read through the company's
+  line-notes database connection. If no connection is set, or the read fails, the rows carry no
+  `FurtherDescription` key at all, never a guessed value. Repush on the task is the SS-side
+  alternative.

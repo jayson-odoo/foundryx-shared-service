@@ -197,6 +197,14 @@ for svc in backend frontend; do
   fi
 done
 
+# 3b. Plan 73 release guard: a write-enabled company whose line notes database is set must be able to read it (one with
+#     none set runs in legacy mode and only warns). Run in the NEW backend container; on failure the new color is
+#     stopped and the old one keeps serving.
+echo "==> Checking AutoCount line notes databases"
+NEW_BACKEND_CID=$(docker compose ps -q "backend_${NEW}")
+docker exec "$NEW_BACKEND_CID" python -m modules.autocount.write_back.admin check-line-notes \
+  || abort_new_color backend "AutoCount line notes check failed"
+
 # 4. Swap Caddy to the new color (rewrite fragment + graceful reload).
 echo "==> Swapping Caddy to ${NEW} (frontend:${NEW_FE_PORT} backend:${NEW_BE_PORT} under ${BACKEND_PATH})"
 TMP_CADDY=$(mktemp)

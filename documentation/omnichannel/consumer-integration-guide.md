@@ -10,6 +10,8 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-11-24** | **Partner API: Page list hardening** (section 6e, "Connecting a Facebook Page"). On the Foundryx Page list, a Page id that was not offered now counts toward the per-address throttle, and the third such id ends the session `FAILED` with the new `errorCode` `page_select_attempts_exceeded` (the browser returns to your `returnUrl` with `status=failed`). The Foundryx page only sends Page ids from its own list, so this happens only to a tampered request. Additive: no route or field changes. |
+> | **2026-11-24** | **Partner API: hosted Facebook Page connect** (section 6e, "Connecting a Facebook Page (Messenger and Instagram)"). `POST /partner/workspaces/{workspaceId}/connect-sessions` accepts `"channelType": "FACEBOOK"`: the user signs in with Facebook, picks one Page on the Foundryx page, and `complete` creates a `FACEBOOK` (Messenger) channel for the Page and an `INSTAGRAM` channel for its linked Instagram professional account. New `errorCode` values `no_page_found`, `page_not_found`, `page_in_use`. The public `/connect/wa-callback` answer gains `pagePicker` for this flow, and a new public `POST /api/v1/omnichannel/connect/page-select` (used only by the Foundryx page) with code `invalid_page` (422). Off until the deployment configures it. Additive: WhatsApp sessions, every existing field and code are unchanged. |
 > | **2026-11-20** | **Partner API: hosted WhatsApp connect sessions** (section 6e, "Connecting WhatsApp numbers"). New `POST /partner/workspaces/{workspaceId}/connect-sessions` returns a Meta sign-up link for one of your workspaces; the user signs in to Meta and is sent back to your `returnUrl`, whose origin must be one of the partner key's allowed return origins. Then `GET /partner/connect-sessions/{id}`, `POST /partner/connect-sessions/{id}/complete` (creates one channel per number of the Meta account that is not connected anywhere yet) and `POST /partner/connect-sessions/{id}/cancel`. New public `POST /api/v1/omnichannel/connect/wa-callback`, used only by the sign-up page. New codes `connect_not_configured` (503), `connect_session_not_found` (404), `invalid_return_url` (422), `connect_session_not_authorized` (409). Off until the deployment configures it. Additive: no existing route, field or code changes. |
 > | **2026-11-20** | **Partner API: client apps** (section 6e). Every workspace and partner key now belongs to a **client app** (one consuming application inside a tenant; a tenant may hold several). Each existing workspace became (or joined) the client app named after it, and existing partner keys belong to the tenant's default client app (the one of its default workspace). A partner key can be minted for a specific client app. Partner routes are limited to the calling key's client app: `GET /partner/workspaces` lists only that client app's workspaces, a workspace of another client app answers the same `404 workspace_not_found`, and `externalOrgId` is unique per client app. `GET /partner/me` gains `clientAppId` and `clientAppName`. A disabled client app answers `403 client_app_disabled` on partner routes only. Nothing changes for workspace keys (`fxw_live_`), webhooks, the dashboard or any route in sections 3 to 6d. |
 > | **2026-11-20** | **Partner API: disconnect a channel** (section 6e). New `POST /partner/workspaces/{workspaceId}/channels/{channelId}/disconnect` disconnects one number of one of your workspaces exactly as a dashboard disconnect does (the channel is no longer listed, `channel.updated` fires, Meta is not called) and answers the workspace's remaining channels. A channel that is unknown, already disconnected or of another workspace answers `404 channel_not_found`; a workspace outside your client app `404 workspace_not_found`. Additive: no existing route, field or code changes. |
@@ -985,7 +987,7 @@ Your partner key does not send messages. For each organisation, mint one ordinar
 
 ### Connecting WhatsApp numbers (hosted connect sessions)
 
-A connect session lets one of your organisations connect its own WhatsApp numbers through Meta's sign-up window, without a Foundryx admin. It finishes in **two steps**: the Meta sign-in only authorizes the session, and the channels are created when **your backend** calls `complete`, after it has checked that the user who came back is the one who started. Only WhatsApp is supported.
+A connect session lets one of your organisations connect its own WhatsApp numbers through Meta's sign-up window, without a Foundryx admin. It finishes in **two steps**: the Meta sign-in only authorizes the session, and the channels are created when **your backend** calls `complete`, after it has checked that the user who came back is the one who started. A Facebook Page (Messenger and Instagram) connects through the same routes with `"channelType": "FACEBOOK"`; see "Connecting a Facebook Page" below for what differs.
 
 **Off until configured.** Until the Foundryx deployment switches the feature on, every route of this section answers `503 connect_not_configured` ("Hosted connect is not configured.").
 
@@ -995,7 +997,7 @@ A connect session lets one of your organisations connect its own WhatsApp number
 { "channelType": "WHATSAPP", "returnUrl": "https://app.example.com/settings/messaging/whatsapp/return", "clientState": "your-nonce" }
 ```
 
-* `channelType`: optional, only `"WHATSAPP"` (the default).
+* `channelType`: optional, `"WHATSAPP"` (the default) or `"FACEBOOK"` (a Facebook Page, below). Any other value answers `422 invalid_request`.
 * `returnUrl`: required, at most 2048 characters, an absolute URL whose exact origin (`scheme://host[:port]`) is one of the partner key's **allowed return origins**. A path and a query are allowed; credentials, a fragment and spaces are not. A key with no allowed origins refuses every URL. Otherwise `422 invalid_return_url`.
 * `clientState`: optional, at most 512 characters, opaque. It is given back to you on the return URL as `state`. Use it to tie the return to the user who started (for example a nonce you store hashed).
 
@@ -1036,9 +1038,37 @@ Treat the return as a hint only: always read the session from your backend befor
 
 **`POST /api/v1/omnichannel/partner/connect-sessions/{id}/cancel`** (no body) ends an `OPEN` or `AUTHORIZED` session (`CANCELLED`) and answers the session. It is idempotent; on a session that already ended, or one whose `complete` is still running, it changes nothing and answers it as it is.
 
-**Scope.** Any active partner key of the same client app may read, complete or cancel a session (so a key rotation does not strand one). A session id of another tenant or another client app, or an unknown id, answers the same `404 connect_session_not_found` ("Connect session not found."). A disabled client app answers `403 client_app_disabled`, as on every partner route.
+**Scope.** Any active partner key of the same client app may read, complete or cancel a session (so a key rotation does not strand one). A session id of another tenant or another client app, or an unknown id, answers the same `404 connect_session_not_found` ("Connect session not found."). A disabled client app answers `403 client_app_disabled`, as on every partner route. When a tenant admin moves the session's workspace to another client app, the session stops working (completion answers `404 connect_session_not_found`); start a new one with a key of the workspace's new client app.
 
-**`POST /api/v1/omnichannel/connect/wa-callback`** is public and is called only by the Foundryx sign-up page (`/wa-callback`), never by your backend: body `{ "state", "code"?, "error"? }`, answer `200 { "redirect" }`. An unknown, already used or expired state, or a session whose client app is disabled or whose workspace was trashed, answers `404 connect_session_not_found`; repeated misses from one address answer `429 rate_limited` with `Retry-After`.
+**`POST /api/v1/omnichannel/connect/wa-callback`** is public and is called only by the Foundryx sign-up page (`/wa-callback`), never by your backend: body `{ "state", "code"?, "error"? }`, answer `200 { "redirect" }` (a Page session can answer `pagePicker` instead; see "Connecting a Facebook Page"). An unknown, already used or expired state, or a session whose client app is disabled or whose workspace was trashed or moved to another client app, answers `404 connect_session_not_found`; repeated misses from one address answer `429 rate_limited` with `Retry-After`.
+
+### Connecting a Facebook Page (Messenger and Instagram)
+
+The same routes as WhatsApp, with `"channelType": "FACEBOOK"` on create. One session connects **one Facebook Page**: a `FACEBOOK` (Messenger) channel for the Page, plus an `INSTAGRAM` channel when the Page has a linked Instagram professional account.
+
+```json
+{ "channelType": "FACEBOOK", "returnUrl": "https://app.example.com/settings/messaging/meta/return", "clientState": "your-nonce" }
+```
+
+* **Off until configured.** The Page connect has its own Meta configuration on the Foundryx side; until it is set, a `FACEBOOK` create answers `503 connect_not_configured` even when WhatsApp connect works.
+* `url` is Meta's Facebook Login for Business dialog. The user signs in and grants access to their Pages (and the linked Instagram accounts).
+* Back from Meta, the Foundryx page (`/wa-callback`) shows the Pages the user granted, each with its linked Instagram username, and only those that would connect something (a Page whose Messenger and Instagram are both already connected anywhere on Foundryx is not offered). The user picks one Page and confirms, or cancels. While the user is on that list the session reads `OPEN`.
+* The browser is then sent to your `returnUrl` exactly as for WhatsApp: `status=authorized` (a Page was chosen; call `complete`), `cancelled` (the user stopped at Meta or on the Page list) or `failed`. A failure before the list sets `errorCode` `code_exchange_failed`, or `no_page_found` when the user granted no Page. A failure on the list sets `page_select_attempts_exceeded`: three Page ids that were not on the list were sent for the session (only a tampered request does that); start a new session.
+* `GET /partner/connect-sessions/{id}` reads `"channelType": "FACEBOOK"`; the statuses are the same.
+
+`complete` (only when `AUTHORIZED`, same retry and idempotency rules as WhatsApp):
+
+* Creates, in the session's workspace, a `FACEBOOK` channel named after the Page and, when the Page has a linked Instagram professional account, an `INSTAGRAM` channel named after the Instagram username.
+* Subscribes the Page to the Foundryx Meta app's messaging webhook fields (`messages`, `messaging_postbacks`, `message_reads`, `message_deliveries`, `message_reactions`), adding them to the Page's existing subscription. A subscription failure does not fail the connect.
+* A Page or Instagram account can belong to one live channel on Foundryx. One already connected (in any workspace) is skipped and the other is still created.
+* `COMPLETED` with `channelIds` when at least one channel was created. Otherwise `FAILED` with `errorCode`: `page_in_use` (the Page and its Instagram account are both already connected), `page_not_found` (the chosen Page can no longer be reached with the user's grant) or `code_exchange_failed`.
+* Each new channel fires `channel.updated` and appears in `GET /partner/workspaces/{workspaceId}/channels` and the workspace key's `GET /channels` with `channelType` `FACEBOOK` or `INSTAGRAM`, `displayPhoneNumber: null` and `verifiedName: null`.
+
+**Disconnect** is the route above, once per channel: Messenger and Instagram are two channels. Meta is not called; the Page can be connected again with a new session.
+
+**Messages** use the workspace key and the existing API unchanged. An all-channels webhook endpoint (section 7) also receives the events of these channels. A Messenger or Instagram contact has no phone number (`phone: null`): identify it by the Foundryx contact id (`data.contact.id` on `message.inbound`), which is one per person per Page (or per Instagram account); the same person on Messenger, Instagram and WhatsApp is three contacts. Send with `{"to": "id:<contactId>", "channelId": "<the FACEBOOK or INSTAGRAM channel id>", ...}`. The 24-hour rule and `409 messaging_window_closed` of section 4.1 apply; there are no templates on these channels.
+
+**`POST /api/v1/omnichannel/connect/page-select`** is public and is called only by the Foundryx page: when the `wa-callback` answer carries `pagePicker` (`{ "pickToken", "pages": [{ "id", "name", "igUsername"?, "connected" }] }`) instead of `redirect`, the page sends `{ "pickToken", "pageId"? }` (no `pageId` = cancel) and gets `200 { "redirect" }`. The pick token works once; an unknown, used or expired one answers `404 connect_session_not_found` with the same throttle; a `pageId` that was not offered answers `422 invalid_page` and counts toward the same throttle; the third one for the same pick token ends the session `FAILED` (`page_select_attempts_exceeded`), clears its token and answers `200 { "redirect" }` with `status=failed`, after which the pick token answers `404`.
 
 ### Isolation
 

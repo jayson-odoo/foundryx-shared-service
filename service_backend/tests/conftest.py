@@ -175,6 +175,7 @@ def _session_factory_template():
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
+    from modules.planner3d.db import PLANNER3D_SCHEMA
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
@@ -196,6 +197,7 @@ def _session_factory_template():
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
+        PLANNER3D_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -332,6 +334,7 @@ def _ideation_session_factory_template():
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
+    from modules.planner3d.db import PLANNER3D_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -347,6 +350,7 @@ def _ideation_session_factory_template():
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
+        PLANNER3D_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -508,6 +512,20 @@ _HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_|s11_)")
 
 
 @pytest.fixture(autouse=True)
+def _gentle_autocount_walks_in_tests(monkeypatch):
+    """SS-STOCK-BAL-SOOTHE - every open-REST walk pauses between pages by
+    default (1 s) and stock lookups are cached per process. Suite-wide: no
+    real pause, and each test starts with an empty lookup cache. A test that
+    pins the pause monkeypatches ``sleep_between_pages`` itself."""
+    import modules.autocount.http_source.gentle as gentle
+
+    monkeypatch.setattr(gentle, "sleep_between_pages", lambda seconds: None)
+    gentle.clear_lookup_cache()
+    yield
+    gentle.clear_lookup_cache()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_sleep_in_autocount_http_tests(request, monkeypatch):
     """sprint-5/10 S1 review round 1 (should-fix 6) - AC-10-75's bounded
     retry ladder makes a genuine ``time.sleep`` call on a real timeout/5xx;
@@ -650,6 +668,7 @@ def _meetings_session_factory_template():
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
+    from modules.planner3d.db import PLANNER3D_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -664,6 +683,7 @@ def _meetings_session_factory_template():
         MEETINGS_SCHEMA: "meetings",
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
+        PLANNER3D_SCHEMA: "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -761,6 +781,7 @@ def connector_session_factory():
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.connector.db import CONNECTOR_SCHEMA, ConnectorBase
     from modules.lead_capture.db import LEAD_CAPTURE_SCHEMA
+    from modules.planner3d.db import PLANNER3D_SCHEMA
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
@@ -777,6 +798,7 @@ def connector_session_factory():
             MEETINGS_SCHEMA: "meetings",
             CONNECTOR_SCHEMA: "connector",
             LEAD_CAPTURE_SCHEMA: "connector",
+            PLANNER3D_SCHEMA: "connector",
         }
     )
     with engine.connect() as conn:
@@ -904,3 +926,33 @@ def key_limit_redis(monkeypatch):
     monkeypatch.setattr(key_limits, "get_redis", lambda: fake, raising=False)
     yield fake
     _reset_key_limit_state(key_limits)
+
+
+class _EchoDocDb:
+    """Plan 73 test default: the AutoCount DB read echoes the document's own header and rows, every row's Further
+    Description as the GET carries it (else empty). A test that cares patches ``WriteFrame._line_notes_source``."""
+
+    def read(self, kind, doc):
+        from modules.autocount.write_back.line_notes import DB_HEADER_KEYS, DB_ROW_KEYS
+
+        header = {k: doc[k] for k in DB_HEADER_KEYS if k in doc}
+        rows = {}
+        for row in doc.get("Details") or []:
+            stored = {k: row[k] for k in DB_ROW_KEYS if k in row}
+            stored["FurtherDescription"] = row.get("FurtherDescription", "")
+            rows[row.get("DtlKey")] = stored
+        return {"header": header, "rows": rows}
+
+    def read_so_notes(self, doc):
+        """SS-FURTHER-DESC-SEND: a sales order's stored Further Description per row, echoed from the GET (else "")."""
+        return {row.get("DtlKey"): row.get("FurtherDescription", "") for row in doc.get("Details") or []} or None
+
+
+@pytest.fixture(autouse=True)
+def _default_line_notes_source(monkeypatch):
+    if "modules.autocount.write_back.frame" not in __import__("sys").modules:
+        # not loaded yet: patch lazily once a test imports it (most autocount tests import it at collection)
+        return
+    from modules.autocount.write_back.frame import WriteFrame
+
+    monkeypatch.setattr(WriteFrame, "_line_notes_source", lambda self, company: _EchoDocDb(), raising=False)

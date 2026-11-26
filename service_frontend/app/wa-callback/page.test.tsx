@@ -1,5 +1,5 @@
 import { StrictMode } from 'react';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WaCallbackPage from './page';
 
@@ -370,5 +370,141 @@ describe('wa-callback page, with state (partner connect)', () => {
       state: 'st_8',
       error: 'e'.repeat(512),
     });
+  });
+});
+
+describe('wa-callback page, Facebook Page connect (page picker)', () => {
+  const okResponse = (body: unknown) =>
+    ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
+  const picker = {
+    pagePicker: {
+      pickToken: 'pick_1',
+      pages: [
+        { id: '101', name: 'Acme Homes', igUsername: 'acme.homes', connected: false },
+        { id: '102', name: 'Taken Page', connected: true },
+        { id: '103', name: 'Side Page', connected: false },
+      ],
+    },
+  };
+
+  it('lists only Pages that would connect something, then posts the chosen Page', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse(picker))
+      .mockResolvedValueOnce(
+        okResponse({ redirect: 'https://app.example/return?status=authorized' }),
+      );
+    vi.stubGlobal('fetch', fetchSpy);
+    setUrl('?state=st_p1&code=c');
+
+    render(<WaCallbackPage />);
+
+    await screen.findByText('Choose a Facebook Page');
+    const connect = screen.getByRole('button', { name: 'Connect Page' });
+    expect(connect).toBeDisabled();
+    fireEvent.click(screen.getByRole('combobox'));
+    expect(screen.queryByText('Taken Page')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Acme Homes (Instagram @acme.homes)'));
+    expect(connect).not.toBeDisabled();
+    fireEvent.click(connect);
+
+    await waitFor(() =>
+      expect(replaceSpy).toHaveBeenCalledWith('https://app.example/return?status=authorized'),
+    );
+    const [url, init] = fetchSpy.mock.calls[1];
+    expect(String(url)).toMatch(/\/api\/v1\/omnichannel\/connect\/page-select$/);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ pickToken: 'pick_1', pageId: '101' });
+  });
+
+  it('cancel posts the pick token alone and follows the redirect', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse(picker))
+      .mockResolvedValueOnce(
+        okResponse({ redirect: 'https://app.example/return?status=cancelled' }),
+      );
+    vi.stubGlobal('fetch', fetchSpy);
+    setUrl('?state=st_p2&code=c');
+
+    render(<WaCallbackPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel connection' }));
+    await waitFor(() =>
+      expect(replaceSpy).toHaveBeenCalledWith('https://app.example/return?status=cancelled'),
+    );
+    expect(JSON.parse(fetchSpy.mock.calls[1][1].body)).toEqual({ pickToken: 'pick_1' });
+  });
+
+  it('every Page already connected: no picker, only cancel', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce(
+        okResponse({
+          pagePicker: {
+            pickToken: 'pick_2',
+            pages: [{ id: '102', name: 'Taken Page', connected: true }],
+          },
+        }),
+      ),
+    );
+    setUrl('?state=st_p3&code=c');
+
+    render(<WaCallbackPage />);
+
+    await screen.findByText('Every Page you manage is already connected.');
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect Page' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel connection' })).toBeTruthy();
+  });
+
+  it('follows the failed redirect when the pick ends the session', async () => {
+    // page_select_attempts_exceeded: the backend ends the session and answers
+    // the stored return URL with status=failed, like any other ending.
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse(picker))
+      .mockResolvedValueOnce(
+        okResponse({ redirect: 'https://app.example/return?status=failed' }),
+      );
+    vi.stubGlobal('fetch', fetchSpy);
+    setUrl('?state=st_p5&code=c');
+
+    render(<WaCallbackPage />);
+
+    await screen.findByText('Choose a Facebook Page');
+    const connect = screen.getByRole('button', { name: 'Connect Page' });
+    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.click(screen.getByText('Side Page'));
+    fireEvent.click(connect);
+    await waitFor(() =>
+      expect(replaceSpy).toHaveBeenCalledWith('https://app.example/return?status=failed'),
+    );
+    expect(screen.queryByText(/could not complete the connection/i)).not.toBeInTheDocument();
+  });
+
+  it('a refused pick shows the neutral message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(okResponse(picker))
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          statusText: 'x',
+          headers: new Headers(),
+          json: async () => ({
+            error: { code: 'connect_session_not_found', message: 'Connect session not found.' },
+          }),
+        }),
+    );
+    setUrl('?state=st_p4&code=c');
+
+    render(<WaCallbackPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel connection' }));
+    await screen.findByText(/could not complete the connection/i);
+    expect(replaceSpy).not.toHaveBeenCalled();
   });
 });

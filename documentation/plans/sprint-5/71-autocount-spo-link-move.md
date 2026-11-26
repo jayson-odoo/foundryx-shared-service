@@ -1,6 +1,6 @@
 # 71 - AutoCount: move / split an SPO line onto another PO line (SPO-LINK-PO-SS)
 
-Status: Built behind the OFF switch; db3 probe deferred by the owner (20 Nov), tracked as BL-SS-372. Partner lane: CRM SPO-LINK-PO (the CRM Save calls this, then the existing Link PO).
+Status: Built behind the OFF switch; db3 probe deferred by the owner (20 Nov), tracked as BL-SS-373. Partner lane: CRM SPO-LINK-PO (the CRM Save calls this, then the existing Link PO).
 UAC: `71-autocount-spo-link-move-acceptance-criteria.md`.
 
 ## Why

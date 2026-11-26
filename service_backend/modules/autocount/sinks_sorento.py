@@ -53,6 +53,7 @@ from app.db_errors import db_error_in, stored_error_text
 from .canonical.base import CanonicalRecord
 from .canonical.documents import (
     PACKAGE_LINES_MIN_CONTRACT,
+    FURTHER_DESC_RTF_MIN_CONTRACT,
     REPLACES_LINE_REF_MIN_CONTRACT,
     CanonicalBillingDocument,
     CanonicalDocument,
@@ -381,9 +382,50 @@ REPLACES_LINE_REF_CONTRACT_VERSION = ContractVersion(*REPLACES_LINE_REF_MIN_CONT
 # 2.13); sent only when the CRM ADVERTISES at least this (``extra="forbid"``).
 PACKAGE_LINES_CONTRACT_VERSION = ContractVersion(*PACKAGE_LINES_MIN_CONTRACT)
 
+# SS-FURTHER-DESC-SEND (sorento-crm #2766) - `further_description_rtf` (raw
+# line Further Description) on SO and PO lines; sent only when the CRM
+# ADVERTISES at least this (line ingest is ``extra="forbid"``).
+FURTHER_DESC_RTF_CONTRACT_VERSION = ContractVersion(*FURTHER_DESC_RTF_MIN_CONTRACT)
+
 # Plan 72 (sorento-crm #2676, contract 2.15) - the project registrations doc
 # feed: >= 2.15 AND `project_registrations` advertised.
 PROJECT_REGISTRATIONS_CONTRACT_VERSION = ContractVersion(2, 15)
+
+# SS-FURTHER-DESC-SEND - the raw line RTF (up to 2 MiB per line) makes a
+# record-count chunk unbounded in bytes. An ingest chunk closes early once its
+# documents' `further_description_rtf` reach this many UTF-8 bytes (a single
+# document over it goes alone). Records with no RTF chunk exactly as before.
+FURTHER_DESC_RTF_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+def _rtf_bytes(record: Any) -> int:
+    total = 0
+    for line in getattr(record, "lines", None) or ():
+        text = getattr(line, "further_description_rtf", None)
+        if isinstance(text, str):
+            total += len(text.encode("utf-8"))
+    return total
+
+
+def chunk_by_rtf_bytes(records: List[Any], batch_size: int) -> List[List[Any]]:
+    """``records`` in order, in chunks of at most ``batch_size`` records whose
+    line RTF totals at most ``FURTHER_DESC_RTF_CHUNK_BYTES`` (a single heavier
+    record is a chunk of its own). Without any RTF this is the plain
+    ``batch_size`` slicing."""
+    chunks: List[List[Any]] = []
+    current: List[Any] = []
+    weight = 0
+    for record in records:
+        size = _rtf_bytes(record)
+        if current and (len(current) >= batch_size or weight + size > FURTHER_DESC_RTF_CHUNK_BYTES):
+            chunks.append(current)
+            current, weight = [], 0
+        current.append(record)
+        weight += size
+    if current:
+        chunks.append(current)
+    return chunks
+
 
 # The contract each doc feed's mode gate and run-time CONTRACT_GATE need.
 DOC_FEED_CONTRACT_VERSIONS: Dict[str, float] = {
@@ -1611,10 +1653,7 @@ class SorentoSink:
         # a concurrent push can never deliver earlier chunks (unmarked) and
         # then stop on a later one. `_to_records` re-checks per chunk.
         self._refuse_contract_1_line_drop(record_list)
-        chunks = [
-            record_list[start : start + self.batch_size]
-            for start in range(0, len(record_list), self.batch_size)
-        ]
+        chunks = chunk_by_rtf_bytes(record_list, self.batch_size)
         if not chunks:
             return []
 

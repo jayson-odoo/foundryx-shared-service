@@ -433,6 +433,13 @@ class Settings(BaseSettings):
     # (separate from meta_graph_version, which the Graph calls keep using).
     # Required only when the Meta app is configured.
     meta_es_dialog_version: str = ""
+    # Facebook Login for Business configuration id for the partner Page connect
+    # (channelType FACEBOOK: Messenger + the linked Instagram account). Its
+    # permissions: pages_show_list, pages_manage_metadata, pages_messaging,
+    # pages_read_engagement, business_management, instagram_basic,
+    # instagram_manage_messages. Required for FACEBOOK sessions only when the
+    # Meta app is configured; WhatsApp sessions never read it.
+    omni_partner_meta_config_id: str = ""
     # How long a partner connect session stays usable, in minutes.
     partner_connect_session_ttl_minutes: int = 30
     # Lead Capture: Facebook Login for Business configuration id for the hosted
@@ -454,6 +461,11 @@ class Settings(BaseSettings):
     # verified the app for the Google Ads scope (plan 68 risk 1); ON without a
     # client id = simulated sign-in for dev / test copies.
     lead_capture_google_signin: bool = False
+    # Planner 3D GPU worker (pull API). SS keeps ONLY the sha256 hex of the
+    # worker token; unset = every worker call is 401. A job whose worker stops
+    # heart-beating for this many minutes is handed out again.
+    planner3d_worker_token_sha256: str = ""
+    planner3d_lease_minutes: int = 10
     # Fernet key for encrypting channel credentials at rest. A throwaway dev
     # key is generated per-process if unset (NEVER rely on that in prod - set
     # OMNICHANNEL_FERNET_KEY so encrypted credentials survive a restart).

@@ -7,6 +7,7 @@ query-string change here is a live-vendor outage).
 from __future__ import annotations
 
 from datetime import date
+from typing import Dict
 
 # ── feed keys (the door names, also the Sorento ingest path segments) ───────
 FEED_DELIVERY_ORDERS = "delivery_orders"
@@ -63,9 +64,12 @@ ISSUE_RETRYABLE = "retryable"
 ISSUE_FAILED = "failed"
 
 # ── backfill (Q6) ────────────────────────────────────────────────────────────
-BACKFILL_FROM_DEFAULT = "2019-01-01"
-# Plan 72 - about 20 years of project registrations: the floor is 2006.
-BACKFILL_FLOOR_BY_FEED = {FEED_PROJECT_REGISTRATIONS: "2006-01-01"}
+# SS-BACKFILL-DATE-FLOOR - every feed reaches back to 2000 (was 2019; project
+# registrations 2006). Still a floor, not open-ended: each day is one vendor
+# GET, walked in budgeted resumable segments (SS-BACKFILL-CHUNKED).
+BACKFILL_FROM_DEFAULT = "2000-01-01"
+# Per-feed override (none today); a feed missing here uses the default.
+BACKFILL_FLOOR_BY_FEED: Dict[str, str] = {}
 BACKFILL_STATUS_RUNNING = "running"
 BACKFILL_STATUS_STOPPING = "stopping"
 BACKFILL_STATUS_STOPPED = "stopped"

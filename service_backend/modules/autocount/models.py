@@ -187,9 +187,17 @@ class AcCompany(AutocountBase):
     # (db3 only, enforced in code by ``write_back.guard``). NULL = writes
     # disabled; every existing row stays NULL (no backfill needed).
     write_connection_id = Column(String, nullable=True)
+    # Plan 74: core ``connections.id`` of a same-tenant ``sql_database`` connection the PO line notes are read
+    # through (set in the app). NULL = unset; existing rows stay NULL.
+    line_notes_connection_id = Column(String, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+    @property
+    def write_enabled(self) -> bool:
+        """Plan 74: the company is active and has a write connection (a flag only, never the connection)."""
+        return bool(self.is_active and self.write_connection_id)
 
 
 class AcEntityConfig(AutocountBase):
@@ -856,6 +864,17 @@ DOC_FEED_BACKFILL_DONE = "done"
 # a stopped backfill closed by Discard: `done` + this error code (never a
 # completed run - the run-once guard ignores it).
 BACKFILL_DISCARDED_CODE = "DISCARDED"
+# SS-BACKFILL-AUTO-RESUME - a person pressed Stop: never resumed by itself
+# (also kept when the stopping job then dies, so a deploy never undoes it).
+BACKFILL_USER_STOPPED_CODE = "USER_STOPPED"
+# The worker reading the backfill was lost (deploy / restart / crash of the
+# process, not an error in the backfill): the beat resumes these by itself.
+BACKFILL_WORKER_LOSS_CODES = ("ORPHANED", "JOB_ENDED", "JOB_ORPHANED")
+BACKFILL_AUTO_RESUMING_CODE = "AUTO_RESUMING"  # the beat's claim, transient
+BACKFILL_AUTO_RESUMED_CODE = "AUTO_RESUMED"  # run-row history entry
+BACKFILL_AUTO_RESUME_LIMIT_CODE = "AUTO_RESUME_LIMIT"
+# The run-row codes of the automatic-resume history entries.
+BACKFILL_AUTO_RESUME_RUN_CODES = (BACKFILL_AUTO_RESUMED_CODE, BACKFILL_AUTO_RESUME_LIMIT_CODE)
 DOC_FEED_BACKFILL_OPEN_STATUSES = (
     DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING, DOC_FEED_BACKFILL_STOPPED,
 )
