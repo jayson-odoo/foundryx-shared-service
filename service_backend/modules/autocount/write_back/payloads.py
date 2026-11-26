@@ -1334,6 +1334,8 @@ def verify_link_doc(
             _same(old.get(k), now.get(k)) for k in _KEPT_ROW_FIELDS if k in old
         ):  # PO-LINK-STUCK-RECONCILE-B: the kept row is as sent (its rest), never moved or repriced
             return Verdict(MISMATCH, "ROW_MISMATCH")
+        elif _link_of_row(kind_name, now) != _link_of_row(kind_name, old):  # plan 71: a kept row keeps its link
+            return Verdict(MISMATCH, "LINK_MISMATCH")
         total.extend(lines)
     known = {r.get("DtlKey") for r in before.get("Details") or []}
     added = [r for r in after.get("Details") or [] if r.get("DtlKey") not in known]

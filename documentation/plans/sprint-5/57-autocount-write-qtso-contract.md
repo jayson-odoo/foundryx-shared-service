@@ -57,6 +57,7 @@ and the size cap are unchanged and not repeated here. Names below are quoted fro
 | `POST /api/v1/autocount/spo-links` | operation | New: link an SPO row to a PO row |
 | `POST /api/v1/autocount/spo-links/unlink` | operation | Plan 55 body; switched off (`VENDOR_UNSUPPORTED`): no SPO write is proven |
 | `POST /api/v1/autocount/spo-links/relink` | operation | New: move an SPO row's link to another PO row |
+| `POST /api/v1/autocount/spo-links/move` | operation | Plan 71: move `qty` of an SPO row onto another PO row; below the row's open qty = split (the rest stays on the old PO row). Switched off (`VENDOR_UNSUPPORTED`) until the db3 probe |
 | `GET /api/v1/autocount/write-operations/{operationId}?companyCode=` | read | One operation's state and answer |
 | `POST /api/v1/autocount/write-operations/{operationId}/resume` | operation | Resume a `needs_attention` or `pending_verification` operation |
 | `GET /api/v1/autocount/write-capabilities?companyCode=` | read | Which primitives and operations are available, and why not (section 7) |
@@ -89,7 +90,8 @@ Header `Idempotency-Key: <1..128 printable ASCII characters, space to tilde>`, s
 company.
 
 - Required on every route above that writes and is new in plan 57 (the five `documents` routes,
-  `po-links/relink`, `spo-links`, `spo-links/relink`): absent = `422 IDEMPOTENCY_KEY_REQUIRED`.
+  `po-links/relink`, `spo-links`, `spo-links/relink`, plan 71 `spo-links/move`): absent = `422
+  IDEMPOTENCY_KEY_REQUIRED`.
 - Optional on `/po-links`, `/po-links/unlink`, `/spo-links/unlink` (absent = not idempotent, as in plan 55).
   Ignored on the two GET routes and on resume.
 - Blank, longer than 128 or containing a non-printable or non-ASCII character: `422
@@ -230,6 +232,18 @@ All keys are integers (1..9223372036854775807).
   expectedLastModified? }` (`docDate` = the PO's date, `soDocDate` = the target sales order's date).
 - `spo-links` and `spo-links/relink`: `{ companyCode, spoDocKey, spoDtlKey, poDocKey, poDtlKey, docDate?,
   poDocDate?, expectedLastModified? }` (`docDate` = the SPO's date, `poDocDate` = the target PO's date).
+- `spo-links/move` (plan 71): `{ companyCode, spoDocKey, spoDtlKey, toPoDocKey, toPoDtlKey, qty, docDate?,
+  poDocDate?, expectedLastModified? }`. take = min(`qty`, the row's open qty = qty minus received); `qty`
+  follows the house rule (above 0, at most 1e9, at most 8 decimal places, else `QTY_INVALID`). ONE PUT on the SPO: the row deleted when all of it moves, else kept with its
+  rest on its own PO row, plus one new row of the take tied to the target PO row; no PO document is
+  written. The answer adds `moved { spoDtlKey (the NEW row), fromPoDtlKey, toPoDtlKey, qty }` and
+  `remainder { spoDtlKey (the original row), poDtlKey, qty } | null` (both null unless `done`; a whole
+  move has `remainder: null`; on a partly received row the received part is the remainder). Refusals
+  (nothing sent): `ROW_NOT_LINKED`, `NO_CHANGE`, `ROW_RECEIVED`, `ITEM_MISMATCH`, `UOM_MISMATCH`,
+  `TARGET_RECEIVED`, `QTY_ABOVE_OUTSTANDING`, `ROW_NOT_FOUND`, `DOC_CANCELLED`, `QTY_INVALID`,
+  `ROW_NEEDS_ATTENTION` (the target is the new PO row a batch link's shipping purchase order row has not
+  followed onto yet, plan 71 slice 2; `spo-links` and `spo-links/relink` too), plus the common ones. Plan:
+  `71-autocount-spo-link-move.md`.
 
 The plan 55 routes `po-links`, `po-links/unlink` and `spo-links/unlink` also take optional `docDate`
 (the PO's or SPO's date; malformed = `422 INVALID_REQUEST`); `po-links` additionally takes `soDocDate`. A
