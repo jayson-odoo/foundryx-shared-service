@@ -69,3 +69,51 @@ output sniff mismatch 422 + sha256 stored; finish needs 2-3 candidates; stale le
 after 3; approve -> convert job queued, double approve 409; render product_changed; cancel -> heartbeat 409.
 Worker: 28 render_only cases; convert round-trip per format; stub determinism + dimensions; health gate refuses
 on high swap; memory cap kills child.
+
+## Phase 1 contract block (testers and coder build to exactly this)
+
+Job JSON (camelCase): `id, kind (model|render|convert), status (queued|running|succeeded|failed|cancelled),
+engine, progress, params, error {code, message} | null, gpuSeconds, peakRssMb, attempts, approvedCandidate,
+sourceJobId, files [{direction (in|out), role, name, mime, size, sha256}], createdAt, startedAt, finishedAt`.
+
+Staff router `/planner3d` (session JWT; `planner3d.jobs.view` for reads, `planner3d.jobs.manage` for writes):
+- `POST /planner3d/jobs/models` multipart: `photos` (1-3 files, PNG/JPEG/WebP by magic bytes, 20 MB each),
+  `lengthMm`, `widthMm`, `heightMm` (positive ints) -> 202 job. Inputs stored as `photo-N.<png|jpg|webp>`,
+  role `photo`; `params = {dimensionsMm: {length, width, height}}`.
+- `POST /planner3d/jobs/renders` multipart: `scene`, `mask`, `depth` (PNG only), `prompt` (<= 300 chars),
+  `seed` (optional int) -> 202 job. Inputs `scene.png`, `mask.png`, `depth.png` (roles = names);
+  `params = {prompt, seed}`.
+- `GET /planner3d/jobs?kind=&status=` -> `{items: [job], total}` newest first.
+- `GET /planner3d/jobs/{id}` -> job. `GET /planner3d/jobs/{id}/files/{name}` -> bytes with stored mime.
+- `POST /planner3d/jobs/{id}/approve` `{candidate: "candidate-2.glb"}` -> 202 the new `convert` job
+  (`sourceJobId` = model job, input `model.glb` role `model` = copy of the candidate). 409 when the job is not
+  a succeeded model job or already approved; 422 unknown candidate.
+- `POST /planner3d/jobs/{id}/cancel` -> job (`cancelled`); 409 when already finished.
+
+Worker router `/planner3d/worker` (`"public": true`; every call `Authorization: Bearer <token>` and header
+`X-Planner3d-Worker: <worker name>`; 401 on missing/wrong token or when `PLANNER3D_WORKER_TOKEN_SHA256` is unset):
+- `POST /planner3d/worker/claim` `{kinds: ["model","render","convert"]}` -> 200
+  `{jobId, kind, params, inputs: [{role, name, mime, size, sha256}]}` or 204. Stale `running` jobs (no
+  heartbeat for `planner3d_lease_minutes`) are requeued first (attempts + 1; at 3 attempts -> failed `worker_lost`).
+- `GET /planner3d/worker/jobs/{id}/inputs/{name}` -> bytes; 404 unless the job is `running` and held by this worker name.
+- `POST /planner3d/worker/jobs/{id}/heartbeat` `{progress}` -> 200; 409 `{code: "cancelled"}` when cancelled.
+- `PUT /planner3d/worker/jobs/{id}/outputs/{name}?role=<role>` raw body -> 201 `{name, size, sha256}`.
+  Allowed per kind: model -> `candidate-N.glb` (N 1..3) + `candidate-N.json`; render -> `render.png` + `diff.json`;
+  convert -> `model.glb|model.gltf|model.obj|model.mtl|model.fbx|model.stl`. Caps: GLB/exports 100 MB, PNG 40 MB,
+  JSON 1 MB. Sniffed type must match the name, else 422 and nothing stored.
+- `POST /planner3d/worker/jobs/{id}/finish` `{status: "succeeded"|"failed", error?: {code, message},
+  gpuSeconds, peakRssMb}` -> job. Model success needs 2-3 candidate GLBs; convert success needs all six files;
+  render success needs `render.png`, and SS re-runs `product_diff(scene, render, mask)`: non-zero -> failed
+  `product_changed`.
+
+Worker package `planner3d_worker/` (repo root):
+- `render_only.py`: proof API unchanged (`composite`, `product_diff`, `verify_saved`, CLI).
+- `convert.py`: `convert_glb(glb_path: Path, out_dir: Path) -> dict[str, Path]` (six names above); FBX via
+  `assimp export`; missing assimp raises `ConvertError("fbx_unavailable")`.
+- `engines/stub.py`: `generate(photos: list[Path], dims_mm: dict, out_dir: Path, n: int = 3) -> list[Path]`
+  deterministic box GLBs `candidate-1..n.glb`, Y up, metres, origin base centre, exact dims.
+- `health.py`: `parse_swapusage(text) -> (used_mb, total_mb)`, `can_start(swap_used_pct, free_ram_mb,
+  max_swap_pct=80, min_free_mb=2048) -> (bool, reason)`.
+- `runner.py`: `run_capped(target, args, rss_cap_mb, timeout_s)` runs `target(*args)` in a child process,
+  samples RSS; over cap -> kills child, raises `MemoryCapExceeded`; over time -> `JobTimeout`; returns
+  `(result, peak_rss_mb, seconds)`.
