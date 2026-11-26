@@ -612,6 +612,35 @@ def append_note(fd: Any, note: str) -> str:
     return _append_escaped(text, escaped)
 
 
+def strip_note(fd: Any, note: Optional[str]) -> Any:
+    """Lane SS-UNLINK-STRIP-SO-NOTE (owner 26 Nov): the exact inverse of ``append_note(fd, note)``: ``fd`` without the
+    note paragraph ``append_note`` put LAST, the rest byte for byte (pictures included). An FD that is only the note
+    reads ``""``; a plain-text FD wrapped with the note comes back as ``autocount_rtf(text)``. An FD whose last
+    paragraph is not exactly ``note`` (another note, hand text after it, no note) is returned unchanged."""
+    if not isinstance(fd, str) or not note:
+        return fd
+    escaped = "".join(_rtf_char(ch) for ch in str(note))
+    if not escaped:
+        return fd
+    bare = _bare_note(fd)
+    if bare is not None:
+        if bare == escaped:
+            return ""
+        line = "\\line " + escaped  # append_note of a plain-text FD: the text, then the note on a new line
+        if bare.endswith(line):
+            return _RTF_HEAD + bare[:-len(line)] + _RTF_TAIL
+    if not fd.lstrip().startswith("{\\rtf"):
+        return fd
+    tag = "\\par " + escaped
+    close = fd.rstrip(_RTF_PAD).rfind("}")  # the same brace ``_append_escaped`` put the note before
+    if close < 0:
+        return fd[:-len(tag)] if fd.endswith(tag) else fd
+    head = fd[:close]
+    if head.endswith(tag):
+        return head[:-len(tag)] + fd[close:]
+    return fd
+
+
 def so_link_values(so: Mapping[str, Any], so_row: Mapping[str, Any]) -> Doc:
     """Plan 65 D2 / D4: the ``so_link`` of ``transfer_restore`` for a row newly linked to
     ``so_row``: the SO row's day (None when it has none) and the note text."""
