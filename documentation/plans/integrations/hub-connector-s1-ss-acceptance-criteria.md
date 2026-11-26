@@ -4,7 +4,7 @@ Lane HUB-CONNECTOR-S1-SS. Written from the owner rulings in the lane brief (26 N
 connector feed contract (sorento-crm #2801 head ffd73d20, forwarded by crew): the shared service PULLS the CRM feed. Tags: [BE] backend, [FE] frontend, [T] automated test, [E2E] end to end.
 
 Words: a **hub** is a partner platform (first one: EcoHub) that shows our availability to its own customers.
-A **hub customer** is a customer company on that hub. The **CRM** pushes availability facts into the shared service.
+A **hub customer** is a customer company on that hub, recorded in the shared service. The **CRM** feed is read (pulled) by the shared service.
 
 ## AC-12 Hub registry [BE][FE][T]
 - Given an admin with `hub_connector.manage`, when they create a hub (name, code, receiver URL), then the hub is stored
