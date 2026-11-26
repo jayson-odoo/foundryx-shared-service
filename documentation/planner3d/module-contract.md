@@ -1,10 +1,11 @@
 # 3D module contract (PLANNER-3D-S0)
 
-Status: contract v0.5, written 20/11/2026, updated 21/11/2026, against `main` at `9fe0099c`. No module
+Status: contract v0.6, written 20/11/2026, updated 26/11/2026, against `main` at `9fe0099c`. No module
 code exists yet. v0.2 applied the review of v0.1; v0.3 takes in the C1 lane's draft shape (section 7.2);
 v0.4 takes in the owner's ruling on the CRM key (one key for the whole Sorento CRM product) and C1's
 `company` parameter, so the planner path now names a CRM company (section 7.1); v0.5 closes open point
-11 (the company code stays in the URL and QR only). Section 13 lists what changed for lanes that read
+11 (the company code stays in the URL and QR only); v0.6 applies the crew ruling of 26/11/2026 (the
+GPU worker pulls its jobs, a model job yields candidates, convert exports). Section 13 lists what changed for lanes that read
 an earlier version.
 S1 builds the module to this document; S2, S3, S4 and the CRM slices C1, C3, C4, C5 build against it.
 A change to any wire shape here is a change to this file in the same commit (the same rule the
@@ -26,8 +27,8 @@ Owner rulings this contract rests on:
 
 - **D7**: SS holds the GPU jobs and the planner; the catalogue and prices stay in the CRM and reach
   SS through an integration API, never copied; leads and quotations stay in the CRM.
-- **D8**: the GPU worker is host-agnostic behind one endpoint (`GPU_WORKER_URL`), with a CPU stub so
-  everything runs with no GPU.
+- **D8**: the GPU worker is host-agnostic: it pulls its jobs from SS (section 6.2, crew ruling 26/11/2026),
+  with a CPU stub so everything runs with no GPU.
 - **D9**: open models on our own GPU by default; a paid API only as a switch per client, off by default.
 - Render only after Save. Catalogue products only. The AI never changes a product. Save creates a lead
   (channel `planner`) and never creates or renames a contact.
@@ -151,9 +152,9 @@ All routes take the tenant key. All ids are tenant-scoped; another tenant's id a
 
 | Field | Values |
 |---|---|
-| `kind` | `render`, `model` |
+| `kind` | `render`, `model`, `convert` (the exports of one approved candidate, 3.3) |
 | `status` | `queued`, `running`, `succeeded`, `failed`, `cancelled` |
-| `engine` | `stub` (CPU stub), `gpu` (open models behind `GPU_WORKER_URL`), `paid` (paid API, per-tenant switch) |
+| `engine` | `stub` (CPU stub), `gpu` (open models on a worker that pulls the job, section 6.2), `paid` (paid API, per-tenant switch) |
 | `error` | `null`, or `{"code", "message"}` with a fixed sentence, never an exception text |
 | `usage.paidCost` | `null` unless `engine` is `paid`; then `{"amount": "0.42", "currency": "USD"}` |
 
@@ -162,7 +163,7 @@ status, the times, the error and the usage itself. Core `background_jobs` rows a
 days and only carry the short work steps (section 4.1), so nothing on the wire reads them.
 
 `error.code` values: `gpu_unavailable`, `worker_failed`, `timeout`, `product_changed` (render only, see 3.4),
-`input_unreadable`, `cancelled`.
+`input_unreadable`, `cancelled`, `worker_lost` (the worker stopped answering three times, section 6.2).
 
 `usage.gpuSeconds` is a whole number, the worker's figure rounded up.
 
@@ -202,10 +203,17 @@ Multipart, one part named `file`. Stores an input image for a later job.
   repeat across companies (open point 10); SS never checks it against the company registry.
 - `uploadIds`: 1 to 6 photos of the one product.
 - `dimensionsMm` is required. The model is scaled so its bounding box equals these three values.
-- `engine`: `default` (the tenant's default: `gpu`, or `stub` when no worker is configured) or `paid`.
+- `engine`: `default` (the tenant's default: `gpu`, or `stub` when no worker is configured, section 6.1) or `paid`.
 - Answer `202` with the job object, `status: "queued"`. A submit only records the job; a separate tick
   starts it (section 4.1), so the answer is `queued` in every environment, tests included.
-- Result: one file, `role: "model"`, GLB, Y up, metres, origin at the centre of the base.
+- Result, two steps (crew ruling 26/11/2026). The model job finishes with 2 or 3 candidates:
+  `candidate-1.glb` to `candidate-3.glb`, each `role: "candidate"`, GLB, Y up, metres, origin at the centre
+  of the base, scaled to `dimensionsMm`. SS sends `model.candidates_ready` (5.7). A person approves one
+  candidate (in SS, or through the staff route the module offers); SS never picks one. Approval queues a
+  `convert` job (kind `convert`, `sourceJobId` = the model job) whose result is `model.glb` (`role: "model"`)
+  plus `model.gltf`, `model.obj`, `model.mtl`, `model.fbx` and `model.stl` (each `role: "export"`). The
+  convert job's own `model.ready` (5.7) is the one a CRM stores from. `kind` therefore also takes `convert`
+  on a job object.
 
 ### 3.4 `POST /renders` (render of a saved design)
 
@@ -238,10 +246,12 @@ Multipart, one part named `file`. Stores an input image for a later job.
 ```
 
   The list carries codes only; the page reads names from the live catalogue.
-- The AI never changes a product. The worker returns the generated image; SS pastes the product pixels
-  from the stored `scene` capture back over it wherever the `mask` marks a product, then sets
-  `unchanged: true` per product. If the paste-back cannot be done the job fails with `product_changed`;
-  a render with an altered product is never delivered.
+- The AI never changes a product. The worker composites the product pixels from the `scene` capture back
+  over the generated image wherever the `mask` marks a product, and returns `render.png` and `diff.json`
+  (its own product diff). SS does not trust that: it re-runs `product_diff` on the stored `render.png`
+  against the `scene` and `mask` it sent, and any non-zero product diff fails the job with
+  `product_changed`. A render with an altered product is never delivered; `unchanged: true` per product is
+  set only from SS's own result (crew ruling 26/11/2026).
 - Checks SS makes on the captures at Save (a failure answers `422`): the three PNGs of a view have the
   same size, at most 1536 px on the long side; every colour in the `mask` belongs to a line of the
   saved design; every line that is in the view has pixels in the `mask`.
@@ -316,7 +326,7 @@ Rules:
   section 7.3), so strangers on the public page cannot use up the month and block the CRM's `/models` jobs.
 - Stub jobs use 0 GPU seconds and no money, so development and tests never reach a cap.
 - With `paidEngineEnabled` off, `engine: "paid"` answers `403 paid_engine_off` and `default` never
-  falls back to the paid engine. With no GPU worker configured, `default` is the stub; it is never the paid engine.
+  falls back to the paid engine. With no worker configured (6.1), `default` is the stub; it is never the paid engine.
 - Per-key request budget: 600 requests per 5 minutes, the lead-capture defaults
   (`app/config.py:146-147`), with its own throttle scope.
 - Across tenants the queue is fair: the next job is taken from the tenant that has waited longest among
@@ -330,17 +340,18 @@ limit and no way to pick up a job again after a deploy. So the waiting line live
 1. A submit writes a `p3_job` row with status `queued` and returns. Nothing else happens in the request.
 2. One beat task, `planner3d.tick`, runs every 5 seconds. Each run does three things, each claimed with
    a guarded `UPDATE` so two runs never take the same row:
-   - **start**: for each tenant below `maxConcurrentJobs`, take its oldest `queued` job, send it to the
-     worker (or run the stub), store `workerJobId`, set `running`;
-   - **poll**: for each `running` job, read the worker's status and store progress;
-   - **finish**: for each job the worker reports done, create one core `background_jobs` job of type
-     `planner3d.finish`. Its handler downloads the outputs, does the paste-back, stores the files,
+   - **start**: for each tenant below `maxConcurrentJobs`, run its oldest `queued` job on the stub when
+     the stub is the engine (6.3). On the pull path SS does not start anything: the worker claims the job
+     (6.2) and the claim sets `running`; the per-tenant limit is applied inside the claim;
+   - **poll**: for each `running` job, requeue it when its lease ran out (6.2);
+   - **finish**: for each job the worker reports done (its `finish` call, 6.2), create one core `background_jobs` job of type
+     `planner3d.finish`. Its handler checks the outputs, re-runs `product_diff` for a render, stores the files,
      writes usage, sets the final status and queues the event.
 3. Every step is short (well under a minute) and safe to run twice. A deploy that kills a step loses
    nothing: the `p3_job` row still says where the job is and the next tick carries on, because the
-   long wait happens on the GPU worker, not inside an SS process. A `planner3d.finish` job that the
+   long wait happens on the GPU worker, not inside an SS process; jobs simply wait as `queued` while the worker is off. A `planner3d.finish` job that the
    core orphan sweep fails is simply created again by the next tick (the `p3_job` is still `running`).
-4. A job is `running` from the moment it is sent to the worker until `planner3d.finish` ends, and that
+4. A job is `running` from the moment it is claimed (or started on the stub) until `planner3d.finish` ends, and that
    whole span counts against `maxConcurrentJobs`.
 5. With `CELERY_TASK_ALWAYS_EAGER=true` (dev and tests) there is no beat; tests call the tick function
    directly, as the workflow scheduler tests do. A consumer must still accept that an event can reach
@@ -489,25 +500,58 @@ With `status: "failed"` or `"cancelled"`, `files` is empty and `error` is `{"cod
 receiver downloads `files[].url` inside the hour and keeps its own copy; after that it reads
 `GET /jobs/{jobId}` for a fresh link.
 
-### 5.7 `model.ready`
+### 5.7 `model.candidates_ready` and `model.ready`
 
-Sent when a model job reaches a final state.
+Two events, one per step of a model (3.3; crew ruling 26/11/2026).
+
+`model.candidates_ready` is sent when a `model` job reaches a final state. On success `files` lists the 2
+or 3 candidates, role `candidate`; the receiver shows them to a person, who approves one.
 
 ```json
 {
-  "id": "evt_...", "type": "model.ready", "occurredAt": "2026-11-21T02:20:00Z",
+  "id": "evt_...", "type": "model.candidates_ready", "occurredAt": "2026-11-21T02:20:00Z",
   "data": {
     "jobId": "job_...", "productCode": "ABC-123", "company": null,
     "status": "succeeded", "engine": "gpu",
     "dimensionsMm": {"length": 600, "width": 450, "height": 850},
-    "files": [{"role": "model", "name": "model.glb", "mime": "model/gltf-binary", "size": 184320, "sha256": "...", "url": "...", "expiresAt": "..."}],
+    "files": [
+      {"role": "candidate", "name": "candidate-1.glb", "mime": "model/gltf-binary", "size": 184320, "sha256": "...", "url": "...", "expiresAt": "..."},
+      {"role": "candidate", "name": "candidate-2.glb", "mime": "model/gltf-binary", "size": 190112, "sha256": "...", "url": "...", "expiresAt": "..."}
+    ],
     "error": null
   }
 }
 ```
 
-The CRM stores the GLB as the product's model attachment, a person approves it, and C1 then returns
-its URL. SS does not decide which model is approved.
+`model.ready` is sent when the `convert` job queued by an approval reaches a final state. `jobId` is the
+convert job's id; `sourceJobId` names the model job and `approvedCandidate` the candidate chosen.
+
+```json
+{
+  "id": "evt_...", "type": "model.ready", "occurredAt": "2026-11-21T02:25:00Z",
+  "data": {
+    "jobId": "job_...", "sourceJobId": "job_...", "approvedCandidate": "candidate-2.glb",
+    "productCode": "ABC-123", "company": null,
+    "status": "succeeded", "engine": "gpu",
+    "dimensionsMm": {"length": 600, "width": 450, "height": 850},
+    "files": [
+      {"role": "model", "name": "model.glb", "mime": "model/gltf-binary", "size": 190112, "sha256": "...", "url": "...", "expiresAt": "..."},
+      {"role": "export", "name": "model.gltf", "mime": "model/gltf+json", "size": 1200, "sha256": "...", "url": "...", "expiresAt": "..."},
+      {"role": "export", "name": "model.obj", "mime": "text/plain", "size": 5000, "sha256": "...", "url": "...", "expiresAt": "..."},
+      {"role": "export", "name": "model.mtl", "mime": "text/plain", "size": 300, "sha256": "...", "url": "...", "expiresAt": "..."},
+      {"role": "export", "name": "model.fbx", "mime": "application/octet-stream", "size": 90000, "sha256": "...", "url": "...", "expiresAt": "..."},
+      {"role": "export", "name": "model.stl", "mime": "model/stl", "size": 40000, "sha256": "...", "url": "...", "expiresAt": "..."}
+    ],
+    "error": null
+  }
+}
+```
+
+On success `files` lists all six files (`model.glb` is the one with `role: "model"`, the rest `role: "export"`).
+With `status: "failed"` or `"cancelled"`, `files` is empty and `error` is `{"code", "message"}`. Both events
+are keyed on `jobId` (5.4): an unknown `jobId` answers `2xx` and is ignored. The CRM stores `model.glb` as
+the product's model attachment (and may keep the exports); because a person already approved the candidate,
+C1 may return the URL once `model.ready` has landed. SS does not decide which candidate is approved.
 
 ---
 
@@ -515,72 +559,76 @@ its URL. SS does not decide which model is approved.
 
 ### 6.1 Configuration
 
+Transport is PULL (crew ruling 26/11/2026). The worker calls SS over the tailnet; SS never calls the
+worker, so the worker host needs no inbound port and SS needs no worker URL.
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `GPU_WORKER_URL` | empty | base URL of the worker, any host. Empty means the CPU stub runs every job. |
-| `GPU_WORKER_TOKEN` | empty | bearer token SS sends to the worker |
-| `GPU_WORKER_TIMEOUT_SECONDS` | 900 | wall-clock limit for one job on the worker |
+| `PLANNER3D_WORKER_TOKEN_SHA256` | empty | sha256 (hex) of the worker's bearer token. SS stores only the hash. Empty means NO worker is configured: the CPU stub runs every job in process (6.3) and every worker call answers 401. |
+| `planner3d_lease_minutes` | 10 | a `running` job with no heartbeat for this long is requeued (6.2) |
 | `PLANNER3D_PAID_API_KEY` | empty | key for the paid engine; without it the paid switch cannot be turned on |
 
-These follow the code-runner pattern (`CODE_RUNNER_URL`, `CODE_RUNNER_TOKEN`, `app/config.py:246-247`,
-`DEPLOY.md` "Topology"): an operator-set URL and token rendered into `.env` by CI from GitHub
-Variables and Secrets. They are never tenant data.
+`GPU_WORKER_URL` and `GPU_WORKER_TOKEN` no longer exist; `GPU_WORKER_TIMEOUT_SECONDS` is replaced by the
+lease. "No worker configured" now means only that `PLANNER3D_WORKER_TOKEN_SHA256` is unset. A worker that
+is configured but off or slow is NOT the stub trigger: no claim inside the lease window changes nothing,
+and the jobs stay `queued` until the worker comes back. The plaintext token lives only on the worker host
+(its login keychain). The hash is operator config rendered into `.env` by CI from a secret, like
+`CODE_RUNNER_TOKEN` (`app/config.py:246-247`, `DEPLOY.md` "Topology"). It is never tenant data.
 
-### 6.2 SS to worker protocol (S3 implements the worker side)
+### 6.2 Worker pull API (S3 implements both sides)
 
-SS always calls the worker; the worker never calls SS and needs no SS credentials. This keeps the worker
-host-agnostic: it needs one reachable URL and outbound access to fetch inputs.
+Router `worker`, prefix `/planner3d/worker`, `"public": true`. Every call carries
+`Authorization: Bearer <token>` and `X-Planner3d-Worker: <worker name>`. SS hashes the token and compares
+it with `PLANNER3D_WORKER_TOKEN_SHA256` in constant time; a missing or wrong token, or an unset hash, answers
+`401`. The worker name identifies who holds a job. One job runs on a worker at a time.
 
 | Call | Purpose |
 |---|---|
-| `GET /health` | `{"status": "ok", "engines": {"render": "<pipeline name>", "model": "<pipeline name>"}, "version": "..."}` |
-| `POST /v1/jobs` | start a job; answer `202 {"workerJobId": "..."}` |
-| `GET /v1/jobs/{workerJobId}` | `{"status": "queued|running|succeeded|failed", "progress": 0-100, "gpuSeconds": 12.5, "outputs": [{"role", "name", "mime", "size", "sha256"}], "error": {"code", "message"}}` |
-| `GET /v1/jobs/{workerJobId}/outputs/{name}` | the output bytes |
-| `DELETE /v1/jobs/{workerJobId}` | cancel and free the outputs |
+| `POST /planner3d/worker/claim` | body `{"kinds": ["model","render","convert"]}`. Answer `200 {"jobId", "kind", "params", "inputs": [{"role", "name", "mime", "size", "sha256"}]}`, or `204` when nothing waits. Takes the oldest `queued` job of an accepted kind, fairly across tenants (section 4), with `FOR UPDATE SKIP LOCKED` and a guarded `UPDATE`; sets `running`, the worker name and `claimed_at`. |
+| `GET /planner3d/worker/jobs/{id}/inputs/{name}` | the input bytes. `404` unless the job is `running` and held by this worker name. |
+| `POST /planner3d/worker/jobs/{id}/heartbeat` | body `{"progress": 0-100}`; the worker sends it about every 15 seconds. `200`, or `409 {"code": "cancelled"}` when the job was cancelled (the worker stops). |
+| `PUT /planner3d/worker/jobs/{id}/outputs/{name}?role=<role>` | raw body. `201 {"name", "size", "sha256"}`. |
+| `POST /planner3d/worker/jobs/{id}/finish` | body `{"status": "succeeded"\|"failed", "error": {"code", "message"}, "gpuSeconds", "peakRssMb"}`. Answer: the job. |
 
-`POST /v1/jobs` body:
+Inputs and params by kind: `render` has inputs `scene.png`, `mask.png`, `depth.png` and params
+`{"prompt", "seed"}`; `model` has inputs `photo-N.<png|jpg|webp>` (role `photo`) and params
+`{"dimensionsMm": {"length", "width", "height"}}`; `convert` has the input `model.glb` (role `model`, a copy
+of the approved candidate).
 
-```json
-{
-  "jobId": "job_...", "kind": "render",
-  "inputs": [
-    {"role": "scene", "url": "<signed SS url>", "mime": "image/png"},
-    {"role": "depth", "url": "<signed SS url>", "mime": "image/png"},
-    {"role": "mask", "url": "<signed SS url>", "mime": "image/png"}
-  ],
-  "params": {"prompt": "warm evening light", "width": 1536, "height": 1024, "seed": 1234}
-}
-```
+Outputs allowed per kind (any other name answers `422`):
 
-For `kind: "model"` the inputs are `role: "photo"` (1 to 6) and `params` is
-`{"dimensionsMm": {"length", "width", "height"}}`.
+| Kind | Output names |
+|---|---|
+| `model` | `candidate-N.glb` with N 1 to 3, and optionally `candidate-N.json` |
+| `render` | `render.png` and `diff.json` |
+| `convert` | `model.glb`, `model.gltf`, `model.obj`, `model.mtl`, `model.fbx`, `model.stl` |
 
-- All calls carry `Authorization: Bearer <GPU_WORKER_TOKEN>`.
-- `jobId` is the worker's idempotency key: a second `POST` with the same `jobId` returns the same `workerJobId`.
-- Inputs are signed SS links valid for 1 hour. The worker holds no tenant data after `DELETE`.
-- SS polls `GET /v1/jobs/{id}` from the 5 second tick (section 4.1). When the worker reports done, the
-  `planner3d.finish` job downloads the outputs, stores them through `storage_for_tenant`, then deletes
-  the worker job.
-- SS does not trust the worker's own description of an output. Each download is read with a cap (40 MB
-  for an image, 100 MB for a GLB), its real type is taken from its first bytes (PNG for a render,
-  binary glTF for a model), and its sha256 is computed by SS. Anything else fails the job with
-  `worker_failed`.
-- Outside development `GPU_WORKER_URL` must be `https`. Outputs are always fetched from that base URL,
-  never from a URL the worker names.
-- For a render, the worker returns the generated image only. The paste-back of product pixels (section
-  3.4) is done by SS, so the "product never changes" rule does not depend on the worker.
-- Worker unreachable or 5xx: 3 tries, 10 seconds apart, then the job fails with `gpu_unavailable`.
-  Past `GPU_WORKER_TIMEOUT_SECONDS` the job fails with `timeout` and SS sends `DELETE`.
+`finish` with `succeeded` needs: for `model`, 2 or 3 candidate GLBs; for `convert`, all six files; for
+`render`, `render.png`, after which SS re-runs `product_diff` (3.4).
+
+- **SS does not trust the worker's description of an output.** Each upload is read with a cap (GLB and
+  export files 100 MB, PNG 40 MB, JSON 1 MB), its real type is taken from its first bytes and must match
+  the name, and its sha256 is computed by SS. A mismatch answers `422` and stores nothing.
+- **Lease and requeue.** On every claim and every tick, a `running` job with no heartbeat for
+  `planner3d_lease_minutes` is requeued (`attempts` + 1, back to `queued`). At 3 attempts it fails with
+  `worker_lost`. A cancelled job is never requeued.
+- **Queueing.** While the worker is off, jobs stay `queued`; nothing times out into the stub. The caps and
+  the per-tenant queue of section 4 still apply at submit.
+- The worker holds no tenant data after a job: it deletes its working files after `finish`.
+- Outside development the worker reaches SS over `https` (or the tailnet address). SS never fetches from a
+  URL the worker names.
+- For a render the worker composites the product pixels and returns `render.png` and `diff.json`; SS
+  re-checks (3.4), so the "product never changes" rule does not depend on the worker.
 
 ### 6.3 CPU stub
 
-With `GPU_WORKER_URL` empty, the same job handler runs the stub in process instead of calling a worker.
-Everything else is the real path: caps, queue, storage, signed links, events.
+With `PLANNER3D_WORKER_TOKEN_SHA256` unset (no worker configured, 6.1), the same job handler runs the stub
+in process; no worker ever claims anything. The stub is the in-process engine for development and for a
+tenant with no worker, not a fallback for a slow or absent worker. Everything else is the real path: caps, queue, storage, signed links, events.
 
 | Kind | Stub output |
 |---|---|
-| `model` | a fixture GLB (a plain box) scaled to `dimensionsMm` |
+| `model` | two fixture candidate GLBs (`candidate-1.glb`, `candidate-2.glb`, plain boxes) scaled to `dimensionsMm`; the `convert` job the approval queues also runs on the stub and writes the six files |
 | `render` | `before` is the plain scene image as received; `render` is a fixture image of the same size with the product pixels pasted back, so the paste-back step and the "products unchanged" list are exercised |
 
 - Stub jobs finish inside 2 seconds, set `engine: "stub"` on the job and on the event, and use 0 GPU seconds.
@@ -968,3 +1016,6 @@ For lanes that started from an earlier version (C1, C3, C6 were sent v0.1):
 | S1 | v0.4: one SS tenant per consuming system; the company registry behind the planner path (lookup form unique across SS, the one query without `tenant_id`); codes registered only by a platform operator through a new `operator` router on the existing key `tenants.manage_modules`; the tenant's Companies screen edits active, name and consent only (1, 7.1, 8, 9). |
 | S2 | v0.4: the route is `app/(public)/p/[company]/planner/page.tsx`; config, branding and the catalogue resolve from the company; every bad code, suspended tenant or missing module answers the same `404`; a design opens only under its own company; the company's own name and consent sentence, falling back to the tenant's (crew ruling (a), 21/11/2026). Open point 8 is closed (crew ruling (a), 20/11/2026); the behaviour in 7.2 is unchanged. |
 | C4, S2 | v0.5 (crew ruling (a) on open point 11, 21/11/2026): the company code stays in the link and QR. It is never on-screen text to the homeowner: the planner page names the company by its display name only (7.1). |
+| S1, S3 | v0.6 (crew ruling 26/11/2026): transport is PULL. Section 6.1 replaces `GPU_WORKER_URL`, `GPU_WORKER_TOKEN` and `GPU_WORKER_TIMEOUT_SECONDS` with `PLANNER3D_WORKER_TOKEN_SHA256` (SS stores the hash only) and a lease (`planner3d_lease_minutes`, default 10). Section 6.2 replaces the push table with the worker pull API (`claim`, `inputs`, `heartbeat`, `outputs`, `finish` under `/planner3d/worker`, bearer token plus `X-Planner3d-Worker`), stale-lease requeue, `worker_lost` after 3 attempts, jobs queue while the worker is off. Section 6.3: the stub is the in-process engine only while the hash is unset; a worker that is off is not a stub trigger. Section 4.1: no SS-side start or poll on the pull path; the tick requeues stale leases and finishes. SS-side caps, sniffing and its own sha256 stay. |
+| C3, S4 | v0.6, 3.4: the worker composites and returns `render.png` and `diff.json`; SS re-runs `product_diff` on the stored PNG and fails `product_changed` on any non-zero product diff. The wire (`render.ready`) is unchanged. |
+| C5 | v0.6, 3.3 and 5.7: a model job yields 2 or 3 `candidate-N.glb` (role `candidate`) and sends the NEW event `model.candidates_ready`; a person approves one; approval queues a `convert` job (new `kind: "convert"`, `sourceJobId`, `approvedCandidate`). `model.ready` now fires for the convert result only, with `model.glb` (role `model`) plus `model.gltf`, `model.obj`, `model.mtl`, `model.fbx`, `model.stl` (role `export`). A receiver that stored the single GLB from `model.ready` keeps working; it now gets `jobId` of the convert job and the extra `sourceJobId`, `approvedCandidate` fields. |
