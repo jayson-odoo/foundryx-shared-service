@@ -1,0 +1,3 @@
+resource,resource_label,action,action_label,description
+planner3d.jobs,Planner 3D jobs,read,View,"View 3D model and render jobs and download their files"
+planner3d.jobs,Planner 3D jobs,manage,Manage,"Submit, approve and cancel 3D model and render jobs"
