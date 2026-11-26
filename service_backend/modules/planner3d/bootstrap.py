@@ -55,8 +55,8 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
 
 
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
-    """Wipe ONLY this tenant's rows (never the schema). Stored blobs are left
-    to the storage sweep; rows are the index."""
+    """Wipe ONLY this tenant's rows (never the schema). Stored blobs are NOT
+    deleted here and no sweep removes them (BL-SS-372)."""
     for table in reversed(Planner3dBase.metadata.sorted_tables):
         if "tenant_id" in table.c:
             db.execute(table.delete().where(table.c.tenant_id == tenant_id))
