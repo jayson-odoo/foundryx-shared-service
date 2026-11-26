@@ -56,7 +56,7 @@ export function HubDetailView({ hubId }: { hubId: string }) {
   const loaded = hub;
   const seed = useCallback((h: Hub) => {
     setName(h.name);
-    setUrl(h.callbackUrl);
+    setUrl(h.callbackUrl ?? '');
     setExposePrice(h.exposePrice);
     setActive(h.active);
   }, []);
@@ -67,13 +67,13 @@ export function HubDetailView({ hubId }: { hubId: string }) {
   const dirty =
     !!loaded &&
     (name.trim() !== loaded.name ||
-      url.trim() !== loaded.callbackUrl ||
+      url.trim() !== (loaded.callbackUrl ?? '') ||
       exposePrice !== loaded.exposePrice ||
       active !== loaded.active);
 
   const onSave = useCallback(async (): Promise<boolean> => {
-    if (!name.trim() || !url.trim()) {
-      toast.error('Name and receiver URL are required.');
+    if (!name.trim()) {
+      toast.error('Name is required.');
       return false;
     }
     try {
@@ -178,11 +178,11 @@ export function HubDetailView({ hubId }: { hubId: string }) {
               <FormRow label="Code">
                 <span className="font-mono text-sm">{loaded.code}</span>
               </FormRow>
-              <FormRow label="Receiver URL" required>
+              <FormRow label="Receiver URL">
                 {editing ? (
                   <Input value={url} type="url" inputMode="url" maxLength={500} onChange={(e) => setUrl(e.target.value)} />
                 ) : (
-                  <ClampedText text={loaded.callbackUrl} lines={2} />
+                  <ClampedText text={loaded.callbackUrl ?? '-'} lines={2} />
                 )}
               </FormRow>
               <FormRow label="Show price">

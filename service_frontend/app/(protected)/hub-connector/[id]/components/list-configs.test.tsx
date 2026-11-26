@@ -25,9 +25,12 @@ describe('deliveries list config', () => {
   });
 
   it('states the receiver answer in plain words', () => {
-    expect(deliveryResult(delivery({ lastError: 'Receiver unavailable' }))).toBe('Receiver unavailable');
-    expect(deliveryResult(delivery({ lastCode: 200 }))).toBe('Answered 200');
-    expect(deliveryResult(delivery({ lastCode: null }))).toBe('-');
+    expect(deliveryResult(delivery({ status: 'PENDING', lastError: 'Delivery failed: ConnectError', lastCode: null }))).toBe(
+      'Receiver could not be reached',
+    );
+    expect(deliveryResult(delivery({ status: 'FAILED', lastCode: 500 }))).toBe('Receiver answered 500');
+    expect(deliveryResult(delivery({ status: 'SUCCESS', lastCode: 200 }))).toBe('Delivered');
+    expect(deliveryResult(delivery({ status: 'PENDING', lastCode: null, lastError: null }))).toBe('-');
   });
 });
 

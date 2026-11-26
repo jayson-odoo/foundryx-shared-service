@@ -23,10 +23,11 @@ const EVENT_LABELS: Record<string, string> = {
   'availability.updated': 'Availability update',
 };
 
-/** The receiver's answer in plain words. */
+/** The receiver's answer in plain words (never the raw technical error). */
 export function deliveryResult(d: HubDelivery): string {
-  if (d.lastError) return d.lastError;
-  if (d.lastCode) return `Answered ${d.lastCode}`;
+  if (d.status === 'SUCCESS') return 'Delivered';
+  if (d.lastCode) return `Receiver answered ${d.lastCode}`;
+  if (d.lastError) return 'Receiver could not be reached';
   return '-';
 }
 
@@ -153,15 +154,19 @@ export function useDeliveriesListConfig(hubId: string): ResourceListConfig<HubDe
       return { data: res.data, total: res.total, page: query.page };
     };
 
-    return embeddedListConfig<HubDelivery>({
-      viewKey: 'hub-connector.deliveries',
-      columns,
-      fetcher,
-      getRowId: (r) => r.id,
-      rowHref: () => '#',
-      searchPlaceholder: 'Search deliveries…',
-      defaultSort: { id: 'createdAt', desc: true },
-      actions,
-    });
+    return {
+      // A delivery log has no trash: no Active | Trashed switch.
+      enableStatusViews: false,
+      ...embeddedListConfig<HubDelivery>({
+        viewKey: 'hub-connector.deliveries',
+        columns,
+        fetcher,
+        getRowId: (r) => r.id,
+        rowHref: () => '#',
+        searchPlaceholder: 'Search deliveries…',
+        defaultSort: { id: 'createdAt', desc: true },
+        actions,
+      }),
+    };
   }, [formatDmyDateTime, hubId]);
 }

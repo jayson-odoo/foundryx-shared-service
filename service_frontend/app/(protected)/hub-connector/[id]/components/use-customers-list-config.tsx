@@ -181,6 +181,8 @@ export function useCustomersListConfig({
     };
 
     return {
+      // No trash for hub customers: the Active | Trashed switch would mean nothing.
+      enableStatusViews: false,
       ...embeddedListConfig<HubCustomer>({
         viewKey: 'hub-connector.customers',
         columns,

@@ -26,6 +26,8 @@ const spec: ClientListSpec<PreviewItem> = {
     switch (field) {
       case 'item':
         return i.name.toLowerCase();
+      case 'code':
+        return i.code.toLowerCase();
       case 'brand':
         return i.brand.name.toLowerCase();
       case 'gotStock':
@@ -66,12 +68,8 @@ export function usePreviewListConfig(
       enableSorting: true,
     });
     const columns: ColumnDef<PreviewItem>[] = [
-      col('item', 'Item', 240, ({ row }) => (
-        <div className="flex min-w-0 flex-col">
-          <ClampedText text={row.original.name} lines={1} className="font-medium" />
-          <ClampedText text={row.original.code} lines={1} className="font-mono text-xs text-muted-foreground" />
-        </div>
-      )),
+      col('item', 'Item', 220, ({ row }) => <ClampedText text={row.original.name} lines={1} className="font-medium" />),
+      col('code', 'Code', 130, ({ row }) => <ClampedText text={row.original.code} lines={1} className="font-mono text-sm" />),
       col('brand', 'Brand', 160, ({ row }) => <ClampedText text={row.original.brand.name} lines={1} className="text-sm" />),
       col('gotStock', 'Got stock', 110, ({ row }) => <YesNo yes={row.original.gotStock} />),
       col('gotIncoming', 'Got incoming', 130, ({ row }) => <YesNo yes={row.original.gotIncoming} />),
@@ -89,15 +87,18 @@ export function usePreviewListConfig(
       const { items } = await hubConnectorService.previewCustomer(hubId, customerId);
       return applyClientQuery(items, query, spec);
     };
-    return embeddedListConfig<PreviewItem>({
-      viewKey: 'hub-connector.preview',
-      columns,
-      fetcher,
-      getRowId: (i) => i.code,
-      rowHref: () => '#',
-      searchPlaceholder: 'Search items…',
-      defaultSort: { id: 'item', desc: false },
-    });
+    return {
+      enableStatusViews: false,
+      ...embeddedListConfig<PreviewItem>({
+        viewKey: 'hub-connector.preview',
+        columns,
+        fetcher,
+        getRowId: (i) => i.code,
+        rowHref: () => '#',
+        searchPlaceholder: 'Search items…',
+        defaultSort: { id: 'item', desc: false },
+      }),
+    };
   }, [hubId, customerId, showPrice]);
 }
 

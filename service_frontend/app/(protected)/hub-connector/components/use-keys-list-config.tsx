@@ -31,6 +31,8 @@ const spec: ClientListSpec<ApiKey> = {
     switch (field) {
       case 'name':
         return k.name.toLowerCase();
+      case 'masked':
+        return k.masked;
       case 'created':
         return k.createdAt;
       case 'lastUsed':
@@ -75,13 +77,17 @@ export function useKeysListConfig(onCreate: () => void, refreshKey: number): Res
         accessorFn: (r) => r.name,
         meta: { headerTitle: 'Name' },
         header: ({ column }) => <DataGridColumnHeader title="Name" column={column} />,
-        cell: ({ row }) => (
-          <div className="flex min-w-0 flex-col">
-            <ClampedText text={row.original.name} lines={1} className="font-medium" />
-            <ClampedText text={row.original.masked} lines={1} className="font-mono text-xs text-muted-foreground" />
-          </div>
-        ),
-        size: 220,
+        cell: ({ row }) => <ClampedText text={row.original.name} lines={1} className="font-medium" />,
+        size: 180,
+        enableSorting: true,
+      },
+      {
+        id: 'masked',
+        accessorFn: (r) => r.masked,
+        meta: { headerTitle: 'Key' },
+        header: ({ column }) => <DataGridColumnHeader title="Key" column={column} />,
+        cell: ({ row }) => <ClampedText text={row.original.masked} lines={1} className="font-mono text-sm" />,
+        size: 180,
         enableSorting: true,
       },
       {
@@ -147,6 +153,7 @@ export function useKeysListConfig(onCreate: () => void, refreshKey: number): Res
       return applyClientQuery(await hubConnectorService.listKeys(), query, spec);
     };
     return {
+      enableStatusViews: false,
       ...embeddedListConfig<ApiKey>({
         viewKey: 'hub-connector.keys',
         columns,

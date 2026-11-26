@@ -63,7 +63,7 @@ export function useHubsListConfig(onCreate: () => void, refreshKey = 0): Resourc
         meta: { headerTitle: 'Receiver URL' },
         header: ({ column }) => <DataGridColumnHeader title="Receiver URL" column={column} />,
         cell: ({ row }) => (
-          <ClampedText text={row.original.callbackUrl} lines={1} className="text-sm text-muted-foreground" />
+          <ClampedText text={row.original.callbackUrl ?? '-'} lines={1} className="text-sm text-muted-foreground" />
         ),
         size: 260,
         enableSorting: true,

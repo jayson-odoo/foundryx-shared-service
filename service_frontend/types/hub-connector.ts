@@ -13,7 +13,7 @@ export interface Hub {
   id: string;
   name: string;
   code: string;
-  callbackUrl: string;
+  callbackUrl: string | null;
   exposePrice: boolean;
   active: boolean;
   customerCount: number;
