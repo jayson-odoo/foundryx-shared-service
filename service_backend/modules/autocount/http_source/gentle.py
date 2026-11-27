@@ -1,11 +1,14 @@
 """SS-STOCK-BAL-SOOTHE - keep the open REST wrapper's load low and even
 (``documentation/plans/sprint-5/ss-stock-bal-soothe.md``).
 
-Two per-connection knobs, both ON by default (a connection saved before
-this lane carries neither key and gets the defaults):
+Two per-connection knobs (a connection saved before this lane carries
+neither key and gets the defaults):
 
 * ``pagePauseSeconds`` - a pause between two page requests of one walk, so a
-  70-page stock walk is a trickle instead of a burst.
+  70-page stock walk is a trickle instead of a burst. SS-STOCK-PAGE-PAUSE-
+  CONFIG (owner 27 Nov): the owner sets it, 0-90 s, default 0 ("then you
+  let me control"). The pause sleeps in ``PAUSE_SLICE_SECONDS`` slices and
+  asks ``should_stop`` between them, so a stopped run never sits it out.
 * ``lookupCacheMinutes`` - a scheduled stock run reuses the item / item-UOM
   lookup rows of the last verified walk for this long (BL-SS-353).
 
@@ -18,14 +21,27 @@ process walks a lookup at most once per TTL.
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-PAGE_PAUSE_FIELD_DEFAULT = 1.0
+PAGE_PAUSE_FIELD_DEFAULT = 0.0
 PAGE_PAUSE_FIELD_MIN = 0.0
-PAGE_PAUSE_FIELD_MAX = 10.0
+# Crew 27 Nov: capped at 90 s so a ~70-page stock run stays under the 2 h job
+# limit (``background_job_soft_time_limit_seconds``).
+PAGE_PAUSE_FIELD_MAX = 90.0
+PAGE_PAUSE_INVALID_MESSAGE = (
+    "Pause between pages must be a number from 0 to 90 seconds "
+    "(max 90 s: longer pauses make the stock run exceed its 2 h limit)."
+)
+
+# One slice of a pause: between slices the run beats its heartbeat and checks
+# for a stop (abort / orphan sweep / abandoned build).
+PAUSE_SLICE_SECONDS = 5.0
+# ``HttpSourceError.code`` of a walk stopped during a pause.
+PAUSE_STOPPED_CODE = "stopped"
 
 LOOKUP_CACHE_FIELD_DEFAULT = 60
 LOOKUP_CACHE_FIELD_MIN = 0
@@ -59,9 +75,12 @@ def gentle_settings(config: Optional[Dict[str, Any]]) -> GentleSettings:
     pause_raw = str(cfg.get("pagePauseSeconds") if cfg.get("pagePauseSeconds") is not None else "").strip()
     if pause_raw:
         try:
-            pause = min(max(float(pause_raw), PAGE_PAUSE_FIELD_MIN), PAGE_PAUSE_FIELD_MAX)
+            value = float(pause_raw)
         except (TypeError, ValueError):
-            pause = PAGE_PAUSE_FIELD_DEFAULT
+            value = PAGE_PAUSE_FIELD_DEFAULT
+        if not math.isfinite(value):
+            value = PAGE_PAUSE_FIELD_DEFAULT
+        pause = min(max(value, PAGE_PAUSE_FIELD_MIN), PAGE_PAUSE_FIELD_MAX)
 
     return GentleSettings(
         page_pause_seconds=pause,
@@ -80,12 +99,9 @@ def validate_gentle_config(config: Optional[Dict[str, Any]]) -> Optional[str]:
         try:
             pause = float(pause_raw)
         except ValueError:
-            return "pagePauseSeconds must be a number."
-        if not (PAGE_PAUSE_FIELD_MIN <= pause <= PAGE_PAUSE_FIELD_MAX):
-            return (
-                f"pagePauseSeconds must be between {PAGE_PAUSE_FIELD_MIN:g} and "
-                f"{PAGE_PAUSE_FIELD_MAX:g}."
-            )
+            return PAGE_PAUSE_INVALID_MESSAGE
+        if not (math.isfinite(pause) and PAGE_PAUSE_FIELD_MIN <= pause <= PAGE_PAUSE_FIELD_MAX):
+            return PAGE_PAUSE_INVALID_MESSAGE
     for key, low, high in (
         ("lookupCacheMinutes", LOOKUP_CACHE_FIELD_MIN, LOOKUP_CACHE_FIELD_MAX),
     ):
@@ -101,10 +117,27 @@ def validate_gentle_config(config: Optional[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def sleep_between_pages(seconds: float) -> None:
-    """The ONE place a walk pauses between pages (tests stub this name)."""
-    if seconds > 0:
-        time.sleep(seconds)
+_sleep = time.sleep
+
+
+def sleep_between_pages(
+    seconds: float, *, should_stop: Optional[Callable[[], bool]] = None
+) -> bool:
+    """The ONE place a walk pauses between pages (tests stub this name).
+
+    Sleeps in ``PAUSE_SLICE_SECONDS`` slices; after each slice ``should_stop``
+    (when given) runs - it beats the job's heartbeat (a 10-minute pause must
+    never read as a dead worker to the 15-minute orphan sweep) and returns
+    ``True`` once the run was stopped. Returns ``False`` when the pause was cut
+    short by a stop, ``True`` when it ran to the end."""
+    remaining = float(seconds)
+    while remaining > 0:
+        step = min(PAUSE_SLICE_SECONDS, remaining)
+        _sleep(step)
+        remaining -= step
+        if should_stop is not None and should_stop():
+            return False
+    return True
 
 
 # ── lookup cache (BL-SS-353) ─────────────────────────────────────────────
