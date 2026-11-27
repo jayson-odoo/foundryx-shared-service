@@ -5,3 +5,4 @@ trimesh
 psutil
 pytest
 scipy
+fast-simplification
