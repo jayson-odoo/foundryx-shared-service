@@ -1,5 +1,6 @@
 import {
   Blocks,
+  Box,
   Building2,
   ClipboardList,
   Cog,
@@ -414,6 +415,18 @@ export const MENU_SIDEBAR: MenuConfig = [
       { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
     ],
   },
+  // 3D Planner (lane PLANNER-3D-S1) - gateway keys + webhook receivers, visible
+  // only while `planner3d` is ACTIVE and the user holds each page's key. Same
+  // tags in all three menu copies.
+  {
+    title: '3D Planner',
+    icon: Box,
+    module: 'planner3d',
+    children: [
+      { title: 'Keys', path: '/planner3d/keys', permission: 'planner3d.keys.manage' },
+      { title: 'Receivers', path: '/planner3d/receivers', permission: 'planner3d.webhooks.manage' },
+    ],
+  },
   // Meetings (sprint-5 S0) - module menu block, visible only while the
   // `meetings` module is ACTIVE for the tenant AND the user holds the key its
   // page gates on (filterMenu prunes at every level). No clickable parent.
@@ -614,6 +627,19 @@ export const MENU_MEGA: MenuConfig = [
               { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
               { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
               { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
+            ],
+          },
+        ],
+      },
+      // 3D Planner (lane PLANNER-3D-S1) - desktop mega copy.
+      {
+        title: '3D Planner',
+        module: 'planner3d',
+        children: [
+          {
+            children: [
+              { title: 'Keys', path: '/planner3d/keys', permission: 'planner3d.keys.manage' },
+              { title: 'Receivers', path: '/planner3d/receivers', permission: 'planner3d.webhooks.manage' },
             ],
           },
         ],
@@ -830,6 +856,18 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
       { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
       { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
       { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
+    ],
+  },
+  // 3D Planner (lane PLANNER-3D-S1) - gateway keys + webhook receivers, visible
+  // only while `planner3d` is ACTIVE and the user holds each page's key. Same
+  // tags in all three menu copies.
+  {
+    title: '3D Planner',
+    icon: Box,
+    module: 'planner3d',
+    children: [
+      { title: 'Keys', path: '/planner3d/keys', permission: 'planner3d.keys.manage' },
+      { title: 'Receivers', path: '/planner3d/receivers', permission: 'planner3d.webhooks.manage' },
     ],
   },
   // Meetings (sprint-5 S0) - third menu copy; same module + permission tags so

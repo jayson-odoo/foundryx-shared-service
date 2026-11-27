@@ -1,3 +1,5 @@
 resource,resource_label,action,action_label,description
 planner3d.jobs,Planner 3D jobs,read,View,"View 3D model and render jobs and download their files"
 planner3d.jobs,Planner 3D jobs,manage,Manage,"Submit, approve and cancel 3D model and render jobs"
+planner3d.keys,Planner 3D keys,manage,Manage,"Issue and revoke the 3D Planner API keys"
+planner3d.webhooks,Planner 3D receivers,manage,Manage,"Add and remove the 3D Planner webhook receivers"

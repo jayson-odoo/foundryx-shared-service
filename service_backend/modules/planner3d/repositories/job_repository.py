@@ -92,10 +92,11 @@ def delete_file(db: Session, row: P3JobFile) -> None:
 
 # ── claim + lease ───────────────────────────────────────────────────────────
 
-def requeue_stale(db: Session, lease_minutes: int) -> List[str]:
+def requeue_stale(db: Session, lease_minutes: int, failed_out: Optional[List[str]] = None) -> List[str]:
     """Running jobs silent for longer than the lease: attempts + 1, back to
     queued, or failed ``worker_lost`` once the attempts reach the limit.
-    Returns the ids that were requeued (their old outputs are now void)."""
+    Returns the ids that were requeued (their old outputs are now void); the ids
+    that failed ``worker_lost`` are appended to ``failed_out`` when given."""
     cutoff = _now() - timedelta(minutes=lease_minutes)
     stale = (
         db.query(P3Job)
@@ -119,6 +120,8 @@ def requeue_stale(db: Session, lease_minutes: int) -> List[str]:
                     finished_at=_now(),
                 )
             )
+            if res.rowcount == 1 and failed_out is not None:
+                failed_out.append(job.id)
         else:
             res = db.execute(
                 update(P3Job)

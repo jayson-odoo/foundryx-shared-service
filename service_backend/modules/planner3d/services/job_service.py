@@ -36,7 +36,7 @@ from ..models import (
     STATUS_SUCCEEDED,
 )
 from ..repositories import job_repository as repo
-from . import paste_back, sniff
+from . import events_service, paste_back, sniff
 from .errors import P3Error
 
 logger = logging.getLogger(__name__)
@@ -375,7 +375,9 @@ def cancel(db: Session, tenant_id: str, job_id: str) -> schemas.JobOut:
         raise P3Error(409, "already_finished", "This job has already finished.")
     db.commit()
     db.expire_all()
-    return present_one(db, tenant_id, _tenant_job(db, tenant_id, job_id))
+    done = _tenant_job(db, tenant_id, job_id)
+    events_service.queue_job_event(db, done)
+    return present_one(db, tenant_id, done)
 
 
 # ── worker ──────────────────────────────────────────────────────────────────
@@ -389,11 +391,16 @@ def _held_job(db: Session, job_id: str, worker: str) -> P3Job:
 
 
 def claim(db: Session, worker: str, kinds: Sequence[str]) -> Optional[schemas.ClaimResponse]:
-    requeued = repo.requeue_stale(db, int(getattr(settings, "planner3d_lease_minutes", 10) or 10))
+    lost: List[str] = []
+    requeued = repo.requeue_stale(db, int(getattr(settings, "planner3d_lease_minutes", 10) or 10), lost)
     for job_id in requeued:
         _void_outputs(db, job_id)
     job = repo.claim_oldest(db, kinds, worker)
     db.commit()
+    for lost_id in lost:
+        lost_job = repo.get_by_id(db, lost_id)
+        if lost_job is not None:
+            events_service.queue_job_event(db, lost_job)
     if job is None:
         return None
     inputs = repo.in_files(db, job.tenant_id, job.id)
@@ -560,4 +567,5 @@ def finish(
     db.commit()
     db.expire_all()
     done = repo.get_by_id(db, job_id)
+    events_service.queue_job_event(db, done)
     return present_one(db, done.tenant_id, done)

@@ -1,7 +1,8 @@
 """Planner 3D bootstrap - the App-Store module contract.
 
 Install: schema + tables + permission catalog sync. The tenant Admin receives
-``planner3d.jobs.read`` / ``planner3d.jobs.manage`` from AppStoreService on
+the module keys (``planner3d.jobs.*``, and since S1 ``planner3d.keys.manage`` /
+``planner3d.webhooks.manage``) from AppStoreService on
 ``install`` and again on every ``update`` (``_grant_admin``, idempotent), so a
 tenant that already has the module picks up a later-added key on update; there
 is no tenant-owned row to backfill in this version.
@@ -29,7 +30,9 @@ def register_capabilities() -> None:
 
 
 def register_engine_entities() -> None:
-    return None
+    from .deferred_actions import register_planner3d_deferred_actions
+
+    register_planner3d_deferred_actions()
 
 
 def create_schema_and_tables(engine: Engine) -> None:

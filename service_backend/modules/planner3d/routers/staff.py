@@ -8,17 +8,19 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Respon
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import require_permission
+from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
 from .. import schemas
-from ..services import job_service
+from ..services import events_service, job_service, key_service
 from ..services.errors import P3Error
 
 router = APIRouter()
 
 _READ = require_permission("planner3d.jobs.read")
 _MANAGE = require_permission("planner3d.jobs.manage")
+_KEYS = require_permission("planner3d.keys.manage")
+_HOOKS = require_permission("planner3d.webhooks.manage")
 
 _FILE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -151,3 +153,78 @@ def cancel_job(job_id: str, user: User = Depends(_MANAGE), db: Session = Depends
         return job_service.cancel(db, user.tenant_id, job_id)
     except P3Error as exc:
         raise _http(exc)
+
+
+# ── S1: gateway keys (contract 8, "Keys") ───────────────────────────────────
+
+def _key_item(row) -> schemas.KeyItem:
+    return schemas.KeyItem(
+        id=row.id,
+        name=row.name,
+        keyMasked=key_service.masked(row),
+        createdAt=row.created_at,
+        lastUsedAt=row.last_used_at,
+        revokedAt=row.revoked_at,
+    )
+
+
+@router.get("/keys", response_model=schemas.KeyList)
+def list_keys(user: User = Depends(_KEYS), db: Session = Depends(get_db)) -> schemas.KeyList:
+    return schemas.KeyList(data=[_key_item(r) for r in key_service.list_keys(db, user.tenant_id)])
+
+
+@router.post("/keys", response_model=schemas.KeyCreated, status_code=201)
+def create_key(
+    body: schemas.KeyCreate,
+    user: User = Depends(_KEYS),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> schemas.KeyCreated:
+    row, full_key = key_service.issue(db, user.tenant_id, name=body.name, created_by=actor_id)
+    return schemas.KeyCreated(**_key_item(row).model_dump(), key=full_key)
+
+
+@router.delete("/keys/{key_id}", status_code=204)
+def revoke_key(key_id: str, user: User = Depends(_KEYS), db: Session = Depends(get_db)) -> Response:
+    try:
+        key_service.revoke(db, user.tenant_id, key_id)
+    except key_service.KeyNotFound:
+        raise HTTPException(status_code=404, detail={"code": "key_not_found", "message": "Key not found."})
+    return Response(status_code=204)
+
+
+# ── S1: webhook receivers (contract 5.1, 8) ─────────────────────────────────
+
+def _receiver_item(row) -> schemas.ReceiverItem:
+    return schemas.ReceiverItem(
+        id=row.id,
+        url=row.url,
+        events=list(row.events_json or []),
+        createdAt=row.created_at,
+        lastSuccessAt=row.last_success_at,
+    )
+
+
+@router.get("/receivers", response_model=schemas.ReceiverList)
+def list_receivers(user: User = Depends(_HOOKS), db: Session = Depends(get_db)) -> schemas.ReceiverList:
+    return schemas.ReceiverList(data=[_receiver_item(r) for r in events_service.list_receivers(db, user.tenant_id)])
+
+
+@router.post("/receivers", response_model=schemas.ReceiverCreated, status_code=201)
+def create_receiver(
+    body: schemas.ReceiverCreate, user: User = Depends(_HOOKS), db: Session = Depends(get_db)
+) -> schemas.ReceiverCreated:
+    try:
+        row, secret = events_service.create_receiver(db, user.tenant_id, body.url, body.events)
+    except P3Error as exc:
+        raise _http(exc)
+    return schemas.ReceiverCreated(**_receiver_item(row).model_dump(), secret=secret)
+
+
+@router.delete("/receivers/{receiver_id}", status_code=204)
+def delete_receiver(receiver_id: str, user: User = Depends(_HOOKS), db: Session = Depends(get_db)) -> Response:
+    try:
+        events_service.delete_receiver(db, user.tenant_id, receiver_id)
+    except P3Error as exc:
+        raise _http(exc)
+    return Response(status_code=204)
