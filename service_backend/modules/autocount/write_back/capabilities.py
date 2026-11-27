@@ -18,6 +18,7 @@ VENDOR_CAPABILITIES: Mapping[str, bool] = MappingProxyType(
         "link_existing_row": True,  # F5: one replace PUT [normal row "D", new linked row]
         "unlink": True,  # F4: one replace PUT [linked row "D", new normal row]
         "spo_unlink": False,  # F14: db3 cannot make an SPO, nothing probed
+        "spo_move": False,  # plan 71: ONE PUT on the SPO (row kept / "D" + new linked row); on after the db3 probe
     }
 )
 

@@ -3,6 +3,7 @@ registry: one-per-type (plan 06 D7), credential encryption (write-only),
 inline test with status upkeep, Resource-list reads (plan 06 D6).
 """
 import csv
+import logging
 import io
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -33,6 +34,8 @@ from app.schemas.user import FilterGroup
 from app.secrets import decrypt_secret, encrypt_secret
 from app.services.filter_translator import translate_filter
 from app.workflow_engine.entity_events import emit_entity_event
+
+logger = logging.getLogger("foundryx.integrations")
 
 # Whitelisted filterable columns (never arbitrary attributes - the translator
 # contract). Wire names are camelCase like every Resource entity.
@@ -173,7 +176,27 @@ class IntegrationService:
         return [p.provider for p in all_providers()]
 
     def get(self, tenant_id: str, connection_id: str) -> ConnectionOut:
-        return _connection_out(self._get_or_404(tenant_id, connection_id))
+        connection = self._get_or_404(tenant_id, connection_id)
+        out = _connection_out(connection)
+        out.fieldHints = self._field_hints(connection)
+        return out
+
+    def _field_hints(self, connection: Connection) -> Dict[str, Dict]:
+        """A provider's optional per-connection hints. Cosmetic: a failure
+        logs and yields none - it must never break opening the connection."""
+        hints = getattr(get_provider(connection.provider), "field_hints", None)
+        if hints is None:
+            return {}
+        try:
+            # A savepoint: a failed hint query must not leave this request's
+            # transaction aborted (Postgres).
+            with self.db.begin_nested():
+                return hints(self.db, connection) or {}
+        except Exception:  # noqa: BLE001 - a hint is advisory
+            logger.warning(
+                "field hints failed for connection %s", connection.id, exc_info=True
+            )
+            return {}
 
     def get_at(
         self,
@@ -347,7 +370,11 @@ class IntegrationService:
         emit_entity_event(self.db, "connection", "updated", connection, tenant_id=tenant_id, changes=changes or None)
         self.db.commit()
         self.db.refresh(connection)
-        return _connection_out(connection)
+        # The form keeps the PATCH answer as its record: carry the hints too,
+        # or they vanish until the next reload.
+        out = _connection_out(connection)
+        out.fieldHints = self._field_hints(connection)
+        return out
 
     def set_active(self, tenant_id: str, connection_id: str) -> ConnectionOut:
         """Make a STORAGE connection the tenant's single active write-target

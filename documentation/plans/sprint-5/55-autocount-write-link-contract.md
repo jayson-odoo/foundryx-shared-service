@@ -183,6 +183,18 @@ than the busy window (600 s, a request that died mid-way) becomes `pending_verif
 PO; a Resume of that stale operation itself is then answered like any `pending_verification` one. An operation
 `in_progress` inside the window is still respected (`DOC_BUSY` / `OPERATION_IN_PROGRESS`). (Plan 65 part B.)
 
+A batch link that ended `SPO_NOT_FOLLOWED` (plan 71 slice 2) is resumed the same way, and Resume may then send
+the shipping purchase order write that did not land, never the link write. For each shipping purchase order row
+still to follow it reads that shipping purchase order fresh. The new row already on the new PO row: confirmed,
+nothing sent. The old row still exactly as it was planned (every field the write sends again, so an edit made in
+AutoCount meanwhile is never undone), nothing received on it, no earlier write of it that may still be landing
+(an unknown outcome is given 420 s first), no other SS write on that shipping purchase order, and room on the
+new PO row: ONE write (the old row removed, a new row of the same quantity tied to the new PO row). Anything else
+stays `needs_attention` / `SPO_NOT_FOLLOWED` and nothing is sent: a person checks the shipping purchase order
+(the alert names it). Until it is resumed, a new `po-links/batch` on the same PO row, and any `spo-links` link,
+move or relink of another shipping purchase order row onto the new PO row a row is still to follow onto, are
+refused `ROW_NEEDS_ATTENTION`, nothing written. A new PO row nothing is to follow onto stays free.
+
 Creating a document (`POST /documents/{kind}`) follows the same table with one difference, because a failed
 create may still have saved the document. A create AutoCount refused before saving (credit limit, unknown item,
 unknown debtor) or SS refused is released at once. Any other failure or an unfinished create is not re-run
@@ -253,7 +265,9 @@ Links one PO row to several SO rows (plan 62). Header `Idempotency-Key` required
 
 **One bad line never fails the batch** (owner rule, 12 Nov 2026). The checks that concern the PO row refuse the
 whole request and nothing is written: `ROW_ALREADY_LINKED`, `ROW_ON_SPO`, `ROW_HAS_OTHER_TRANSFER`, `ROW_RECEIVED`,
-`DOC_CANCELLED` (the PO), `ROW_NOT_FOUND` (the PO row), `DOC_STALE`, `DOC_BUSY`, `VENDOR_UNSUPPORTED`. Every other
+`DOC_CANCELLED` (the PO), `ROW_NOT_FOUND` (the PO row), `DOC_STALE`, `DOC_BUSY`, `VENDOR_UNSUPPORTED`, and with the
+plan 71 `spo_move` switch on `ROW_NEEDS_ATTENTION` (an earlier link on this PO row still has a shipping purchase
+order row to carry along). Every other
 check is made line by line, in request order, and a line that fails is skipped: it is not sent, the other lines are
 linked. The reasons are `ROW_NOT_FOUND` (the SO row), `ITEM_MISMATCH`, `UOM_MISMATCH`, `DOC_CANCELLED` (its sales
 order), `QTY_ABOVE_OUTSTANDING`, `QTY_INVALID`, `LOCATION_UNKNOWN` (plan 70: its `location` is not in AutoCount), `FOC_ON_ROW` (the line would take the whole of a PO row that has a free quantity, which
@@ -278,6 +292,18 @@ second write does not land (AutoCount error, read-back differs, or the time budg
 (section 4.0a). It is no longer `done` with a warning. The same holds for a whole-row link and a relink. The
 single part-row link on `po-links` (split) keeps `done` with `LOCATION_NOT_MOVED` / `ROW_VALUES_NOT_KEPT`
 (section 5). Use `po-links/relocate` for a row left at the default location.
+
+Plan 71 slice 2 (behind the `spo_move` switch, off until the db3 probe): a `po-links/batch` that splits a PO row
+a shipping purchase order row sits on is no longer refused when one of those rows has the same quantity as a
+link: after the link, the same operation moves that shipping purchase order row onto the new PO row and names it
+in `spoLines: [{spoDocKey, fromSpoDtlKey, spoDtlKey, fromPoDtlKey, toPoDtlKey, qty}]` (always present, empty
+when nothing moved). If that move does not land the answer is `needs_attention` with `errorCode`
+`SPO_NOT_FOLLOWED`: the links stand, the shipping purchase order row still sits on the kept PO row, and the
+operation is resumable (section 4.0a). Still `ROW_ON_SPO`, nothing written: no shipping purchase order row of a
+link's quantity; the links take the whole PO row; the kept PO row cannot hold the shipping purchase order rows
+that stay (a move onto it whose outcome is still unknown counts as staying); a shipping purchase order row with
+goods received. A shipping purchase order that another SS write holds: `DOC_BUSY`. An earlier link on the same
+PO row whose shipping purchase order row has not followed yet: `ROW_NEEDS_ATTENTION` (resume it first).
 
 AutoCount's API rewrites the PO's Remark2, Remark3 and Remark4 to the value of Remark1 on every write (db3,
 16 Nov). The gateway accepts that: no warning is raised and a Remark2..4 that reads back equal to Remark1 is
@@ -512,6 +538,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 |---|---|---|---|
 | `done` | 200 | null, or `LOCATION_NOT_MOVED` | Written and verified: every sent row read back as sent and every other row unchanged. `LOCATION_NOT_MOVED` only on the single part-row link. The header money and tax fields and stamps AutoCount recomputes on a save (totals, tax, `TaxEntityID`, `LastModified`) are not judged. Plan 73: `warnings` may carry `STORED_FIELDS_CHANGED` when, after a landed PO / SPO write, a stored field the change did not intend (a header field, or a kept line's Further Description) reads back different; the outcome stays `done`  Plan 73: the new linked line of a split (the original keeps a rest) carries only the S/O note in its Further Description; a whole link carries the original's note plus the S/O note |
 | `needs_attention` | 502 | `RESTORE_NOT_LANDED` | Batch link, whole-row link or relink: the links stand but the restore of the new rows (location, unit price, delivery date, discount, note) did not land. Resumable (section 4.0a) |
+| `needs_attention` | 502 | `SPO_NOT_FOLLOWED` | Batch link (plan 71 slice 2, `spo_move` switch on): the links stand but a shipping purchase order row did not move onto its new PO row; it still sits on the kept PO row. `spoLines` names the rows that did move. Resumable (section 4.0a) |
 | `pending_verification` | 202 | `WRITE_TIMEOUT`, `WRITE_CONNECT`, `DOC_NOT_FOUND`, `DOC_AMBIGUOUS`, `READ_FAILED`, `INTERNAL_ERROR`, `DEADLINE_EXCEEDED` | The write may or may not have happened; the server could not confirm it |
 | `refused` | 403 | `WRITE_DISABLED` | This company has no write connection, or the company or its write connection is inactive |
 | `refused` | 403 | `WRITE_NOT_ALLOWED` | The company's write target is not an allowed book |
@@ -554,7 +581,7 @@ The same JSON is returned for every outcome, with only the HTTP status differing
 | `IDEMPOTENCY_CONFLICT` | The `Idempotency-Key` was used for a different body or route and its first call did not release it | Use a new key for a new change |
 | `OPERATION_IN_PROGRESS` | The first call under this key is still running | Wait, then resend the same call |
 | `QTY_ABOVE_OUTSTANDING` | `qty` is above what is still unlinked on the SO row | Lower `qty`, or unlink another PO row first |
-| `ROW_NEEDS_ATTENTION` | Unlink, relink or delete line on a PO row that an unresolved link operation covers (its source row, or a new row linked to one of its SO rows); nothing written | Resume that operation (`POST /write-operations/{id}/resume`); hide the action on this code |
+| `ROW_NEEDS_ATTENTION` | Unlink, relink or delete line on a PO row that an unresolved link operation covers (its source row, or a new row linked to one of its SO rows); plan 71: a batch link on a PO row whose earlier batch link still has a shipping purchase order row to carry along, or another shipping purchase order row linked, moved or relinked onto the new PO row that row is still to follow onto; nothing written | Resume that operation (`POST /write-operations/{id}/resume`); hide the action on this code |
 | `FOC_ON_ROW` | A write that would remove a PO row that has a free quantity (AutoCount's API cannot write it on another row): a link taking the whole row (`po-links`: refused; `po-links/batch`: the line is skipped and named in `skipped`), and an unlink or relink of such a row (`po-links/unlink`, `po-links/relink`: refused). Nothing written | Link a smaller quantity, or handle the row in AutoCount |
 | `ALL_LINKS_SKIPPED` | `po-links/batch`: every line failed its own check, so nothing was linked; `skipped` names each line and its code | Fix the lines and resend (same key is fine) |
 

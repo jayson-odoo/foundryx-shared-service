@@ -87,6 +87,10 @@ THROTTLE_SCOPE_LEAD_GATEWAY_KEY = "lead_gateway_key"
 # Hub Connector hub read API: failed keys per IP, and the request budget per key.
 THROTTLE_SCOPE_HUB_API = "hub_api"
 THROTTLE_SCOPE_HUB_API_KEY = "hub_api_key"
+# Planner 3D gateway (lane PLANNER-3D-S1, contract 2.1 + 4) - same pattern as Lead
+# Capture: per IP counts 401s only; per key counts every authenticated call.
+THROTTLE_SCOPE_PLANNER3D_GATEWAY = "planner3d_gateway"
+THROTTLE_SCOPE_PLANNER3D_GATEWAY_KEY = "planner3d_gateway_key"
 
 
 class AuthThrottle(Base):

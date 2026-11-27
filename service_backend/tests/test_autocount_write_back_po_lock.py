@@ -117,11 +117,12 @@ class _Recorder:
         self.busy = set(busy)
         self.open = 0
 
-    def tokens(self, po, so) -> List[str]:
-        return [f"po:{k}" for k in sorted(set(po))] + [f"so:{k}" for k in sorted(set(so))]
+    def tokens(self, po, so, spo=()) -> List[str]:
+        return ([f"po:{k}" for k in sorted(set(po))] + [f"spo:{k}" for k in sorted(set(spo))]
+                + [f"so:{k}" for k in sorted(set(so))])
 
-    def link_locks(self, db, company_id, *, po_doc_keys=(), so_dtl_keys=()):
-        return self._cm(self.tokens(list(po_doc_keys), list(so_dtl_keys)))
+    def link_locks(self, db, company_id, *, po_doc_keys=(), so_dtl_keys=(), spo_doc_keys=()):
+        return self._cm(self.tokens(list(po_doc_keys), list(so_dtl_keys), list(spo_doc_keys)))
 
     def so_row_locks(self, db, company_id, so_dtl_keys):
         return self._cm(self.tokens([], list(so_dtl_keys)))
@@ -371,6 +372,23 @@ def test_pol_pg_the_lock_is_released_on_an_exception_and_after_a_timed_out_wait(
         assert isinstance(out.get("error"), SoRowBusy), out
         free = _in_thread(lambda: _enter(link_locks(pg_db, "c1", po_doc_keys=[7001])))
         assert free.get("value") == "got", free  # the PO lock won before the timeout was given back
+    assert _held_tokens(pg_db.engine) == 0
+
+
+@pg
+def test_pol_pg_the_spo_document_lock_keeps_a_follow_and_an_spo_operation_apart(pg_db):
+    """Plan 71 slice 2 review round 2: a batch's follow (nested under its PO lock) and an SPO operation (its
+    target PO, then the SPO) take the same SPO document lock; the follow gives it back at once."""
+    from modules.autocount.write_back.link_lock import link_locks
+
+    with link_locks(pg_db, "c1", po_doc_keys=[7001]):  # the batch holds its PO
+        with link_locks(pg_db, "c1", spo_doc_keys=[7203]):  # its follow takes the SPO on the same connection
+            busy = _in_thread(lambda: _enter(link_locks(pg_db, "c1", po_doc_keys=[7002], spo_doc_keys=[7203])))
+            assert isinstance(busy.get("error"), SoRowBusy), busy  # an SPO move onto another PO waits, then busy
+        free = _in_thread(lambda: _enter(link_locks(pg_db, "c1", po_doc_keys=[7002], spo_doc_keys=[7203])))
+        assert free.get("value") == "got", free  # the follow released the SPO; the batch still holds only its PO
+        held = _in_thread(lambda: _enter(link_locks(pg_db, "c1", po_doc_keys=[7001])))
+        assert isinstance(held.get("error"), SoRowBusy), held
     assert _held_tokens(pg_db.engine) == 0
 
 

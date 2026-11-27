@@ -154,7 +154,10 @@ def pauses(monkeypatch):
     import modules.autocount.http_source.gentle as gentle
 
     recorded: List[float] = []
-    monkeypatch.setattr(gentle, "sleep_between_pages", lambda seconds: recorded.append(seconds))
+    monkeypatch.setattr(
+        gentle, "sleep_between_pages",
+        lambda seconds, **_kw: recorded.append(seconds) or True,
+    )
     return recorded
 
 
@@ -167,11 +170,12 @@ def _source(db, company, config, *, mode=RUN_MODE_INCREMENTAL):
 # ── AC-3: connection settings ──────────────────────────────────────────────
 
 
-def test_gentle_settings_default_on_for_a_connection_without_the_keys():
+def test_gentle_settings_defaults_for_a_connection_without_the_keys():
     from modules.autocount.http_source.gentle import gentle_settings
 
     s = gentle_settings({"baseUrl": BASE_URL, "auth": "none"})
-    assert s.page_pause_seconds == 1.0
+    # SS-STOCK-PAGE-PAUSE-CONFIG (owner 27 Nov): the pause default is 0.
+    assert s.page_pause_seconds == 0.0
     assert s.lookup_cache_minutes == 60
 
 
@@ -180,8 +184,8 @@ def test_gentle_settings_read_and_clamp_stored_values():
 
     s = gentle_settings({"pagePauseSeconds": "1.5", "lookupCacheMinutes": "0"})
     assert (s.page_pause_seconds, s.lookup_cache_minutes) == (1.5, 0)
-    junk = gentle_settings({"pagePauseSeconds": "999", "lookupCacheMinutes": "x"})
-    assert junk.page_pause_seconds == 10.0
+    junk = gentle_settings({"pagePauseSeconds": "9999", "lookupCacheMinutes": "x"})
+    assert junk.page_pause_seconds == 90.0
     assert junk.lookup_cache_minutes == 60
 
 
@@ -196,7 +200,7 @@ def test_provider_exposes_and_validates_the_new_fields():
     for key in ("stockSkipWhenUnchanged", "stockFullWalkMinutes"):
         assert key not in fields, "owner 26 Nov: no skip setting"
     base = {"baseUrl": "", "auth": "none"}
-    assert provider.validate_config({**base, "pagePauseSeconds": "11"})
+    assert provider.validate_config({**base, "pagePauseSeconds": "91"})
     assert provider.validate_config({**base, "pagePauseSeconds": "abc"})
     assert provider.validate_config({**base, "lookupCacheMinutes": "-1"})
     assert provider.validate_config({**base, "lookupCacheMinutes": "1441"})
@@ -210,7 +214,7 @@ def test_provider_exposes_and_validates_the_new_fields():
 
 def test_walk_pauses_between_pages_only(session_factory, server, pauses):
     db = session_factory()
-    conn = _open_connection(db)
+    conn = _open_connection(db, pagePauseSeconds="1")
     company = _company(db, conn.id)
     config = _stock_config(db, company, conn)
 
@@ -224,7 +228,7 @@ def test_lookup_walks_are_not_paused(session_factory, server, pauses):
     """A cache-miss run must still fit the 5-minute tick: only the balance
     walk is spread out."""
     db = session_factory()
-    conn = _open_connection(db)
+    conn = _open_connection(db, pagePauseSeconds="1")
     company = _company(db, conn.id)
     config = _stock_config(db, company, conn, lookups=[ITEM_LOOKUP])
 
@@ -351,7 +355,7 @@ def _run_job(db, company, *, mode=RUN_MODE_INCREMENTAL):
 
 def test_every_scheduled_stock_run_walks_the_balances_lookups_cached(session_factory, server, pauses):
     db = session_factory()
-    conn = _open_connection(db)
+    conn = _open_connection(db, pagePauseSeconds="1")
     company = _company(db, conn.id)
     _stock_config(db, company, conn, lookups=[ITEM_LOOKUP])
 
