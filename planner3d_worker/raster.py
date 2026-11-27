@@ -42,7 +42,7 @@ def _blank(size: int) -> bytes:
 
 def _render(vertices: np.ndarray, faces: np.ndarray, yaw: float, elev: float, size: int) -> bytes:
     rot = _rotation(yaw, elev)
-    pts = (vertices - vertices.mean(axis=0)) @ rot.T
+    pts = np.einsum("ij,nj->ni", rot, vertices - vertices.mean(axis=0))
     lo, hi = pts[:, :2].min(axis=0), pts[:, :2].max(axis=0)
     span = float(max(hi - lo)) or 1.0
     scale = size * 0.86 / span
@@ -57,9 +57,9 @@ def _render(vertices: np.ndarray, faces: np.ndarray, yaw: float, elev: float, si
     lengths = np.linalg.norm(normals, axis=1)
     keep = lengths > 1e-12
     normals = np.where(keep[:, None], normals / np.where(keep, lengths, 1.0)[:, None], 0.0)
-    cam_n = normals @ rot.T
-    facing = np.abs(cam_n @ np.array([0.0, 0.0, 1.0]))  # two sided: open meshes still read
-    lit = np.abs(cam_n @ LIGHT)
+    cam_n = np.einsum("ij,nj->ni", rot, normals)
+    facing = np.abs(cam_n[:, 2])  # two sided: open meshes still read
+    lit = np.abs(np.einsum("nj,j->n", cam_n, LIGHT))
     shade = (0.30 + 0.45 * lit + 0.15 * facing).clip(0.0, 1.0)
     colour = (60 + shade * 170).astype(np.uint8)
 
