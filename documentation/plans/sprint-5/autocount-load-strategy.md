@@ -66,28 +66,62 @@ up the rest - section 5's query splits it.
 
 Stock freshness unchanged in office hours (15 min); at night 60 min.
 
-## 3. Settings (owner rule: admin UI per connection, no env flags)
+## 3. Owner answers (27 Nov ~11:42) and what was built
 
-On the AutoCount connection form: "Pages per request" per task (on the task form, default = connection),
-"One request at a time" (on, default on), "Pause between pages" (existing, becomes the floor of the adaptive pause),
-"Slow page threshold (seconds)" (20), "Stop after N failures in a row" (3) / "Wait before retry (minutes)" (10).
-Office hours reuse the task's existing quiet-hours fields. Every pause, slow page and stop shows in the run's
-activity and on Scheduled Tasks (last run / last error / Run now).
+| Q | Answer | Built |
+|---|---|---|
+| 1 Lock scope | One request in flight per AutoCount server, across ALL entities (SO, stock, products, feeds, writes), taken page by page | `http_source/server_gate.py`: a Redis turn per server (`scheme://host:port`, so db1 + db2 on one wrapper share it), held for ONE request, handed back after it. Two jobs interleave per page, never per job. |
+| 1b A person's calls | Writes (Link PO etc.), lookups from a screen, previews go ahead of scheduled sync pages | While a person's call waits, no sync page takes the next turn. **A person waits at most for the one page already in flight** (today a stock page answers in seconds; the worst case is that page's request timeout, `requestTimeoutSeconds`, default 90 s). A person's call is never refused: if it ever waited 120 s it goes ahead. |
+| 2 Product page size | Stays 1000 | Connection "Page size" unchanged (max 1000); new "Stock balance page size" (default 3000, 50-3000) used only by the stock balance walk; its item/UOM lookups keep the connection page size. Stock: ~70 -> ~24 pages a run. |
+| 3 Office hours | From the settings already in Sorento CRM, no new hours field in SS | `office_hours.py` reads the CRM's `GET /api/v1/external/work-calendar` (+ `is-working-day` for holidays) with the Sorento connection's own API key, cached 1 h. Outside office hours: stock balance at most hourly, every other open-REST list waits for the next office-hours start; the nightly full run is never held back. Unreadable / no access = every hour is office hours, and the reason shows under the Sorento connection's base URL. |
+| 4 Changed-since | Vendor is not adding it | Dropped. Full walks stay, made lighter by 3000-row stock pages, office hours and the queue. |
+| 5 Safety stop | Yes | N failed requests in a row (timeout, connection error, 5xx/524; a 4xx is not a server failure) stop every SCHEDULED request to that server for M minutes (defaults 3 / 10). Then exactly one test call is let through: a good answer resumes everything, a bad one stops it again. A stopped run fails once with "AutoCount is not answering well, so the sync to this server is paused until dd/mm/yyyy, h:mm am/pm. It resumes by itself." (no retry ladder). A person's call is never refused, and its good answer lifts the stop. A failed run already raises the existing AutoCount failure alert. |
+| - Adaptive pause | (card c) | `gentle.AdaptivePause`: starts at the owner's "Pause between pages"; a page slower than "Slow page" (default 30 s) doubles the next pause (at least 5 s, max 90 s); a page faster than half of it halves it back, never below the owner's value. The run's activity notes each lengthening. |
 
-## 4. Questions (max 5, each with a recommendation)
+### Document feeds (owner 27 Nov ~11:58)
 
-1. **Lock scope: per server or per book?** Both books sit behind one server. Recommend **per server** (base host): the
-   slow thing is the one machine, not the book.
-2. **Product page size: 3000 too, or stay at 1000?** Recommend **stay 1000 until one db3 timing run** compares
-   seconds per 1000 rows at 1000 vs 3000; stock goes to 3000 now per the vendor.
-3. **Office hours for the warehouse:** recommend **08:00-19:00 MYT, Mon-Sat**, stock 15 min inside, 60 min outside;
-   product/masters hourly inside, nightly only outside. Change if the warehouse works later.
-4. **Ask the vendor for a changed-since filter on `/itembypage` and `/debtorbypage`?** Recommend **yes** - it is the
-   only change that removes the full product scan; until then (h) + (d) keep it to ~1 walk an hour.
-5. **Circuit breaker defaults: 3 failures in a row -> stop that server's tasks for 10 min, then one test call?**
-   Recommend **yes**, plus alert on the second open within an hour.
+- **What a feed calls:** one GET per day, a plain list, no paging, no per-document call (`doc_feed/vendor.py`).
+  Poll = 2 GETs (yesterday + today) every 60 min; sweep = 45 GETs (by doc date) every 24 h; backfill = 1 GET per
+  day from the chosen start (floor 2000-01-01), one day straight after another (only project registrations paused).
+- **Mode Off:** no poll, no sweep, no auto-resume (`doc_feed/scheduler.py:62,260`); only a manual Run now or backfill
+  reaches AutoCount. The db2 feeds shown (Off) cost nothing today.
+- **On:** ~4 calls an hour per feed (~12 for three feeds on a book) vs ~540 for product/stock/masters: about 2 %.
+- **Backfill is the heavy one:** 365 back-to-back GETs per year walked, per feed per book. The 26 Nov GRN/DO
+  backfills the owner stopped were this (they walk by doc date).
+- **Now:** every feed read (poll, sweep, backfill, document finder) takes the same per-server turn and safety stop
+  (the finder at a person's priority); days are paced with the same adaptive pause (floor = the connection's "Pause
+  between pages"); a stopped server fails a feed run once (`VENDOR_STOPPED`), no retries.
 
-## 5. Prod read needed (read-only, crew runs it)
+### Settings on the AutoCount connection form (owner rule: admin UI, no env flags)
+
+"Stock balance page size" (3000), "One request at a time per server" (Yes), "Slow page (seconds)" (30, 0 = off),
+"Stop after failed requests in a row" (3, 0 = off), "Stop for (minutes)" (10). They appear through the provider's
+field schema (`provider.py`), next to the existing "Pause between pages". A connection saved before this lane has
+none of the keys and gets these defaults, so no backfill is needed.
+
+### Not built (left open)
+
+- Continue a timed-out walk from the failed page instead of restarting from page 1 after a page-size halving
+  (rare; needs a rework of both page walkers). Backlog.
+- One shared `/itembypage` walk for product + UOM + stock lookups (card h). Backlog; the queue and office hours
+  already cut the overlap.
+- Prod measurement (section 5): skipped for now (crew, 27 Nov).
+
+### Calls per hour, per book, with what was built (estimate)
+
+| | Before | Office hours | Outside office hours |
+|---|---|---|---|
+| Stock balance (+ lookups, cached 60 min) | ~334 | 4 x 24 + ~27 = ~123 | 24 + ~27 = ~51 |
+| Product + UOM (still 1000 a page) | ~156 | ~156 (own 15-min interval) | 0 (nightly full only) |
+| Customer + small masters | ~44 | ~44 | 0 |
+| Document feeds (when On) | ~12 | ~12 | ~12 |
+| **Total** | **~540** | **~335** | **~63** |
+| Requests in flight at once on one server | 4+ | 1 | 1 |
+
+Inside office hours the owner can lower product/master load further by raising their interval on the task form
+(e.g. 60 min -> product + UOM ~39/h).
+
+## 4. Prod read (skipped for now, crew 27 Nov)
 
 Per call: `integration_activity` rows with `source='autocount'`, `operation LIKE 'GET %'` (the open-REST client
 records every page with `latency_ms`, `http_source/client.py:301`, `activity.py:155`).
@@ -118,10 +152,3 @@ SELECT company_id, entity_type, mode, count(*), avg(source_pages)::int, avg(dura
 FROM app_autocount.ac_sync_run WHERE started_at > now() - interval '7 days'
 GROUP BY 1, 2, 3 ORDER BY 4 DESC;
 ```
-
-## 6. Step 2 build order (after answers)
-
-1. (a) per-task page size, cap 3000 - smallest, biggest stock win. 2. (b) per-server lock. 3. (c) adaptive pause +
-breaker + continue-from-failed-page. 4. (d) office-hours schedule defaults + staggered start minutes, with a
-backfill for existing tasks (owner-approved values only). 5. (h) shared item walk. 6. (g) finder read-through.
-Tests red-first per step; live calls only on db3.
