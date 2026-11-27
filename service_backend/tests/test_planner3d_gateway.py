@@ -468,3 +468,54 @@ def test_unused_uploads_are_purged_and_used_ones_kept(client, p3, key):
         assert ids == {used}
     finally:
         db.close()
+
+
+# ── deferred (grace-window) revoke / remove, the screens' row actions ───────
+
+def _park_and_lapse(db, action_key, entity_type, entity_id):
+    from app.deferred_actions.service import PendingActionService
+    from app.models import DEFAULT_TENANT_ID, User
+    from app.models.pending_action import PendingAction
+    from tests.conftest import ACTIVE_EMAIL
+
+    admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key=action_key, entity_type=entity_type, entity_id=entity_id, payload=None,
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+    return svc.commit_one(row)
+
+
+def test_deferred_key_revoke_commits_and_the_key_stops_working(client, p3, staff, key):
+    key_id = client.get("/planner3d/keys", headers=staff).json()["data"][0]["id"]
+    db = p3()
+    try:
+        assert _park_and_lapse(db, "planner3d_keys.revoke", "planner3d_key", key_id).status == "committed"
+    finally:
+        db.close()
+    assert upload(client, key).status_code == 401
+
+
+def test_deferred_receiver_remove_commits(client, p3, staff):
+    rid = add_receiver(client, staff)["id"]
+    db = p3()
+    try:
+        assert _park_and_lapse(db, "planner3d_receivers.remove", "planner3d_receiver", rid).status == "committed"
+    finally:
+        db.close()
+    assert client.get("/planner3d/receivers", headers=staff).json()["data"] == []
+
+
+def test_stale_key_revoke_says_so(client, staff, key):
+    key_id = client.get("/planner3d/keys", headers=staff).json()["data"][0]["id"]
+    assert client.delete(f"/planner3d/keys/{key_id}", headers=staff).status_code == 204
+    res = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "planner3d_keys.revoke", "entityType": "planner3d_key", "entityId": key_id},
+        headers=staff,
+    )
+    assert res.status_code == 404 and res.json()["detail"] == "This key was already revoked."
