@@ -1,7 +1,7 @@
 # Step 1: API confirmation (27/11/2026)
 
 Real Anthropic API, key from the login keychain, engine `claude-procedural` through
-`python -m planner3d_worker.claude_cli`. Ledger: `step1-ledger.jsonl` (one line per call).
+`python -m planner3d_worker.claude_cli`. Ledger: `ledger.jsonl` (lines 1-15) (one line per call).
 Prices: Sonnet 5.5 US$2 / US$10, Opus 5.5 US$4 / US$20 per MTok in / out.
 
 | Run | Product | Model | Calls | In tokens | Out tokens | US$ | Wall time | Faces | Dims error mm | Scout estimate US$ |
