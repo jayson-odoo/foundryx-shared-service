@@ -8,19 +8,19 @@
   "heightMm": 130.0,
   "dimsSource": "description",
   "dimsText": "L400 x W300 x H130MM",
-  "usd": 0.281,
-  "calls": 3,
-  "seconds": 114,
+  "usd": 0.589,
+  "calls": 6,
+  "seconds": 125,
   "ok": true,
   "model": "claude-opus-5-5",
-  "versions": 2,
+  "versions": 3,
   "dimsErrorMm": {
    "length": 0.0,
    "width": 0.0,
    "height": 0.0
   },
-  "faces": 55760,
-  "kb": 981
+  "faces": 60016,
+  "kb": 1056
  },
  {
   "kind": "basin",
@@ -77,19 +77,19 @@
   "heightMm": 155.0,
   "dimsSource": "description",
   "dimsText": "L560 x W400 x H155MM",
-  "usd": 0.268,
-  "calls": 3,
-  "seconds": 114,
+  "usd": 0.596,
+  "calls": 6,
+  "seconds": 157,
   "ok": true,
   "model": "claude-opus-5-5",
-  "versions": 2,
+  "versions": 3,
   "dimsErrorMm": {
    "length": 0.0,
    "width": 0.0,
    "height": 0.0
   },
-  "faces": 53792,
-  "kb": 948
+  "faces": 54304,
+  "kb": 957
  },
  {
   "kind": "basin",
@@ -100,9 +100,9 @@
   "heightMm": 155.0,
   "dimsSource": "description",
   "dimsText": "L430 x W360 x H155MM",
-  "usd": 0.383,
-  "calls": 3,
-  "seconds": 151,
+  "usd": 0.81,
+  "calls": 6,
+  "seconds": 156,
   "ok": true,
   "model": "claude-opus-5-5",
   "versions": 3,
@@ -111,8 +111,8 @@
    "width": 0.0,
    "height": 0.0
   },
-  "faces": 58000,
-  "kb": 1020
+  "faces": 52768,
+  "kb": 929
  },
  {
   "kind": "accessory",
@@ -353,19 +353,19 @@
   "heightMm": 240,
   "dimsSource": "drawing",
   "dimsText": "side view: body 40 wide, projection 170, overall height 240 incl. 60 thread",
-  "usd": 0.34,
-  "calls": 3,
-  "seconds": 113,
+  "usd": 1.048,
+  "calls": 9,
+  "seconds": 112,
   "ok": true,
   "model": "claude-opus-5-5",
-  "versions": 2,
+  "versions": 3,
   "dimsErrorMm": {
    "length": 0.0,
    "width": 0.0,
    "height": 0.0
   },
-  "faces": 7594,
-  "kb": 135
+  "faces": 8976,
+  "kb": 161
  },
  {
   "kind": "tap",

@@ -64,3 +64,13 @@ requires named PBR materials; every kind runs on Opus (WC and basin with distanc
 Opus round: US$7.77 for 23 products (US$0.34 average). At that rate the ~1,804-product catalogue is about
 US$610, inside the US$700 envelope only if the CRM-DIMS-BACKFILL lane stays small; crew holds the total.
 Owner re-review: same page, fresh marks (`verdicts_opus`); round 1 marks kept as a record.
+
+## Round 3: owner round 2 marks and the reruns (27/11/2026 ~23:20)
+
+Owner round 2: 19 of 23 passed (basin 2/5, accessory 5/5, WC 5/5, tap 2/3, shower 5/5). Fails: MAB7041 and
+MAB7023 (no drain hole visible), MWB248 (not the closest), M4731SS-GD (gold colour). Generator fixes
+(a8c16a5c, 19ab5d2b): every visible functional feature listed and built (drain with pop-up cap, tap holes,
+overflow), colours written as linear glTF values from a finish table checked against the photo's dominant
+colours, renders in sRGB with brighter metal, and a 4th top view so bowl interiors are visible. The drains were
+in the round-2 models already; the old cameras could not see into the bowls. Only the 4 failed products were
+rerun on Opus; the page is republished for a quick re-tick.
