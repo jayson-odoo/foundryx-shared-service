@@ -11,6 +11,8 @@ from planner3d_worker import keychain
 from planner3d_worker.client import Worker
 from planner3d_worker.engines import build_engine
 
+CLAUDE_TIMEOUT_S = 3600
+
 
 def _token() -> str:
     env = os.environ.get("PLANNER3D_WORKER_TOKEN")
@@ -28,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="planner3d_worker")
     parser.add_argument("--base-url", required=True, help="Shared Service API origin")
     parser.add_argument("--name", required=True, help="this worker's name")
-    parser.add_argument("--engine", choices=["stub", "triposr"], default="stub")
+    parser.add_argument("--engine", choices=["stub", "triposr", "claude"], default="stub")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="handle at most one job")
     mode.add_argument("--loop", action="store_true", help="poll forever (default)")
@@ -37,7 +39,9 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    worker = Worker(base_url=args.base_url, token=_token(), name=args.name, engine=build_engine(args.engine))
+    # a claude job runs up to three API calls and script runs, so it gets a longer job timeout
+    extra = {"timeout_s": CLAUDE_TIMEOUT_S} if args.engine == "claude" else {}
+    worker = Worker(base_url=args.base_url, token=_token(), name=args.name, engine=build_engine(args.engine), **extra)
     if args.once:
         worker.run_once()
         return 0

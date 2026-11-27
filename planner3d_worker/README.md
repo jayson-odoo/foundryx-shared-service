@@ -52,6 +52,18 @@ python -m planner3d_worker --base-url https://SHARED_SERVICE_HOST --name mac-min
 python -m planner3d_worker --base-url https://SHARED_SERVICE_HOST --name mac-mini --engine triposr --loop
 ```
 
+`--engine claude` writes the model with the Anthropic API (model jobs only; job timeout 3600 s). Setup:
+
+```bash
+~/planner3d/venv/bin/pip install -r planner3d_worker/requirements-model.txt
+security add-generic-password -a planner3d -s anthropic-api-key -w   # prompts for the value
+```
+
+Routing by category: `PLANNER3D_CLAUDE_ROUTING`, else `~/planner3d/claude-routing.json`, else the shipped
+`planner3d_worker/claude/routing.default.json` (copy it to start; the default profile is Opus 5.5, primitives, 3 versions, for every product kind; a `categories` entry overrides it per category code). Spend ledger: `~/planner3d/claude-ledger.jsonl`
+(one line per API call; the engine stops at `spendCapUsd`). Scripts run under macOS `sandbox-exec`, so this engine
+needs macOS. One run outside Shared Service: `python -m planner3d_worker.claude_cli --help`.
+
 `--engine stub` makes box models of the right size on the CPU (no model needed). The loop sleeps 10 s
 when idle, refused by the health gate (swap above 80 percent or under 2 GB free RAM) or unable to
 reach Shared Service.
