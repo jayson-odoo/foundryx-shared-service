@@ -118,7 +118,7 @@ def test_small_png_is_passed_through_unchanged(tmp_path):
 
 
 def test_system_prompt_carries_the_budget_orientation_and_material_rules():
-    for needle in ("60,000", "300,000", "filter_taubin", "simplify_quadric_decimation", "Z", "lofted", "roughness 0.3", "metallic 1.0"):
+    for needle in ("60,000", "300,000", "filter_taubin", "simplify_quadric_decimation", "Z", "lofted"):
         assert needle in SYSTEM_PROMPT
 
 
@@ -203,3 +203,14 @@ def test_refine_turn_sends_every_render_it_is_given():
     renders = {k: k.encode() for k in ("front", "side", "three_quarter", "top")}
     spec = {"length": 1, "width": 2, "height": 3}
     assert len(_images(refine_turn(renders, spec, spec, None))) == 4
+
+
+def test_renders_are_described_as_coloured_and_the_finish_table_is_the_only_material_source():
+    import re
+
+    text = _text(refine_turn({"front": b"a", "top": b"b"}, {"length": 1}, {"length": 1}, None))
+    assert "light grey" not in text and "flat shaded" not in text and "coloured" in text
+    assert "light grey" not in SYSTEM_PROMPT
+    table_start = SYSTEM_PROMPT.index("Finish table")
+    outside = SYSTEM_PROMPT[:table_start] + SYSTEM_PROMPT[SYSTEM_PROMPT.index("Choose the finish of each part from the photo."):]
+    assert not re.search(r"roughness \d", outside)

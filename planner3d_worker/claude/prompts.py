@@ -28,12 +28,11 @@ Rules for the script:
 - Total triangle budget 60,000 (hard limit 300,000): mesh SDF bodies at a resolution fine enough for smooth curves, then smooth (trimesh.smoothing.filter_taubin) and decimate to the budget (mesh.simplify_quadric_decimation(face_count=N)).
 - trimesh.creation.cylinder, annulus and capsule run along Z: rotate them so their axes match the Y-up frame before use, and check the orientation in the renders.
 - Sculpted parts (levers, spouts, handles) are lofted or swept profiles, or hulls of several cross-sections, never a single box.
-- Materials: ceramic white roughness 0.3, chrome metallic 1.0 roughness 0.1, following the photo.
 - Colours go in glTF PBR materials only: give each part trimesh.visual.TextureVisuals(material=trimesh.visual.material.PBRMaterial(baseColorFactor=[r, g, b, 255], metallicFactor=..., roughnessFactor=...)), never vertex colours or face colours. Always name each part (Scene geometry names) and give every part its own material.
 - baseColorFactor values are LINEAR, not sRGB: convert every colour you read from the photo (sRGB) to linear before writing it (c/255, then ((c + 0.055) / 1.055) ** 2.4 for c above 0.04045, else c / 12.92). A "Photo finish colours" line in the request lists measured colours with their linear values.
 - Finish table (linear baseColorFactor, metallic, roughness); start from it and adjust to the photo colour facts, keeping the table values unless the photo clearly differs: chrome (0.55, 0.556, 0.554) m1 r0.08; brushed nickel / stainless (0.66, 0.61, 0.53) m1 r0.35; brushed gold (1.0, 0.766, 0.336) m1 r0.35; polished gold (1.0, 0.766, 0.336) m1 r0.1; rose gold (0.95, 0.64, 0.54) m1 r0.25; gunmetal (0.22, 0.22, 0.23) m1 r0.3; matte black (0.02, 0.02, 0.02) m0 r0.6; ceramic white (0.85, 0.85, 0.83) m0 r0.15. Choose the finish of each part from the photo.
 - Model every functional feature visible in the photo or drawing: drain / waste outlet hole (with its chrome pop-up cap when shown), tap holes, overflow slots, flush buttons, handles, aerators. Before writing the script, list the visible features in a comment at the top of the script, then build each.
-- Write the result to model.glb in the current directory with simple PBR materials that match the photo (for example white ceramic: baseColor near white, roughness 0.15, metallic 0; chrome: metallic 1, roughness 0.1). Use trimesh.visual.material.PBRMaterial and export a trimesh.Scene so named parts survive.
+- Write the result to model.glb in the current directory with the PBR materials from the finish table. Use trimesh.visual.material.PBRMaterial and export a trimesh.Scene so named parts survive.
 - Look at the drawing for sides the photo does not show (back, top, hidden faces) and follow it for proportions.
 - The script must run to completion in under four minutes on a laptop CPU and must not print secrets or read anything outside the cwd.
 
@@ -157,7 +156,7 @@ def refine_turn(
 ) -> list[dict]:
     blocks = [_image_block(png, "image/png") for png in renders.values()]
     lines = [
-        "Renders of your model: " + ", ".join(renders) + " (flat shaded, light grey).",
+        "Renders of your model: " + ", ".join(renders) + " (coloured, studio-lit renders of your own materials).",
         "Measured bounding box mm: " + ", ".join(f"{k} {measured_mm[k]}" for k in ("length", "width", "height") if k in measured_mm) + ".",
         "Specified mm: " + ", ".join(f"{k} {spec_mm[k]}" for k in ("length", "width", "height") if k in spec_mm) + ".",
     ]

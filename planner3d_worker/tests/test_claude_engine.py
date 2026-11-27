@@ -502,3 +502,10 @@ def test_a_model_over_the_render_budget_is_decimated_before_rendering(tmp_path, 
     engine, _, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2"))])
     _run(engine, tmp_path)
     assert seen and all(n <= 6 for n in seen)
+
+
+def test_an_all_failing_run_stops_at_max_versions_calls(tmp_path):
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("FAIL"))] * 5, routing=_routing(tmp_path, default_versions=3))
+    with pytest.raises(EngineFailure):
+        _run(engine, tmp_path)
+    assert len(client.calls) == 3

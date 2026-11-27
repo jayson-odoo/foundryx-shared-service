@@ -178,7 +178,7 @@ class ClaudeProceduralEngine:
             n += 1
             good = [v for v in versions if v.glb is not None]
             extra = n > limit  # one more attempt, only while fewer than MIN_GOOD versions are usable
-            if extra and (len(good) >= MIN_GOOD or n > limit + 1):
+            if extra and (len(good) != MIN_GOOD - 1 or n > limit + 1):  # only a run that is one good version short
                 break
             if ledger.total_usd() >= routing.spend_cap_usd:
                 if len(good) >= MIN_GOOD or extra:
