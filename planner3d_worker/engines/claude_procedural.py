@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import io
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,7 @@ KEY_SERVICE = "anthropic-api-key"
 MAX_TOKENS = 32000
 MIN_GOOD = 2
 MAX_FACES = 300_000
+RENDER_FACES = 60_000  # a model over this is decimated (on a copy) before the four renders
 DEFAULT_TIME_BUDGET_S = 3000.0
 BAD_STOPS = {"refusal": "the model refused the request", "max_tokens": "the reply hit the output token limit"}
 
@@ -61,6 +63,22 @@ class _Version:
 def _usage_dict(usage: Any) -> dict:
     keys = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
     return {k: int(getattr(usage, k, 0) or 0) for k in keys}
+
+
+def _for_render(scene, faces: int):
+    """The scene, or a decimated copy (each part to its share of RENDER_FACES) when it is over budget."""
+    if faces <= RENDER_FACES:
+        return scene
+    try:
+        ratio = RENDER_FACES / faces
+        copy = scene.copy()
+        for name, geom in list(copy.geometry.items()):
+            target = max(4, int(len(geom.faces) * ratio))
+            if len(geom.faces) > target:
+                copy.geometry[name] = geom.simplify_quadric_decimation(face_count=target)
+        return copy
+    except Exception:  # noqa: BLE001 - rendering the full model is the fallback
+        return scene
 
 
 def _parts(scene, limit: int = 20) -> list[dict]:
@@ -172,7 +190,9 @@ class ClaudeProceduralEngine:
             versions.append(ver)
             began = time.monotonic()
             self._one_version(client, routing, ledger, profile, messages, ver, spec, run_script, out, product_code, job_ref)
-            self._write_trail(out, ver)
+            if not self._write_trail(out, ver):
+                ver.glb = None
+                ver.error = "the trail directory could not be created"
             durations.append(time.monotonic() - began)
         good = [v for v in versions if v.glb is not None]
         if len(good) < MIN_GOOD:
@@ -278,19 +298,27 @@ class ClaudeProceduralEngine:
         ver.faces = faces
         ver.parts = _parts(scene)
         ver.measured = {"length": round(float(ext[0]), 2), "width": round(float(ext[2]), 2), "height": round(float(ext[1]), 2)}
-        renders = render_views(scene, materials=glb_materials(data))
+        renders = render_views(_for_render(scene, faces), materials=glb_materials(data))
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": prompts.refine_turn(renders, ver.measured, spec, None, faces=ver.faces, parts=ver.parts, over_budget=ver.faces > prompts.TRIANGLE_BUDGET)})
 
     @staticmethod
-    def _write_trail(out: Path, ver: _Version) -> None:
-        """Debug trail beside the version's work files; never uploaded (only candidate-N.* are returned)."""
-        work = out / f"work-{ver.n}"
-        work.mkdir(parents=True, exist_ok=True)
-        if ver.response:
-            (work / "response.txt").write_text(ver.response, encoding="utf-8")
-        if ver.error:
-            (work / "error.txt").write_text(ver.error, encoding="utf-8")
+    def _write_trail(out: Path, ver: _Version) -> bool:
+        """Debug trail in ``trail-N``, a directory the script never had access to, created here after
+        the script ran; files are created exclusively without following links. Never uploaded (only
+        candidate-N.* are returned). False when the directory could not be created fresh."""
+        trail = out / f"trail-{ver.n}"
+        try:
+            trail.mkdir(parents=True, exist_ok=False)
+            for name, text in (("response.txt", ver.response), ("error.txt", ver.error or "")):
+                if not text:
+                    continue
+                fd = os.open(trail / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+        except OSError:
+            return False
+        return True
 
     @staticmethod
     def _queue_error(messages: list, content: Optional[list], error: str) -> None:

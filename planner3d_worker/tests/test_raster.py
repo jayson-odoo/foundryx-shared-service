@@ -198,3 +198,42 @@ def test_gold_metal_keeps_its_hue_and_brightness():
     assert mean[0] > mean[1] > mean[2]
     base = np.array([1.0, 0.89, 0.62]) * 255  # the display (sRGB) base colour
     assert mean.max() >= 0.65 * base.max()
+
+
+def _glb_with(material):
+    import json
+    import struct
+
+    doc = {"asset": {"version": "2.0"}, "meshes": [{"name": "p", "primitives": [{"attributes": {}, "material": 0}]}], "materials": [material]}
+    blob = json.dumps(doc).encode()
+    blob += b" " * (-len(blob) % 4)
+    return b"glTF" + struct.pack("<II", 2, 20 + len(blob)) + struct.pack("<I4s", len(blob), b"JSON") + blob
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize(
+    "material",
+    [
+        ["not", "a", "dict"],
+        {"pbrMetallicRoughness": {"baseColorFactor": "red", "metallicFactor": 1.0}},
+        {"pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.5, 0.2, 1.0], "metallicFactor": {"x": 1}}},
+        {"pbrMetallicRoughness": {"baseColorFactor": [1.0, "a", 0.2], "metallicFactor": 0.0}},
+        {"pbrMetallicRoughness": {"baseColorFactor": [1.0, 5.0, 0.2], "metallicFactor": 0.0}},
+        {"pbrMetallicRoughness": ["x"]},
+    ],
+)
+def test_malformed_material_values_never_raise(material):
+    from planner3d_worker.raster import glb_materials
+
+    out = glb_materials(_glb_with(material))
+    assert isinstance(out, dict)
+    assert all(isinstance(v[1], float) and all(0.0 <= c <= 1.0 for c in v[0]) for v in out.values())
+
+
+def test_a_well_formed_material_is_still_read():
+    from planner3d_worker.raster import glb_materials
+
+    out = glb_materials(_glb_with({"pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.5, 0.2, 1.0], "metallicFactor": 0.0}}))
+    assert out["p"] == ((1.0, 0.5, 0.2), 0.0)

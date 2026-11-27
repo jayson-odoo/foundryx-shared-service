@@ -196,17 +196,47 @@ def glb_materials(data: bytes) -> dict:
         doc = json.loads(data[20 : 20 + length].decode("utf-8"))
     except (ValueError, struct.error, UnicodeDecodeError):
         return {}
-    mats = doc.get("materials") or []
+    try:
+        return _read_materials(doc)
+    except Exception:  # noqa: BLE001 - a malformed file renders grey, it never fails the job
+        return {}
+
+
+def _unit(x) -> Optional[float]:
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or not 0.0 <= x <= 1.0:
+        return None
+    return float(x)
+
+
+def _read_materials(doc) -> dict:
+    if not isinstance(doc, dict):
+        return {}
+    mats = doc.get("materials")
+    meshes = doc.get("meshes")
+    if not isinstance(mats, list) or not isinstance(meshes, list):
+        return {}
     out: dict = {}
-    for mi, mesh in enumerate(doc.get("meshes") or []):
-        base = mesh.get("name") or f"geometry_{mi}"
-        for pi, prim in enumerate(mesh.get("primitives") or []):
-            idx = prim.get("material")
-            if not isinstance(idx, int) or not 0 <= idx < len(mats):
+    for mi, mesh in enumerate(meshes):
+        if not isinstance(mesh, dict):
+            continue
+        name = mesh.get("name")
+        base = name if isinstance(name, str) and name else f"geometry_{mi}"
+        prims = mesh.get("primitives")
+        for pi, prim in enumerate(prims if isinstance(prims, list) else []):
+            idx = prim.get("material") if isinstance(prim, dict) else None
+            if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx < len(mats) or not isinstance(mats[idx], dict):
                 continue
-            pbr = mats[idx].get("pbrMetallicRoughness") or {}
-            factor = pbr.get("baseColorFactor") or [1.0, 1.0, 1.0, 1.0]
-            value = (tuple(float(x) for x in factor[:3]), float(pbr.get("metallicFactor", 1.0)))
+            pbr = mats[idx].get("pbrMetallicRoughness", {})
+            if not isinstance(pbr, dict):
+                continue
+            factor = pbr.get("baseColorFactor", [1.0, 1.0, 1.0, 1.0])
+            if not isinstance(factor, list) or len(factor) not in (3, 4):
+                continue
+            rgb = [_unit(x) for x in factor[:3]]
+            metallic = _unit(pbr.get("metallicFactor", 1.0))
+            if None in rgb or metallic is None:
+                continue
+            value = (tuple(rgb), metallic)
             out.setdefault(base, value)
             out[f"{base}_{pi}"] = value
     return out

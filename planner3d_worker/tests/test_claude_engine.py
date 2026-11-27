@@ -448,9 +448,9 @@ def test_debug_trail_is_written_per_version_and_never_returned(tmp_path):
         routing=_routing(tmp_path, default_versions=3),
     )
     produced, out = _run(engine, tmp_path)
-    assert "subprocess" in (out / "work-1" / "response.txt").read_text()
-    assert "rejected" in (out / "work-1" / "error.txt").read_text()
-    assert (out / "work-2" / "response.txt").exists() and not (out / "work-2" / "error.txt").exists()
+    assert "subprocess" in (out / "trail-1" / "response.txt").read_text()
+    assert "rejected" in (out / "trail-1" / "error.txt").read_text()
+    assert (out / "trail-2" / "response.txt").exists() and not (out / "trail-2" / "error.txt").exists()
     assert all(n.startswith("candidate-") for n, _r in produced)
 
 
@@ -459,3 +459,46 @@ def test_first_turn_carries_the_measured_photo_colours(tmp_path):
     _run(engine, tmp_path)
     text = "\n".join(b["text"] for b in client.calls[0]["messages"][0]["content"] if b["type"] == "text")
     assert "Photo finish colours (sRGB hex, linear rgb): #c80a0a" in text
+
+
+def test_planted_symlinks_in_the_work_dir_never_redirect_the_trail(tmp_path):
+    canary = tmp_path / "canary.txt"
+    canary.write_text("UNTOUCHED")
+
+    class Planter(FakeRunner):
+        def __call__(self, src, work_dir, limits):
+            work_dir = Path(work_dir)
+            work_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("error.txt", "response.txt"):
+                (work_dir / name).symlink_to(canary)
+            return RunResult(ok=False, glb=None, stderr_tail="Traceback: planted", seconds=0.1, reason="exit")
+
+    client = FakeClient([reply(box_script("v1")), reply(box_script("v2")), reply(box_script("v3"))])
+    engine = ClaudeProceduralEngine(client=client, routing=_routing(tmp_path, default_versions=3), ledger=Ledger(tmp_path / "l.jsonl"), run_script=Planter())
+    with pytest.raises(EngineFailure):
+        _run(engine, tmp_path)
+    assert canary.read_text() == "UNTOUCHED"
+    out = tmp_path / "out"
+    assert "planted" in (out / "trail-1" / "error.txt").read_text()
+    assert (out / "trail-1" / "response.txt").exists()
+
+
+def test_an_existing_trail_dir_fails_that_version_instead_of_being_reused(tmp_path):
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2")), reply(box_script("v3"))])
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "trail-1").mkdir()
+    produced, out = _run(engine, tmp_path)  # v1 is dropped, v2 + v3 are good
+    assert len(produced) == 4
+    assert not list((out / "trail-1").iterdir())
+
+
+def test_a_model_over_the_render_budget_is_decimated_before_rendering(tmp_path, monkeypatch):
+    import planner3d_worker.engines.claude_procedural as mod
+
+    monkeypatch.setattr(mod, "RENDER_FACES", 6)  # a box has 12
+    seen = []
+    real = mod.render_views
+    monkeypatch.setattr(mod, "render_views", lambda scene, **k: seen.append(sum(len(g.faces) for g in scene.geometry.values())) or real(scene, **k))
+    engine, _, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2"))])
+    _run(engine, tmp_path)
+    assert seen and all(n <= 6 for n in seen)
