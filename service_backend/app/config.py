@@ -472,6 +472,9 @@ class Settings(BaseSettings):
     # heart-beating for this many minutes is handed out again.
     planner3d_worker_token_sha256: str = ""
     planner3d_lease_minutes: int = 10
+    # S1 gateway (contract 4): jobs of one tenant that may wait as `queued`; one
+    # more submit answers 429 queue_full.
+    planner3d_max_queued_jobs: int = 20
     # Fernet key for encrypting channel credentials at rest. A throwaway dev
     # key is generated per-process if unset (NEVER rely on that in prod - set
     # OMNICHANNEL_FERNET_KEY so encrypted credentials survive a restart).

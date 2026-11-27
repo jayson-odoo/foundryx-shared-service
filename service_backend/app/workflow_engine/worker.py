@@ -108,6 +108,10 @@ celery_app.conf.beat_schedule = {
     # Lead Capture backfill (plan 64 AC-64-28) - re-reads every routing
     # source's forms for leads the webhook missed. Module-absence safe.
     "lead-capture-backfill-due": {"task": "lead_capture.backfill_due", "schedule": 900.0},
+    # Planner 3D (lane PLANNER-3D-S1, contract 5.4 + 3.2) - re-drives PENDING
+    # event deliveries whose retry time passed and removes uploads no job used
+    # once they expired. Module-absence safe.
+    "planner3d-deliveries-due": {"task": "planner3d.deliveries_due", "schedule": 60.0},
     # Resume workflow runs parked by an omnichannel Ask-a-question / Wait step
     # whose deadline passed (plan sprint-4/31 S4, D-A5-10/F8). Module-owned
     # work, defined + scheduled HERE (the sole beat host) and guarded exactly
@@ -454,6 +458,62 @@ def lead_capture_deliveries_due() -> dict:
         return {"redriven": 0}
     finally:
         db.close()
+
+
+@celery_app.task(name="planner3d.deliver")
+def planner3d_deliver(delivery_id: str) -> str:
+    """One planner3d event delivery attempt; a retry reschedules itself (the due
+    tick is the backstop after a crash). Eager dev runs one attempt inline."""
+    from datetime import datetime, timezone
+
+    from app.database import SessionLocal
+
+    try:
+        from modules.planner3d.models import P3Delivery
+        from modules.planner3d.services.events_service import dispatch
+    except ImportError:
+        return "skip"
+    db = SessionLocal()
+    try:
+        outcome = dispatch(db, delivery_id)
+        if outcome == "retry" and not settings.celery_task_always_eager:
+            row = db.query(P3Delivery).filter(P3Delivery.id == delivery_id).first()
+            if row is not None and row.next_at is not None:
+                delay = (row.next_at - datetime.now(timezone.utc)).total_seconds()
+                planner3d_deliver.apply_async((delivery_id,), countdown=max(1, int(delay)))
+        return outcome
+    except Exception:  # noqa: BLE001
+        logger.exception("planner3d delivery %s failed", delivery_id)
+        db.rollback()
+        return "error"
+    finally:
+        db.close()
+
+
+@celery_app.task(name="planner3d.deliveries_due")
+def planner3d_deliveries_due() -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.planner3d.services.events_service import run_due
+        from modules.planner3d.services.gateway_service import purge_unused_uploads
+    except ImportError:
+        return {"redriven": 0, "purged": 0}
+    db = SessionLocal()
+    out = {"redriven": 0, "purged": 0}
+    try:
+        out["redriven"] = run_due(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("planner3d delivery tick failed")
+        db.rollback()
+    try:
+        out["purged"] = purge_unused_uploads(db)
+    except Exception:  # noqa: BLE001
+        logger.exception("planner3d upload purge failed")
+        db.rollback()
+    finally:
+        db.close()
+    return out
 
 
 @celery_app.task(name="omnichannel.wait_sweep")

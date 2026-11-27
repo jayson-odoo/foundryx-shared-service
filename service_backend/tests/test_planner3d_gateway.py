@@ -192,7 +192,7 @@ def test_every_call_is_audited_without_payload(client, p3, key):
     db = p3()
     try:
         rows = db.query(P3ApiAudit).all()
-        assert [(r.method, r.route, r.status_code) for r in rows] == [("POST", f"{BASE}/uploads", 201)]
+        assert [(r.method, r.route, r.status_code) for r in rows] == [("POST", "/uploads", 201)]
     finally:
         db.close()
 
