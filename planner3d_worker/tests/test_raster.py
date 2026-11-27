@@ -52,3 +52,86 @@ def test_empty_mesh_is_handled_without_raising():
     views = render_views(trimesh.Trimesh())
     assert set(views) == {"front", "side", "three_quarter"}
     assert all(png.startswith(PNG_MAGIC) for png in views.values())
+
+
+def _coloured(rgba, metallic=0.0, mesh=None):
+    m = mesh if mesh is not None else _box()
+    m.visual = trimesh.visual.TextureVisuals(material=trimesh.visual.material.PBRMaterial(baseColorFactor=rgba, metallicFactor=metallic))
+    return m
+
+
+def _object_pixels(png):
+    a = _arr(png).reshape(-1, 3).astype(int)
+    return a[(a != 255).any(axis=1)]
+
+
+def test_a_red_material_renders_red_dominant_pixels():
+    px = _object_pixels(render_views(_coloured([255, 0, 0, 255]))["front"])
+    interior = px[px[:, 0] > 120]
+    assert len(interior) > 1000
+    assert (interior[:, 0] > interior[:, 1] * 2).all() and (interior[:, 0] > interior[:, 2] * 2).all()
+
+
+def test_default_material_stays_grey():
+    px = _object_pixels(render_views(_box())["front"])
+    assert (abs(px[:, 0] - px[:, 1]) < 3).all() and (abs(px[:, 1] - px[:, 2]) < 3).all()
+
+
+def test_a_metallic_part_has_a_brighter_highlight_than_a_dielectric_one():
+    grey = [200, 200, 200, 255]
+    dielectric = _object_pixels(render_views(_coloured(grey, 0.0, trimesh.creation.icosphere(subdivisions=3)))["three_quarter"])
+    metal = _object_pixels(render_views(_coloured(grey, 1.0, trimesh.creation.icosphere(subdivisions=3)))["three_quarter"])
+    assert metal.max() > dielectric.max()
+    assert metal.std() > dielectric.std()  # a reflection gradient, not a flat tone
+
+
+def test_a_scene_with_two_materials_shows_both_colours():
+    red = _coloured([255, 0, 0, 255], 0.0, trimesh.creation.box(extents=(0.5, 0.5, 0.5)))
+    blue = _coloured([0, 0, 255, 255], 0.0, trimesh.creation.box(extents=(0.5, 0.5, 0.5)))
+    blue.apply_translation((1.0, 0, 0))
+    scene = trimesh.Scene()
+    scene.add_geometry(red, node_name="a", geom_name="a")
+    scene.add_geometry(blue, node_name="b", geom_name="b")
+    px = _object_pixels(render_views(scene)["front"])
+    assert ((px[:, 0] > 150) & (px[:, 2] < 60)).sum() > 500
+    assert ((px[:, 2] > 150) & (px[:, 0] < 60)).sum() > 500
+
+
+def test_explicit_materials_win_and_coloured_render_is_deterministic():
+    scene = trimesh.Scene()
+    scene.add_geometry(_box(), node_name="p", geom_name="p")
+    a = render_views(scene, materials={"p": ((0.0, 1.0, 0.0), 0.0)})
+    assert a == render_views(scene, materials={"p": ((0.0, 1.0, 0.0), 0.0)})
+    px = _object_pixels(a["front"])
+    assert ((px[:, 1] > 120) & (px[:, 0] < 60)).sum() > 500
+
+
+def test_a_white_part_gets_a_dark_silhouette_edge():
+    px = _object_pixels(render_views(_coloured([255, 255, 255, 255]))["front"])
+    assert px.min() < 140
+
+
+def test_glb_materials_reads_factors_from_the_json_chunk_only():
+    from planner3d_worker.raster import glb_materials
+
+    scene = trimesh.Scene()
+    scene.add_geometry(_coloured([255, 0, 0, 255], 0.0), node_name="seat", geom_name="seat")
+    tap = _coloured([200, 200, 200, 255], 1.0, trimesh.creation.box())
+    scene.add_geometry(tap, node_name="tap", geom_name="tap")
+    mats = glb_materials(scene.export(file_type="glb"))
+    assert mats["seat"][0][0] == 1.0 and mats["seat"][1] == 0.0
+    assert mats["tap"][1] == 1.0
+    assert glb_materials(b"not a glb") == {}
+
+
+def test_engine_render_uses_the_glb_colours_when_materials_are_skipped():
+    import io as _io
+
+    from planner3d_worker.raster import glb_materials
+
+    scene = trimesh.Scene()
+    scene.add_geometry(_coloured([255, 0, 0, 255], 0.0), node_name="seat", geom_name="seat")
+    data = scene.export(file_type="glb")
+    loaded = trimesh.load(_io.BytesIO(data), file_type="glb", force="scene", skip_materials=True)
+    px = _object_pixels(render_views(loaded, materials=glb_materials(data))["front"])
+    assert ((px[:, 0] > 120) & (px[:, 1] < 60)).sum() > 500

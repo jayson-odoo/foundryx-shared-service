@@ -1,7 +1,8 @@
 """Software z-buffer rasteriser for the render-compare loop (plan
 planner3d-claude-procedural-engine, D7).
 
-numpy + Pillow only, orthographic, flat shaded, light grey on white. Headless and
+numpy + Pillow only, orthographic, flat shaded on white, with the material colour of each part
+(glTF baseColorFactor / metallicFactor, or vertex and face colours), light grey when a part has none. Headless and
 deterministic: the same mesh gives the same PNG bytes. glTF frame in: Y up, front
 faces +Z, length along X.
 """
@@ -9,7 +10,10 @@ faces +Z, length along X.
 from __future__ import annotations
 
 import io
+import json
 import math
+import struct
+from typing import Optional
 
 import numpy as np
 import trimesh
@@ -20,6 +24,10 @@ BACKGROUND = 255
 VIEWS = {"front": (0.0, 8.0), "side": (90.0, 8.0), "three_quarter": (35.0, 22.0)}
 LIGHT = np.array([0.35, 0.55, 0.75])
 LIGHT = LIGHT / np.linalg.norm(LIGHT)
+DEFAULT_RGB = (0.78, 0.78, 0.78)
+VIEW = np.array([0.0, 0.0, 1.0])
+HALF = (LIGHT + VIEW) / np.linalg.norm(LIGHT + VIEW)
+OUTLINE_RGB = np.array([70.0, 70.0, 70.0])
 
 
 def _rotation(yaw_deg: float, elev_deg: float) -> np.ndarray:
@@ -30,17 +38,80 @@ def _rotation(yaw_deg: float, elev_deg: float) -> np.ndarray:
     return rx @ ry
 
 
-def _png(gray: np.ndarray) -> bytes:
+def _png(rgb: np.ndarray) -> bytes:
     buf = io.BytesIO()
-    Image.fromarray(gray, "L").convert("RGB").save(buf, "PNG", optimize=False)
+    Image.fromarray(rgb, "RGB").save(buf, "PNG", optimize=False)
     return buf.getvalue()
 
 
 def _blank(size: int) -> bytes:
-    return _png(np.full((size, size), BACKGROUND, dtype=np.uint8))
+    return _png(np.full((size, size, 3), BACKGROUND, dtype=np.uint8))
 
 
-def _render(vertices: np.ndarray, faces: np.ndarray, yaw: float, elev: float, size: int) -> bytes:
+def _material_of(geom) -> tuple[tuple[float, float, float], float]:
+    """(rgb 0..1, metallic 0..1) from a geometry's material; the default grey when it has none."""
+    rgb, metallic = DEFAULT_RGB, 0.0
+    material = getattr(getattr(geom, "visual", None), "material", None)
+    if material is not None:
+        factor = getattr(material, "baseColorFactor", None)
+        if factor is None:
+            factor = getattr(material, "main_color", None)
+        if factor is not None:
+            f = np.asarray(factor, dtype=float).ravel()[:3]
+            if len(f) == 3:
+                rgb = tuple(float(x) / 255.0 for x in f)
+        m = getattr(material, "metallicFactor", None)
+        if m is not None:
+            metallic = float(m)
+    return rgb, metallic
+
+
+def _collect(mesh, materials: Optional[dict]):
+    """World vertices, faces and per-face colour and metallic of a Trimesh or a Scene."""
+    if isinstance(mesh, trimesh.Scene):
+        items = []
+        for node in mesh.graph.nodes_geometry:
+            transform, name = mesh.graph[node]
+            items.append((name, mesh.geometry[name], transform))
+    else:
+        items = [(None, mesh, np.eye(4))]
+    verts, faces, rgbs, metals = [], [], [], []
+    offset = 0
+    for name, geom, transform in items:
+        v = np.asarray(getattr(geom, "vertices", []), dtype=float)
+        f = np.asarray(getattr(geom, "faces", []), dtype=np.int64)
+        if len(v) == 0 or len(f) == 0:
+            continue
+        v = np.einsum("ij,nj->ni", transform[:3, :3], v) + transform[:3, 3]
+        rgb, metallic = (materials or {}).get(name) or _material_of(geom)
+        face_rgb = np.tile(np.asarray(rgb, dtype=float), (len(f), 1))
+        visual = getattr(geom, "visual", None)
+        if (materials or {}).get(name) is None and visual is not None and getattr(visual, "kind", None) in ("vertex", "face") and visual.defined:
+            face_rgb = np.asarray(visual.face_colors, dtype=float)[:, :3] / 255.0
+        verts.append(v)
+        faces.append(f + offset)
+        rgbs.append(face_rgb)
+        metals.append(np.full(len(f), metallic))
+        offset += len(v)
+    if not verts:
+        return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros((0, 3)), np.zeros(0)
+    return np.concatenate(verts), np.concatenate(faces), np.concatenate(rgbs), np.concatenate(metals)
+
+
+def _shade(cam_n: np.ndarray, rgb: np.ndarray, metallic: np.ndarray) -> np.ndarray:
+    """Per-face colour 0..255. Dielectric: base x (0.35 ambient + 0.65 lambert). Metal: base x a sky/floor
+    gradient on the normal plus one specular highlight; the two are mixed by the metallic factor."""
+    lambert = np.abs(np.einsum("nj,j->n", cam_n, LIGHT))
+    dielectric = rgb * (0.35 + 0.65 * lambert)[:, None]
+    sky = 0.5 + 0.5 * cam_n[:, 1]
+    env = 0.25 + 0.75 * sky
+    spec = np.clip(np.abs(np.einsum("nj,j->n", cam_n, HALF)), 0.0, 1.0) ** 40
+    metal = np.clip(rgb * (0.85 * env)[:, None] + (0.9 * spec)[:, None], 0.0, 1.0)
+    m = metallic[:, None]
+    return np.clip((1.0 - m) * dielectric + m * metal, 0.0, 1.0) * 255.0
+
+
+def _render(vertices, faces, face_rgb, face_metal, yaw: float, elev: float, size: int) -> bytes:
     rot = _rotation(yaw, elev)
     pts = np.einsum("ij,nj->ni", rot, vertices - vertices.mean(axis=0))
     lo, hi = pts[:, :2].min(axis=0), pts[:, :2].max(axis=0)
@@ -58,12 +129,9 @@ def _render(vertices: np.ndarray, faces: np.ndarray, yaw: float, elev: float, si
     keep = lengths > 1e-12
     normals = np.where(keep[:, None], normals / np.where(keep, lengths, 1.0)[:, None], 0.0)
     cam_n = np.einsum("ij,nj->ni", rot, normals)
-    facing = np.abs(cam_n[:, 2])  # two sided: open meshes still read
-    lit = np.abs(np.einsum("nj,j->n", cam_n, LIGHT))
-    shade = (0.30 + 0.45 * lit + 0.15 * facing).clip(0.0, 1.0)
-    colour = (60 + shade * 170).astype(np.uint8)
+    colour = _shade(cam_n, face_rgb, face_metal).astype(np.uint8)
 
-    image = np.full((size, size), BACKGROUND, dtype=np.uint8)
+    image = np.full((size, size, 3), BACKGROUND, dtype=np.uint8)
     depth = np.full((size, size), -np.inf)
     for t in range(len(tri)):
         if not keep[t]:
@@ -92,13 +160,54 @@ def _render(vertices: np.ndarray, faces: np.ndarray, yaw: float, elev: float, si
         closer = inside & (z > win_d)
         win_d[closer] = z[closer]
         win_i[closer] = colour[t]
-    return _png(image)
+    return _png(_outline(image, depth > -np.inf))
 
 
-def render_views(mesh: trimesh.Trimesh, size: int = 512) -> dict[str, bytes]:
-    """Front, side and three-quarter PNGs of ``mesh`` (``size`` px square)."""
-    vertices = np.asarray(getattr(mesh, "vertices", np.zeros((0, 3))), dtype=float)
-    faces = np.asarray(getattr(mesh, "faces", np.zeros((0, 3), dtype=int)), dtype=np.int64)
+def _outline(image: np.ndarray, covered: np.ndarray) -> np.ndarray:
+    """A soft 1 px dark edge on the silhouette so white parts read on the white background."""
+    padded = np.pad(covered, 1, constant_values=False)
+    interior = padded[:-2, 1:-1] & padded[2:, 1:-1] & padded[1:-1, :-2] & padded[1:-1, 2:]
+    edge = covered & ~interior
+    out = image.astype(float)
+    out[edge] = 0.4 * out[edge] + 0.6 * OUTLINE_RGB
+    return out.astype(np.uint8)
+
+
+def glb_materials(data: bytes) -> dict:
+    """Geometry name -> ((r, g, b) 0..1, metallic) from the glTF JSON chunk only (baseColorFactor and
+    metallicFactor); no image is read or decoded. Names follow the loader's: the mesh name, with a
+    ``_<n>`` suffix for further primitives, or ``geometry_<n>`` for an unnamed mesh."""
+    try:
+        if data[:4] != b"glTF" or len(data) < 20:
+            return {}
+        length, kind = struct.unpack("<I4s", data[12:20])
+        if kind != b"JSON" or 20 + length > len(data):
+            return {}
+        doc = json.loads(data[20 : 20 + length].decode("utf-8"))
+    except (ValueError, struct.error, UnicodeDecodeError):
+        return {}
+    mats = doc.get("materials") or []
+    out: dict = {}
+    for mi, mesh in enumerate(doc.get("meshes") or []):
+        base = mesh.get("name") or f"geometry_{mi}"
+        for pi, prim in enumerate(mesh.get("primitives") or []):
+            idx = prim.get("material")
+            if not isinstance(idx, int) or not 0 <= idx < len(mats):
+                continue
+            pbr = mats[idx].get("pbrMetallicRoughness") or {}
+            factor = pbr.get("baseColorFactor") or [1.0, 1.0, 1.0, 1.0]
+            value = (tuple(float(x) for x in factor[:3]), float(pbr.get("metallicFactor", 1.0)))
+            out.setdefault(base, value)
+            out[f"{base}_{pi}"] = value
+    return out
+
+
+def render_views(mesh, size: int = 512, materials: Optional[dict] = None) -> dict[str, bytes]:
+    """Front, side and three-quarter PNGs of a Trimesh or Scene (``size`` px square).
+
+    ``materials`` optionally maps a geometry name to ``(rgb 0..1, metallic)`` and wins over the
+    geometry's own material (used when the model was loaded without materials)."""
+    vertices, faces, rgb, metal = _collect(mesh, materials)
     if len(vertices) == 0 or len(faces) == 0:
         return {name: _blank(size) for name in VIEWS}
-    return {name: _render(vertices, faces, yaw, elev, size) for name, (yaw, elev) in VIEWS.items()}
+    return {name: _render(vertices, faces, rgb, metal, yaw, elev, size) for name, (yaw, elev) in VIEWS.items()}

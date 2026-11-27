@@ -22,7 +22,7 @@ from planner3d_worker import keychain
 from planner3d_worker.claude import prompts, sandbox
 from planner3d_worker.claude.ledger import Ledger, cost_usd
 from planner3d_worker.claude.routing import Profile, Routing
-from planner3d_worker.raster import render_views
+from planner3d_worker.raster import glb_materials, render_views
 
 KEY_ACCOUNT = "planner3d"
 KEY_SERVICE = "anthropic-api-key"
@@ -274,7 +274,7 @@ class ClaudeProceduralEngine:
         ver.faces = faces
         ver.parts = _parts(scene)
         ver.measured = {"length": round(float(ext[0]), 2), "width": round(float(ext[2]), 2), "height": round(float(ext[1]), 2)}
-        renders = render_views(mesh)
+        renders = render_views(scene, materials=glb_materials(data))
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": prompts.refine_turn(renders, ver.measured, spec, None, faces=ver.faces, parts=ver.parts, over_budget=ver.faces > prompts.TRIANGLE_BUDGET)})
 
