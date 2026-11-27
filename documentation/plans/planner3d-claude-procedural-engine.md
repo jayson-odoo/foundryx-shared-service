@@ -73,3 +73,61 @@ killed by the limit; memory hog killed; fork bomb contained; env is empty; AST c
 Raster: deterministic PNG for a unit box; three views differ; empty mesh handled.
 Backend: submit with drawing + category stores role `drawing` and params `category`; fake drawing -> 422;
 oversize -> 413; without them behaves exactly as before.
+
+## Phase 1 contract block (tester and coder build to exactly this)
+
+Worker package `planner3d_worker/claude/` plus the engine file:
+
+- `routing.py`: `Profile(model: str, approach: "primitives"|"sdf", max_versions: int, effort: str)` (frozen
+  dataclass); `Routing.load(path) -> Routing` reads JSON
+  `{"spendCapUsd": 700, "prices": {"<model>": {"input": 2.0, "output": 10.0, "cacheRead": 0.10}},
+  "default": {"model","approach","maxVersions","effort"}, "categories": {"<code>": {...same keys...}}}`;
+  `Routing.profile_for(category: dict | None) -> Profile` (by `category["code"]`, else `default`);
+  `Routing.prices(model) -> dict`; `Routing.spend_cap_usd -> float`. `max_versions` is clamped to 2..3.
+  Shipped file `planner3d_worker/claude/routing.default.json` (Sonnet 5.5 primitives default, no categories).
+- `ledger.py`: `cost_usd(usage: dict, prices: dict) -> float` (usage keys `input_tokens`, `output_tokens`,
+  `cache_read_input_tokens`, `cache_creation_input_tokens` billed as input); `Ledger(path)` with
+  `.total_usd() -> float` (sum of `usd` over JSONL lines, missing file = 0.0) and `.append(entry: dict)`
+  (one JSON line, keys at least `at, jobRef, productCode, model, inputTokens, outputTokens,
+  cacheReadTokens, usd`).
+- `sandbox.py`: `ScriptRejected(Exception)`, `SandboxUnavailable(Exception)`; `check_script(src: str) -> None`
+  raises `ScriptRejected` (imports outside `numpy, math, trimesh, manifold3d, scipy, json, itertools,
+  functools, collections`; names `eval, exec, compile, __import__, open, globals, getattr` on dunder strings,
+  any `os`, `sys`, `subprocess`, `socket`, `ctypes`, `importlib`, attribute access starting with `__`);
+  `Limits(cpu_s=240, wall_s=300, mem_mb=3072, file_mb=200)`; `available() -> bool` (darwin and
+  `/usr/bin/sandbox-exec` exists); `run_script(src, work_dir: Path, limits: Limits) -> RunResult(ok: bool,
+  glb: Path | None, stderr_tail: str, seconds: float, reason: str | None)` - writes `gen.py` and
+  `params.json` into `work_dir`, runs `python -I gen.py` with an EMPTY env, cwd `work_dir`, under the
+  sandbox profile; the script reads `params.json` and must write `model.glb` in cwd. Raises
+  `SandboxUnavailable` when `available()` is false. `reason` in `timeout|cpu|memory|exit|no_output`.
+- `prompts.py`: `SYSTEM_PROMPT: str`, `first_turn(photos: list[Path], drawing: Path | None, dims_mm: dict,
+  category: dict | None, profile: Profile) -> list[dict]` (Messages API content blocks: images base64
+  then text), `refine_turn(renders: dict[str, bytes], measured_mm: dict, spec_mm: dict, error: str | None)
+  -> list[dict]`, `extract_script(text: str) -> str` (last ```python fenced block; ValueError when none).
+- `planner3d_worker/raster.py`: `render_views(mesh: trimesh.Trimesh, size: int = 512) -> dict[str, bytes]`
+  keys `front, side, three_quarter`, PNG bytes, deterministic, numpy + Pillow only.
+- `planner3d_worker/engines/claude_procedural.py`: `EngineFailure(Exception)` with `.code` in
+  `spend_cap | generation_failed | no_api_key | sandbox_unavailable`, str = `"<code>: <message>"`;
+  `ClaudeProceduralEngine(client=None, routing=None, ledger=None, run_script=None)`, `kinds = ["model"]`,
+  `run(kind, inputs: dict[name, path], params, out_dir) -> list[(name, role)]`. Inputs: names starting
+  `photo` are photos, a name starting `drawing` is the drawing. Params: `dimensionsMm {length,width,height}`,
+  optional `category {code,name}`, optional `productCode`. Loop: check spend cap -> call -> ledger ->
+  extract -> check_script -> run_script -> load GLB, measure bbox (Y up, metres; length = X, width = Z) ->
+  render -> refine, until `max_versions` versions ran (at least 2). Candidates per D5 with roles
+  `candidate` / `report`; `candidate-N.json` keys `engine:"claude-procedural", model, version, usage, usd,
+  seconds, measuredMm, specMm, dimsErrorMm, script`. A version that fails gets the error fed to the next
+  turn; fewer than 2 good versions = `generation_failed`. The client is the SDK `anthropic.Anthropic`
+  (key from keychain `planner3d` / `anthropic-api-key` when `client` is None, else `no_api_key`); tests pass
+  a fake with `.messages.stream(...)` returning a context manager whose `get_final_message()` gives an
+  object with `.content` (text blocks) and `.usage`.
+- `engines/__init__.py`: `build_engine("claude")`; `__main__.py --engine` accepts `claude`.
+- `client.py`: an engine failure whose message starts with `EngineFailure: <code>:` finishes with that code
+  when it is in `GENERIC_ERRORS` (add `spend_cap`, `generation_failed`, `no_api_key`, `sandbox_unavailable`).
+- `planner3d_worker/claude_cli.py`: `python -m planner3d_worker.claude_cli --photo P [--photo P] [--drawing D]
+  --dims L,W,H [--category CODE] [--model M] [--approach sdf|primitives] --out DIR --ledger PATH --ref CODE`
+  runs the engine once outside SS (step 1 and the pilot).
+
+Backend: `POST /planner3d/jobs/models` adds `drawing: UploadFile | None = File(None)` (sniff PNG/JPEG/WebP,
+`PHOTO_CAP`, stored `drawing.<ext>` role `drawing`, 422 `drawing_type`), `categoryCode: str | None` and
+`categoryName: str | None` (`Form`, max 64 / 128 chars) -> `params.category = {code, name}` only when a code
+is given; `productCode: str | None` (max 64) -> `params.productCode`.
