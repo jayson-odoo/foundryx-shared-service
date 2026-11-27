@@ -139,11 +139,11 @@ PROFILE = """\
 ; the interpreter, its stdlib, site-packages (numpy/trimesh/manifold3d/scipy) and dylibs it links.
 (allow file-read* (subpath (param "PYPREFIX")) (subpath (param "PYBASE")) (subpath (param "VENV")))
 ; system frameworks and libs every Mach-O binary needs (dyld shared cache, libSystem, Accelerate for numpy).
-(allow file-read* (subpath "/System") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/private/var/db/dyld") (subpath "/Library/Apple"))
+(allow file-read* (subpath "/System") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/private/var/db/dyld"))
 ; the filesystem root directory itself (getcwd/realpath open "/"; its entries stay unreadable below it).
 (allow file-read-data (literal "/"))
 ; random + null devices (hash seeds, numpy RNG, os.devnull).
-(allow file-read* (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))
+(allow file-read* (literal "/dev/null") (literal "/dev/urandom"))
 (allow file-write* (literal "/dev/null"))
 ; the only writable place: the per-job work dir (gen.py, params.json, model.glb, scratch).
 (allow file-read* file-write* (subpath (param "WORK")))
