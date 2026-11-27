@@ -142,6 +142,9 @@ def test_provider_fields_have_no_appsecret_and_no_company(client):
         "auth", "baseUrl", "appId", "userId", "password",
         "pageSize", "requestTimeoutSeconds", "maxConcurrentPages",
         "pagePauseSeconds", "lookupCacheMinutes",
+        # AUTOCOUNT-LOAD-STRATEGY
+        "stockPageSize", "oneRequestAtATime", "slowPageSeconds",
+        "stopAfterFailures", "stopMinutes",
         "apiKey", "apiKeyHeader", "apiKeyFormat", "apiKeyOnReads",
     ]
 

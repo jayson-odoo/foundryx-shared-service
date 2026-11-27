@@ -53,6 +53,8 @@ from .models import (
 from .repositories import SyncJobRepository, SyncRunRepository, WatermarkRepository
 from .services.etl_service import EtlService, in_quiet_hours, quiet_hours_end
 from .bootstrap import MODULE_NAME as AUTOCOUNT_MODULE_NAME
+from . import office_hours
+from .canonical.masters import ENTITY_STOCK_BALANCE
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -328,9 +330,39 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
             db.commit()
         return "quiet"
 
+    #     !!  OUTSIDE SORENTO CRM'S OFFICE HOURS (AUTOCOUNT-LOAD-STRATEGY,
+    #         owner 27 Nov).  !!
+    # Open-REST tasks only (each run is a full walk of AutoCount): the stock
+    # balance runs at most hourly, every other list waits for the next
+    # office-hours start. A due reconcile (the nightly full run) is never
+    # held back. No readable calendar = every hour is office hours.
+    closed_until = None
+    if (
+        mode == RUN_MODE_INCREMENTAL
+        and not due_reconcile
+        and config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+    ):
+        closed_until = _outside_office_hours(db, config, now)
+    if closed_until is not None and config.entity_type != ENTITY_STOCK_BALANCE:
+        if due_incremental:
+            db.query(AcEntityConfig).filter(
+                AcEntityConfig.id == config.id,
+                AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
+                AcEntityConfig.next_incremental_at <= now,
+            ).update(
+                {AcEntityConfig.next_incremental_at: closed_until},
+                synchronize_session=False,
+            )
+            db.commit()
+        return "quiet"
+
     next_incremental, next_reconcile = EtlService.next_run_times(
         source_config, now=now
     )
+    if closed_until is not None and next_incremental is not None:
+        next_incremental = max(
+            next_incremental, now + timedelta(minutes=office_hours.OFF_HOURS_STOCK_MINUTES)
+        )
     # The reconcile slot exactly as it stood before this tick's claim - a
     # tick that ends up NOT running a reconcile puts it back (see
     # ``_keep_reconcile_due``).
@@ -549,6 +581,25 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         _keep_reconcile_due(db, config.id, armed=next_reconcile, slot=reconcile_slot)
         db.commit()
     return "fired"
+
+
+def _outside_office_hours(db: Session, config: AcEntityConfig, now: datetime) -> Optional[datetime]:
+    """The next office-hours start when ``now`` is outside Sorento CRM's
+    office hours for this task's company, else ``None`` (also when the
+    calendar cannot be read - never a reason to hold a sync back)."""
+    try:
+        from .repositories import CompanyRepository
+
+        company = CompanyRepository(db).get(config.tenant_id, config.company_id)
+        if company is None:
+            return None
+        read = office_hours.read_for_company(db, config.tenant_id, company, now=now)
+        if read.hours is None or read.hours.is_open(now):
+            return None
+        return read.hours.next_open(now)
+    except Exception:  # noqa: BLE001 - the calendar is advisory, the sync is not
+        logger.exception("office hours check failed for task %s", config.id)
+        return None
 
 
 def _is_short_incremental(watermark) -> bool:

@@ -134,6 +134,26 @@ class SorentoProvider:
             },
         ]
 
+    def field_hints(self, db: Any, connection: Any) -> Dict[str, Dict[str, Any]]:
+        """AUTOCOUNT-LOAD-STRATEGY - the office hours this CRM's work calendar
+        gives (or why they could not be read), under the base URL. The
+        AutoCount sync slows down outside them."""
+        from datetime import datetime, timezone
+
+        from . import office_hours
+
+        try:
+            from app.secrets import decrypt_secret
+
+            credentials = decrypt_secret(connection.credentials_json) if connection.credentials_json else {}
+        except Exception:  # noqa: BLE001 - a wrong key is shown, never a 500
+            credentials = {}
+        read = office_hours.read_for_connection(
+            connection, credentials or {}, now=datetime.now(timezone.utc),
+        )
+        text = office_hours.hint_text(read)
+        return {"baseUrl": {"kind": "text", "text": text}} if text else {}
+
     def test(
         self,
         config: Dict[str, Any],

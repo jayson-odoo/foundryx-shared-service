@@ -1442,6 +1442,38 @@ class SorentoSink:
         except Exception:  # noqa: BLE001 - advisory only, must never propagate
             return None
 
+    def fetch_work_calendar(self) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """AUTOCOUNT-LOAD-STRATEGY - the CRM's office hours:
+        ``GET /api/v1/external/work-calendar`` and
+        ``GET /api/v1/external/work-calendar/is-working-day`` (holidays).
+        Returns ``(calendar, working_day)`` bodies; raises
+        ``SorentoWorkCalendarError`` with a plain reason on any failure."""
+        headers = {"X-API-Key": self._api_key}
+        release_read_transactions()  # plan 34
+        bodies: List[Optional[Dict[str, Any]]] = []
+        with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+            for path in ("/api/v1/external/work-calendar", "/api/v1/external/work-calendar/is-working-day"):
+                try:
+                    response = client.get(f"{self._base_url}{path}", headers=headers)
+                except httpx.HTTPError as exc:
+                    raise SorentoWorkCalendarError("Sorento CRM could not be reached.") from exc
+                if response.status_code in (401, 403):
+                    raise SorentoWorkCalendarError(
+                        "the Sorento API key has no access to the work calendar"
+                    )
+                if response.status_code != 200:
+                    raise SorentoWorkCalendarError(
+                        f"Sorento CRM answered HTTP {response.status_code}"
+                    )
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise SorentoWorkCalendarError("Sorento CRM did not answer JSON") from exc
+                if not isinstance(body, dict):
+                    raise SorentoWorkCalendarError("Sorento CRM answered an unexpected shape")
+                bodies.append(body)
+        return bodies[0], bodies[1]
+
     def fetch_contract(self) -> Optional[int]:
         """``GET /api/v1/external/contract`` -> the version Sorento advertises,
         or ``None`` on ANY failure (network, non-200, malformed body).
@@ -1994,6 +2026,10 @@ def describe_consumer_failure(
         detail = redact(detail)
     detail = _URL_RE.sub("[url]", detail)[:_CONSUMER_SNIPPET_MAX]
     return f"{prefix}{detail}".rstrip(), status, detail
+
+
+class SorentoWorkCalendarError(Exception):
+    """The CRM's work calendar could not be read; the message is plain."""
 
 
 def sorento_sink_from_connection(

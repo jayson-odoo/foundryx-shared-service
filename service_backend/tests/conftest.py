@@ -944,6 +944,24 @@ def autocount_server_gate_off():
     server_gate.set_client(False)
 
 
+@pytest.fixture(autouse=True)
+def autocount_office_hours_offline(monkeypatch):
+    """AUTOCOUNT-LOAD-STRATEGY: no test reads a real Sorento CRM work calendar;
+    the read answers "no calendar" (every hour is office hours) unless a test
+    puts the real reader back (``tests/test_autocount_office_hours.py``)."""
+    try:
+        from modules.autocount import office_hours
+    except ImportError:
+        yield
+        return
+    office_hours.clear_cache()
+    monkeypatch.setattr(
+        office_hours, "_fetch", lambda *a, **k: office_hours.CalendarRead(hours=None, error=None),
+    )
+    yield
+    office_hours.clear_cache()
+
+
 class _EchoDocDb:
     """Plan 73 test default: the AutoCount DB read echoes the document's own header and rows, every row's Further
     Description as the GET carries it (else empty). A test that cares patches ``WriteFrame._line_notes_source``."""

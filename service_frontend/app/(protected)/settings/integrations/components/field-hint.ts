@@ -16,6 +16,7 @@ export function fieldHintText(
   value: string | undefined,
   config: Record<string, string> = {},
 ): string | null {
+  if (hint?.kind === 'text') return hint.text || null;
   if (!hint || hint.kind !== 'pageRun' || hint.pages < 1) return null;
   const raw = (value ?? '').trim();
   const pause = raw === '' ? 0 : Number(raw);

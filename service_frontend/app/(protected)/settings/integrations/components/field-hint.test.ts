@@ -59,3 +59,18 @@ describe('fieldHintText (pause between pages)', () => {
     expect(fieldHintText(undefined, '1')).toBeNull();
   });
 });
+
+describe('fieldHintText (a fixed line)', () => {
+  it('shows the office hours a Sorento connection reads', () => {
+    expect(
+      fieldHintText(
+        { kind: 'text', text: 'Office hours from Sorento CRM: Monday - Friday, 9:00 am - 5:30 pm' },
+        'https://crm.example.test',
+      ),
+    ).toBe('Office hours from Sorento CRM: Monday - Friday, 9:00 am - 5:30 pm');
+  });
+
+  it('shows nothing for an empty line', () => {
+    expect(fieldHintText({ kind: 'text', text: '' }, undefined)).toBeNull();
+  });
+});
