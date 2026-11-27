@@ -218,3 +218,30 @@ def test_memory_hog_is_killed(tmp_path):
         Limits(cpu_s=30, wall_s=30, mem_mb=300, file_mb=10),
     )
     assert not res.ok and res.reason == "memory"
+
+
+@needs_sandbox
+def test_fork_bomb_is_contained(tmp_path):
+    res, out = _probe(
+        tmp_path,
+        """
+        import os
+        forked = 0
+        try:
+            for _ in range(50):
+                pid = os.fork()
+                if pid == 0:
+                    while True:
+                        pass
+                forked += 1
+        except OSError:
+            pass
+        open("result.txt", "w").write(str(forked))
+        """,
+        Limits(cpu_s=10, wall_s=15, mem_mb=1024, file_mb=10),
+    )
+    assert out == "0", (out, res.stderr_tail)
+    import psutil
+
+    time_left = [p for p in psutil.process_iter(["cmdline"]) if p.info["cmdline"] and "gen.py" in " ".join(p.info["cmdline"])]
+    assert time_left == []
