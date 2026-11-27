@@ -339,10 +339,10 @@ def read_regular_file(path: Path, cap_bytes: int) -> Optional[bytes]:
 
 
 def run_script(src: str, work_dir: Path, limits: Limits, check: bool = True) -> RunResult:
+    if check:
+        check_script(src)  # pure: writes nothing, runs nothing
     if not available():
         raise SandboxUnavailable("the macOS sandbox is not available; model code is never run unsandboxed")
-    if check:
-        check_script(src)
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
     (work / "gen.py").write_text(src, encoding="utf-8")
