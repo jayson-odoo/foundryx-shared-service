@@ -29,6 +29,7 @@ Rules for the script:
 - trimesh.creation.cylinder, annulus and capsule run along Z: rotate them so their axes match the Y-up frame before use, and check the orientation in the renders.
 - Sculpted parts (levers, spouts, handles) are lofted or swept profiles, or hulls of several cross-sections, never a single box.
 - Materials: ceramic white roughness 0.3, chrome metallic 1.0 roughness 0.1, following the photo.
+- Colours go in glTF PBR materials only: give each part trimesh.visual.TextureVisuals(material=trimesh.visual.material.PBRMaterial(baseColorFactor=[r, g, b, 255], metallicFactor=..., roughnessFactor=...)), never vertex colours or face colours. Always name each part (Scene geometry names) and give every part its own material.
 - Write the result to model.glb in the current directory with simple PBR materials that match the photo (for example white ceramic: baseColor near white, roughness 0.15, metallic 0; chrome: metallic 1, roughness 0.1). Use trimesh.visual.material.PBRMaterial and export a trimesh.Scene so named parts survive.
 - Look at the drawing for sides the photo does not show (back, top, hidden faces) and follow it for proportions.
 - The script must run to completion in under four minutes on a laptop CPU and must not print secrets or read anything outside the cwd.

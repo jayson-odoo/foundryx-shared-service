@@ -135,3 +135,31 @@ def test_engine_render_uses_the_glb_colours_when_materials_are_skipped():
     loaded = trimesh.load(_io.BytesIO(data), file_type="glb", force="scene", skip_materials=True)
     px = _object_pixels(render_views(loaded, materials=glb_materials(data))["front"])
     assert ((px[:, 0] > 120) & (px[:, 1] < 60)).sum() > 500
+
+
+def test_a_white_part_reads_white_under_the_studio_rig():
+    for view in ("front", "side", "three_quarter"):
+        a = _arr(render_views(_coloured([245, 245, 245, 255]))[view]).reshape(-1, 3).astype(int)
+        px = a[(a != 255).any(axis=1)]
+        lit = px[px.min(axis=1) >= 150]  # drops the dark outline pixels
+        # faces turned away from the key light in the three-quarter view sit lower than the straight views
+        assert lit.mean() >= (230 if view != "three_quarter" else 205), view
+        assert lit.min() >= 170, view
+
+
+def test_vertex_colours_win_over_a_material_that_has_no_colour():
+    import io as _io
+
+    import numpy as np
+
+    from planner3d_worker.raster import glb_materials
+
+    m = trimesh.creation.box(extents=(1.2, 0.75, 0.6))
+    m.apply_translation((0, 0.375, 0))
+    m.visual = trimesh.visual.ColorVisuals(m, vertex_colors=np.tile([10, 10, 10, 255], (len(m.vertices), 1)))
+    scene = trimesh.Scene()
+    scene.add_geometry(m, node_name="p", geom_name="p")
+    data = scene.export(file_type="glb")
+    loaded = trimesh.load(_io.BytesIO(data), file_type="glb", force="scene", skip_materials=True)
+    px = _object_pixels(render_views(loaded, materials=glb_materials(data))["front"])
+    assert (px.max(axis=1) < 120).sum() > 1000

@@ -86,7 +86,8 @@ def _collect(mesh, materials: Optional[dict]):
         rgb, metallic = (materials or {}).get(name) or _material_of(geom)
         face_rgb = np.tile(np.asarray(rgb, dtype=float), (len(f), 1))
         visual = getattr(geom, "visual", None)
-        if (materials or {}).get(name) is None and visual is not None and getattr(visual, "kind", None) in ("vertex", "face") and visual.defined:
+        # vertex or face colours, when the file carries them, are the part's colour
+        if visual is not None and getattr(visual, "kind", None) in ("vertex", "face") and visual.defined:
             face_rgb = np.asarray(visual.face_colors, dtype=float)[:, :3] / 255.0
         verts.append(v)
         faces.append(f + offset)
@@ -99,10 +100,13 @@ def _collect(mesh, materials: Optional[dict]):
 
 
 def _shade(cam_n: np.ndarray, rgb: np.ndarray, metallic: np.ndarray) -> np.ndarray:
-    """Per-face colour 0..255. Dielectric: base x (0.35 ambient + 0.65 lambert). Metal: base x a sky/floor
+    """Per-face colour 0..255. Dielectric: base x a studio rig (fill + key + rim). Metal: base x a sky/floor
     gradient on the normal plus one specular highlight; the two are mixed by the metallic factor."""
     lambert = np.abs(np.einsum("nj,j->n", cam_n, LIGHT))
-    dielectric = rgb * (0.35 + 0.65 * lambert)[:, None]
+    # studio rig: hemisphere fill 0.66, key light 0.34 (saturating so a face turned to it is fully lit), rim 0.06
+    key = 0.34 * np.clip(1.3 * lambert, 0.0, 1.0)
+    rim = 0.06 * (1.0 - np.abs(cam_n[:, 2]))
+    dielectric = rgb * np.clip(0.66 + key + rim, 0.0, 1.0)[:, None]
     sky = 0.5 + 0.5 * cam_n[:, 1]
     env = 0.25 + 0.75 * sky
     spec = np.clip(np.abs(np.einsum("nj,j->n", cam_n, HALF)), 0.0, 1.0) ** 40

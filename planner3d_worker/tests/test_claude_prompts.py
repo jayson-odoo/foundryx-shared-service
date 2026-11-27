@@ -170,3 +170,8 @@ def test_extract_script_prefers_the_block_that_writes_the_model_over_a_later_sni
 def test_extract_script_without_model_glb_takes_the_longest_block():
     text = "```python\na = 1\nb = 2\nc = 3\n```\n```python\nz = 1\n```"
     assert "c = 3" in extract_script(text)
+
+
+def test_system_prompt_puts_colour_in_pbr_materials_not_vertex_colours():
+    for needle in ("PBRMaterial(baseColorFactor", "metallicFactor", "roughnessFactor", "TextureVisuals", "vertex colours", "name each part"):
+        assert needle in SYSTEM_PROMPT
