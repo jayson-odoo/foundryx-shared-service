@@ -14,8 +14,11 @@ No user-visible screen changes (no behaviour card): the engine is a new worker e
   `build_engine("claude")` (`planner3d_worker/engines/__init__.py`). Runs LOCAL on the Mac (CDN + key).
 - D2 API key: login keychain, account `planner3d`, service `anthropic-api-key`, read at runtime by
   `keychain.py` like the HF token (S3 D6). Never printed, logged, written, or passed to the sandbox.
-- D3 Anthropic Messages API over raw httpx (same reason as `app/integrations/llm_base.py`): photo and drawing
-  as image blocks, dims + category as text. Usage tokens from every response go to the ledger.
+- D3 Anthropic Messages API through the official `anthropic` Python SDK (worker-only dependency in
+  `requirements-model.txt`), streaming + `get_final_message()`, adaptive thinking, `output_config.effort`
+  per profile; photo and drawing as image blocks, dims + category as text. Usage tokens from every response go
+  to the ledger. Prices (Anthropic first-party, checked 27/11/2026): Sonnet 5.5 $2 in / $10 out / $0.10 cache
+  read per MTok; Opus 5.5 $4 / $20 / $0.20. The client is injected so tests use a fake.
 - D4 Routing by category DATA, never by product words in code: `claude_routing.json` (operator file) maps a
   category code to a profile `{model, approach: primitives|sdf, maxVersions}`; unknown category = default
   profile (Sonnet, primitives). The pilot fills the file from the CRM category list.
