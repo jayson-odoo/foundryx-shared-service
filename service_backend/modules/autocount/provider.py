@@ -225,6 +225,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": PAGE_SIZE_FIELD_DEFAULT,
                 "defaultValue": str(PAGE_SIZE_FIELD_DEFAULT),
+                "effectiveValue": str(PAGE_SIZE_FIELD_DEFAULT),
                 "min": PAGE_SIZE_FIELD_MIN,
                 "max": PAGE_SIZE_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -236,6 +237,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": REQUEST_TIMEOUT_FIELD_DEFAULT,
                 "defaultValue": str(REQUEST_TIMEOUT_FIELD_DEFAULT),
+                "effectiveValue": f"{REQUEST_TIMEOUT_FIELD_DEFAULT:g}",
                 "max": REQUEST_TIMEOUT_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
@@ -249,6 +251,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": MAX_CONCURRENT_PAGES_FIELD_DEFAULT,
                 "defaultValue": str(MAX_CONCURRENT_PAGES_FIELD_DEFAULT),
+                "effectiveValue": str(MAX_CONCURRENT_PAGES_FIELD_DEFAULT),
                 "min": MAX_CONCURRENT_PAGES_FIELD_MIN,
                 "max": MAX_CONCURRENT_PAGES_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -263,6 +266,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": PAGE_PAUSE_FIELD_DEFAULT,
                 "defaultValue": f"{PAGE_PAUSE_FIELD_DEFAULT:g}",
+                "effectiveValue": f"{PAGE_PAUSE_FIELD_DEFAULT:g}",
                 "min": PAGE_PAUSE_FIELD_MIN,
                 "max": PAGE_PAUSE_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -274,6 +278,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": LOOKUP_CACHE_FIELD_DEFAULT,
                 "defaultValue": str(LOOKUP_CACHE_FIELD_DEFAULT),
+                "effectiveValue": str(LOOKUP_CACHE_FIELD_DEFAULT),
                 "min": LOOKUP_CACHE_FIELD_MIN,
                 "max": LOOKUP_CACHE_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -402,8 +407,21 @@ class AutoCountProvider:
         estimate from the last run, once one is known."""
         from .services.page_pause_hint import page_run_hint
 
-        hint = page_run_hint(db, connection)
-        return {"pagePauseSeconds": hint} if hint else {}
+        from .http_source.client import connection_sizing
+        from .http_source.gentle import server_policy
+
+        hints: Dict[str, Dict[str, Any]] = {}
+        config = connection.config_json or {}
+        # AUTOCOUNT-LOAD-STRATEGY s7 - the queue overrides the field.
+        if server_policy(config).one_at_a_time and connection_sizing(config).max_concurrent_pages > 1:
+            hints["maxConcurrentPages"] = {
+                "kind": "text", "text": "Runs at 1 while One request at a time per server is Yes.",
+            }
+        if db is not None:
+            hint = page_run_hint(db, connection)
+            if hint:
+                hints["pagePauseSeconds"] = hint
+        return hints
 
     def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
         """S5 (sprint-5/08 review round 1) - the SAME scheme rule `test()`

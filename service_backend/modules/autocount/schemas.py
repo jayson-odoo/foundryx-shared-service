@@ -949,6 +949,9 @@ class EtlTaskResponse(ApiModel):
     # here with its code, never as a per-record failure (Appendix A6).
     lastRunError: Optional[str] = None
     lastRunErrorCode: Optional[str] = None
+    # AUTOCOUNT-LOAD-STRATEGY s6 - the run-time hint under the task's own
+    # "Pause between pages" (``services/page_pause_hint.task_page_run_hint``).
+    pageRunHint: Optional[Dict[str, Any]] = None
     # ── schedule (plan 22 S3, AC-22-12/13) ───────────────────────────────────
     # When the sweep will next fire each cadence - armed at activate/resume,
     # recomputed on every PUT. NULL for a draft/paused task (the sweep never
@@ -1333,6 +1336,9 @@ class DocFeedWindowOut(BaseModel):
     pollBasis: str
     pollLookbackDays: int
     recheckDays: int
+    # AUTOCOUNT-LOAD-STRATEGY s6 - the feed's own pause between two day
+    # reads; None = the connection's "Pause between pages".
+    pagePauseSeconds: Optional[float] = None
 
 
 class DocFeedWindowIn(BaseModel):
@@ -1344,6 +1350,7 @@ class DocFeedWindowIn(BaseModel):
     pollBasis: Optional[Any] = None
     pollLookbackDays: Optional[Any] = None
     recheckDays: Optional[Any] = None
+    pagePauseSeconds: Optional[Any] = None
 
 
 class DocFeedItemOut(ApiModel):

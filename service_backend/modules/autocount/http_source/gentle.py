@@ -165,6 +165,34 @@ def server_policy(config: Optional[Dict[str, Any]]) -> Any:
     )
 
 
+def clean_page_pause(raw: Any) -> Tuple[Optional[float], Optional[str]]:
+    """AUTOCOUNT-LOAD-STRATEGY s6 - a task's / document feed's own "Pause
+    between pages". ``(None, None)`` = blank (use the connection's value),
+    ``(value, None)`` in range, ``(None, message)`` otherwise."""
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return None, None
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None, PAGE_PAUSE_INVALID_MESSAGE
+    if not (math.isfinite(value) and PAGE_PAUSE_FIELD_MIN <= value <= PAGE_PAUSE_FIELD_MAX):
+        return None, PAGE_PAUSE_INVALID_MESSAGE
+    return value, None
+
+
+def with_own_pause(settings: GentleSettings, own: Any) -> GentleSettings:
+    """``settings`` with the task's / feed's own pause in place of the
+    connection's, when one is set (a stored value is never trusted outright:
+    out of range = the connection's)."""
+    value, error = clean_page_pause(own)
+    if value is None or error:
+        return settings
+    from dataclasses import replace
+
+    return replace(settings, page_pause_seconds=value)
+
+
 class AdaptivePause:
     """The pause before the next page of a walk. Starts at the owner's
     ``pagePauseSeconds`` (the floor). A page slower than ``slow_seconds``

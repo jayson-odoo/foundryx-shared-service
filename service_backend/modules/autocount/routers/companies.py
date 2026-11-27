@@ -605,6 +605,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         lastRunAt=view.last_run_at,
         lastRunError=view.last_run_error,
         lastRunErrorCode=view.last_run_error_code,
+        pageRunHint=view.page_run_hint,
         nextIncrementalAt=view.next_incremental_at,
         nextReconcileAt=view.next_reconcile_at,
         initialLoad=view.initial_load,

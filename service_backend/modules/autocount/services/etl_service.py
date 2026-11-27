@@ -139,6 +139,8 @@ from ..http_source.combine import (
     combine_output_columns,
     validate_combine,
 )
+from ..http_source.gentle import clean_page_pause
+from .page_pause_hint import task_page_run_hint
 from ..http_source.client import (
     PREVIEW_REQUEST_TIMEOUT_CEILING_SECONDS,
     connection_sizing,
@@ -477,6 +479,9 @@ class EtlTaskView:
     # Review & Activate banner ("Consumer contract 2.2 - brands land when 2.3
     # is deployed") without the operator having to run Preview first.
     brand_contract_gate: Optional[Dict[str, Any]] = None
+    # AUTOCOUNT-LOAD-STRATEGY s6 - "About N pages per run -> about X min" under
+    # the task's own "Pause between pages", from THIS task's last good run.
+    page_run_hint: Optional[Dict[str, Any]] = None
     # sprint-5/10 (AC-10-10) - ``push`` (today's behaviour) or ``pull``.
     delivery_mode: str = DELIVERY_MODE_PUSH
     # sprint-5/10 (AC-10-69) - the GENERALISED replacement for
@@ -1546,6 +1551,11 @@ class EtlService:
                 if config is not None and tenant_id is not None
                 else None
             ),
+            page_run_hint=(
+                task_page_run_hint(self.db, config)
+                if config is not None and source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+                else None
+            ),
         )
 
     def _brand_contract_gate(
@@ -2174,6 +2184,16 @@ class EtlService:
         )
         for key, message in alert_errors.items():
             errors.setdefault(key, message)
+        # AUTOCOUNT-LOAD-STRATEGY s6 - the task's own "Pause between pages":
+        # blank = the connection's value; a save that does not send the key
+        # (an older client) keeps the stored one.
+        own_pause: Optional[float] = None
+        if "pagePauseSeconds" in raw:
+            own_pause, pause_error = clean_page_pause(raw.get("pagePauseSeconds"))
+            if pause_error:
+                errors.setdefault("pagePauseSeconds", pause_error)
+        elif config is not None and isinstance(config.source_config, dict):
+            own_pause, _ = clean_page_pause(config.source_config.get("pagePauseSeconds"))
         if errors:
             raise EtlValidationError(errors)
 
@@ -2243,6 +2263,9 @@ class EtlService:
 
         config.source_impl = SOURCE_IMPL_AUTOCOUNT_HTTP
         clean = _with_stored_quiet_hours(config.source_config, clean)
+        clean.pop("pagePauseSeconds", None)
+        if own_pause is not None:
+            clean["pagePauseSeconds"] = own_pause
         config.source_config = {**clean, **alert_keys}
         if demote and config.etl_status == ETL_STATUS_ACTIVE:
             config.etl_status = ETL_STATUS_DRAFT

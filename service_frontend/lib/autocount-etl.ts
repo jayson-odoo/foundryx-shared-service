@@ -588,6 +588,7 @@ export const DEFAULT_DOC_FEED_WINDOW: DocFeedWindow = {
   pollBasis: 'last_modified',
   pollLookbackDays: 1,
   recheckDays: 45,
+  pagePauseSeconds: null,
 };
 
 export const DOC_FEED_POLL_BASIS_OPTIONS: { label: string; value: DocFeedPollBasis }[] = [
@@ -608,6 +609,11 @@ export function docFeedWindowErrors(value: DocFeedWindow): Record<string, string
   if (lookback) errors.pollLookbackDays = lookback;
   const recheck = wholeDaysError(value.recheckDays, 1, 180);
   if (recheck) errors.recheckDays = recheck;
+  const pause = value.pagePauseSeconds;
+  if (pause !== null && pause !== undefined && !(Number.isFinite(pause) && pause >= 0 && pause <= 90)) {
+    errors.pagePauseSeconds =
+      'Pause between pages must be a number from 0 to 90 seconds (max 90 s: longer pauses make the stock run exceed its 2 h limit).';
+  }
   return errors;
 }
 

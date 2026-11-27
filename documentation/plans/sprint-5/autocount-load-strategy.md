@@ -99,6 +99,11 @@ Stock freshness unchanged in office hours (15 min); at night 60 min.
 field schema (`provider.py`), next to the existing "Pause between pages". A connection saved before this lane has
 none of the keys and gets these defaults, so no backfill is needed.
 
+### Owner follow-ups (27 Nov afternoon)
+
+- **s6 "control per entity":** "Pause between pages (seconds)" on each open-REST task's Source tab and in each document feed's dialog, 0-90; blank = the connection's value (the connection field stays the default). The adaptive pause and the safety stop sit on top. The run-time hint ("About N pages per run -> about X min per run") is per task, from that task's own last run.
+- **s7 "Max concurrent pages":** with "One request at a time per server" on (default) only one request is ever in flight, so the walk runs one page at a time whatever the field says (effective value 1, the pause applies again); the form says "Runs at 1 while One request at a time per server is Yes." A blank field means today: Page size 1000, Request timeout 90 s, Pause 0 s, Max concurrent pages 1, Reuse stock lookups 60 min; the connection form now shows these instead of "-".
+
 ### Not built (left open)
 
 - Continue a timed-out walk from the failed page instead of restarting from page 1 after a page-size halving

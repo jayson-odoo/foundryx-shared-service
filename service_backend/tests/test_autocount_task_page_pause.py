@@ -184,15 +184,15 @@ def test_a_feed_window_carries_its_own_pause():
     from modules.autocount.doc_feed.window import resolve_window, validate_doc_feed_window
 
     clean, errors = validate_doc_feed_window(
-        {"pollBasis": "lastModified", "pollLookbackDays": 1, "recheckDays": 45, "pagePauseSeconds": "3"}
+        {"pollBasis": "last_modified", "pollLookbackDays": 1, "recheckDays": 45, "pagePauseSeconds": "3"}
     )
     assert errors == {} and clean["pagePauseSeconds"] == 3.0
     clean, errors = validate_doc_feed_window(
-        {"pollBasis": "lastModified", "pollLookbackDays": 1, "recheckDays": 45, "pagePauseSeconds": ""}
+        {"pollBasis": "last_modified", "pollLookbackDays": 1, "recheckDays": 45, "pagePauseSeconds": ""}
     )
     assert errors == {} and clean.get("pagePauseSeconds") is None
     _clean, errors = validate_doc_feed_window(
-        {"pollBasis": "lastModified", "pollLookbackDays": 1, "recheckDays": 45, "pagePauseSeconds": "91"}
+        {"pollBasis": "last_modified", "pollLookbackDays": 1, "recheckDays": 45, "pagePauseSeconds": "91"}
     )
     assert "pagePauseSeconds" in errors
     assert resolve_window(None)["pagePauseSeconds"] is None

@@ -47,6 +47,9 @@ import type {
   AutocountSqlConnection,
 } from '@/types/autocount';
 import { CombineEditor } from './combine-editor';
+import { PagePauseField } from '@/app/(protected)/autocount/components/page-pause-field';
+import { fieldHintText } from '@/app/(protected)/settings/integrations/components/field-hint';
+import type { PageRunFieldHint } from '@/types/integration';
 import { LookupsEditor } from './lookups-editor';
 
 /**
@@ -127,6 +130,9 @@ export interface SourceTabProps {
    * by Review & Activate's own "Preview" ceremony, never the Source tab's
    * own Test button. */
   companyId: string;
+  /** AUTOCOUNT-LOAD-STRATEGY s6 - this task's last good run, for the hint
+   * under its own "Pause between pages". */
+  pageRunHint?: PageRunFieldHint | null;
   /**
    * A Test succeeded for exactly this `connectionId`/`path` pair (AC-08-20) -
    * `TaskEditorView` tracks it to withhold Save until it happens for the
@@ -186,6 +192,7 @@ export function SourceTab({
   lockedApiConnection = null,
   httpPreview,
   companyId,
+  pageRunHint,
   onHttpPreviewSuccess,
   columnsProbe,
   onCombineFormulaTest,
@@ -924,6 +931,18 @@ export function SourceTab({
                   </Badge>
                 )}
               </div>
+
+              <PagePauseField
+                id="etl-page-pause"
+                value={config.pagePauseSeconds ?? null}
+                onChange={(pagePauseSeconds) => onChange({ pagePauseSeconds })}
+                disabled={!editing}
+                error={fieldErrors.pagePauseSeconds}
+                hintText={fieldHintText(
+                  pageRunHint ?? undefined,
+                  String(config.pagePauseSeconds ?? pageRunHint?.lastPauseSeconds ?? ''),
+                )}
+              />
 
               {httpPreview.state.status === 'loading' && (
                 // sprint-5/11 (AC-11-27) - the ONE running-state component,

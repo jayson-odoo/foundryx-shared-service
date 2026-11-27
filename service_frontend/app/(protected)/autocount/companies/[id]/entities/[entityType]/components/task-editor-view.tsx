@@ -859,6 +859,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 lockedApiConnection={lockedApiConnection}
                 httpPreview={httpPreview}
                 companyId={companyId}
+                pageRunHint={task?.pageRunHint ?? null}
                 onHttpPreviewSuccess={onHttpPreviewSuccess}
                 columnsProbe={columnsProbe}
                 onCombineFormulaTest={mapping.testFormula}

@@ -295,7 +295,12 @@ def resolve_vendor(db, feed_row: AcDocFeed, *, vendor_transport=None) -> Resolve
         server_policy=gentle.server_policy(conn.config_json or {}),
         tenant_id=tenant_id,
     )
-    vendor = DocFeedVendor(vendor_client, pacing=gentle.gentle_settings(conn.config_json or {}))
+    # AUTOCOUNT-LOAD-STRATEGY s6 - the feed's own pause, when set, in place
+    # of the connection's.
+    vendor = DocFeedVendor(vendor_client, pacing=gentle.with_own_pause(
+        gentle.gentle_settings(conn.config_json or {}),
+        (feed_row.window_config or {}).get("pagePauseSeconds"),
+    ))
     if feed_row.feed in PROJNO_FEEDS:
         # Plan 72 (contract 2.15 section 1, UAC S0-1) - every registration
         # read is one `ac_api_call_log` row, as the #2648 reads are.

@@ -22,7 +22,10 @@ export function fieldHintText(
   const pause = raw === '' ? 0 : Number(raw);
   if (!Number.isFinite(pause) || pause < 0 || pause > PAGE_PAUSE_MAX_SECONDS) return null;
   const concurrent = Number((config.maxConcurrentPages ?? '').trim() || '1');
-  if (pause > 0 && Number.isFinite(concurrent) && concurrent > 1) {
+  // AUTOCOUNT-LOAD-STRATEGY s7 - with one request at a time per server (the
+  // default) the walk runs one page at a time, so the pause always applies.
+  const queueOff = (config.oneRequestAtATime ?? '').trim().toLowerCase() === 'no';
+  if (queueOff && pause > 0 && Number.isFinite(concurrent) && concurrent > 1) {
     return 'Not used while Max concurrent pages is above 1.';
   }
   const gaps = Math.max(hint.pages - 1, 0);

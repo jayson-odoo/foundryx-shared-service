@@ -369,8 +369,18 @@ class HttpApiSource:
         # ceiling (1..8, default 1 = byte-identical to today); read ONCE here
         # exactly like ``self._page_size``, never re-read mid-walk.
         self._page_concurrency = sizing.max_concurrent_pages
+        # AUTOCOUNT-LOAD-STRATEGY s7 - with "One request at a time per
+        # server" on (the default), only one request is ever in flight, so
+        # the walk runs one page at a time (and the pause between pages
+        # applies) whatever "Max concurrent pages" says.
+        if gentle.server_policy(conn_config).one_at_a_time:
+            self._page_concurrency = 1
         # SS-STOCK-BAL-SOOTHE - pause between pages + stock lookup cache.
-        self._gentle = gentle.gentle_settings(conn_config)
+        # AUTOCOUNT-LOAD-STRATEGY s6 - the task's own pause, when set, in
+        # place of the connection's (owner: "control per entity").
+        self._gentle = gentle.with_own_pause(
+            gentle.gentle_settings(conn_config), config.get("pagePauseSeconds")
+        )
         self._connection_id = connection_id
         self._base_url = base_url
         try:

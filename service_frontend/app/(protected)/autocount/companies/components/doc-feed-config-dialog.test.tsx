@@ -145,7 +145,7 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
       connectionId: 'conn-1',
       mode: 'push',
       schedule: { incrementalMinutes: 15, reconcileMode: 'interval', reconcileHours: 6, reconcileAt: null },
-      window: { pollBasis: 'last_modified', pollLookbackDays: 1, recheckDays: 45 },
+      window: { pollBasis: 'last_modified', pollLookbackDays: 1, recheckDays: 45, pagePauseSeconds: null },
     });
   });
 
@@ -229,7 +229,7 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
     await userEvent.click(screen.getByTestId('doc-feed-config-save'));
     expect(onSave).toHaveBeenCalledWith(
       expect.objectContaining({
-        window: { pollBasis: 'doc_date', pollLookbackDays: 3, recheckDays: 150 },
+        window: { pollBasis: 'doc_date', pollLookbackDays: 3, recheckDays: 150, pagePauseSeconds: null },
       }),
     );
   });
@@ -292,5 +292,55 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
     );
     await userEvent.click(screen.getByTestId('doc-feed-config-save'));
     expect(await screen.findByTestId('doc-feed-window-basis-error')).toHaveTextContent('Choose LastModified or DocDate.');
+  });
+});
+
+describe('DocFeedConfigDialog pause (AUTOCOUNT-LOAD-STRATEGY s6)', () => {
+  it('saves the feed own pause, and blank means the connection value', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{
+          connectionId: 'conn-1', mode: 'push', contractGate: null,
+          window: { pollBasis: 'last_modified', pollLookbackDays: 1, recheckDays: 45, pagePauseSeconds: 4 },
+        }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    expect(screen.getByTestId('doc-feed-page-pause')).toHaveValue(4);
+    fireEvent.change(screen.getByTestId('doc-feed-page-pause'), { target: { value: '2.5' } });
+    await userEvent.click(screen.getByTestId('doc-feed-config-save'));
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ window: expect.objectContaining({ pagePauseSeconds: 2.5 }) }),
+    );
+    fireEvent.change(screen.getByTestId('doc-feed-page-pause'), { target: { value: '' } });
+    await userEvent.click(screen.getByTestId('doc-feed-config-save'));
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ window: expect.objectContaining({ pagePauseSeconds: null }) }),
+    );
+  });
+
+  it('refuses a pause over 90 s before saving', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedConfigDialog } = await import('./doc-feed-config-dialog');
+    render(
+      <DocFeedConfigDialog
+        feed="delivery_orders"
+        current={{
+          connectionId: 'conn-1', mode: 'push', contractGate: null,
+          window: { pollBasis: 'last_modified', pollLookbackDays: 1, recheckDays: 45 },
+        }}
+        eligibleConnections={[eligibleConnection()]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.change(screen.getByTestId('doc-feed-page-pause'), { target: { value: '95' } });
+    expect(screen.getByTestId('doc-feed-page-pause-error')).toBeInTheDocument();
+    expect(screen.getByTestId('doc-feed-config-save')).toBeDisabled();
   });
 });

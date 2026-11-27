@@ -1,3 +1,4 @@
+import type { PageRunFieldHint } from '@/types/integration';
 /**
  * AutoCount ESB types (sprint-4/13, slice 1) - the wire contract of the
  * `autocount` module's routers (`modules/autocount/schemas.py`).
@@ -906,6 +907,9 @@ export interface AutocountEtlSourceConfig {
    * crosses midnight. Reconcile + manual Run now are unaffected. Absent on a
    * task saved before the keys = no window. */
   quietHoursEnabled?: boolean;
+  /** AUTOCOUNT-LOAD-STRATEGY s6 - this task's own pause between pages;
+   * absent / null = the connection's "Pause between pages". */
+  pagePauseSeconds?: number | null;
   quietHoursStart?: string | null;
   quietHoursEnd?: string | null;
   /** IANA zone the window is read in (default `Asia/Kuala_Lumpur`). */
@@ -1248,6 +1252,9 @@ export interface AutocountEtlTask {
    */
   lastRunError: string | null;
   lastRunErrorCode: AutocountAnchorErrorCode | string | null;
+  /** AUTOCOUNT-LOAD-STRATEGY s6 - pages / run time of this task's last good
+   * run, for the hint under its own "Pause between pages". */
+  pageRunHint?: PageRunFieldHint | null;
   /**
    * When the scheduler will next fire each cadence (plan 22 §2.6, slice S3).
    * Read-only, server-stamped (`EtlService.next_run_times`); null while the
@@ -1739,6 +1746,9 @@ export interface DocFeedWindow {
   pollBasis: DocFeedPollBasis;
   pollLookbackDays: number;
   recheckDays: number;
+  /** AUTOCOUNT-LOAD-STRATEGY s6 - the feed's own pause between two day
+   * reads; null = the connection's "Pause between pages". */
+  pagePauseSeconds?: number | null;
 }
 
 /** `GET /autocount/doc-feeds/{companyId}` - one row per feed. A never-

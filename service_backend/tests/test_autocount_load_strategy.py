@@ -812,3 +812,54 @@ def test_a_page_that_gets_no_turn_fails_once_without_retries(session_factory, se
 
 def test_the_turn_outlives_a_slow_request():
     assert server_gate.hold_ttl_ms(90.0) >= 3 * 90 * 1000
+
+
+# ── s7: "Max concurrent pages" under the one-request-per-server queue ──────
+
+
+def test_with_one_request_per_server_the_walk_is_one_page_at_a_time(session_factory, server, gate, pauses):
+    db = session_factory()
+    conn = _open_connection(db, maxConcurrentPages="4", pagePauseSeconds="1", slowPageSeconds="0")
+    company = _company(db, conn.id)
+    config = _stock_config(db, company, conn)
+    source = _source(db, company, config)
+    source.fetch_changes(Watermark())
+    assert source.source_concurrency == 1
+    assert pauses == [1.0, 1.0], "the pause applies again (a concurrent walk never pauses)"
+
+
+def test_switched_off_the_connections_concurrency_applies_again(session_factory, server, gate):
+    db = session_factory()
+    conn = _open_connection(db, maxConcurrentPages="4", oneRequestAtATime="no")
+    company = _company(db, conn.id)
+    config = _stock_config(db, company, conn)
+    source = _source(db, company, config)
+    source.fetch_changes(Watermark())
+    assert source.source_concurrency == 4
+
+
+def test_the_form_says_concurrency_runs_at_1_under_the_queue():
+    from modules.autocount.provider import AutoCountProvider
+
+    class Conn:
+        tenant_id = "t"
+        id = "c"
+        config_json = {"auth": "none", "baseUrl": BASE_URL, "maxConcurrentPages": "4"}
+
+    hints = AutoCountProvider().field_hints(None, Conn())
+    assert hints["maxConcurrentPages"] == {
+        "kind": "text", "text": "Runs at 1 while One request at a time per server is Yes.",
+    }
+    Conn.config_json = {**Conn.config_json, "oneRequestAtATime": "no"}
+    assert "maxConcurrentPages" not in AutoCountProvider().field_hints(None, Conn())
+
+
+def test_older_fields_show_what_a_blank_value_runs_at():
+    from modules.autocount.provider import AutoCountProvider
+
+    fields = {f["key"]: f for f in AutoCountProvider().fields()}
+    assert fields["pageSize"]["effectiveValue"] == "1000"
+    assert fields["requestTimeoutSeconds"]["effectiveValue"] == "90"
+    assert fields["maxConcurrentPages"]["effectiveValue"] == "1"
+    assert fields["pagePauseSeconds"]["effectiveValue"] == "0"
+    assert fields["lookupCacheMinutes"]["effectiveValue"] == "60"
