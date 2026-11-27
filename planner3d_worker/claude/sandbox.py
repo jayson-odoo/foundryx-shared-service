@@ -23,6 +23,7 @@ import json
 import os
 import resource
 import signal
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -55,6 +56,8 @@ class Limits:
     wall_s: int = 300
     mem_mb: int = 3072
     file_mb: int = 200
+    output_mb: int = 50  # cap on the model.glb the parent reads back
+    dir_mb: int = 300  # cap on the total size of the work dir
 
 
 @dataclass
@@ -63,7 +66,8 @@ class RunResult:
     glb: Optional[Path]
     stderr_tail: str
     seconds: float
-    reason: Optional[str]  # timeout | cpu | memory | exit | no_output
+    reason: Optional[str]  # timeout | cpu | memory | disk | exit | no_output | bad_output
+    glb_bytes: Optional[bytes] = None
 
 
 # ── 1. AST pre-check ────────────────────────────────────────────────────────
@@ -134,8 +138,11 @@ PROFILE = """\
 (deny default)
 ; exec the interpreter (the venv symlink) and the framework binary it re-execs inside the base install. No process-fork: a fork bomb cannot start.
 (allow process-exec (literal (param "PYEXE")) (subpath (param "PYBASE")))
-; path traversal (lstat/stat of parent dirs, realpath) needs metadata only, never contents.
-(allow file-read-metadata)
+; path traversal (lstat/stat, realpath) needs metadata only: allowed on the same trees as the read list,
+; plus each parent directory of those trees as a literal (no contents of any other path).
+(allow file-read-metadata (subpath (param "PYPREFIX")) (subpath (param "PYBASE")) (subpath (param "VENV")) (subpath (param "WORK")) (subpath "/System") (subpath "/usr") (subpath "/private/var/db/dyld"))
+(allow file-read-metadata (literal "/") (literal "/private") (literal "/private/var") (literal "/private/var/db") (literal "/dev") (literal "/dev/null") (literal "/dev/urandom"))
+(allow file-read-metadata PARENTS)
 ; the interpreter, its stdlib, site-packages (numpy/trimesh/manifold3d/scipy) and dylibs it links.
 (allow file-read* (subpath (param "PYPREFIX")) (subpath (param "PYBASE")) (subpath (param "VENV")))
 ; system frameworks and libs every Mach-O binary needs (dyld shared cache, libSystem, Accelerate for numpy).
@@ -156,6 +163,41 @@ PROFILE = """\
 
 def _real(p: str | Path) -> str:
     return os.path.realpath(str(p))
+
+
+def _symlink_chain(path: str) -> list[str]:
+    """Each hop of a symlinked interpreter path, so exec can resolve it (metadata only)."""
+    hops: list[str] = []
+    current = path
+    for _ in range(16):
+        hops.append(current)
+        if not os.path.islink(current):
+            break
+        target = os.readlink(current)
+        current = target if os.path.isabs(target) else os.path.join(os.path.dirname(current), target)
+        current = os.path.normpath(current)
+    return hops
+
+
+def _profile_for(work: Path) -> tuple[list[str], str]:
+    """``-D`` arguments plus the profile text with metadata allowed on each parent directory (literal)."""
+    args = _profile_params(work)
+    paths = [a.split("=", 1)[1] for a in args if "=" in a and not a == "-D"]
+    paths += _symlink_chain(sys.executable) + [sys.base_prefix, sys.prefix]
+    parents: list[str] = []
+    for raw in paths:
+        for parent in [Path(raw), *Path(raw).parents]:
+            if str(parent) not in parents and str(parent) != "/":
+                parents.append(str(parent))
+    for i, parent in enumerate(parents):
+        args += ["-D", f"PARENT{i}={parent}"]
+    # a framework build (Homebrew) stats files beside Versions/<n> in its install root (metadata only)
+    base = _real(sys.base_prefix)
+    root = base.split("/Frameworks/Python.framework/")[0] if "/Frameworks/Python.framework/" in base else base
+    args += ["-D", f"PYROOT={root}"]
+    lines = "".join(f' (literal (param "PARENT{i}"))' for i in range(len(parents)))
+    text = PROFILE.replace("(allow file-read-metadata PARENTS)", f'(allow file-read-metadata (subpath (param "PYROOT")){lines})')
+    return args, text
 
 
 def _profile_params(work: Path) -> list[str]:
@@ -233,6 +275,54 @@ def _kill_group(proc: subprocess.Popen) -> None:
         pass
 
 
+def dir_size_bytes(path: Path) -> int:
+    """Total size of the regular files under ``path`` (lstat, links are not followed)."""
+    total = 0
+    stack = [str(path)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                for entry in it:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(entry.path)
+                    else:
+                        total += st.st_size
+        except OSError:
+            continue
+    return total
+
+
+def read_regular_file(path: Path, cap_bytes: int) -> Optional[bytes]:
+    """The bytes of ``path`` when it is a regular, unlinked file within ``cap_bytes``; else None.
+    Opened without following links and checked again on the open descriptor, read once."""
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > cap_bytes:
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        after = os.fstat(fd)
+        if not stat.S_ISREG(after.st_mode) or after.st_nlink != 1 or after.st_size > cap_bytes:
+            return None
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+            return None
+        data = os.read(fd, cap_bytes + 1)
+        chunks = [data]
+        while data and sum(map(len, chunks)) <= cap_bytes:
+            data = os.read(fd, 1 << 20)
+            chunks.append(data)
+        out = b"".join(chunks)
+        return out if len(out) <= cap_bytes else None
+    finally:
+        os.close(fd)
+
+
 def run_script(src: str, work_dir: Path, limits: Limits, check: bool = True) -> RunResult:
     if not available():
         raise SandboxUnavailable("the macOS sandbox is not available; model code is never run unsandboxed")
@@ -245,7 +335,8 @@ def run_script(src: str, work_dir: Path, limits: Limits, check: bool = True) -> 
     glb = work / "model.glb"
     glb.unlink(missing_ok=True)
 
-    cmd = [SANDBOX_EXEC, *_profile_params(work), "-p", PROFILE, sys.executable, "-I", "-c", BOOTSTRAP]
+    args, profile = _profile_for(work)
+    cmd = [SANDBOX_EXEC, *args, "-p", profile, sys.executable, "-I", "-c", BOOTSTRAP]
     started = time.monotonic()
     reason: Optional[str] = None
     with tempfile.TemporaryFile() as err:
@@ -265,6 +356,8 @@ def run_script(src: str, work_dir: Path, limits: Limits, check: bool = True) -> 
                     reason = "timeout"
                 elif _group_rss_mb(proc.pid) > limits.mem_mb:
                     reason = "memory"
+                elif dir_size_bytes(work) > limits.dir_mb * 1024 * 1024:
+                    reason = "disk"
                 if reason:
                     _kill_group(proc)
                     break
@@ -289,11 +382,18 @@ def run_script(src: str, work_dir: Path, limits: Limits, check: bool = True) -> 
             reason = "cpu"
         elif code != 0:
             reason = "exit"
-        elif not glb.exists() or glb.stat().st_size == 0:
+        elif not os.path.lexists(glb):
+            reason = "no_output"
+    data: Optional[bytes] = None
+    if reason is None:
+        data = read_regular_file(glb, limits.output_mb * 1024 * 1024)
+        if data is None:
+            reason = "bad_output"
+        elif not data:
             reason = "no_output"
     if reason:
         return RunResult(False, None, tail, seconds, reason)
-    return RunResult(True, glb, tail, seconds, None)
+    return RunResult(True, glb, tail, seconds, None, glb_bytes=data)
 
 
 def _read_params(work: Path) -> dict:

@@ -243,5 +243,67 @@ def test_fork_bomb_is_contained(tmp_path):
     assert out == "0", (out, res.stderr_tail)
     import psutil
 
-    time_left = [p for p in psutil.process_iter(["cmdline"]) if p.info["cmdline"] and "gen.py" in " ".join(p.info["cmdline"])]
-    assert time_left == []
+    import os
+
+    work = os.path.realpath(tmp_path / "work")
+    left = []
+    for p in psutil.process_iter():
+        try:
+            if os.path.realpath(p.cwd()) == work:
+                left.append(p.pid)
+        except (psutil.Error, OSError):
+            continue
+    assert left == []
+
+
+def _glb_probe(tmp_path, body, limits=None, outside=None):
+    work = tmp_path / "work"
+    work.mkdir()
+    return run_script("import os\nimport json\n" + textwrap.dedent(body), work, limits or Limits(cpu_s=20, wall_s=30, mem_mb=2048, file_mb=10), check=False)
+
+
+def test_run_result_has_glb_bytes_for_a_regular_output(tmp_path):
+    if not sandbox.available():
+        pytest.skip("macOS sandbox-exec not available")
+    work = tmp_path / "work"
+    work.mkdir()
+    res = run_script(CLEAN, work, Limits(cpu_s=60, wall_s=120, mem_mb=2048, file_mb=50))
+    assert res.ok and res.glb_bytes and res.glb_bytes[:4] == b"glTF"
+
+
+@needs_sandbox
+def test_symlinked_output_is_bad_output_and_never_read(tmp_path_factory, tmp_path):
+    secret = tmp_path_factory.mktemp("elsewhere") / "secret.bin"
+    secret.write_bytes(b"OUTSIDE-CANARY-BYTES")
+    res = _glb_probe(tmp_path, f"os.symlink({str(secret)!r}, 'model.glb')\n")
+    assert not res.ok and res.reason == "bad_output"
+    assert res.glb is None and res.glb_bytes is None
+    assert "OUTSIDE-CANARY" not in repr(res)
+
+
+@needs_sandbox
+def test_hard_linked_output_is_bad_output(tmp_path):
+    res = _glb_probe(tmp_path, "open('a.bin','wb').write(b'x'*10)\nos.link('a.bin', 'model.glb')\n")
+    assert not res.ok and res.reason == "bad_output"
+
+
+@needs_sandbox
+def test_over_cap_output_is_bad_output(tmp_path):
+    res = _glb_probe(tmp_path, "open('model.glb','wb').write(b'x'*(2*1024*1024))\n", Limits(cpu_s=20, wall_s=30, mem_mb=2048, file_mb=10, output_mb=1))
+    assert not res.ok and res.reason == "bad_output"
+
+
+@needs_sandbox
+def test_work_dir_total_size_is_capped(tmp_path):
+    res = _glb_probe(
+        tmp_path,
+        """
+        import time
+        for i in range(200):
+            open(f"f{i}.bin", "wb").write(b"x" * (512 * 1024))
+            time.sleep(0.02)
+        time.sleep(20)
+        """,
+        Limits(cpu_s=20, wall_s=30, mem_mb=2048, file_mb=10, dir_mb=5),
+    )
+    assert not res.ok and res.reason == "disk"
