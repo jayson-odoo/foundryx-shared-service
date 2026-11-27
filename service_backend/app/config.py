@@ -145,6 +145,12 @@ class Settings(BaseSettings):
     throttle_lead_gateway_window_minutes: int = 15
     throttle_lead_gateway_key_max_requests: int = 600
     throttle_lead_gateway_key_window_minutes: int = 5
+    # Planner 3D gateway (lane PLANNER-3D-S1, contract 2.1 + 4): failed keys per IP,
+    # and the per-key request budget (600 per 5 minutes, the lead-capture defaults).
+    throttle_planner3d_gateway_max_fails: int = 20
+    throttle_planner3d_gateway_window_minutes: int = 15
+    throttle_planner3d_gateway_key_max_requests: int = 600
+    throttle_planner3d_gateway_key_window_minutes: int = 5
     # Omnichannel replace-token attempts per channel (plan 42).
     throttle_channel_token_max: int = 10
     throttle_channel_token_window_minutes: int = 10
@@ -466,6 +472,9 @@ class Settings(BaseSettings):
     # heart-beating for this many minutes is handed out again.
     planner3d_worker_token_sha256: str = ""
     planner3d_lease_minutes: int = 10
+    # S1 gateway (contract 4): jobs of one tenant that may wait as `queued`; one
+    # more submit answers 429 queue_full.
+    planner3d_max_queued_jobs: int = 20
     # Fernet key for encrypting channel credentials at rest. A throwaway dev
     # key is generated per-process if unset (NEVER rely on that in prod - set
     # OMNICHANNEL_FERNET_KEY so encrypted credentials survive a restart).
