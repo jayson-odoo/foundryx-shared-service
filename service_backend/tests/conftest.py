@@ -929,6 +929,21 @@ def key_limit_redis(monkeypatch):
     _reset_key_limit_state(key_limits)
 
 
+@pytest.fixture(autouse=True)
+def autocount_server_gate_off():
+    """AUTOCOUNT-LOAD-STRATEGY: the one-request-per-server gate and safety
+    stop are off unless a test switches them on with its own fakeredis
+    (``tests/test_autocount_load_strategy.py``) - no test reaches a real Redis."""
+    try:
+        from modules.autocount.http_source import server_gate
+    except ImportError:
+        yield
+        return
+    server_gate.set_client(False)
+    yield
+    server_gate.set_client(False)
+
+
 class _EchoDocDb:
     """Plan 73 test default: the AutoCount DB read echoes the document's own header and rows, every row's Further
     Description as the GET carries it (else empty). A test that cares patches ``WriteFrame._line_notes_source``."""
