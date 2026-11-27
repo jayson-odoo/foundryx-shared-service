@@ -28,4 +28,8 @@ def build_engine(name: str) -> MultiEngine:
         from .triposr import TripoSREngine
 
         return MultiEngine([TripoSREngine(), RenderEngine(), ConvertEngine()])
+    if name == "claude":
+        from .claude_procedural import ClaudeProceduralEngine
+
+        return MultiEngine([ClaudeProceduralEngine(), RenderEngine(), ConvertEngine()])
     raise ValueError(f"unknown engine: {name}")

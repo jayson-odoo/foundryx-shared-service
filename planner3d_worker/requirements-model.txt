@@ -13,3 +13,5 @@ xatlas
 imageio
 fast-simplification
 numpy<2.3
+anthropic
+manifold3d

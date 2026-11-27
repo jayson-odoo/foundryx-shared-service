@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="planner3d_worker")
     parser.add_argument("--base-url", required=True, help="Shared Service API origin")
     parser.add_argument("--name", required=True, help="this worker's name")
-    parser.add_argument("--engine", choices=["stub", "triposr"], default="stub")
+    parser.add_argument("--engine", choices=["stub", "triposr", "claude"], default="stub")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="handle at most one job")
     mode.add_argument("--loop", action="store_true", help="poll forever (default)")

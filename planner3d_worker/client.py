@@ -40,6 +40,10 @@ GENERIC_ERRORS = {
     "memory_cap": "The job used more memory than allowed.",
     "timeout": "The job took longer than allowed.",
     "bad_input": "The job inputs were not valid.",
+    "spend_cap": "The model spend limit has been reached.",
+    "generation_failed": "No usable 3D model could be generated.",
+    "no_api_key": "The model service is not configured.",
+    "sandbox_unavailable": "The model builder is not available on this worker.",
 }
 
 
@@ -63,6 +67,15 @@ def _is_uuid(value: object) -> bool:
 
 def _safe_name(name: object) -> bool:
     return isinstance(name, str) and SAFE_NAME.fullmatch(name) is not None and ".." not in name
+
+
+ENGINE_FAILURE = re.compile(r"EngineFailure: ([a-z_]+): ")
+
+
+def _engine_failure_code(detail: str) -> str:
+    """An engine failure arrives as ``EngineFailure: <code>: <message>``; only a known code is used."""
+    m = ENGINE_FAILURE.match(detail)
+    return m.group(1) if m and m.group(1) in GENERIC_ERRORS else "worker_failed"
 
 
 class Cancelled(Exception):
@@ -181,7 +194,8 @@ class Worker:
         except JobCancelled:
             raise Cancelled()
         except Exception as exc:  # noqa: BLE001 - any engine failure is reported, not raised
-            self._finish_failed(job_id, "worker_failed", str(exc) or type(exc).__name__)
+            detail = str(exc) or type(exc).__name__
+            self._finish_failed(job_id, _engine_failure_code(detail), detail)
             return
 
         self._heartbeat(job_id, 90)
