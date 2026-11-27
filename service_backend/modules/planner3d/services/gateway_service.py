@@ -26,6 +26,7 @@ from ..models import (
     DIRECTION_IN,
     DIRECTION_OUT,
     KIND_MODEL,
+    STATUS_CANCELLED,
     STATUS_QUEUED,
     STATUS_SUCCEEDED,
     P3Job,
@@ -43,6 +44,10 @@ UPLOAD_CAP = 20 * MB
 UPLOAD_TTL = timedelta(hours=24)
 IDEMPOTENCY_WINDOW = timedelta(hours=24)
 MAX_PHOTOS = 3
+# Input photos are decoded on the worker: a tiny file claiming a huge size is a
+# decompression bomb there. A 48 MP phone photo (8064 px) still passes.
+MAX_PHOTO_SIDE_PX = 8192
+MAX_PHOTO_PIXELS = 50_000_000
 
 
 def _now() -> datetime:
@@ -69,10 +74,15 @@ def upload(db: Session, tenant_id: str, key_id: str, data: bytes) -> Dict[str, A
     mime = sniff.sniff_image(data)
     if mime is None:
         raise P3Error(415, "unsupported_file", "Send a PNG, JPEG or WebP image.")
+    too_large = P3Error(422, "image_too_large", f"Images may be at most {MAX_PHOTO_SIDE_PX} pixels per side.")
     try:
-        Image.open(io.BytesIO(data)).size  # header only: an image that cannot be read is refused
+        width, height = Image.open(io.BytesIO(data)).size  # header only, no pixels decoded
+    except Image.DecompressionBombError as exc:
+        raise too_large from exc
     except Exception as exc:  # noqa: BLE001
         raise P3Error(415, "unsupported_file", "The image could not be read.") from exc
+    if max(width, height) > MAX_PHOTO_SIDE_PX or width * height > MAX_PHOTO_PIXELS:
+        raise too_large
     upload_id = f"upl_{uuid.uuid4().hex}"
     key = storage_for_tenant(db, tenant_id).save(
         f"planner3d/{tenant_id}/uploads/{upload_id}.{sniff.IMAGE_EXT[mime]}", data, mime
@@ -108,16 +118,25 @@ def purge_unused_uploads(db: Session, limit: int = 500) -> int:
     """Remove uploads no job took once they expired (contract 3.2). An upload a job
     used is kept: its blob is that job's input."""
     rows = (
-        db.query(P3Upload)
+        db.query(P3Upload.id, P3Upload.tenant_id, P3Upload.storage_key)
         .filter(P3Upload.used_at.is_(None), P3Upload.expires_at < _now())
         .limit(limit)
         .all()
     )
-    for row in rows:
-        _drop_blob(db, row.tenant_id, row.storage_key)
-        db.delete(row)
-    db.commit()
-    return len(rows)
+    removed = 0
+    for upload_id, tenant_id, key in rows:
+        # Guarded: a job that took the upload since the read above (used_at set)
+        # keeps it, and its blob. The blob goes only after the row is gone.
+        gone = (
+            db.query(P3Upload)
+            .filter(P3Upload.id == upload_id, P3Upload.used_at.is_(None))
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        if gone == 1:
+            _drop_blob(db, tenant_id, key)
+            removed += 1
+    return removed
 
 
 # ── model jobs ──────────────────────────────────────────────────────────────
@@ -191,7 +210,9 @@ def create_model(
     for upload_id in ids:
         row = uploads.get(upload_id)
         expires = None if row is None else (row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=timezone.utc))
-        if row is None or (row.used_at is None and expires < now):
+        # Expired is expired for a NEW job, used or not (a used upload's blob stays
+        # only as the earlier job's input).
+        if row is None or expires < now:
             raise _bad("An upload id is unknown or has expired.", "uploadIds")
 
     queued = db.query(P3Job).filter(P3Job.tenant_id == tenant_id, P3Job.status == STATUS_QUEUED).count()
@@ -264,7 +285,7 @@ def result_files(db: Session, job: P3Job) -> List[Dict[str, Any]]:
         url, expires = signed_files.signed_url(f.id)
         out.append(
             {
-                "role": f.role,
+                "role": _wire_role(job.kind, f.name, f.role),
                 "name": f.name,
                 "mime": f.mime,
                 "size": f.size,
@@ -277,9 +298,23 @@ def result_files(db: Session, job: P3Job) -> List[Dict[str, Any]]:
 
 
 def error_out(job: P3Job) -> Optional[Dict[str, str]]:
-    if not job.error_code:
-        return None
-    return {"code": job.error_code, "message": job.error_message or ""}
+    if job.error_code:
+        return {"code": job.error_code, "message": job.error_message or ""}
+    if job.status == STATUS_CANCELLED:  # contract 5.6/5.7: failed or cancelled carry an error
+        return {"code": "cancelled", "message": "The job was cancelled."}
+    return None
+
+
+def _wire_role(kind: str, name: str, stored: str) -> str:
+    """The role the consumer reads, from the file NAME (the worker may omit ``role``,
+    in which case S3 stores the name): candidate / model / export."""
+    if kind == KIND_MODEL and name.endswith(".glb"):
+        return "candidate"
+    if name == "model.glb":
+        return "model"
+    if name.startswith("model."):
+        return "export"
+    return stored
 
 
 def present(db: Session, job: P3Job) -> Dict[str, Any]:

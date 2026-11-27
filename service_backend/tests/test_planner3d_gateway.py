@@ -373,7 +373,9 @@ def test_failed_and_cancelled_jobs(client, key, staff):
     assert job["error"] == {"code": "worker_failed", "message": "boom"}
     other = create(client, key, [upl], idem="c").json()["id"]
     assert client.post(f"/planner3d/jobs/{other}/cancel", headers=staff).status_code == 200
-    assert _job(client, key, other)["status"] == "cancelled"
+    cancelled = _job(client, key, other)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["error"] == {"code": "cancelled", "message": "The job was cancelled."}
 
 
 # ── model.candidates_ready push ─────────────────────────────────────────────
@@ -519,3 +521,68 @@ def test_stale_key_revoke_says_so(client, staff, key):
         headers=staff,
     )
     assert res.status_code == 404 and res.json()["detail"] == "This key was already revoked."
+
+
+# ── security review round 1 ─────────────────────────────────────────────────
+
+def _png_header_only(width: int, height: int) -> bytes:
+    """A PNG whose header claims ``width`` x ``height`` (no real pixels): a bomb."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(b"\0")) + chunk(b"IEND", b"")
+
+
+def test_upload_with_huge_pixel_size_is_refused(client, key):
+    res = upload(client, key, _png_header_only(60000, 60000))
+    assert res.status_code == 422 and res.json()["error"]["code"] == "image_too_large"
+
+
+def test_chunked_upload_without_length_is_refused(client, key):
+    boundary = "p3boundary"
+    body = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"p\"\r\n"
+        "Content-Type: image/png\r\n\r\n"
+    ).encode() + png_bytes() + f"\r\n--{boundary}--\r\n".encode()
+
+    def stream():
+        yield body
+
+    res = client.post(
+        f"{BASE}/uploads",
+        content=stream(),
+        headers={**bearer(key), "Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    assert res.status_code == 411 and res.json()["error"]["code"] == "length_required"
+
+
+def test_a_used_upload_also_expires_for_new_jobs(client, p3, key):
+    from modules.planner3d.models import P3Upload
+
+    upl = upload(client, key).json()["id"]
+    assert create(client, key, [upl], idem="first").status_code == 202
+    db = p3()
+    try:
+        db.get(P3Upload, upl).expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+    finally:
+        db.close()
+    res = create(client, key, [upl], idem="second")
+    assert res.status_code == 422 and res.json()["error"]["code"] == "invalid_request"
+
+
+def test_candidates_read_as_candidate_even_when_the_worker_sent_no_role(client, key):
+    upl = upload(client, key).json()["id"]
+    job_id = create(client, key, [upl]).json()["id"]
+    assert claim(client, ["model"]).status_code == 200
+    for i in (1, 2):
+        res = client.put(
+            f"/planner3d/worker/jobs/{job_id}/outputs/candidate-{i}.glb", content=glb_bytes(f"r{i}"), headers=worker_headers()
+        )
+        assert res.status_code == 201
+    assert finish(client, job_id).status_code == 200
+    assert {f["role"] for f in _job(client, key, job_id)["result"]["files"]} == {"candidate"}

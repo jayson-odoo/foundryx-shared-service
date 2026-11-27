@@ -84,4 +84,7 @@ If it stalls:
 | CRM: "The model service could not be reached" | `PLANNER_SS_URL` / key; SS answers `401 invalid_api_key` (wrong or revoked key), `403 service_not_enabled` (module off or tenant suspended), `429` (budget, `Retry-After`) |
 | Job stays `queued` | the worker is off, or its token hash does not match (`401` in the worker log) |
 | Job `succeeded` but the CRM stays Processing | the receiver: URL not public https, wrong signing secret (CRM 401), CRM copy unreachable; SS retries 1m, 5m, 30m, 2h, 6h, 24h. The CRM marks a job Failed after 15 minutes |
-| CRM fetch fails | `PUBLIC_BASE_URL` is not the public host, or the link expired (1 hour; the CRM reads `GET /jobs/{id}` for a fresh one) |
+| CRM fetch fails | `PUBLIC_BASE_URL` is not the public host, or the link expired (1 hour; the CRM reads `GET /jobs/{id}` for a fresh one; links inside a RETRIED event are the ones signed when the event was queued) |
+
+Dev only: with `CELERY_TASK_ALWAYS_EAGER=true` the event is sent inline, so the worker's `finish` call
+waits for the receiver (up to 10 seconds per receiver). Production sends it from the Celery worker.

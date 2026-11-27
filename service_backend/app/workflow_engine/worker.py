@@ -479,8 +479,11 @@ def planner3d_deliver(delivery_id: str) -> str:
         if outcome == "retry" and not settings.celery_task_always_eager:
             row = db.query(P3Delivery).filter(P3Delivery.id == delivery_id).first()
             if row is not None and row.next_at is not None:
+                import math
+
+                # Rounded UP (+1 s): a task that fires before next_at is skipped by the claim.
                 delay = (row.next_at - datetime.now(timezone.utc)).total_seconds()
-                planner3d_deliver.apply_async((delivery_id,), countdown=max(1, int(delay)))
+                planner3d_deliver.apply_async((delivery_id,), countdown=max(1, math.ceil(delay) + 1))
         return outcome
     except Exception:  # noqa: BLE001
         logger.exception("planner3d delivery %s failed", delivery_id)

@@ -32,8 +32,12 @@ def _api(exc: P3Error) -> ApiError:
 
 async def _read_file_part(request: Request) -> bytes:
     """The multipart part ``file``, read with a cap (cap + 1 bytes proves it is over)."""
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > gateway_service.UPLOAD_CAP + 64 * 1024:
+    # The cap must hold BEFORE the body is parsed: Starlette spools a file part to
+    # disk without a limit, so a body with no declared length is refused (411).
+    declared = (request.headers.get("content-length") or "").strip()
+    if not declared.isdigit():
+        raise P3Error(411, "length_required", "Send the upload with a Content-Length header.")
+    if int(declared) > gateway_service.UPLOAD_CAP + 64 * 1024:
         raise P3Error(413, "file_too_large", "The file is over the 20 MB limit.")
     try:
         form = await request.form()
