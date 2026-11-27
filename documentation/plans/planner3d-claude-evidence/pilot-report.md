@@ -46,3 +46,21 @@ ruled (option a). Inputs read read-only from the CRM catalogue connector: produc
 
 Owner marks the 23 products. Then: approved GLBs go through C5 once ss#364 is live; step 4 (full catalogue,
 US$700 cap, batches with a ledger, stop on a falling pass rate) only after the dims fix in finding 1.
+
+## Round 2: all kinds on Opus, colour renders (27/11/2026, owner ruling ~22:35)
+
+Round 1 owner marks: 0 of 23 passed, all for colour (the review renders were flat grey; the GLBs carried the
+right finishes) and 2 basins also for shape. Fixes: renders show glTF base colour and metal finish; the prompt
+requires named PBR materials; every kind runs on Opus (WC and basin with distance fields).
+
+| Kind | Products | Model made | Avg US$ / product | Avg time | Max faces | Max size error |
+|---|---|---|---|---|---|---|
+| Basin | 5 | 5 | 0.33 | 2 min 20 s | 58,384 | 0 mm |
+| Accessory | 5 | 5 | 0.25 | 1 min 25 s | 44,708 | 0 mm |
+| WC | 5 | 5 | 0.42 | 3 min 33 s | 55,204 | 0 mm |
+| Tap | 3 | 3 | 0.31 | 1 min 37 s | 11,194 | 0 mm |
+| Shower set | 5 | 5 | 0.38 | 2 min 10 s | 49,706 | 0 mm |
+
+Opus round: US$7.77 for 23 products (US$0.34 average). At that rate the ~1,804-product catalogue is about
+US$610, inside the US$700 envelope only if the CRM-DIMS-BACKFILL lane stays small; crew holds the total.
+Owner re-review: same page, fresh marks (`verdicts_opus`); round 1 marks kept as a record.
