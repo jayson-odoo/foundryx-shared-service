@@ -88,6 +88,20 @@ export interface IntegrationProvider {
   testTarget: { label: string; placeholder: string } | null;
 }
 
+/**
+ * SS-STOCK-PAGE-PAUSE-CONFIG - the hint under AutoCount's "Pause between
+ * pages (seconds)": the connection's heaviest task's last successful run.
+ */
+export interface PageRunFieldHint {
+  kind: 'pageRun';
+  pages: number;
+  lastRunSeconds: number;
+  /** The pause saved when the hint was computed (the last run's pause). */
+  savedPauseSeconds: number;
+}
+
+export type FieldHint = PageRunFieldHint;
+
 /** A tenant's configured connection - credentials are NEVER returned. */
 export interface Connection {
   id: string;
@@ -105,6 +119,11 @@ export interface Connection {
   lastError: string | null;
   /** Outbox dispatcher throttle (plan 09 §5 - low-spec SMTP guard). */
   rateLimitPerMinute: number;
+  /**
+   * Read-only hints a provider computes for ONE connection, keyed by field
+   * key (single-connection read only; absent on list rows).
+   */
+  fieldHints?: Record<string, FieldHint>;
   createdAt: string; // ISO
   updatedAt: string; // ISO
 }

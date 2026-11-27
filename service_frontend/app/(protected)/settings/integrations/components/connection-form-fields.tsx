@@ -30,6 +30,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import { useFx } from '@/hooks/use-fx';
 import type { Connection, IntegrationProvider, ProviderField } from '@/types/integration';
 import { CONNECTION_STATUS_REGISTRY } from './connection-status';
+import { fieldHintText } from './field-hint';
 import { FxSavedSecretField, fxSavedSecretWord } from './fx-saved-secret-field';
 import {
   FxConnectionChip,
@@ -80,6 +81,14 @@ function fieldName(f: ProviderField): `config.${string}` | `credentials.${string
   return f.secret ? `credentials.${f.key}` : `config.${f.key}`;
 }
 
+function FieldHintLine({ fieldKey, text }: { fieldKey: string; text: string }) {
+  return (
+    <p className="text-xs text-muted-foreground" data-field-hint={fieldKey}>
+      {text}
+    </p>
+  );
+}
+
 /** One provider-declared field - control by type, read mode shows the value. */
 function ProviderFieldRow({
   f,
@@ -95,10 +104,15 @@ function ProviderFieldRow({
   connection: Connection | null;
 }) {
   const fx = useFx();
+  // SS-STOCK-PAGE-PAUSE-CONFIG - a provider's read-only hint under the field
+  // (e.g. AutoCount's pages/run-time estimate), live while editing.
+  const liveValue = useWatch({ control: form.control, name: fieldName(f) });
+  const hint = connection?.fieldHints?.[f.key];
   if (!editing) {
     // Same resolution as the edit prefill (`storedOrEffective`): a legacy
     // Sorento connection reads "1 (legacy)" here too, never "-".
     const value = f.secret ? undefined : storedOrEffective(f, connection?.config ?? {});
+    const hintText = f.secret ? null : fieldHintText(hint, value);
     return (
       <FormRow label={f.label}>
         {f.secret ? (
@@ -116,9 +130,11 @@ function ProviderFieldRow({
         ) : (
           value || '-'
         )}
+        {hintText && <FieldHintLine fieldKey={f.key} text={hintText} />}
       </FormRow>
     );
   }
+  const editHintText = f.secret ? null : fieldHintText(hint, liveValue);
 
   return (
     <FormRow label={f.label} required={f.required && (creating || !f.secret)}>
@@ -165,6 +181,7 @@ function ProviderFieldRow({
                 />
               )}
             </FormControl>
+            {editHintText && <FieldHintLine fieldKey={f.key} text={editHintText} />}
             <FormMessage />
           </FormItem>
         )}
