@@ -37,3 +37,23 @@ def test_generic_errors_include_the_new_codes():
 
     for code in ("spend_cap", "generation_failed", "no_api_key", "sandbox_unavailable"):
         assert code in GENERIC_ERRORS
+
+
+class ParamsEngine(FakeEngine):
+    """Module-level so the capped child process can unpickle it."""
+
+    def run(self, kind, inputs, params, out_dir):
+        from pathlib import Path
+
+        Path(out_dir, "candidate-1.glb").write_bytes(b"glTF")
+        Path(out_dir, "candidate-1.json").write_text(json.dumps(params))
+        return [("candidate-1.glb", "candidate"), ("candidate-1.json", "report")]
+
+
+def test_worker_passes_the_job_id_to_the_engine_as_underscore_job_id(tmp_path):
+    from planner3d_worker.tests.test_client import JOB
+
+    ss = FakeSS("model")
+    _worker(ss, tmp_path, engine=ParamsEngine()).run_once()
+    put = next(r for r in ss.calls if r.method == "PUT" and r.url.path.endswith("/candidate-1.json"))
+    assert json.loads(put.content)["_jobId"] == JOB

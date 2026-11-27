@@ -335,3 +335,50 @@ def test_build_engine_claude_knows_the_model_kind():
     from planner3d_worker.engines import build_engine
 
     assert "model" in build_engine("claude").kinds
+
+
+def test_a_model_with_too_many_faces_fails_the_version_and_is_never_rendered(tmp_path, monkeypatch):
+    import planner3d_worker.engines.claude_procedural as mod
+
+    monkeypatch.setattr(mod, "MAX_FACES", 5)  # a box has 12
+    rendered = []
+    monkeypatch.setattr(mod, "render_views", lambda *a, **k: rendered.append(1) or {})
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2"))])
+    with pytest.raises(EngineFailure) as e:
+        _run(engine, tmp_path)
+    assert e.value.code == "generation_failed" and rendered == []
+    assert "too many faces" in _last_user_text(client.calls[1])
+
+
+def test_unknown_model_price_fails_before_any_call(tmp_path):
+    routing = _routing(tmp_path)
+    routing._prices = {}
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2"))], routing=routing)
+    with pytest.raises(EngineFailure) as e:
+        _run(engine, tmp_path)
+    assert e.value.code == "generation_failed" and "no price for model" in str(e.value)
+    assert client.calls == []
+
+
+def test_time_budget_skips_a_further_version_once_two_are_good(tmp_path):
+    engine, client, _, _ = _make(
+        tmp_path, [reply(box_script("v1")), reply(box_script("v2")), reply(box_script("v3"))], routing=_routing(tmp_path, default_versions=3)
+    )
+    engine.time_budget_s = 0.0
+    produced, _ = _run(engine, tmp_path)
+    assert len(client.calls) == 2
+    assert {n for n, _r in produced} == {"candidate-1.glb", "candidate-1.json", "candidate-2.glb", "candidate-2.json"}
+
+
+def test_time_budget_never_blocks_the_first_two_versions(tmp_path):
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2"))])
+    engine.time_budget_s = 0.0
+    _run(engine, tmp_path)
+    assert len(client.calls) == 2
+
+
+def test_job_id_from_params_is_the_ledger_job_ref(tmp_path):
+    engine, _, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2"))])
+    _run(engine, tmp_path, {"_jobId": "job-123"})
+    lines = [json.loads(l) for l in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    assert {l["jobRef"] for l in lines} == {"job-123"}

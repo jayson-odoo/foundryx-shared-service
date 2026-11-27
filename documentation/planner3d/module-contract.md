@@ -163,7 +163,9 @@ status, the times, the error and the usage itself. Core `background_jobs` rows a
 days and only carry the short work steps (section 4.1), so nothing on the wire reads them.
 
 `error.code` values: `gpu_unavailable`, `worker_failed`, `timeout`, `product_changed` (render only, see 3.4),
-`input_unreadable`, `cancelled`, `worker_lost` (the worker stopped answering three times, section 6.2).
+`input_unreadable`, `cancelled`, `worker_lost` (the worker stopped answering three times, section 6.2),
+`spend_cap` (the model engine's spend limit is reached), `generation_failed` (no usable model after the allowed attempts),
+`no_api_key` (the model engine has no key configured), `sandbox_unavailable` (the model engine cannot run its scripts on this worker).
 
 `usage.gpuSeconds` is a whole number, the worker's figure rounded up.
 

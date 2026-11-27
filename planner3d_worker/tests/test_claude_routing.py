@@ -69,3 +69,21 @@ def test_shipped_default_file_is_sonnet_primitives_with_no_categories():
     assert p.approach == "primitives" and "sonnet" in p.model
     assert r.spend_cap_usd == 700.0
     assert r.prices(p.model)["input"] == 2.0
+
+
+def test_default_load_uses_env_then_home_file_then_shipped(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import planner3d_worker.claude.routing as mod
+
+    custom = _file(tmp_path, spendCapUsd=123)
+    monkeypatch.setenv("PLANNER3D_CLAUDE_ROUTING", str(custom))
+    assert Routing.load().spend_cap_usd == 123.0
+    monkeypatch.delenv("PLANNER3D_CLAUDE_ROUTING")
+    home = tmp_path / "home"
+    (home / "planner3d").mkdir(parents=True)
+    (home / "planner3d" / "claude-routing.json").write_text(custom.read_text())
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    assert Routing.load().spend_cap_usd == 123.0
+    (home / "planner3d" / "claude-routing.json").unlink()
+    assert Routing.load().spend_cap_usd == 700.0

@@ -184,7 +184,8 @@ class Worker:
             return
 
         try:
-            produced, peak, seconds = self._run_engine(job_id, kind, paths, params, out_dir)
+            # `_jobId` lets an engine tag its spend ledger with the job; engines that do not need it ignore it
+            produced, peak, seconds = self._run_engine(job_id, kind, paths, {**params, "_jobId": job_id}, out_dir)
         except MemoryCapExceeded as exc:
             self._finish_failed(job_id, "memory_cap", str(exc))
             return

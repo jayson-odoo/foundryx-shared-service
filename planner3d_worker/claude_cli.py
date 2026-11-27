@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--approach", choices=["sdf", "primitives"])
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--ledger", type=Path)
+    ap.add_argument("--routing", type=Path, help="routing JSON (default: env / ~/planner3d/claude-routing.json / shipped)")
     ap.add_argument("--ref", required=True, help="product code, recorded in the ledger")
     args = ap.parse_args(argv)
 
@@ -35,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         length, width, height = (float(x) for x in args.dims.split(","))
     except ValueError:
         ap.error("--dims must be L,W,H in mm")
-    routing = Routing.load()
+    routing = Routing.load(args.routing)
     if args.model or args.approach:
         profile = routing.profile_for({"code": args.category} if args.category else None)
         profile = dataclasses.replace(profile, model=args.model or profile.model, approach=args.approach or profile.approach)

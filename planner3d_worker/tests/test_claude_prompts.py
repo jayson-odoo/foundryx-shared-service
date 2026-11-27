@@ -93,3 +93,25 @@ def test_refine_turn_carries_renders_measurements_and_error():
 def test_refine_turn_without_error_has_no_error_text():
     blocks = refine_turn({"front": b"a"}, {"length": 1, "width": 2, "height": 3}, {"length": 1, "width": 2, "height": 3}, None)
     assert "Traceback" not in _text(blocks)
+
+
+def test_large_images_are_downscaled_and_kept_small(tmp_path):
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    arr = rng.integers(0, 255, (4000, 6000, 3), dtype=np.uint8)
+    path = tmp_path / "photo-1.png"
+    Image.fromarray(arr).save(path, "PNG")
+    blocks = first_turn([path], None, DIMS, None, PRIMS)
+    src = _images(blocks)[0]["source"]
+    data = base64.b64decode(src["data"])
+    assert len(data) < 3_500_000
+    img = Image.open(io.BytesIO(data))
+    assert max(img.size) <= 1568
+    assert src["media_type"] in ("image/jpeg", "image/png")
+
+
+def test_small_png_is_passed_through_unchanged(tmp_path):
+    photo = _png(tmp_path / "photo-1.png", (1, 2, 3))
+    imgs = _images(first_turn([photo], None, DIMS, None, PRIMS))
+    assert base64.b64decode(imgs[0]["source"]["data"]) == photo.read_bytes()

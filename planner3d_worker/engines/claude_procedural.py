@@ -10,8 +10,8 @@ engine only; it is never logged, written, put in an exception or passed on to th
 from __future__ import annotations
 
 import json
-import shutil
-import tempfile
+import io
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -28,6 +28,8 @@ KEY_ACCOUNT = "planner3d"
 KEY_SERVICE = "anthropic-api-key"
 MAX_TOKENS = 32000
 MIN_GOOD = 2
+MAX_FACES = 300_000
+DEFAULT_TIME_BUDGET_S = 3000.0
 BAD_STOPS = {"refusal": "the model refused the request", "max_tokens": "the reply hit the output token limit"}
 
 
@@ -47,7 +49,7 @@ class _Version:
         self.usd = 0.0
         self.seconds = 0.0
         self.script = ""
-        self.glb: Optional[Path] = None
+        self.glb: Optional[bytes] = None
         self.measured: dict = {}
         self.error: Optional[str] = None
 
@@ -70,7 +72,9 @@ class ClaudeProceduralEngine:
         routing: Optional[Routing] = None,
         ledger: Optional[Ledger] = None,
         run_script: Optional[Callable] = None,
+        time_budget_s: float = DEFAULT_TIME_BUDGET_S,
     ):
+        self.time_budget_s = time_budget_s
         self._client = client
         self._routing = routing
         self._ledger = ledger
@@ -106,10 +110,16 @@ class ClaudeProceduralEngine:
         category = params.get("category")
         profile = routing.profile_for(category)
         product_code = params.get("productCode") or ""
-        job_ref = params.get("jobRef") or ""
+        job_ref = params.get("_jobId") or params.get("jobRef") or ""
         photos = [Path(p) for n, p in sorted(inputs.items()) if n.startswith("photo")]
         drawing = next((Path(p) for n, p in sorted(inputs.items()) if n.startswith("drawing")), None)
+        try:
+            routing.prices(profile.model)
+        except KeyError:
+            raise EngineFailure("generation_failed", f"no price for model {profile.model}") from None
         client = self._client_or_key()
+        started = time.monotonic()
+        durations: list[float] = []
 
         messages: list[dict] = [{"role": "user", "content": prompts.first_turn(photos, drawing, spec, category, profile)}]
         versions: list[_Version] = []
@@ -119,9 +129,13 @@ class ClaudeProceduralEngine:
                 if len(good) >= MIN_GOOD:
                     break
                 raise EngineFailure("spend_cap", f"the US${routing.spend_cap_usd:.0f} spend cap is reached")
+            if len(good) >= MIN_GOOD and durations and time.monotonic() - started + max(durations) > self.time_budget_s:
+                break
             ver = _Version(n, profile.model)
             versions.append(ver)
+            began = time.monotonic()
             self._one_version(client, routing, ledger, profile, messages, ver, spec, run_script, out, product_code, job_ref)
+            durations.append(time.monotonic() - began)
         good = [v for v in versions if v.glb is not None]
         if len(good) < MIN_GOOD:
             last = next((v.error for v in reversed(versions) if v.error), "no usable model")
@@ -197,13 +211,23 @@ class ClaudeProceduralEngine:
             self._queue_error(messages, content, ver.error)
             return
         ver.seconds = float(result.seconds)
-        if not result.ok or result.glb is None:
+        data = result.glb_bytes
+        if data is None and result.ok and result.glb is not None:
+            data = sandbox.read_regular_file(Path(result.glb), sandbox.Limits().output_mb * 1024 * 1024)
+            if data is None:
+                result = sandbox.RunResult(False, None, "", result.seconds, "bad_output")
+        if not result.ok or not data:
             ver.error = f"the script failed ({result.reason}):\n{result.stderr_tail}".strip()
             self._queue_error(messages, content, ver.error)
             return
         try:
-            scene = trimesh.load(str(result.glb), force="scene")
+            scene = trimesh.load(io.BytesIO(data), file_type="glb", force="scene")
             mesh = scene.to_geometry() if hasattr(scene, "to_geometry") else scene.dump(concatenate=True)
+            faces = int(len(mesh.faces))
+            if faces > MAX_FACES:
+                ver.error = f"the model has too many faces ({faces}, at most {MAX_FACES}); simplify it (fewer segments, coarser grid)"
+                self._queue_error(messages, content, ver.error)
+                return
             ext = (scene.bounds[1] - scene.bounds[0]) * 1000.0
             if not (ext > 0).all():
                 raise ValueError("the model has no volume")
@@ -211,7 +235,7 @@ class ClaudeProceduralEngine:
             ver.error = f"model.glb could not be used: {type(exc).__name__}: {exc}"[:600]
             self._queue_error(messages, content, ver.error)
             return
-        ver.glb = result.glb
+        ver.glb = data
         ver.measured = {"length": round(float(ext[0]), 2), "width": round(float(ext[2]), 2), "height": round(float(ext[1]), 2)}
         renders = render_views(mesh)
         messages.append({"role": "assistant", "content": content})
@@ -233,7 +257,7 @@ class ClaudeProceduralEngine:
         produced: list[tuple[str, str]] = []
         for idx, ver in enumerate(reversed(good[-3:]), start=1):
             glb_name, json_name = f"candidate-{idx}.glb", f"candidate-{idx}.json"
-            shutil.copyfile(ver.glb, out / glb_name)
+            (out / glb_name).write_bytes(ver.glb)
             report = {
                 "engine": "claude-procedural",
                 "model": ver.model,

@@ -5,12 +5,23 @@ words in code."""
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 MIN_VERSIONS, MAX_VERSIONS = 2, 3
 DEFAULT_PATH = Path(__file__).with_name("routing.default.json")
+
+
+def default_path() -> Path:
+    """The operator file: ``PLANNER3D_CLAUDE_ROUTING``, else ``~/planner3d/claude-routing.json`` when it
+    exists, else the shipped default."""
+    env = os.environ.get("PLANNER3D_CLAUDE_ROUTING")
+    if env:
+        return Path(env)
+    home_file = Path.home() / "planner3d" / "claude-routing.json"
+    return home_file if home_file.exists() else DEFAULT_PATH
 
 
 @dataclass(frozen=True)
@@ -38,7 +49,7 @@ class Routing:
 
     @classmethod
     def load(cls, path: Path | str | None = None) -> "Routing":
-        raw = json.loads(Path(path or DEFAULT_PATH).read_text(encoding="utf-8"))
+        raw = json.loads(Path(path or default_path()).read_text(encoding="utf-8"))
         return cls(
             spend_cap_usd=raw["spendCapUsd"],
             prices=raw["prices"],

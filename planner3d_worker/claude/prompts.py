@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import base64
+import io
 import re
 from pathlib import Path
 from typing import Optional
+
+from PIL import Image, ImageOps
 
 from planner3d_worker.claude.routing import Profile
 
@@ -44,9 +47,38 @@ def _image_block(data: bytes, media_type: str) -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data).decode("ascii")}}
 
 
+MAX_SIDE = 1568
+MAX_BYTES = 3_500_000
+
+
+def _shrink(data: bytes, media_type: str) -> tuple[bytes, str]:
+    """Long side at most MAX_SIDE px, EXIF orientation applied, under MAX_BYTES. A small image passes through."""
+    img = Image.open(io.BytesIO(data))
+    img.load()
+    if max(img.size) <= MAX_SIDE and len(data) <= MAX_BYTES:
+        return data, media_type
+    img = ImageOps.exif_transpose(img)
+    img.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
+    candidates: list[tuple[bytes, str]] = []
+    if media_type == "image/png":
+        buf = io.BytesIO()
+        img.save(buf, "PNG", optimize=True)
+        candidates.append((buf.getvalue(), "image/png"))
+    flat = img.convert("RGB") if img.mode not in ("RGB", "L") else img
+    for quality in (90, 80, 70, 60):
+        buf = io.BytesIO()
+        flat.save(buf, "JPEG", quality=quality)
+        candidates.append((buf.getvalue(), "image/jpeg"))
+        if len(buf.getvalue()) <= MAX_BYTES:
+            break
+    fitting = [c for c in candidates if len(c[0]) <= MAX_BYTES]
+    return min(fitting or candidates, key=lambda c: len(c[0]))
+
+
 def _file_block(path: Path) -> dict:
     data = Path(path).read_bytes()
-    return _image_block(data, _sniff(data, Path(path)))
+    data, media_type = _shrink(data, _sniff(data, Path(path)))
+    return _image_block(data, media_type)
 
 
 def first_turn(photos: list[Path], drawing: Optional[Path], dims_mm: dict, category: Optional[dict], profile: Profile) -> list[dict]:
