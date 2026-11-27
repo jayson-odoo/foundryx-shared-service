@@ -159,6 +159,10 @@ def submit_model(
     length_mm: int,
     width_mm: int,
     height_mm: int,
+    drawing: Optional[bytes] = None,
+    category_code: Optional[str] = None,
+    category_name: Optional[str] = None,
+    product_code: Optional[str] = None,
 ) -> schemas.JobOut:
     if not 1 <= len(photos) <= MAX_PHOTOS:
         raise P3Error(422, "photo_count", f"Send between 1 and {MAX_PHOTOS} photos.")
@@ -168,10 +172,20 @@ def submit_model(
         if mime is None:
             raise P3Error(422, "photo_type", "Photos must be PNG, JPEG or WebP images.")
         prepared.append((f"photo-{i}.{sniff.IMAGE_EXT[mime]}", data, mime))
-    params = {"dimensionsMm": {"length": length_mm, "width": width_mm, "height": height_mm}}
-    return _create_with_inputs(
-        db, tenant_id, user_id, KIND_MODEL, params, [(n, "photo", d, m) for n, d, m in prepared]
-    )
+    inputs = [(n, "photo", d, m) for n, d, m in prepared]
+    if drawing is not None:
+        mime = sniff.sniff_image(drawing)
+        if mime is None:
+            raise P3Error(422, "drawing_type", "The drawing must be a PNG, JPEG or WebP image.")
+        inputs.append((f"drawing.{sniff.IMAGE_EXT[mime]}", "drawing", drawing, mime))
+    params: dict = {"dimensionsMm": {"length": length_mm, "width": width_mm, "height": height_mm}}
+    code = (category_code or "").strip()
+    if code:
+        params["category"] = {"code": code, "name": (category_name or "").strip()}
+    product = (product_code or "").strip()
+    if product:
+        params["productCode"] = product
+    return _create_with_inputs(db, tenant_id, user_id, KIND_MODEL, params, inputs)
 
 
 def submit_render(

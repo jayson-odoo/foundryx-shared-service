@@ -47,6 +47,10 @@ def submit_model(
     lengthMm: int = Form(..., gt=0),
     widthMm: int = Form(..., gt=0),
     heightMm: int = Form(..., gt=0),
+    drawing: Optional[UploadFile] = File(default=None),
+    categoryCode: Optional[str] = Form(default=None, max_length=64),
+    categoryName: Optional[str] = Form(default=None, max_length=128),
+    productCode: Optional[str] = Form(default=None, max_length=64),
     user: User = Depends(_MANAGE),
     db: Session = Depends(get_db),
 ) -> schemas.JobOut:
@@ -54,7 +58,20 @@ def submit_model(
         if len(photos) > job_service.MAX_PHOTOS:
             raise P3Error(422, "photo_count", f"Send at most {job_service.MAX_PHOTOS} photos.")
         blobs = [_read_capped(p, job_service.PHOTO_CAP) for p in photos]
-        return job_service.submit_model(db, user.tenant_id, user.id, blobs, lengthMm, widthMm, heightMm)
+        drawing_blob = _read_capped(drawing, job_service.PHOTO_CAP) if drawing is not None and drawing.filename else None
+        return job_service.submit_model(
+            db,
+            user.tenant_id,
+            user.id,
+            blobs,
+            lengthMm,
+            widthMm,
+            heightMm,
+            drawing=drawing_blob,
+            category_code=categoryCode,
+            category_name=categoryName,
+            product_code=productCode,
+        )
     except P3Error as exc:
         raise _http(exc)
 
