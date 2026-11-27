@@ -95,11 +95,11 @@ Worker package `planner3d_worker/claude/` plus the engine file:
   functools, collections`; names `eval, exec, compile, __import__, open, globals, getattr` on dunder strings,
   any `os`, `sys`, `subprocess`, `socket`, `ctypes`, `importlib`, attribute access starting with `__`);
   `Limits(cpu_s=240, wall_s=300, mem_mb=3072, file_mb=200)`; `available() -> bool` (darwin and
-  `/usr/bin/sandbox-exec` exists); `run_script(src, work_dir: Path, limits: Limits) -> RunResult(ok: bool,
+  `/usr/bin/sandbox-exec` exists); `run_script(src, work_dir: Path, limits: Limits, check: bool = True) -> RunResult(ok: bool,
   glb: Path | None, stderr_tail: str, seconds: float, reason: str | None)` - writes `gen.py` and
   `params.json` into `work_dir`, runs `python -I gen.py` with an EMPTY env, cwd `work_dir`, under the
-  sandbox profile; the script reads `params.json` and must write `model.glb` in cwd. Raises
-  `SandboxUnavailable` when `available()` is false. `reason` in `timeout|cpu|memory|exit|no_output`.
+  sandbox profile; the script reads `params.json` and must write `model.glb` in cwd. `check=False` skips the AST pre-check (tests only: isolation probes must reach the OS sandbox; the engine always uses the default). Raises
+  `SandboxUnavailable` when `available()` is false; with `check=True` raises `ScriptRejected` before anything is written or run. `reason` in `timeout|cpu|memory|exit|no_output`.
 - `prompts.py`: `SYSTEM_PROMPT: str`, `first_turn(photos: list[Path], drawing: Path | None, dims_mm: dict,
   category: dict | None, profile: Profile) -> list[dict]` (Messages API content blocks: images base64
   then text), `refine_turn(renders: dict[str, bytes], measured_mm: dict, spec_mm: dict, error: str | None)
