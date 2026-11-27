@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import re
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -56,10 +57,24 @@ MAX_SIDE = 1568
 MAX_BYTES = 3_500_000
 
 
+MAX_PIXELS = 40_000_000
+
+
+class ImageTooLarge(ValueError):
+    """An input image has more pixels than the engine will decode."""
+
+
 def _shrink(data: bytes, media_type: str) -> tuple[bytes, str]:
     """Long side at most MAX_SIDE px, EXIF orientation applied, under MAX_BYTES. A small image passes through."""
-    img = Image.open(io.BytesIO(data))
-    img.load()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        try:
+            img = Image.open(io.BytesIO(data))
+            if img.size[0] * img.size[1] > MAX_PIXELS:
+                raise ImageTooLarge(f"the image is {img.size[0]}x{img.size[1]} pixels; at most {MAX_PIXELS} are accepted")
+            img.load()
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            raise ImageTooLarge("the image has too many pixels") from exc
     if max(img.size) <= MAX_SIDE and len(data) <= MAX_BYTES:
         return data, media_type
     img = ImageOps.exif_transpose(img)

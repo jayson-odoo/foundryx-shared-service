@@ -37,6 +37,7 @@ import psutil
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 POLL_S = 0.1
+NOFILE = 16
 ALLOWED_IMPORTS = {"numpy", "math", "trimesh", "manifold3d", "scipy", "json", "itertools", "functools", "collections"}
 BANNED_NAMES = {"eval", "exec", "compile", "__import__", "globals", "locals", "vars", "breakpoint", "input", "delattr", "setattr"}
 ALLOWED_OPEN_FILES = {"params.json", "model.glb"}
@@ -58,6 +59,7 @@ class Limits:
     file_mb: int = 200
     output_mb: int = 50  # cap on the model.glb the parent reads back
     dir_mb: int = 300  # cap on the total size of the work dir
+    max_entries: int = 2000  # cap on the number of files and directories in the work dir
 
 
 @dataclass
@@ -231,8 +233,11 @@ def _child_limits(limits: Limits):
     def apply() -> None:
         mb = 1024 * 1024
         resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_s, limits.cpu_s + 5))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (limits.file_mb * mb, limits.file_mb * mb))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+        # Residual bound: a file that is deleted while still open keeps its blocks until the process
+        # is killed, so the most such data is NOFILE x FSIZE. The group is killed on every exit path.
+        fsize = min(limits.file_mb, limits.output_mb + 14) * mb
+        resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (NOFILE, NOFILE))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         try:
             resource.setrlimit(resource.RLIMIT_NPROC, (8, 8))
@@ -275,14 +280,15 @@ def _kill_group(proc: subprocess.Popen) -> None:
         pass
 
 
-def dir_size_bytes(path: Path) -> int:
-    """Total size of the regular files under ``path`` (lstat, links are not followed)."""
-    total = 0
+def scan_dir(path: Path) -> tuple[int, int]:
+    """(total bytes of the regular files, number of entries) under ``path``; links are not followed."""
+    total = entries = 0
     stack = [str(path)]
     while stack:
         try:
             with os.scandir(stack.pop()) as it:
                 for entry in it:
+                    entries += 1
                     try:
                         st = entry.stat(follow_symlinks=False)
                     except OSError:
@@ -293,7 +299,16 @@ def dir_size_bytes(path: Path) -> int:
                         total += st.st_size
         except OSError:
             continue
-    return total
+    return total, entries
+
+
+def dir_size_bytes(path: Path) -> int:
+    return scan_dir(path)[0]
+
+
+def _over_disk(work: Path, limits: Limits) -> bool:
+    size, entries = scan_dir(work)
+    return size > limits.dir_mb * 1024 * 1024 or entries > limits.max_entries
 
 
 def read_regular_file(path: Path, cap_bytes: int) -> Optional[bytes]:
@@ -356,7 +371,7 @@ def run_script(src: str, work_dir: Path, limits: Limits, check: bool = True) -> 
                     reason = "timeout"
                 elif _group_rss_mb(proc.pid) > limits.mem_mb:
                     reason = "memory"
-                elif dir_size_bytes(work) > limits.dir_mb * 1024 * 1024:
+                elif _over_disk(work, limits):
                     reason = "disk"
                 if reason:
                     _kill_group(proc)
@@ -376,6 +391,8 @@ def run_script(src: str, work_dir: Path, limits: Limits, check: bool = True) -> 
     except (ProcessLookupError, PermissionError):
         pass
 
+    if reason is None and _over_disk(work, limits):
+        reason = "disk"
     if reason is None:
         code = proc.returncode
         if code == -signal.SIGXCPU or code == -signal.SIGKILL:

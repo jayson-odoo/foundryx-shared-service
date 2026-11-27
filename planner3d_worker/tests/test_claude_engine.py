@@ -393,3 +393,32 @@ def test_over_budget_but_under_cap_is_accepted_and_flagged_in_the_refine_turn(tm
     assert len(produced) == 4
     text = _last_user_text(client.calls[1])
     assert "Triangle count: 12" in text and "over the 5 triangle budget" in text and "Parts (name" in text
+
+
+def test_a_glb_with_a_huge_embedded_image_is_not_decoded_by_the_parent(tmp_path):
+    import numpy as np
+    from PIL import Image as PILImage
+
+    mesh = trimesh.creation.box(extents=(1.2, 0.75, 0.6))
+    mesh.apply_translation((0, 0.375, 0))
+    big = PILImage.new("1", (12000, 12000))  # 144 MP once decoded, small as a PNG
+    mesh.visual = trimesh.visual.TextureVisuals(uv=np.zeros((len(mesh.vertices), 2)), material=trimesh.visual.material.PBRMaterial(baseColorTexture=big))
+    glb = mesh.export(file_type="glb")
+
+    class OneShot(FakeRunner):
+        def __call__(self, src, work_dir, limits):
+            work_dir = Path(work_dir)
+            work_dir.mkdir(parents=True, exist_ok=True)
+            (work_dir / "model.glb").write_bytes(glb)
+            return RunResult(ok=True, glb=work_dir / "model.glb", stderr_tail="", seconds=0.1, reason=None, glb_bytes=glb)
+
+    client = FakeClient([reply(box_script("v1")), reply(box_script("v2"))])
+    engine = ClaudeProceduralEngine(client=client, routing=_routing(tmp_path), ledger=Ledger(tmp_path / "l.jsonl"), run_script=OneShot())
+    import tracemalloc
+
+    tracemalloc.start()
+    produced, _ = _run(engine, tmp_path)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert len(produced) == 4
+    assert peak < 100 * 1024 * 1024

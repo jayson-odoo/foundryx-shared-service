@@ -307,3 +307,32 @@ def test_work_dir_total_size_is_capped(tmp_path):
         Limits(cpu_s=20, wall_s=30, mem_mb=2048, file_mb=10, dir_mb=5),
     )
     assert not res.ok and res.reason == "disk"
+
+
+@needs_sandbox
+def test_too_many_entries_is_disk(tmp_path):
+    res = _glb_probe(
+        tmp_path,
+        """
+        import time
+        for i in range(300):
+            open(f"e{i}.txt", "w").close()
+        time.sleep(20)
+        """,
+        Limits(cpu_s=20, wall_s=30, mem_mb=2048, file_mb=10, max_entries=100),
+    )
+    assert not res.ok and res.reason == "disk"
+
+
+@needs_sandbox
+def test_oversize_work_dir_after_exit_is_disk(tmp_path):
+    res = _glb_probe(
+        tmp_path,
+        """
+        import trimesh
+        trimesh.creation.box().export("model.glb")
+        open("big.bin", "wb").write(b"x" * (3 * 1024 * 1024))
+        """,
+        Limits(cpu_s=20, wall_s=30, mem_mb=2048, file_mb=10, dir_mb=2),
+    )
+    assert not res.ok and res.reason == "disk"

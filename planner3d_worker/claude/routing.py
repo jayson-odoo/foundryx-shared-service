@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 MIN_VERSIONS, MAX_VERSIONS = 2, 3
+HARD_SPEND_CAP_USD = 700.0  # the owner-approved total; a routing file can only lower it
 DEFAULT_PATH = Path(__file__).with_name("routing.default.json")
 
 
@@ -42,7 +43,7 @@ def _profile(raw: dict) -> Profile:
 
 class Routing:
     def __init__(self, spend_cap_usd: float, prices: dict, default: Profile, categories: dict[str, Profile]):
-        self.spend_cap_usd = float(spend_cap_usd)
+        self.spend_cap_usd = min(float(spend_cap_usd), HARD_SPEND_CAP_USD)
         self._prices = prices
         self._default = default
         self._categories = categories

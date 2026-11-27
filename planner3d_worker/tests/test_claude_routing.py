@@ -87,3 +87,11 @@ def test_default_load_uses_env_then_home_file_then_shipped(tmp_path, monkeypatch
     assert Routing.load().spend_cap_usd == 123.0
     (home / "planner3d" / "claude-routing.json").unlink()
     assert Routing.load().spend_cap_usd == 700.0
+
+
+def test_spend_cap_is_clamped_to_the_hard_cap_in_code(tmp_path):
+    from planner3d_worker.claude.routing import HARD_SPEND_CAP_USD
+
+    assert HARD_SPEND_CAP_USD == 700.0
+    assert Routing.load(_file(tmp_path, spendCapUsd=5000)).spend_cap_usd == 700.0
+    assert Routing.load(_file(tmp_path, spendCapUsd=50)).spend_cap_usd == 50.0

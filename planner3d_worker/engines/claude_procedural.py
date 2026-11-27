@@ -143,7 +143,11 @@ class ClaudeProceduralEngine:
         started = time.monotonic()
         durations: list[float] = []
 
-        messages: list[dict] = [{"role": "user", "content": prompts.first_turn(photos, drawing, spec, category, profile)}]
+        try:
+            first = prompts.first_turn(photos, drawing, spec, category, profile)
+        except prompts.ImageTooLarge as exc:
+            raise EngineFailure("generation_failed", f"bad input: {exc}") from None
+        messages: list[dict] = [{"role": "user", "content": first}]
         versions: list[_Version] = []
         for n in range(1, profile.max_versions + 1):
             good = [v for v in versions if v.glb is not None]
@@ -243,7 +247,7 @@ class ClaudeProceduralEngine:
             self._queue_error(messages, content, ver.error)
             return
         try:
-            scene = trimesh.load(io.BytesIO(data), file_type="glb", force="scene")
+            scene = trimesh.load(io.BytesIO(data), file_type="glb", force="scene", skip_materials=True)
             mesh = scene.to_geometry() if hasattr(scene, "to_geometry") else scene.dump(concatenate=True)
             faces = int(len(mesh.faces))
             if faces > MAX_FACES:

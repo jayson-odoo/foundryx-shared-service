@@ -128,3 +128,12 @@ def test_refine_turn_lists_triangles_parts_and_orientation_first():
     text = _text(refine_turn({"front": b"a"}, spec, spec, None, faces=70000, parts=parts, over_budget=True))
     assert "70000" in text and "lid" in text and "400.0 x 300.0 x 20.0" in text
     assert "orientation" in text and "over the 60000" in text.replace(",", "").replace("_", "")
+
+
+def test_a_huge_pixel_count_is_rejected_before_it_is_decoded(tmp_path):
+    from planner3d_worker.claude.prompts import ImageTooLarge
+
+    path = tmp_path / "photo-1.png"
+    Image.new("1", (9000, 9000)).save(path, "PNG")  # 81 MP, tiny on disk
+    with pytest.raises(ImageTooLarge):
+        first_turn([path], None, DIMS, None, PRIMS)
