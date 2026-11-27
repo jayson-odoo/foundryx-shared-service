@@ -325,7 +325,9 @@ def test_too_many_entries_is_disk(tmp_path):
 
 
 @needs_sandbox
-def test_oversize_work_dir_after_exit_is_disk(tmp_path):
+def test_oversize_work_dir_after_exit_is_disk(tmp_path, monkeypatch):
+    # a long poll interval: the in-loop check never sees the dir, only the post-exit check can
+    monkeypatch.setattr(sandbox, "POLL_S", 6)
     res = _glb_probe(
         tmp_path,
         """
