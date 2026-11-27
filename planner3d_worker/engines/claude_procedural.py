@@ -52,11 +52,33 @@ class _Version:
         self.glb: Optional[bytes] = None
         self.measured: dict = {}
         self.error: Optional[str] = None
+        self.faces = 0
+        self.parts: list = []
 
 
 def _usage_dict(usage: Any) -> dict:
     keys = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
     return {k: int(getattr(usage, k, 0) or 0) for k in keys}
+
+
+def _parts(scene, limit: int = 20) -> list[dict]:
+    """Name, extents and centre in mm (length X, width Z, height Y) of each geometry node."""
+    parts: list[dict] = []
+    try:
+        for node in list(scene.graph.nodes_geometry)[:limit]:
+            transform, geom = scene.graph[node]
+            g = scene.geometry[geom].copy()
+            g.apply_transform(transform)
+            lo, hi = g.bounds
+            ext, mid = (hi - lo) * 1000.0, (hi + lo) * 500.0
+            parts.append({
+                "name": str(node)[:40],
+                "extentsMm": [round(float(ext[0]), 1), round(float(ext[2]), 1), round(float(ext[1]), 1)],
+                "centreMm": [round(float(mid[0]), 1), round(float(mid[1]), 1), round(float(mid[2]), 1)],
+            })
+    except Exception:  # noqa: BLE001 - the part list is advisory only
+        return parts
+    return parts
 
 
 def _text_of(message: Any) -> str:
@@ -236,10 +258,12 @@ class ClaudeProceduralEngine:
             self._queue_error(messages, content, ver.error)
             return
         ver.glb = data
+        ver.faces = faces
+        ver.parts = _parts(scene)
         ver.measured = {"length": round(float(ext[0]), 2), "width": round(float(ext[2]), 2), "height": round(float(ext[1]), 2)}
         renders = render_views(mesh)
         messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content": prompts.refine_turn(renders, ver.measured, spec, None)})
+        messages.append({"role": "user", "content": prompts.refine_turn(renders, ver.measured, spec, None, faces=ver.faces, parts=ver.parts, over_budget=ver.faces > prompts.TRIANGLE_BUDGET)})
 
     @staticmethod
     def _queue_error(messages: list, content: Optional[list], error: str) -> None:

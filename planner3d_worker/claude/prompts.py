@@ -23,6 +23,10 @@ Rules for the script:
 - Clean, watertight-ish surfaces. Smooth where the product is curved (enough segments, no faceted lumps or stray fragments). Parts that are one piece in reality must be one welded piece; keep genuinely separate parts (seat, lid, taps, handles) as separate named parts.
 - Approach "primitives": a CSG of primitives (boxes, cylinders, spheres, extrusions) combined with manifold3d booleans.
 - Approach "sdf": a numpy signed distance field with smooth unions (smooth minimum) sampled on a grid and meshed with manifold3d (Manifold.level_set) for one-piece ceramics; then convert to a trimesh mesh.
+- Total triangle budget 60,000 (hard limit 300,000): mesh SDF bodies at a resolution fine enough for smooth curves, then smooth (trimesh.smoothing.filter_taubin) and decimate to the budget (mesh.simplify_quadric_decimation(face_count=N)).
+- trimesh.creation.cylinder, annulus and capsule run along Z: rotate them so their axes match the Y-up frame before use, and check the orientation in the renders.
+- Sculpted parts (levers, spouts, handles) are lofted or swept profiles, or hulls of several cross-sections, never a single box.
+- Materials: ceramic white roughness 0.3, chrome metallic 1.0 roughness 0.1, following the photo.
 - Write the result to model.glb in the current directory with simple PBR materials that match the photo (for example white ceramic: baseColor near white, roughness 0.15, metallic 0; chrome: metallic 1, roughness 0.1). Use trimesh.visual.material.PBRMaterial and export a trimesh.Scene so named parts survive.
 - Look at the drawing for sides the photo does not show (back, top, hidden faces) and follow it for proportions.
 - The script must run to completion in under four minutes on a laptop CPU and must not print secrets or read anything outside the cwd.
@@ -47,6 +51,7 @@ def _image_block(data: bytes, media_type: str) -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data).decode("ascii")}}
 
 
+TRIANGLE_BUDGET = 60_000
 MAX_SIDE = 1568
 MAX_BYTES = 3_500_000
 
@@ -100,15 +105,33 @@ def first_turn(photos: list[Path], drawing: Optional[Path], dims_mm: dict, categ
     return blocks
 
 
-def refine_turn(renders: dict[str, bytes], measured_mm: dict, spec_mm: dict, error: Optional[str]) -> list[dict]:
+def refine_turn(
+    renders: dict[str, bytes],
+    measured_mm: dict,
+    spec_mm: dict,
+    error: Optional[str],
+    faces: Optional[int] = None,
+    parts: Optional[list[dict]] = None,
+    over_budget: bool = False,
+) -> list[dict]:
     blocks = [_image_block(png, "image/png") for png in renders.values()]
     lines = [
         "Renders of your model: " + ", ".join(renders) + " (flat shaded, light grey).",
         "Measured bounding box mm: " + ", ".join(f"{k} {measured_mm[k]}" for k in ("length", "width", "height") if k in measured_mm) + ".",
         "Specified mm: " + ", ".join(f"{k} {spec_mm[k]}" for k in ("length", "width", "height") if k in spec_mm) + ".",
     ]
+    if faces is not None:
+        lines.append(f"Triangle count: {faces} (budget {TRIANGLE_BUDGET}).")
+        if over_budget:
+            lines.append(f"The model is over the {TRIANGLE_BUDGET} triangle budget: smooth and decimate it to the budget.")
+    if parts:
+        lines.append("Parts (name, extents mm length x width x height, centre mm x, y, z):")
+        for part in parts:
+            e, c = part["extentsMm"], part["centreMm"]
+            lines.append(f"- {part['name']}: {e[0]} x {e[1]} x {e[2]}, centre {c[0]}, {c[1]}, {c[2]}")
     if error:
         lines.append("The last run failed with this error:\n" + error)
+    lines.append("Fix orientation errors first (a part standing the wrong way, an axis on Z instead of Y).")
     lines.append(
         "Compare the renders with the photo and the drawing, fix the biggest visual differences "
         "and any bbox mismatch, and return the full corrected script in one ```python block."

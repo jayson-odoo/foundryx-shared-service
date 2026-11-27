@@ -382,3 +382,14 @@ def test_job_id_from_params_is_the_ledger_job_ref(tmp_path):
     _run(engine, tmp_path, {"_jobId": "job-123"})
     lines = [json.loads(l) for l in (tmp_path / "ledger.jsonl").read_text().splitlines()]
     assert {l["jobRef"] for l in lines} == {"job-123"}
+
+
+def test_over_budget_but_under_cap_is_accepted_and_flagged_in_the_refine_turn(tmp_path, monkeypatch):
+    import planner3d_worker.claude.prompts as prompts_mod
+
+    monkeypatch.setattr(prompts_mod, "TRIANGLE_BUDGET", 5)  # a box has 12 faces
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2"))])
+    produced, _ = _run(engine, tmp_path)
+    assert len(produced) == 4
+    text = _last_user_text(client.calls[1])
+    assert "Triangle count: 12" in text and "over the 5 triangle budget" in text and "Parts (name" in text

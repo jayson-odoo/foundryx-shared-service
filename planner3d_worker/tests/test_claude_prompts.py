@@ -115,3 +115,16 @@ def test_small_png_is_passed_through_unchanged(tmp_path):
     photo = _png(tmp_path / "photo-1.png", (1, 2, 3))
     imgs = _images(first_turn([photo], None, DIMS, None, PRIMS))
     assert base64.b64decode(imgs[0]["source"]["data"]) == photo.read_bytes()
+
+
+def test_system_prompt_carries_the_budget_orientation_and_material_rules():
+    for needle in ("60,000", "300,000", "filter_taubin", "simplify_quadric_decimation", "Z", "lofted", "roughness 0.3", "metallic 1.0"):
+        assert needle in SYSTEM_PROMPT
+
+
+def test_refine_turn_lists_triangles_parts_and_orientation_first():
+    parts = [{"name": "lid", "extentsMm": [400.0, 300.0, 20.0], "centreMm": [0.0, 750.0, 0.0]}]
+    spec = {"length": 1, "width": 2, "height": 3}
+    text = _text(refine_turn({"front": b"a"}, spec, spec, None, faces=70000, parts=parts, over_budget=True))
+    assert "70000" in text and "lid" in text and "400.0 x 300.0 x 20.0" in text
+    assert "orientation" in text and "over the 60000" in text.replace(",", "").replace("_", "")
