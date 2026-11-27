@@ -22,7 +22,7 @@ def _arr(png):
 
 def test_three_views_are_png_of_the_requested_size():
     views = render_views(_box())
-    assert set(views) == {"front", "side", "three_quarter"}
+    assert set(views) == {"front", "side", "three_quarter", "top"}
     for png in views.values():
         assert png.startswith(PNG_MAGIC)
         assert Image.open(io.BytesIO(png)).size == (512, 512)
@@ -39,7 +39,7 @@ def test_output_is_deterministic():
 
 def test_views_differ_from_each_other():
     v = render_views(_box())
-    assert len({v["front"], v["side"], v["three_quarter"]}) == 3
+    assert len({v["front"], v["side"], v["three_quarter"], v["top"]}) == 4
 
 
 def test_the_box_is_drawn_not_a_blank_image():
@@ -50,7 +50,7 @@ def test_the_box_is_drawn_not_a_blank_image():
 
 def test_empty_mesh_is_handled_without_raising():
     views = render_views(trimesh.Trimesh())
-    assert set(views) == {"front", "side", "three_quarter"}
+    assert set(views) == {"front", "side", "three_quarter", "top"}
     assert all(png.startswith(PNG_MAGIC) for png in views.values())
 
 
@@ -169,3 +169,32 @@ def test_linear_base_colour_is_encoded_to_srgb_for_display():
     # linear 0.214 is sRGB 0.5 (value 128): a mid grey factor must not render dark
     px = _object_pixels(render_views(_coloured([55, 55, 55, 255]))["front"])  # 55/255 = 0.2157 linear
     assert 110 <= px.max() <= 140
+
+
+def test_top_view_looks_down_with_the_front_at_the_bottom():
+    # a box with a red front face and a blue top: the top view shows blue over most of the image, red low
+    import numpy as np
+
+    m = _box()
+    m.visual.face_colors = [[0, 0, 255, 255]] * len(m.faces)
+    for i, n in enumerate(m.face_normals):
+        if n[2] > 0.9:
+            m.visual.face_colors[i] = [255, 0, 0, 255]
+    px = _arr(render_views(m)["top"]).astype(int)
+    blue = (px[..., 2] > px[..., 0] + 40)
+    red = (px[..., 0] > px[..., 2] + 40)
+    assert blue.sum() > red.sum() > 0
+    assert np.argwhere(red)[:, 0].mean() > np.argwhere(blue)[:, 0].mean()
+
+
+def test_gold_metal_keeps_its_hue_and_brightness():
+    import numpy as np
+
+    m = trimesh.creation.icosphere(subdivisions=3)
+    gold = [255, 195, 86, 255]  # linear 1.0, 0.766, 0.336
+    px = _object_pixels(render_views(_coloured(gold, 1.0, m))["front"]).astype(float)
+    inner = px[px.max(axis=1) > 100]
+    mean = inner.mean(axis=0)
+    assert mean[0] > mean[1] > mean[2]
+    base = np.array([1.0, 0.89, 0.62]) * 255  # the display (sRGB) base colour
+    assert mean.max() >= 0.65 * base.max()

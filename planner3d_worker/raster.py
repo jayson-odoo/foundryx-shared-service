@@ -21,7 +21,7 @@ from PIL import Image
 
 BACKGROUND = 255
 # (yaw about Y in degrees, elevation in degrees): front looks down -Z, side down -X.
-VIEWS = {"front": (0.0, 8.0), "side": (90.0, 8.0), "three_quarter": (35.0, 22.0)}
+VIEWS = {"front": (0.0, 8.0), "side": (90.0, 8.0), "three_quarter": (35.0, 30.0), "top": (0.0, 65.0)}
 LIGHT = np.array([0.35, 0.55, 0.75])
 LIGHT = LIGHT / np.linalg.norm(LIGHT)
 DEFAULT_RGB = (0.78, 0.78, 0.78)
@@ -107,17 +107,16 @@ def _collect(mesh, materials: Optional[dict]):
 
 
 def _shade(cam_n: np.ndarray, rgb: np.ndarray, metallic: np.ndarray) -> np.ndarray:
-    """Per-face colour 0..255. Dielectric: base x a studio rig (fill + key + rim). Metal: base x a sky/floor
-    gradient on the normal plus one specular highlight; the two are mixed by the metallic factor."""
+    """Per-face colour 0..255. Dielectric: base x a studio rig (fill + key + rim). Metal: base x (0.62 + 0.38 x a sky/floor
+    gradient on the normal) plus one white specular highlight; the two are mixed by the metallic factor."""
     lambert = np.abs(np.einsum("nj,j->n", cam_n, LIGHT))
     # studio rig: hemisphere fill 0.66, key light 0.34 (saturating so a face turned to it is fully lit), rim 0.06
     key = 0.34 * np.clip(1.3 * lambert, 0.0, 1.0)
     rim = 0.06 * (1.0 - np.abs(cam_n[:, 2]))
     dielectric = rgb * np.clip(0.66 + key + rim, 0.0, 1.0)[:, None]
-    sky = 0.5 + 0.5 * cam_n[:, 1]
-    env = 0.25 + 0.75 * sky
+    env = 0.5 + 0.5 * cam_n[:, 1]  # smooth sky (1) to floor (0) gradient
     spec = np.clip(np.abs(np.einsum("nj,j->n", cam_n, HALF)), 0.0, 1.0) ** 40
-    metal = np.clip(rgb * (0.85 * env)[:, None] + (0.9 * spec)[:, None], 0.0, 1.0)
+    metal = np.clip(rgb * (0.62 + 0.38 * env)[:, None] + (0.9 * spec)[:, None], 0.0, 1.0)
     m = metallic[:, None]
     return np.clip((1.0 - m) * dielectric + m * metal, 0.0, 1.0) * 255.0
 

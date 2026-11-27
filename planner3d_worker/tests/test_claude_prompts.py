@@ -192,3 +192,14 @@ def test_first_turn_names_the_photo_finish_colours_when_given(tmp_path):
     cols = [{"hex": "#c8a24a", "linear": [0.578, 0.361, 0.069]}]
     text = _text(first_turn([photo], None, DIMS, None, PRIMS, finish_colours=cols))
     assert "Photo finish colours (sRGB hex, linear rgb): #c8a24a (linear 0.578, 0.361, 0.069)" in text
+
+
+def test_system_prompt_carries_the_finish_table():
+    for needle in ("chrome (0.55, 0.556, 0.554) m1 r0.08", "brushed gold (1.0, 0.766, 0.336) m1 r0.35", "matte black (0.02, 0.02, 0.02) m0 r0.6", "ceramic white (0.85, 0.85, 0.83) m0 r0.15", "gunmetal", "rose gold"):
+        assert needle in SYSTEM_PROMPT
+
+
+def test_refine_turn_sends_every_render_it_is_given():
+    renders = {k: k.encode() for k in ("front", "side", "three_quarter", "top")}
+    spec = {"length": 1, "width": 2, "height": 3}
+    assert len(_images(refine_turn(renders, spec, spec, None))) == 4
