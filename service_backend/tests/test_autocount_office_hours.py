@@ -315,3 +315,28 @@ def test_the_cache_stays_bounded(monkeypatch):
             id = f"crm-{n}"
         office_hours.read_for_connection(C(), {"apiKey": "k"}, now=_myt(23, 10))
     assert len(office_hours._cache) <= 3
+
+
+def test_the_last_off_hours_stock_run_never_delays_the_first_office_hours_run(session_factory, calendar):
+    from modules.autocount.scheduler import sweep_etl_tasks
+
+    now = _myt(24, 8, 45)
+    db, _company, config = _http_task(session_factory, ENTITY_STOCK_BALANCE, due_at=now - timedelta(seconds=5))
+    assert sweep_etl_tasks(db, now=now, run_alerts=False)["fired"] == 1
+    db.expire_all()
+    assert db.get(AcEntityConfig, config.id).next_incremental_at == _myt(24, 9, 0)
+
+
+def test_a_failed_calendar_read_is_tried_again_within_minutes(monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(office_hours, "_monotonic", lambda: clock["t"])
+    fetched = []
+    monkeypatch.setattr(
+        office_hours, "_fetch",
+        lambda *a, **k: fetched.append(1) or office_hours.CalendarRead(hours=None, error="no access"),
+    )
+    office_hours.read_for_connection(_Conn(), {"apiKey": "k"}, now=_myt(23, 10))
+    clock["t"] += office_hours.ERROR_CACHE_SECONDS + 1
+    office_hours.read_for_connection(_Conn(), {"apiKey": "k"}, now=_myt(23, 10))
+    assert len(fetched) == 2
+    assert office_hours.ERROR_CACHE_SECONDS <= 600

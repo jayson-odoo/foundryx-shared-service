@@ -105,6 +105,8 @@ RETRYABLE_CLIENT_STATUSES = (400,)
 # ``HttpSourceError.code`` of a page not sent because the server's safety
 # stop is on (AUTOCOUNT-LOAD-STRATEGY, ``server_gate``).
 SERVER_STOPPED_CODE = "server_stopped"
+# ... and of a page that got no turn on its server in time.
+SERVER_BUSY_CODE = "server_busy"
 # How much of AutoCount's answer a failed-page error carries (what the
 # wrapper said is the only clue to WHY a page failed).
 ERROR_BODY_SNIPPET_CHARS = 160
@@ -443,6 +445,8 @@ class HttpApiSource:
                     # AUTOCOUNT-LOAD-STRATEGY - the server's safety stop is on:
                     # fail once, plainly; never retry against it.
                     raise HttpSourceError(exc.message, code=SERVER_STOPPED_CODE, page=page) from exc
+                if exc.busy:
+                    raise HttpSourceError(exc.message, code=SERVER_BUSY_CODE, page=page) from exc
                 if exc.is_timeout:
                     timeout_attempts += 1
                     if timeout_attempts >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:

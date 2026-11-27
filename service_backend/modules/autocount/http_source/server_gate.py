@@ -47,13 +47,22 @@ POLL_SECONDS_USER = 0.05
 # server (the page's own retry ladder then applies). A person's call never
 # fails for want of a turn: past this it goes ahead (better one overlap than a
 # write reported as failed although nothing was sent).
-MAX_WAIT_SECONDS_SYNC = 600.0
+# Well under the 15-minute orphan sweep (review round 1): a page that
+# waits this long fails its run once (``server_busy``), never retried, so a
+# live job never looks dead while it waits.
+MAX_WAIT_SECONDS_SYNC = 300.0
 MAX_WAIT_SECONDS_USER = 120.0
 # The "a person is waiting" marker outlives a crashed waiter by this much.
 URGENT_TTL_SECONDS = 30
-# Margin on top of the request timeout for the held turn's expiry, so a
-# crashed holder frees the server by itself.
+# The held turn's expiry, so a crashed holder frees the server by itself:
+# a request timeout applies per read, not to the whole request, so a slow
+# page may run past it - the turn outlives it several times over.
 HOLD_MARGIN_SECONDS = 10.0
+HOLD_TIMEOUT_MULTIPLE = 3
+
+
+def hold_ttl_ms(hold_seconds: float) -> int:
+    return int((hold_seconds * HOLD_TIMEOUT_MULTIPLE + HOLD_MARGIN_SECONDS) * 1000)
 
 _RELEASE_LUA = (
     "if redis.call('get', KEYS[1]) == ARGV[1] then "
@@ -187,7 +196,7 @@ def turn(
         yield 0.0
         return
     token = uuid.uuid4().hex
-    ttl_ms = int((hold_seconds + HOLD_MARGIN_SECONDS) * 1000)
+    ttl_ms = hold_ttl_ms(hold_seconds)
     started = time.monotonic()
     held = False
     try:
@@ -197,6 +206,20 @@ def turn(
     except Exception as exc:  # noqa: BLE001
         _warn("could not take a turn", exc)
     waited = time.monotonic() - started
+    if held and priority != PRIORITY_USER and policy.stop_after_failures > 0:
+        # A page that queued before the stop switched on re-checks it now
+        # that it has the turn: never send to a server that just stopped.
+        try:
+            until_raw = client.get(keys["until"])
+        except Exception as exc:  # noqa: BLE001
+            until_raw = None
+            _warn("stop re-check failed", exc)
+        if until_raw and _now() < float(until_raw):
+            try:
+                client.eval(_RELEASE_LUA, 1, keys["lock"], token)
+            except Exception as exc:  # noqa: BLE001
+                _warn("could not hand the turn back", exc)
+            raise ServerStopped(datetime.fromtimestamp(float(until_raw), tz=timezone.utc))
     try:
         yield waited
     finally:
@@ -212,10 +235,12 @@ def _acquire(client: Any, keys: dict, token: str, ttl_ms: int, *, priority: str)
     poll = POLL_SECONDS_USER if user else POLL_SECONDS_SYNC
     max_wait = MAX_WAIT_SECONDS_USER if user else MAX_WAIT_SECONDS_SYNC
     deadline = time.monotonic() + max_wait
-    if user:
-        client.incr(keys["urgent"])
-        client.expire(keys["urgent"], URGENT_TTL_SECONDS)
     try:
+        if user:
+            pipe = client.pipeline()
+            pipe.incr(keys["urgent"])
+            pipe.expire(keys["urgent"], URGENT_TTL_SECONDS)
+            pipe.execute()
         while True:
             if user or int(client.get(keys["urgent"]) or 0) <= 0:
                 if client.set(keys["lock"], token, nx=True, px=ttl_ms):

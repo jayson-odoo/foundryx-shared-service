@@ -146,7 +146,7 @@ class DocFeedVendor:
             try:
                 response = self._logged_get(path, params)
             except HttpTransportError as exc:
-                if exc.stopped_until is not None:
+                if exc.stopped_until is not None or exc.busy:
                     raise DocFeedVendorError(VENDOR_STOPPED, exc.message) from exc
                 if exc.is_timeout:
                     timeout_attempts += 1

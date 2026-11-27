@@ -362,8 +362,10 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         source_config, now=now
     )
     if closed_until is not None and next_incremental is not None:
-        next_incremental = max(
-            next_incremental, now + timedelta(minutes=office_hours.OFF_HOURS_STOCK_MINUTES)
+        # Hourly at most, but never past the next office-hours start.
+        next_incremental = min(
+            max(next_incremental, now + timedelta(minutes=office_hours.OFF_HOURS_STOCK_MINUTES)),
+            max(next_incremental, closed_until),
         )
     # The reconcile slot exactly as it stood before this tick's claim - a
     # tick that ends up NOT running a reconcile puts it back (see

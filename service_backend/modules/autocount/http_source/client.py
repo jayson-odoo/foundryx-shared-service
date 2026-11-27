@@ -169,8 +169,13 @@ class HttpTransportError(Exception):
     two retries with a longer backoff and never halves.
     """
 
-    def __init__(self, message: str, *, is_timeout: bool = False, stopped_until: Any = None):
+    def __init__(
+        self, message: str, *, is_timeout: bool = False, stopped_until: Any = None, busy: bool = False,
+    ):
         super().__init__(message)
+        # The request got no turn on its server in time (``server_gate``):
+        # nothing was sent; never retried.
+        self.busy = busy
         self.message = message
         self.is_timeout = is_timeout
         # AUTOCOUNT-LOAD-STRATEGY - set when the request was never sent
@@ -333,7 +338,7 @@ class HttpApiClient:
         except server_gate.ServerBusy as exc:
             message = f"AutoCount at {self.base_url} stayed busy; this request waited too long for its turn."
             self._record_call(path, params, None, started, error=f"not sent: {message}")
-            raise HttpTransportError(message, is_timeout=False) from exc
+            raise HttpTransportError(message, is_timeout=False, busy=True) from exc
         except UrlGuardError as exc:
             self._record_call(path, params, None, started, error=self._masked(f"blocked: {exc}"))
             raise HttpTransportError(str(exc), is_timeout=False) from exc

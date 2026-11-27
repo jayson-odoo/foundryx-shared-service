@@ -30,6 +30,9 @@ from typing import Any, Dict, FrozenSet, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CACHE_SECONDS = 3600
+# A failed read is tried again sooner, so a key fixed on the CRM side shows
+# within minutes (review round 1).
+ERROR_CACHE_SECONDS = 300
 OFF_HOURS_STOCK_MINUTES = 60
 DEFAULT_TIMEZONE = "Asia/Kuala_Lumpur"
 # Short on purpose: the scheduler's tick waits on a cache miss (security
@@ -204,7 +207,8 @@ def read_for_connection(conn: Any, credentials: Dict[str, Any], *, now: datetime
     stamp = _monotonic()
     with _lock:
         hit = _cache.get(key)
-    if hit is not None and stamp - hit[0] < CACHE_SECONDS:
+    ttl = CACHE_SECONDS if hit is None or hit[1].hours is not None else ERROR_CACHE_SECONDS
+    if hit is not None and stamp - hit[0] < ttl:
         hours = hit[1].hours
         if hours is None or hours.holiday is None or hours.holiday == now.astimezone(hours.zone).date():
             return hit[1]

@@ -714,3 +714,98 @@ def test_the_source_and_feed_clients_carry_their_tenant(session_factory, server,
 
     db2, feed = _doc_feed(session_factory)
     assert resolve_vendor(db2, feed).vendor_client.tenant_id == feed.tenant_id
+
+
+# ── review round 1 ─────────────────────────────────────────────────────────
+
+
+def test_while_the_test_call_is_out_every_other_scheduled_call_stays_stopped(gate, monkeypatch):
+    """LS-4-2: exactly one test call after the stop runs out."""
+    policy = ServerPolicy(stop_after_failures=1, stop_minutes=10)
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(server_gate, "_now", lambda: clock["t"])
+    _client(_failing(), server_policy=policy).get("/itembypage", {"page": 1})
+    clock["t"] += 10 * 60 + 1
+
+    calls: List[str] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def probe_handler(_request):
+        calls.append("probe")
+        entered.set()
+        release.wait(2)
+        return httpx.Response(200, json=[])
+
+    probe = threading.Thread(target=lambda: _client(probe_handler, server_policy=policy).get("/a", {}))
+    probe.start()
+    assert entered.wait(2)
+    other = _client(lambda r: calls.append("other") or httpx.Response(200, json=[]),
+                    server_policy=ServerPolicy(one_at_a_time=False, stop_after_failures=1))
+    with pytest.raises(HttpTransportError) as caught:
+        other.get("/b", {})
+    assert caught.value.stopped_until is not None
+    release.set()
+    probe.join(2)
+    assert calls == ["probe"]
+
+
+def test_a_waiting_person_keeps_scheduled_pages_off_the_free_server(gate, monkeypatch):
+    """LS-2-5, deterministic: with a person waiting, a scheduled page never
+    takes the turn, even when the server is free."""
+    monkeypatch.setattr(server_gate, "MAX_WAIT_SECONDS_SYNC", 0.05)
+    gate.set(server_gate._keys(BASE_URL)["urgent"], "1", ex=30)
+    calls: List[int] = []
+    sync = _client(lambda r: calls.append(1) or httpx.Response(200, json=[]))
+    with pytest.raises(HttpTransportError):
+        sync.get("/itembatchbalqtybypage", {"page": 2})
+    assert calls == []
+
+
+def test_pages_queued_before_the_stop_are_not_sent_after_it(gate):
+    """A page that waited for its turn re-checks the stop once it has it."""
+    policy = ServerPolicy(stop_after_failures=1)
+    keys = server_gate._keys(BASE_URL)
+    gate.set(keys["lock"], "page-in-flight", px=60_000)
+    calls: List[int] = []
+    result = {}
+
+    def waiter():
+        try:
+            _client(lambda r: calls.append(1) or httpx.Response(200, json=[]), server_policy=policy).get("/p", {})
+        except HttpTransportError as exc:
+            result["err"] = exc
+
+    t = threading.Thread(target=waiter)
+    t.start()
+    time.sleep(0.03)
+    server_gate.record_result(BASE_URL, ok=False, policy=policy)  # the page in flight failed
+    gate.delete(keys["lock"])
+    t.join(2)
+    assert calls == []
+    assert result["err"].stopped_until is not None
+    assert gate.get(keys["lock"]) is None, "the turn is handed back"
+
+
+def test_a_page_that_gets_no_turn_fails_once_without_retries(session_factory, server, gate, monkeypatch):
+    from modules.autocount.http_source.errors import HttpSourceError
+
+    monkeypatch.setattr(server_gate, "MAX_WAIT_SECONDS_SYNC", 0.02)
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    config = _stock_config(db, company, conn)
+    gate.set(server_gate._keys(BASE_URL)["lock"], "held", px=60_000)
+    waits: List[float] = []
+    import modules.autocount.http_source.source as source_module
+    monkeypatch.setattr(source_module.time, "sleep", lambda s: waits.append(s))
+
+    with pytest.raises(HttpSourceError) as caught:
+        _source(db, company, config).fetch_changes(Watermark())
+    assert caught.value.code == "server_busy"
+    assert waits == [], "no retry ladder for a busy server"
+    assert server_gate.MAX_WAIT_SECONDS_SYNC < 15 * 60
+
+
+def test_the_turn_outlives_a_slow_request():
+    assert server_gate.hold_ttl_ms(90.0) >= 3 * 90 * 1000
