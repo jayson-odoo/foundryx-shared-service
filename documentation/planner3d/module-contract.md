@@ -1,6 +1,6 @@
 # 3D module contract (PLANNER-3D-S0)
 
-Status: contract v0.6, written 20/11/2026, updated 26/11/2026, against `main` at `9fe0099c`. No module
+Status: contract v0.7, written 20/11/2026, updated 27/11/2026, against `main` at `9fe0099c`. No module
 code exists yet. v0.2 applied the review of v0.1; v0.3 takes in the C1 lane's draft shape (section 7.2);
 v0.4 takes in the owner's ruling on the CRM key (one key for the whole Sorento CRM product) and C1's
 `company` parameter, so the planner path now names a CRM company (section 7.1); v0.5 closes open point
@@ -201,7 +201,7 @@ Multipart, one part named `file`. Stores an input image for a later job.
 - `company` is optional: the CRM company code the product belongs to, opaque to SS, echoed on the job
   and on `model.ready`, and part of the retention key (3.8). C5 sends it whenever product codes can
   repeat across companies (open point 10); SS never checks it against the company registry.
-- `uploadIds`: 1 to 6 photos of the one product.
+- `uploadIds`: 1 to 3 photos of the one product (v0.7: the worker and the CRM picker take at most 3).
 - `dimensionsMm` is required. The model is scaled so its bounding box equals these three values.
 - `engine`: `default` (the tenant's default: `gpu`, or `stub` when no worker is configured, section 6.1) or `paid`.
 - Answer `202` with the job object, `status: "queued"`. A submit only records the job; a separate tick
@@ -1020,3 +1020,4 @@ For lanes that started from an earlier version (C1, C3, C6 were sent v0.1):
 | S1, S3 | v0.6 (crew ruling 26/11/2026): transport is PULL. Section 6.1 replaces `GPU_WORKER_URL`, `GPU_WORKER_TOKEN` and `GPU_WORKER_TIMEOUT_SECONDS` with `PLANNER3D_WORKER_TOKEN_SHA256` (SS stores the hash only) and a lease (`planner3d_lease_minutes`, default 10). Section 6.2 replaces the push table with the worker pull API (`claim`, `inputs`, `heartbeat`, `outputs`, `finish` under `/planner3d/worker`, bearer token plus `X-Planner3d-Worker`), stale-lease requeue, `worker_lost` after 3 attempts, jobs queue while the worker is off. Section 6.3: the stub is the in-process engine only while the hash is unset; a worker that is off is not a stub trigger. Section 4.1: no SS-side start or poll on the pull path; the tick requeues stale leases and finishes. SS-side caps, sniffing and its own sha256 stay. |
 | C3, S4 | v0.6, 3.4: the worker composites and returns `render.png` and `diff.json`; SS re-runs `product_diff` on the stored PNG and fails `product_changed` on any non-zero product diff. The wire (`render.ready`) is unchanged. |
 | C5 | v0.6, 3.3 and 5.7: a model job yields 2 or 3 `candidate-N.glb` (role `candidate`) and sends the NEW event `model.candidates_ready`; a person approves one; approval queues a `convert` job (new `kind: "convert"`, `sourceJobId`, `approvedCandidate`). `model.ready` now fires for the convert result only, with `model.glb` (role `model`) plus `model.gltf`, `model.obj`, `model.mtl`, `model.fbx`, `model.stl` (role `export`). A receiver that stored the single GLB from `model.ready` keeps working; it now gets `jobId` of the convert job and the extra `sourceJobId`, `approvedCandidate` fields. |
+| C5, S1 | v0.7 (lane PLANNER-3D-S1, crew answers 27/11/2026): S1 ships the gateway subset the CRM uses: `POST /uploads`, `POST /models`, `GET /jobs/{id}`, the `files` signed links, tenant keys, webhook receivers and the `model.candidates_ready` / `model.ready` push. 3.3 `uploadIds` is 1 to 3 (was 1 to 6). The job object also carries `sourceJobId` and `approvedCandidate` (null on a model job). On a model job `result.files` lists only the candidate GLBs (the worker's `candidate-N.json` reports stay internal). With no worker configured jobs wait `queued`; the CPU stub (6.3), `POST /renders`, `GET /jobs`, cancel on the gateway, `/usage`, the monthly GPU cap and the paid engine are later slices. Limits shipped: 600 requests per 5 minutes per key, 20 failed keys per IP per 15 minutes, 20 waiting jobs per tenant (`429 queue_full`), uploads 20 MB, PNG / JPEG / WebP by their bytes. |

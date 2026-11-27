@@ -235,7 +235,7 @@ def test_create_model_job_matches_the_crm_contract_and_feeds_the_worker(client, 
     res = create(client, key, [upl])
     assert res.status_code == 202, res.text
     job = res.json()
-    assert job["id"] and job["kind"] == "model" and job["status"] == "queued"
+    assert job["id"] and job["kind"] == "model" and job["status"] == "queued" and job["engine"] == "gpu"
     assert job["input"] == {"productCode": "ZZT-1", "company": "SRT", "uploadIds": [upl], "dimensionsMm": DIMS}
     assert job["result"] == {"files": []} and job["error"] is None
     got = claim(client, ["model"])

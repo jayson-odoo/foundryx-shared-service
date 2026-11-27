@@ -202,6 +202,7 @@ def create_model(
         tenant_id=tenant_id,
         kind=KIND_MODEL,
         status=STATUS_QUEUED,
+        engine="gpu",  # the pull worker (contract 6); the in-process stub is a later slice
         params_json=body,
         api_key_id=key_id,
         idempotency_ref=idempotency_key or None,
