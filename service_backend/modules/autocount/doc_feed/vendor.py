@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from ..http_source import gentle
 from ..http_source.client import HttpApiClient, HttpTransportError
 from ..http_source.envelope import ENVELOPE_PAGED, parse_page
 from ..http_source.source import (
@@ -32,6 +33,8 @@ VENDOR_HTTP = "VENDOR_HTTP"
 VENDOR_NOT_JSON = "VENDOR_NOT_JSON"
 VENDOR_SHAPE = "VENDOR_SHAPE"
 VENDOR_PAGED = "VENDOR_PAGED"
+# AUTOCOUNT-LOAD-STRATEGY - the server's safety stop is on; nothing was sent.
+VENDOR_STOPPED = "VENDOR_STOPPED"
 
 
 class DocFeedVendorError(Exception):
@@ -47,9 +50,31 @@ class DocFeedVendor:
     """One feed connection's vendor reads. ``client`` is an already-built
     ``HttpApiClient`` (base URL + timeout + optional test transport)."""
 
-    def __init__(self, client: HttpApiClient) -> None:
+    def __init__(self, client: HttpApiClient, *, pacing: Optional[gentle.GentleSettings] = None) -> None:
         self._client = client
         self._call_log = None
+        # AUTOCOUNT-LOAD-STRATEGY - the pause between two day reads: the
+        # connection's own "Pause between pages" floor, longer while
+        # AutoCount answers slowly. ``None`` (a caller that reads one day
+        # only) = never pause.
+        self._pacer = (
+            gentle.AdaptivePause(
+                floor_seconds=pacing.page_pause_seconds, slow_seconds=pacing.slow_page_seconds,
+            )
+            if pacing is not None else None
+        )
+        self._reads = 0
+
+    def pace(self, *, should_stop=None) -> bool:
+        """Call before each day read: pauses after the first read, adapting
+        to how fast the last one was answered. ``False`` = stopped during
+        the pause."""
+        if self._pacer is None or self._reads == 0:
+            return True
+        seconds = self._pacer.after_page(self._client.last_latency_seconds)
+        if seconds <= 0:
+            return True
+        return gentle.sleep_between_pages(seconds, should_stop=should_stop)
 
     def attach_call_log(self, log) -> None:
         """Plan 72 (contract 2.15 section 1, UAC S0-1) - from now on every GET
@@ -100,6 +125,7 @@ class DocFeedVendor:
         return self._document_day(path, params)
 
     def _document_day(self, path: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        self._reads += 1
         response = self._fetch_with_retry(path, params)
         body = self._as_json(response)
         parsed = self._as_page(body)
@@ -120,6 +146,8 @@ class DocFeedVendor:
             try:
                 response = self._logged_get(path, params)
             except HttpTransportError as exc:
+                if exc.stopped_until is not None:
+                    raise DocFeedVendorError(VENDOR_STOPPED, exc.message) from exc
                 if exc.is_timeout:
                     timeout_attempts += 1
                     if timeout_attempts >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:

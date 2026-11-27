@@ -36,6 +36,7 @@ from ..doc_feed.vendor import (
 )
 from ..repositories.doc_feed_repository import DocFeedRepository
 from ..repositories.doc_lookup_repository import DocLookupRepository
+from ..http_source.server_gate import PRIORITY_USER
 from .reader import DocLookupReader
 from .registry import AcDocType, get_doc_type
 from .service import (
@@ -59,6 +60,9 @@ from .service import (
 )
 
 logger = logging.getLogger("foundryx.autocount")
+
+# AUTOCOUNT-LOAD-STRATEGY - every document-finder read is a person's call.
+READ_PRIORITY = PRIORITY_USER
 
 MAX_STEP_ERROR_LEN = 300
 
@@ -179,6 +183,9 @@ def run_doc_lookup(db: Session, job: BackgroundJob) -> None:
         jobs.finish(job, status=JOB_FAILED, error=exc.message)
         return
 
+    # AUTOCOUNT-LOAD-STRATEGY - the document finder is a person waiting on a
+    # screen: its reads take the server's next turn ahead of sync pages.
+    resolved.vendor_client.priority = READ_PRIORITY
     reader = DocLookupReader(resolved.vendor_client)
     errors = 0
     found_record: Optional[Dict[str, Any]] = None

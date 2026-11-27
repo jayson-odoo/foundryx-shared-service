@@ -22,6 +22,7 @@ from app.models.integration_activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS
 
 from ..activity import record_activity, record_client_calls, trace_id_for_job
 from ..http_source.book import derive_book
+from ..http_source import gentle
 from ..http_source.client import HttpApiClient, connection_sizing
 from ..http_source.source import DELETE_GUARD_MIN_ABSOLUTE, DELETE_GUARD_RATIO
 from ..models import (
@@ -289,8 +290,11 @@ def resolve_vendor(db, feed_row: AcDocFeed, *, vendor_transport=None) -> Resolve
         str((conn.config_json or {}).get("baseUrl") or ""),
         transport=vendor_transport, timeout_seconds=sizing.request_timeout_seconds,
         auth_headers=read_auth,
+        # AUTOCOUNT-LOAD-STRATEGY - the same one-request-per-server turn and
+        # safety stop as every other read through this connection.
+        server_policy=gentle.server_policy(conn.config_json or {}),
     )
-    vendor = DocFeedVendor(vendor_client)
+    vendor = DocFeedVendor(vendor_client, pacing=gentle.gentle_settings(conn.config_json or {}))
     if feed_row.feed in PROJNO_FEEDS:
         # Plan 72 (contract 2.15 section 1, UAC S0-1) - every registration
         # read is one `ac_api_call_log` row, as the #2648 reads are.
@@ -628,6 +632,7 @@ def run_poll(
     day = start
     try:
         while day <= end:
+            resolved.vendor.pace(should_stop=lambda: _heartbeat(db, job_id) or False)
             all_records.extend(read_day(feed_row.feed, day))
             requests_count += 1
             _heartbeat(db, job_id)  # B2 - per vendor day
@@ -817,6 +822,7 @@ def run_sweep(
     day = window_from
     try:
         while day <= today:
+            resolved.vendor.pace(should_stop=lambda: _heartbeat(db, job_id) or False)
             for r in resolved.vendor.day_by_doc_date(feed_row.feed, day):
                 fetched.append(r)
                 key = doc_key(r, feed_row.feed)
@@ -1048,6 +1054,14 @@ def run_backfill(
             }
             break
 
+        if not resolved.vendor.pace(
+            should_stop=lambda: _heartbeat(db, job_id) or _job_is_dead(db, job_id)
+        ):
+            stop_reason = {
+                "code": "JOB_ORPHANED",
+                "message": "The worker running this backfill is no longer live.",
+            }
+            break
         try:
             rows = resolved.vendor.day_by_doc_date(feed_row.feed, day)
             requests_count += 1

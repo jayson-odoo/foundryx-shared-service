@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
+from . import server_gate
 from .client import DEFAULT_TIMEOUT_SECONDS, HttpApiClient, HttpTransportError
 from .envelope import parse_page
 
@@ -129,7 +130,12 @@ def run_http_preview(
     # ``http_source.source.HttpApiSource`` builds a real run's client with
     # (``http_source.client.connection_sizing``).
     extra: Dict[str, Any] = {"auth_headers": auth_headers} if auth_headers else {}
-    client = HttpApiClient(base_url, transport=transport, timeout_seconds=timeout_seconds, **extra)
+    # AUTOCOUNT-LOAD-STRATEGY - a preview is a person waiting on a screen:
+    # it takes the server's next turn ahead of scheduled sync pages.
+    client = HttpApiClient(
+        base_url, transport=transport, timeout_seconds=timeout_seconds,
+        priority=server_gate.PRIORITY_USER, **extra,
+    )
     started = time.monotonic()
     try:
         if on_page is not None:

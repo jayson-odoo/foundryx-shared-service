@@ -460,3 +460,178 @@ def test_walk_pauses_longer_after_a_slow_page(session_factory, server, gate, pau
 
     assert pauses == [5.0, 2.5], "slow page 1 -> 5 s; fast page 2 -> halved"
     assert source.source_pause_seconds == 0.0, "the owner's floor is what the run records"
+
+
+# ── LS-6 document feeds ride the same queue, stop and pause ────────────────
+
+
+@pytest.fixture
+def _contract(monkeypatch):
+    from modules.autocount import sinks_sorento
+
+    monkeypatch.setattr(
+        sinks_sorento.SorentoSink, "fetch_contract_detail",
+        lambda self: sinks_sorento.SorentoContractInfo(
+            version=2.7, entities=["delivery_orders", "goods_receive_notes"]
+        ),
+    )
+
+
+def _doc_feed(session_factory, **conn_config):
+    from datetime import date
+
+    from modules.autocount.models import AcDocFeed
+    from tests.s14_doc_feed_helpers import wired_company
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    ac_conn.config_json = {**ac_conn.config_json, **conn_config}
+    db.commit()
+    feed = AcDocFeed(
+        tenant_id=co.tenant_id, company_id=co.id, feed="delivery_orders",
+        connection_id=ac_conn.id, book="db1", mode="push", cursor_day=date(2026, 9, 29),
+    )
+    db.add(feed)
+    db.commit()
+    return db, feed
+
+
+def test_document_feed_reads_take_the_same_turn_and_policy(session_factory, gate, _contract):
+    from modules.autocount.doc_feed.runner import resolve_vendor
+
+    db, feed = _doc_feed(session_factory, oneRequestAtATime="no", stopAfterFailures="5")
+    client = resolve_vendor(db, feed).vendor_client
+    assert client.server_policy == ServerPolicy(one_at_a_time=False, stop_after_failures=5)
+    assert client.priority == PRIORITY_SYNC
+
+
+def test_a_stopped_server_fails_the_feed_poll_once_without_retries(
+    session_factory, gate, _contract, monkeypatch,
+):
+    from datetime import datetime, timezone
+
+    import modules.autocount.doc_feed.vendor as vendor_module
+    from modules.autocount.doc_feed.runner import run_poll
+    from tests.s14_doc_feed_helpers import VENDOR_BASE_URL
+
+    sleeps: List[float] = []
+    monkeypatch.setattr(vendor_module.time, "sleep", lambda s: sleeps.append(s))
+    db, feed = _doc_feed(session_factory)
+    server_gate.record_result(VENDOR_BASE_URL, ok=False, policy=ServerPolicy(stop_after_failures=1))
+    calls: List[str] = []
+    vendor = httpx.Client(transport=httpx.MockTransport(
+        lambda r: calls.append(r.url.path) or httpx.Response(200, json=[]),
+    ))
+
+    run = run_poll(db, feed, dry_run=False, now=datetime(2026, 9, 29, 10, tzinfo=timezone.utc),
+                   vendor_transport=vendor)
+
+    assert calls == [] and sleeps == []
+    assert run.error_code == "VENDOR_STOPPED"
+    assert "AutoCount is not answering well" in (run.error or "")
+
+
+def test_document_feed_days_pause_longer_after_a_slow_day(session_factory, gate, _contract, monkeypatch):
+    from datetime import date, datetime, timezone
+
+    import modules.autocount.http_source.client as client_module
+    import modules.autocount.http_source.gentle as gentle
+    from modules.autocount.doc_feed.runner import run_sweep
+
+    pauses: List[float] = []
+    monkeypatch.setattr(gentle, "sleep_between_pages", lambda s, **_k: pauses.append(s) or True)
+    latencies = iter([40.0] + [1.0] * 10)
+    real = client_module.HttpApiClient.get
+
+    def timed(self, path, params):
+        response = real(self, path, params)
+        self.last_latency_seconds = next(latencies)
+        return response
+
+    monkeypatch.setattr(client_module.HttpApiClient, "get", timed)
+    db, feed = _doc_feed(session_factory)
+    feed.window_config = {"recheckDays": 4}
+    db.commit()
+    vendor = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[])))
+
+    run_sweep(db, feed, dry_run=True, now=datetime(2026, 9, 29, 10, tzinfo=timezone.utc),
+              vendor_transport=vendor)
+
+    assert pauses == [5.0, 2.5, 1.25], "slow day 1 -> 5 s, then halved back towards 0"
+    assert date  # noqa: B018
+
+
+# ── LS-2b a person's calls: writes, screen lookups, previews ───────────────
+
+
+def _person_goes_first(gate, person_call):
+    keys = server_gate._keys(BASE_URL)
+    order: List[str] = []
+    gate.set(keys["lock"], "page-in-flight", px=60_000)
+    sync = _client(lambda r: order.append("sync") or httpx.Response(200, json=[]))
+    t_sync = threading.Thread(target=lambda: sync.get("/itembatchbalqtybypage", {"page": 2}))
+    t_sync.start()
+    time.sleep(0.03)
+    t_user = threading.Thread(target=lambda: person_call(order))
+    t_user.start()
+    time.sleep(0.03)
+    assert order == [], "nothing overtakes the page in flight"
+    gate.delete(keys["lock"])
+    t_user.join(2)
+    t_sync.join(2)
+    return order
+
+
+def test_a_write_waits_only_for_the_page_in_flight_and_goes_before_sync(gate, monkeypatch):
+    import modules.autocount.write_back.client as write_client
+    from modules.autocount.write_back.client import AutoCountWriteClient
+
+    # The write-book guard is its own suite's concern (test_autocount_plan63_gate.py).
+    monkeypatch.setattr(write_client, "assert_write_allowed", lambda _url: "db3")
+
+    def write(order):
+        client = AutoCountWriteClient(
+            BASE_URL,
+            transport=httpx.MockTransport(lambda r: order.append("write") or httpx.Response(200, json={})),
+        )
+        client.post("/SalesOrder", {"DocNo": "X"})
+
+    assert _person_goes_first(gate, write) == ["write", "sync"]
+
+
+def test_a_document_read_from_a_screen_goes_before_sync(gate):
+    from modules.autocount.write_back.reader import AutoCountDocReader
+
+    def read(order):
+        reader = AutoCountDocReader(
+            BASE_URL,
+            transport=httpx.MockTransport(lambda r: order.append("read") or httpx.Response(200, json=[])),
+        )
+        reader.fetch_records("/SalesOrder", {"DocNo": "X"})
+
+    assert _person_goes_first(gate, read) == ["read", "sync"]
+
+
+def test_doc_finder_and_preview_reads_are_a_persons_calls(session_factory, gate, _contract, monkeypatch):
+    import modules.autocount.http_source.preview as preview_module
+
+    seen: List[str] = []
+    real = HttpApiClient.__init__
+
+    def spy(self, *a, **kw):
+        real(self, *a, **kw)
+        seen.append(kw.get("priority", PRIORITY_SYNC))
+
+    monkeypatch.setattr(HttpApiClient, "__init__", spy)
+    try:
+        preview_module.run_http_preview(
+            BASE_URL, "/location",
+            transport=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[]))),
+        )
+    except Exception:  # noqa: BLE001 - only the client's priority matters here
+        pass
+    assert seen and seen[0] == PRIORITY_USER
+
+    from modules.autocount.doc_lookup import job as lookup_job
+
+    assert lookup_job.READ_PRIORITY == PRIORITY_USER

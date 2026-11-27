@@ -284,3 +284,21 @@ def stopped_until(base_url: str) -> Optional[datetime]:
     if not raw or _now() >= float(raw):
         return None
     return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+
+
+def send_as_person(http: Any, request: Any, base_url: str, timeout: Any) -> Any:
+    """A write, or a read a person waits on (``write_back`` client + reader):
+    takes the server's turn ahead of scheduled sync pages, so it waits at most
+    for the page already in flight; its answer is counted for the safety stop,
+    which never refuses it."""
+    import httpx
+
+    hold = float(timeout) if isinstance(timeout, (int, float)) else 90.0
+    with turn(base_url, priority=PRIORITY_USER, hold_seconds=hold):
+        try:
+            response = http.send(request)
+        except (httpx.TimeoutException, httpx.TransportError):
+            record_result(base_url, ok=False)
+            raise
+        record_result(base_url, ok=response.status_code < 500)
+        return response

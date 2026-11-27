@@ -47,11 +47,36 @@ LOOKUP_CACHE_FIELD_DEFAULT = 60
 LOOKUP_CACHE_FIELD_MIN = 0
 LOOKUP_CACHE_FIELD_MAX = 1440
 
+# AUTOCOUNT-LOAD-STRATEGY (owner 27 Nov): the vendor says the stock balance
+# endpoint can serve 3000 rows a page; every other endpoint (products) stays
+# at the connection's own ``pageSize`` (max 1000).
+STOCK_PAGE_SIZE_FIELD_DEFAULT = 3000
+STOCK_PAGE_SIZE_FIELD_MIN = 50
+STOCK_PAGE_SIZE_FIELD_MAX = 3000
+# A page slower than this lengthens the pause (``AdaptivePause``); 0 = off.
+SLOW_PAGE_FIELD_DEFAULT = 30.0
+SLOW_PAGE_FIELD_MIN = 0.0
+SLOW_PAGE_FIELD_MAX = 300.0
+# The first lengthened pause, when the owner's floor is shorter.
+ADAPTIVE_FIRST_PAUSE_SECONDS = 5.0
+# Safety stop (``server_gate``): N failed requests in a row stop scheduled
+# calls to the server for M minutes. N = 0 switches it off.
+STOP_AFTER_FIELD_DEFAULT = 3
+STOP_AFTER_FIELD_MIN = 0
+STOP_AFTER_FIELD_MAX = 20
+STOP_MINUTES_FIELD_DEFAULT = 10
+STOP_MINUTES_FIELD_MIN = 1
+STOP_MINUTES_FIELD_MAX = 120
+ONE_AT_A_TIME_YES = "yes"
+ONE_AT_A_TIME_NO = "no"
+
 
 @dataclass(frozen=True)
 class GentleSettings:
     page_pause_seconds: float
     lookup_cache_minutes: int
+    stock_page_size: int = STOCK_PAGE_SIZE_FIELD_DEFAULT
+    slow_page_seconds: float = SLOW_PAGE_FIELD_DEFAULT
 
 
 def _int_in_range(raw: Any, default: int, low: int, high: int) -> int:
@@ -63,6 +88,17 @@ def _int_in_range(raw: Any, default: int, low: int, high: int) -> int:
     except (TypeError, ValueError):
         return default
     return value if low <= value <= high else default
+
+
+def _float_in_range(raw: Any, default: float, low: float, high: float) -> float:
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return default
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and low <= value <= high else default
 
 
 def gentle_settings(config: Optional[Dict[str, Any]]) -> GentleSettings:
@@ -88,7 +124,78 @@ def gentle_settings(config: Optional[Dict[str, Any]]) -> GentleSettings:
             cfg.get("lookupCacheMinutes"), LOOKUP_CACHE_FIELD_DEFAULT,
             LOOKUP_CACHE_FIELD_MIN, LOOKUP_CACHE_FIELD_MAX,
         ),
+        stock_page_size=_stock_page_size(cfg.get("stockPageSize")),
+        slow_page_seconds=_float_in_range(
+            cfg.get("slowPageSeconds"), SLOW_PAGE_FIELD_DEFAULT,
+            SLOW_PAGE_FIELD_MIN, SLOW_PAGE_FIELD_MAX,
+        ),
     )
+
+
+def _stock_page_size(raw: Any) -> int:
+    """Clamped like ``connection_sizing``'s ``pageSize``: a stored value past
+    either end is pulled back into range, junk is the default."""
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return STOCK_PAGE_SIZE_FIELD_DEFAULT
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return STOCK_PAGE_SIZE_FIELD_DEFAULT
+    return max(STOCK_PAGE_SIZE_FIELD_MIN, min(value, STOCK_PAGE_SIZE_FIELD_MAX))
+
+
+def server_policy(config: Optional[Dict[str, Any]]) -> Any:
+    """The connection's ``server_gate.ServerPolicy`` (one request at a time,
+    safety stop). Junk falls back to the defaults."""
+    from .server_gate import ServerPolicy
+
+    cfg = config or {}
+    one = str(cfg.get("oneRequestAtATime") or ONE_AT_A_TIME_YES).strip().lower()
+    return ServerPolicy(
+        one_at_a_time=one != ONE_AT_A_TIME_NO,
+        stop_after_failures=_int_in_range(
+            cfg.get("stopAfterFailures"), STOP_AFTER_FIELD_DEFAULT,
+            STOP_AFTER_FIELD_MIN, STOP_AFTER_FIELD_MAX,
+        ),
+        stop_minutes=_int_in_range(
+            cfg.get("stopMinutes"), STOP_MINUTES_FIELD_DEFAULT,
+            STOP_MINUTES_FIELD_MIN, STOP_MINUTES_FIELD_MAX,
+        ),
+    )
+
+
+class AdaptivePause:
+    """The pause before the next page of a walk. Starts at the owner's
+    ``pagePauseSeconds`` (the floor). A page slower than ``slow_seconds``
+    doubles it (at least ``ADAPTIVE_FIRST_PAUSE_SECONDS``, at most the 90 s
+    max); a page faster than half of it halves it back, never below the
+    floor. ``slow_seconds`` 0 = always the floor."""
+
+    def __init__(self, *, floor_seconds: float, slow_seconds: float) -> None:
+        self.floor = max(0.0, float(floor_seconds))
+        self.slow = max(0.0, float(slow_seconds))
+        self.seconds = self.floor
+
+    def after_page(self, latency_seconds: Optional[float]) -> float:
+        if self.slow <= 0 or latency_seconds is None:
+            return self.seconds
+        if latency_seconds > self.slow:
+            grown = max(self.seconds * 2, ADAPTIVE_FIRST_PAUSE_SECONDS, self.floor)
+            self.seconds = min(grown, PAGE_PAUSE_FIELD_MAX)
+        elif latency_seconds <= self.slow / 2 and self.seconds > self.floor:
+            self.seconds = max(self.seconds / 2, self.floor)
+            if self.seconds - self.floor < 0.25:
+                self.seconds = self.floor
+        return self.seconds
+
+
+_FIELD_LABELS = {
+    "lookupCacheMinutes": "lookupCacheMinutes",
+    "stockPageSize": "Stock balance page size",
+    "stopAfterFailures": "Stop after failed requests in a row",
+    "stopMinutes": "Stop for (minutes)",
+}
 
 
 def validate_gentle_config(config: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -102,8 +209,22 @@ def validate_gentle_config(config: Optional[Dict[str, Any]]) -> Optional[str]:
             return PAGE_PAUSE_INVALID_MESSAGE
         if not (math.isfinite(pause) and PAGE_PAUSE_FIELD_MIN <= pause <= PAGE_PAUSE_FIELD_MAX):
             return PAGE_PAUSE_INVALID_MESSAGE
+    one = str(cfg.get("oneRequestAtATime") if cfg.get("oneRequestAtATime") is not None else "").strip().lower()
+    if one and one not in (ONE_AT_A_TIME_YES, ONE_AT_A_TIME_NO):
+        return "One request at a time per server must be Yes or No."
+    slow_raw = str(cfg.get("slowPageSeconds") if cfg.get("slowPageSeconds") is not None else "").strip()
+    if slow_raw:
+        try:
+            slow = float(slow_raw)
+        except ValueError:
+            slow = -1.0
+        if not (math.isfinite(slow) and SLOW_PAGE_FIELD_MIN <= slow <= SLOW_PAGE_FIELD_MAX):
+            return "Slow page must be a number from 0 to 300 seconds (0 = off)."
     for key, low, high in (
         ("lookupCacheMinutes", LOOKUP_CACHE_FIELD_MIN, LOOKUP_CACHE_FIELD_MAX),
+        ("stockPageSize", STOCK_PAGE_SIZE_FIELD_MIN, STOCK_PAGE_SIZE_FIELD_MAX),
+        ("stopAfterFailures", STOP_AFTER_FIELD_MIN, STOP_AFTER_FIELD_MAX),
+        ("stopMinutes", STOP_MINUTES_FIELD_MIN, STOP_MINUTES_FIELD_MAX),
     ):
         raw = str(cfg.get(key) if cfg.get(key) is not None else "").strip()
         if not raw:
@@ -111,9 +232,9 @@ def validate_gentle_config(config: Optional[Dict[str, Any]]) -> Optional[str]:
         try:
             value = int(raw)
         except ValueError:
-            return f"{key} must be a whole number."
+            return f"{_FIELD_LABELS.get(key, key)} must be a whole number."
         if not (low <= value <= high):
-            return f"{key} must be between {low} and {high}."
+            return f"{_FIELD_LABELS.get(key, key)} must be between {low} and {high}."
     return None
 
 
