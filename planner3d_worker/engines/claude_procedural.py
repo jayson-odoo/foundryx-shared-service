@@ -53,6 +53,7 @@ class _Version:
         self.measured: dict = {}
         self.error: Optional[str] = None
         self.faces = 0
+        self.response = ""
         self.parts: list = []
 
 
@@ -149,18 +150,25 @@ class ClaudeProceduralEngine:
             raise EngineFailure("generation_failed", f"bad input: {exc}") from None
         messages: list[dict] = [{"role": "user", "content": first}]
         versions: list[_Version] = []
-        for n in range(1, profile.max_versions + 1):
+        limit = profile.max_versions
+        n = 0
+        while True:
+            n += 1
             good = [v for v in versions if v.glb is not None]
+            extra = n > limit  # one more attempt, only while fewer than MIN_GOOD versions are usable
+            if extra and (len(good) >= MIN_GOOD or n > limit + 1):
+                break
             if ledger.total_usd() >= routing.spend_cap_usd:
-                if len(good) >= MIN_GOOD:
+                if len(good) >= MIN_GOOD or extra:
                     break
                 raise EngineFailure("spend_cap", f"the US${routing.spend_cap_usd:.0f} spend cap is reached")
-            if len(good) >= MIN_GOOD and durations and time.monotonic() - started + max(durations) > self.time_budget_s:
+            if (len(good) >= MIN_GOOD or extra) and durations and time.monotonic() - started + max(durations) > self.time_budget_s:
                 break
             ver = _Version(n, profile.model)
             versions.append(ver)
             began = time.monotonic()
             self._one_version(client, routing, ledger, profile, messages, ver, spec, run_script, out, product_code, job_ref)
+            self._write_trail(out, ver)
             durations.append(time.monotonic() - began)
         good = [v for v in versions if v.glb is not None]
         if len(good) < MIN_GOOD:
@@ -191,6 +199,7 @@ class ClaudeProceduralEngine:
             self._queue_error(messages, None, ver.error)
             return
 
+        ver.response = _text_of(message)
         ver.usage = _usage_dict(message.usage)
         ver.usd = cost_usd(ver.usage, routing.prices(profile.model))
         ledger.append({
@@ -268,6 +277,16 @@ class ClaudeProceduralEngine:
         renders = render_views(mesh)
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": prompts.refine_turn(renders, ver.measured, spec, None, faces=ver.faces, parts=ver.parts, over_budget=ver.faces > prompts.TRIANGLE_BUDGET)})
+
+    @staticmethod
+    def _write_trail(out: Path, ver: _Version) -> None:
+        """Debug trail beside the version's work files; never uploaded (only candidate-N.* are returned)."""
+        work = out / f"work-{ver.n}"
+        work.mkdir(parents=True, exist_ok=True)
+        if ver.response:
+            (work / "response.txt").write_text(ver.response, encoding="utf-8")
+        if ver.error:
+            (work / "error.txt").write_text(ver.error, encoding="utf-8")
 
     @staticmethod
     def _queue_error(messages: list, content: Optional[list], error: str) -> None:

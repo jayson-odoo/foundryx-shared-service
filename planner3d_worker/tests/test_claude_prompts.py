@@ -134,6 +134,39 @@ def test_a_huge_pixel_count_is_rejected_before_it_is_decoded(tmp_path):
     from planner3d_worker.claude.prompts import ImageTooLarge
 
     path = tmp_path / "photo-1.png"
-    Image.new("1", (9000, 9000)).save(path, "PNG")  # 81 MP, tiny on disk
+    Image.new("1", (11000, 11000)).save(path, "PNG")  # 121 MP, tiny on disk
     with pytest.raises(ImageTooLarge):
         first_turn([path], None, DIMS, None, PRIMS)
+
+
+def test_a_60_megapixel_drawing_is_accepted_and_shrunk(tmp_path):
+    path = tmp_path / "drawing.png"
+    Image.new("L", (8000, 7500), 200).save(path, "PNG")  # 60 MP
+    blocks = first_turn([], path, DIMS, None, PRIMS)
+    img = Image.open(io.BytesIO(base64.b64decode(_images(blocks)[0]["source"]["data"])))
+    assert max(img.size) <= 1568
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```python\r\nimport trimesh\r\nx = 1\r\n```\r\n",
+        "```py\nx = 1\n```",
+        "```Python\nx = 1\n```",
+        "- step one:\n    ```python\n    import trimesh\n    if True:\n        x = 1\n    ```\n",
+    ],
+)
+def test_extract_script_handles_fence_variants_and_indented_blocks(text):
+    import ast
+
+    ast.parse(extract_script(text))
+
+
+def test_extract_script_prefers_the_block_that_writes_the_model_over_a_later_snippet():
+    text = "```python\nimport trimesh\nm = 1\nm.export('model.glb')\n```\nnote\n```python\nprint('tip')\n```"
+    assert "model.glb" in extract_script(text)
+
+
+def test_extract_script_without_model_glb_takes_the_longest_block():
+    text = "```python\na = 1\nb = 2\nc = 3\n```\n```python\nz = 1\n```"
+    assert "c = 3" in extract_script(text)

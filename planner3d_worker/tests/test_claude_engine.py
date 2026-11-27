@@ -205,7 +205,7 @@ def test_rejected_script_never_reaches_run_script_and_error_is_fed_back(tmp_path
 
 
 def test_all_versions_failing_is_generation_failed(tmp_path):
-    engine, client, _, _ = _make(tmp_path, [reply(box_script("FAIL")), reply(box_script("FAIL"))])
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("FAIL")), reply(box_script("FAIL")), reply(box_script("FAIL"))])
     with pytest.raises(EngineFailure) as e:
         _run(engine, tmp_path)
     assert e.value.code == "generation_failed"
@@ -213,7 +213,7 @@ def test_all_versions_failing_is_generation_failed(tmp_path):
 
 
 def test_only_one_good_version_is_generation_failed(tmp_path):
-    engine, _, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("FAIL"))])
+    engine, _, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("FAIL")), reply(box_script("FAIL"))])
     with pytest.raises(EngineFailure) as e:
         _run(engine, tmp_path)
     assert e.value.code == "generation_failed"
@@ -221,7 +221,7 @@ def test_only_one_good_version_is_generation_failed(tmp_path):
 
 def test_reply_without_a_script_counts_as_a_failed_version(tmp_path):
     no_code = SimpleNamespace(content=[SimpleNamespace(type="text", text="sorry")], usage=SimpleNamespace(**USAGE))
-    engine, client, _, _ = _make(tmp_path, [no_code, no_code])
+    engine, client, _, _ = _make(tmp_path, [no_code, no_code, no_code])
     with pytest.raises(EngineFailure) as e:
         _run(engine, tmp_path)
     assert e.value.code == "generation_failed"
@@ -422,3 +422,33 @@ def test_a_glb_with_a_huge_embedded_image_is_not_decoded_by_the_parent(tmp_path)
     tracemalloc.stop()
     assert len(produced) == 4
     assert peak < 100 * 1024 * 1024
+
+
+def test_one_extra_attempt_rescues_a_run_with_one_good_version(tmp_path):
+    # 1 failed + 1 rejected + 1 good is still only one good: needs the extra one
+    engine2, client2, _, _ = _make(tmp_path, [reply(box_script("FAIL")), reply(box_script("v2")), reply(box_script("v3"))])
+    produced, _ = _run(engine2, tmp_path)
+    assert len(client2.calls) == 3 and len(produced) == 4
+    with pytest.raises(EngineFailure):  # not a second extra: 4 failures in a row stop at max_versions + 1
+        _run(_make(tmp_path, [reply(box_script("FAIL"))] * 4)[0], tmp_path)
+
+
+def test_no_extra_attempt_when_the_time_budget_is_spent(tmp_path):
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("FAIL")), reply(box_script("v2")), reply(box_script("v3"))])
+    engine.time_budget_s = 0.0
+    with pytest.raises(EngineFailure):
+        _run(engine, tmp_path)
+    assert len(client.calls) == 2
+
+
+def test_debug_trail_is_written_per_version_and_never_returned(tmp_path):
+    engine, client, _, _ = _make(
+        tmp_path,
+        [reply("import subprocess\n# BOX 1 1 1"), reply(box_script("v2")), reply(box_script("v3"))],
+        routing=_routing(tmp_path, default_versions=3),
+    )
+    produced, out = _run(engine, tmp_path)
+    assert "subprocess" in (out / "work-1" / "response.txt").read_text()
+    assert "rejected" in (out / "work-1" / "error.txt").read_text()
+    assert (out / "work-2" / "response.txt").exists() and not (out / "work-2" / "error.txt").exists()
+    assert all(n.startswith("candidate-") for n, _r in produced)

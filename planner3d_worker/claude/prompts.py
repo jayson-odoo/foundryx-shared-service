@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import re
+import textwrap
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -57,7 +58,7 @@ MAX_SIDE = 1568
 MAX_BYTES = 3_500_000
 
 
-MAX_PIXELS = 40_000_000
+MAX_PIXELS = 100_000_000
 
 
 class ImageTooLarge(ValueError):
@@ -66,15 +67,22 @@ class ImageTooLarge(ValueError):
 
 def _shrink(data: bytes, media_type: str) -> tuple[bytes, str]:
     """Long side at most MAX_SIDE px, EXIF orientation applied, under MAX_BYTES. A small image passes through."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", Image.DecompressionBombWarning)
-        try:
-            img = Image.open(io.BytesIO(data))
-            if img.size[0] * img.size[1] > MAX_PIXELS:
-                raise ImageTooLarge(f"the image is {img.size[0]}x{img.size[1]} pixels; at most {MAX_PIXELS} are accepted")
-            img.load()
-        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
-            raise ImageTooLarge("the image has too many pixels") from exc
+    old_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            try:
+                img = Image.open(io.BytesIO(data))
+                if img.size[0] * img.size[1] > MAX_PIXELS:
+                    raise ImageTooLarge(f"the image is {img.size[0]}x{img.size[1]} pixels; at most {MAX_PIXELS} are accepted")
+                if img.format == "JPEG":
+                    img.draft("RGB", (MAX_SIDE * 2, MAX_SIDE * 2))  # decode at a reduced size
+                img.load()
+            except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+                raise ImageTooLarge("the image has too many pixels") from exc
+    finally:
+        Image.MAX_IMAGE_PIXELS = old_limit
     if max(img.size) <= MAX_SIDE and len(data) <= MAX_BYTES:
         return data, media_type
     img = ImageOps.exif_transpose(img)
@@ -155,11 +163,13 @@ def refine_turn(
     return blocks
 
 
-_FENCE = re.compile(r"```python[ \t]*\r?\n(.*?)```", re.DOTALL)
+_FENCE = re.compile(r"^[ \t]*```[ \t]*(?:python3?|py)[ \t]*\n(.*?)^[ \t]*```", re.DOTALL | re.MULTILINE | re.IGNORECASE)
 
 
 def extract_script(text: str) -> str:
-    blocks = _FENCE.findall(text or "")
+    """The script block of a reply: the last python block that writes model.glb, else the longest."""
+    blocks = [textwrap.dedent(b) for b in _FENCE.findall((text or "").replace("\r\n", "\n"))]
     if not blocks:
         raise ValueError("the reply has no ```python block")
-    return blocks[-1]
+    writers = [b for b in blocks if "model.glb" in b]
+    return writers[-1] if writers else max(blocks, key=len)
