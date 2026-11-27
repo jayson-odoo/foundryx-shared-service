@@ -60,7 +60,7 @@ security add-generic-password -a planner3d -s anthropic-api-key -w   # prompts f
 ```
 
 Routing by category: `PLANNER3D_CLAUDE_ROUTING`, else `~/planner3d/claude-routing.json`, else the shipped
-`planner3d_worker/claude/routing.default.json` (copy it to start). Spend ledger: `~/planner3d/claude-ledger.jsonl`
+`planner3d_worker/claude/routing.default.json` (copy it to start; the default profile is Opus 5.5, primitives, 3 versions, for every product kind; a `categories` entry overrides it per category code). Spend ledger: `~/planner3d/claude-ledger.jsonl`
 (one line per API call; the engine stops at `spendCapUsd`). Scripts run under macOS `sandbox-exec`, so this engine
 needs macOS. One run outside Shared Service: `python -m planner3d_worker.claude_cli --help`.
 

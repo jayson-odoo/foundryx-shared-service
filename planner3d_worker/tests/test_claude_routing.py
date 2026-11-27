@@ -56,7 +56,7 @@ def test_prices_and_cap(tmp_path):
     assert r.spend_cap_usd == 700.0
 
 
-def test_shipped_default_file_is_sonnet_primitives_with_no_categories():
+def test_shipped_default_file_is_opus_primitives_with_no_categories():
     from pathlib import Path
 
     import planner3d_worker.claude.routing as mod
@@ -66,9 +66,9 @@ def test_shipped_default_file_is_sonnet_primitives_with_no_categories():
     assert raw["categories"] == {}
     r = Routing.load(path)
     p = r.profile_for(None)
-    assert p.approach == "primitives" and "sonnet" in p.model
+    assert p.approach == "primitives" and p.model == "claude-opus-5-5" and p.max_versions == 3
     assert r.spend_cap_usd == 700.0
-    assert r.prices(p.model)["input"] == 2.0
+    assert r.prices(p.model)["input"] == 4.0
 
 
 def test_default_load_uses_env_then_home_file_then_shipped(tmp_path, monkeypatch):
