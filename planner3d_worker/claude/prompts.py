@@ -30,6 +30,8 @@ Rules for the script:
 - Sculpted parts (levers, spouts, handles) are lofted or swept profiles, or hulls of several cross-sections, never a single box.
 - Materials: ceramic white roughness 0.3, chrome metallic 1.0 roughness 0.1, following the photo.
 - Colours go in glTF PBR materials only: give each part trimesh.visual.TextureVisuals(material=trimesh.visual.material.PBRMaterial(baseColorFactor=[r, g, b, 255], metallicFactor=..., roughnessFactor=...)), never vertex colours or face colours. Always name each part (Scene geometry names) and give every part its own material.
+- baseColorFactor values are LINEAR, not sRGB: convert every colour you read from the photo (sRGB) to linear before writing it (c/255, then ((c + 0.055) / 1.055) ** 2.4 for c above 0.04045, else c / 12.92). A "Photo finish colours" line in the request lists measured colours with their linear values.
+- Model every functional feature visible in the photo or drawing: drain / waste outlet hole (with its chrome pop-up cap when shown), tap holes, overflow slots, flush buttons, handles, aerators. Before writing the script, list the visible features in a comment at the top of the script, then build each.
 - Write the result to model.glb in the current directory with simple PBR materials that match the photo (for example white ceramic: baseColor near white, roughness 0.15, metallic 0; chrome: metallic 1, roughness 0.1). Use trimesh.visual.material.PBRMaterial and export a trimesh.Scene so named parts survive.
 - Look at the drawing for sides the photo does not show (back, top, hidden faces) and follow it for proportions.
 - The script must run to completion in under four minutes on a laptop CPU and must not print secrets or read anything outside the cwd.
@@ -110,7 +112,19 @@ def _file_block(path: Path) -> dict:
     return _image_block(data, media_type)
 
 
-def first_turn(photos: list[Path], drawing: Optional[Path], dims_mm: dict, category: Optional[dict], profile: Profile) -> list[dict]:
+def finish_line(finish_colours: list[dict]) -> str:
+    listed = ", ".join(f"{c['hex']} (linear {c['linear'][0]}, {c['linear'][1]}, {c['linear'][2]})" for c in finish_colours)
+    return f"Photo finish colours (sRGB hex, linear rgb): {listed}."
+
+
+def first_turn(
+    photos: list[Path],
+    drawing: Optional[Path],
+    dims_mm: dict,
+    category: Optional[dict],
+    profile: Profile,
+    finish_colours: Optional[list[dict]] = None,
+) -> list[dict]:
     blocks = [_file_block(p) for p in photos]
     if drawing is not None:
         blocks.append(_file_block(drawing))
@@ -120,6 +134,8 @@ def first_turn(photos: list[Path], drawing: Optional[Path], dims_mm: dict, categ
     ]
     if category and (category.get("name") or category.get("code")):
         lines.append(f"Category: {category.get('name') or category.get('code')}.")
+    if finish_colours:
+        lines.append(finish_line(finish_colours))
     if profile.approach == "sdf":
         lines.append("Approach: sdf (signed distance field with smooth unions, meshed with manifold3d level set). One smooth ceramic piece.")
     else:
@@ -155,6 +171,7 @@ def refine_turn(
             lines.append(f"- {part['name']}: {e[0]} x {e[1]} x {e[2]}, centre {c[0]}, {c[1]}, {c[2]}")
     if error:
         lines.append("The last run failed with this error:\n" + error)
+    lines.append("Check each feature you listed at the top of your script is present and visible in the renders; add any that are missing.")
     lines.append("Fix orientation errors first (a part standing the wrong way, an axis on Z instead of Y).")
     lines.append(
         "Compare the renders with the photo and the drawing, fix the biggest visual differences "

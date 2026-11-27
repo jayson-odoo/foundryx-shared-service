@@ -175,3 +175,20 @@ def test_extract_script_without_model_glb_takes_the_longest_block():
 def test_system_prompt_puts_colour_in_pbr_materials_not_vertex_colours():
     for needle in ("PBRMaterial(baseColorFactor", "metallicFactor", "roughnessFactor", "TextureVisuals", "vertex colours", "name each part"):
         assert needle in SYSTEM_PROMPT
+
+
+def test_system_prompt_says_linear_colours_and_lists_the_features_to_model():
+    for needle in ("LINEAR", "linear before writing", "drain", "pop-up cap", "overflow", "aerators", "list the visible features"):
+        assert needle in SYSTEM_PROMPT
+
+
+def test_refine_turn_asks_to_check_the_listed_features():
+    text = _text(refine_turn({"front": b"a"}, {"length": 1}, {"length": 1}, None))
+    assert "feature you listed" in text
+
+
+def test_first_turn_names_the_photo_finish_colours_when_given(tmp_path):
+    photo = _png(tmp_path / "photo-1.png", (1, 2, 3))
+    cols = [{"hex": "#c8a24a", "linear": [0.578, 0.361, 0.069]}]
+    text = _text(first_turn([photo], None, DIMS, None, PRIMS, finish_colours=cols))
+    assert "Photo finish colours (sRGB hex, linear rgb): #c8a24a (linear 0.578, 0.361, 0.069)" in text

@@ -452,3 +452,10 @@ def test_debug_trail_is_written_per_version_and_never_returned(tmp_path):
     assert "rejected" in (out / "work-1" / "error.txt").read_text()
     assert (out / "work-2" / "response.txt").exists() and not (out / "work-2" / "error.txt").exists()
     assert all(n.startswith("candidate-") for n, _r in produced)
+
+
+def test_first_turn_carries_the_measured_photo_colours(tmp_path):
+    engine, client, _, _ = _make(tmp_path, [reply(box_script("v1")), reply(box_script("v2"))])
+    _run(engine, tmp_path)
+    text = "\n".join(b["text"] for b in client.calls[0]["messages"][0]["content"] if b["type"] == "text")
+    assert "Photo finish colours (sRGB hex, linear rgb): #c80a0a" in text

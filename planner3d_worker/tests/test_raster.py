@@ -78,7 +78,7 @@ def test_default_material_stays_grey():
 
 
 def test_a_metallic_part_has_a_brighter_highlight_than_a_dielectric_one():
-    grey = [200, 200, 200, 255]
+    grey = [60, 60, 60, 255]
     dielectric = _object_pixels(render_views(_coloured(grey, 0.0, trimesh.creation.icosphere(subdivisions=3)))["three_quarter"])
     metal = _object_pixels(render_views(_coloured(grey, 1.0, trimesh.creation.icosphere(subdivisions=3)))["three_quarter"])
     assert metal.max() > dielectric.max()
@@ -163,3 +163,9 @@ def test_vertex_colours_win_over_a_material_that_has_no_colour():
     loaded = trimesh.load(_io.BytesIO(data), file_type="glb", force="scene", skip_materials=True)
     px = _object_pixels(render_views(loaded, materials=glb_materials(data))["front"])
     assert (px.max(axis=1) < 120).sum() > 1000
+
+
+def test_linear_base_colour_is_encoded_to_srgb_for_display():
+    # linear 0.214 is sRGB 0.5 (value 128): a mid grey factor must not render dark
+    px = _object_pixels(render_views(_coloured([55, 55, 55, 255]))["front"])  # 55/255 = 0.2157 linear
+    assert 110 <= px.max() <= 140

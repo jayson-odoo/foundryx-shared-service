@@ -20,6 +20,7 @@ import trimesh
 
 from planner3d_worker import keychain
 from planner3d_worker.claude import prompts, sandbox
+from planner3d_worker.claude.colours import photo_colours
 from planner3d_worker.claude.ledger import Ledger, cost_usd
 from planner3d_worker.claude.routing import Profile, Routing
 from planner3d_worker.raster import glb_materials, render_views
@@ -146,6 +147,9 @@ class ClaudeProceduralEngine:
 
         try:
             first = prompts.first_turn(photos, drawing, spec, category, profile)
+            finish = photo_colours(photos[0]) if photos else []
+            if finish:  # after the image guard in first_turn; added to the request text
+                first[-1] = {"type": "text", "text": first[-1]["text"] + "\n" + prompts.finish_line(finish)}
         except prompts.ImageTooLarge as exc:
             raise EngineFailure("generation_failed", f"bad input: {exc}") from None
         messages: list[dict] = [{"role": "user", "content": first}]

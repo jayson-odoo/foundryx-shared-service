@@ -48,6 +48,12 @@ def _blank(size: int) -> bytes:
     return _png(np.full((size, size, 3), BACKGROUND, dtype=np.uint8))
 
 
+def _srgb(linear) -> np.ndarray:
+    """glTF colour factors are linear; encode them for display like a glTF viewer does."""
+    c = np.clip(np.asarray(linear, dtype=float), 0.0, 1.0)
+    return np.where(c <= 0.0031308, 12.92 * c, 1.055 * np.power(c, 1 / 2.4) - 0.055)
+
+
 def _material_of(geom) -> tuple[tuple[float, float, float], float]:
     """(rgb 0..1, metallic 0..1) from a geometry's material; the default grey when it has none."""
     rgb, metallic = DEFAULT_RGB, 0.0
@@ -59,7 +65,7 @@ def _material_of(geom) -> tuple[tuple[float, float, float], float]:
         if factor is not None:
             f = np.asarray(factor, dtype=float).ravel()[:3]
             if len(f) == 3:
-                rgb = tuple(float(x) / 255.0 for x in f)
+                rgb = tuple(float(x) for x in _srgb(f / 255.0))
         m = getattr(material, "metallicFactor", None)
         if m is not None:
             metallic = float(m)
@@ -83,12 +89,13 @@ def _collect(mesh, materials: Optional[dict]):
         if len(v) == 0 or len(f) == 0:
             continue
         v = np.einsum("ij,nj->ni", transform[:3, :3], v) + transform[:3, 3]
-        rgb, metallic = (materials or {}).get(name) or _material_of(geom)
+        given = (materials or {}).get(name)
+        rgb, metallic = ((tuple(float(x) for x in _srgb(given[0])), given[1]) if given else _material_of(geom))
         face_rgb = np.tile(np.asarray(rgb, dtype=float), (len(f), 1))
         visual = getattr(geom, "visual", None)
         # vertex or face colours, when the file carries them, are the part's colour
         if visual is not None and getattr(visual, "kind", None) in ("vertex", "face") and visual.defined:
-            face_rgb = np.asarray(visual.face_colors, dtype=float)[:, :3] / 255.0
+            face_rgb = _srgb(np.asarray(visual.face_colors, dtype=float)[:, :3] / 255.0)
         verts.append(v)
         faces.append(f + offset)
         rgbs.append(face_rgb)
