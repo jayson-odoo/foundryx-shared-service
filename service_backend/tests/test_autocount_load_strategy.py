@@ -391,7 +391,9 @@ def test_a_stopped_server_fails_the_run_once_with_a_plain_reason(session_factory
     conn = _open_connection(db)
     company = _company(db, conn.id)
     config = _stock_config(db, company, conn)
-    server_gate.record_result(BASE_URL, ok=False, policy=ServerPolicy(stop_after_failures=1))
+    server_gate.record_result(
+        BASE_URL, ok=False, policy=ServerPolicy(stop_after_failures=1), tenant_id=config.tenant_id,
+    )
 
     from modules.autocount.http_source.errors import HttpSourceError
 
@@ -517,7 +519,9 @@ def test_a_stopped_server_fails_the_feed_poll_once_without_retries(
     sleeps: List[float] = []
     monkeypatch.setattr(vendor_module.time, "sleep", lambda s: sleeps.append(s))
     db, feed = _doc_feed(session_factory)
-    server_gate.record_result(VENDOR_BASE_URL, ok=False, policy=ServerPolicy(stop_after_failures=1))
+    server_gate.record_result(
+        VENDOR_BASE_URL, ok=False, policy=ServerPolicy(stop_after_failures=1), tenant_id=feed.tenant_id,
+    )
     calls: List[str] = []
     vendor = httpx.Client(transport=httpx.MockTransport(
         lambda r: calls.append(r.url.path) or httpx.Response(200, json=[]),
@@ -635,3 +639,78 @@ def test_doc_finder_and_preview_reads_are_a_persons_calls(session_factory, gate,
     from modules.autocount.doc_lookup import job as lookup_job
 
     assert lookup_job.READ_PRIORITY == PRIORITY_USER
+
+
+# ── security review round 1 ────────────────────────────────────────────────
+
+
+def test_one_tenants_failures_never_stop_another_tenants_sync(gate):
+    """B1: tenant A pointing a connection at tenant B's wrapper host and
+    failing on purpose must not pause B's scheduled sync."""
+    harsh = ServerPolicy(stop_after_failures=1, stop_minutes=120)
+    attacker = _client(_failing(), server_policy=harsh, tenant_id="tenant-a")
+    attacker.get("/nonexistent", {})
+    assert server_gate.stopped_until(BASE_URL, tenant_id="tenant-a") is not None
+
+    calls: List[int] = []
+    victim = _client(lambda r: calls.append(1) or httpx.Response(200, json=[]), tenant_id="tenant-b")
+    assert victim.get("/itembypage", {"page": 1}).status_code == 200
+    assert calls == [1]
+    assert server_gate.stopped_until(BASE_URL, tenant_id="tenant-b") is None
+
+
+def test_a_persons_call_in_one_tenant_does_not_hold_back_another_tenants_sync(gate):
+    keys_a = server_gate._keys(BASE_URL, "tenant-a")
+    gate.set(keys_a["urgent"], "5", ex=30)
+    other = _client(_ok, tenant_id="tenant-b")
+    assert other.get("/itembypage", {"page": 1}).status_code == 200
+
+
+def test_the_turn_is_still_one_per_server_across_tenants(gate):
+    assert server_gate._keys(BASE_URL, "tenant-a")["lock"] == server_gate._keys(BASE_URL, "tenant-b")["lock"]
+
+
+@pytest.mark.parametrize("a,b", [
+    ("https://Wrapper.Example.com/api/db1", "https://wrapper.example.com:443/api/db2"),
+    ("https://wrapper.example.com./api/db1", "https://wrapper.example.com/api/db2"),
+])
+def test_one_server_has_one_key_however_its_url_is_spelt(a, b):
+    assert server_gate.server_key(a) == server_gate.server_key(b)
+
+
+def test_a_write_counts_its_answer_for_its_own_tenant(gate, monkeypatch):
+    import modules.autocount.write_back.client as write_client
+    from modules.autocount.write_back import call_log as cl
+    from modules.autocount.write_back.client import AutoCountWriteClient
+
+    monkeypatch.setattr(write_client, "assert_write_allowed", lambda _url: "db3")
+    client = AutoCountWriteClient(BASE_URL, transport=httpx.MockTransport(lambda r: httpx.Response(503, json={})))
+
+    class _Log:
+        context = cl.CallContext(tenant_id="tenant-w", company_id="c", actor=cl.ACTOR_RUNNER, doc_type="x")
+
+        def started(self):
+            return None
+
+        def record(self, **_kw):
+            return None
+
+    client.attach_call_log(_Log())
+    for _ in range(3):
+        client.post("/SalesOrder", {})
+    assert server_gate.stopped_until(BASE_URL, tenant_id="tenant-w") is not None
+    assert server_gate.stopped_until(BASE_URL, tenant_id="tenant-other") is None
+
+
+def test_the_source_and_feed_clients_carry_their_tenant(session_factory, server, gate, _contract):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.doc_feed.runner import resolve_vendor
+
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    config = _stock_config(db, company, conn)
+    assert _source(db, company, config)._client.tenant_id == DEFAULT_TENANT_ID
+
+    db2, feed = _doc_feed(session_factory)
+    assert resolve_vendor(db2, feed).vendor_client.tenant_id == feed.tenant_id

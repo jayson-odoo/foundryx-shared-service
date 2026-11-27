@@ -273,3 +273,45 @@ def test_sorento_connection_shows_the_office_hours_line(monkeypatch):
     assert hints == {"baseUrl": {
         "kind": "text", "text": "Office hours from Sorento CRM: Monday - Friday, 9:00 am - 5:30 pm",
     }}
+
+
+# ── security review round 1 ─────────────────────────────────────────────────
+
+
+def test_a_private_crm_address_is_refused_before_the_key_is_sent():
+    class Private(_Conn):
+        config_json = {"baseUrl": "https://10.0.0.5:8080"}
+
+    read = office_hours.read_for_connection(Private(), {"apiKey": "k"}, now=_myt(23, 10))
+    assert read.hours is None
+    assert read.error == "the Sorento base URL is not allowed"
+
+
+def test_a_tick_reads_the_crm_at_most_a_few_times(monkeypatch):
+    fetched = []
+    monkeypatch.setattr(
+        office_hours, "_fetch",
+        lambda conn, *a, **k: fetched.append(conn.id) or office_hours.CalendarRead(hours=None, error="x"),
+    )
+    budget = office_hours.ReadBudget(2)
+    for n in range(5):
+        class C(_Conn):
+            id = f"crm-{n}"
+        office_hours.read_for_connection(C(), {"apiKey": "k"}, now=_myt(23, 10), budget=budget)
+    assert len(fetched) == 2
+
+
+def test_an_echoed_bad_value_is_cut_short():
+    with pytest.raises(ValueError) as caught:
+        office_hours.parse_work_calendar({**CALENDAR, "working_hours_start": "x" * 500}, None, now=_myt(23, 10))
+    assert len(str(caught.value)) < 80
+
+
+def test_the_cache_stays_bounded(monkeypatch):
+    monkeypatch.setattr(office_hours, "MAX_CACHE_ENTRIES", 3)
+    monkeypatch.setattr(office_hours, "_fetch", lambda *a, **k: office_hours.CalendarRead(hours=None, error=None))
+    for n in range(10):
+        class C(_Conn):
+            id = f"crm-{n}"
+        office_hours.read_for_connection(C(), {"apiKey": "k"}, now=_myt(23, 10))
+    assert len(office_hours._cache) <= 3

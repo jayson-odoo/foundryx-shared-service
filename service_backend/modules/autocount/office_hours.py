@@ -32,7 +32,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 CACHE_SECONDS = 3600
 OFF_HOURS_STOCK_MINUTES = 60
 DEFAULT_TIMEZONE = "Asia/Kuala_Lumpur"
-CALENDAR_TIMEOUT_SECONDS = 10.0
+# Short on purpose: the scheduler's tick waits on a cache miss (security
+# review S2), so a slow CRM costs at most this per read, and at most
+# ``SWEEP_MAX_READS`` reads happen in one scheduler tick.
+CALENDAR_TIMEOUT_SECONDS = 3.0
+SWEEP_MAX_READS = 3
+MAX_CACHE_ENTRIES = 1024
 
 _WEEKDAYS = {
     name: i for i, name in enumerate(
@@ -101,19 +106,25 @@ def _clock(minute: int) -> str:
     return f"{hour % 12 or 12}:{mins:02d} {'am' if hour < 12 else 'pm'}"
 
 
+def _short(raw: Any) -> str:
+    text = str(raw or "")
+    return text if len(text) <= 20 else text[:20] + "..."
+
+
 def _parse_time(raw: Any) -> int:
     match = _TIME_RE.match(str(raw or ""))
+    bad = ValueError(f"the office hours time '{_short(raw)}' could not be read")
     if not match:
-        raise ValueError(f"the office hours time '{raw}' could not be read")
+        raise bad
     hour, minute, half = int(match.group(1)), int(match.group(2)), match.group(3)
     if minute > 59:
-        raise ValueError(f"the office hours time '{raw}' could not be read")
+        raise bad
     if half:
         if not 1 <= hour <= 12:
-            raise ValueError(f"the office hours time '{raw}' could not be read")
+            raise bad
         hour = hour % 12 + (12 if half.lower() == "p" else 0)
     elif hour > 23:
-        raise ValueError(f"the office hours time '{raw}' could not be read")
+        raise bad
     return hour * 60 + minute
 
 
@@ -125,7 +136,7 @@ def parse_work_calendar(
     try:
         zone = ZoneInfo(zone_name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError(f"the time zone '{zone_name}' is not known") from exc
+        raise ValueError(f"the time zone '{_short(zone_name)}' is not known") from exc
     start = _parse_time(calendar.get("working_hours_start"))
     end = _parse_time(calendar.get("working_hours_end"))
     if end <= start:
@@ -171,8 +182,17 @@ def clear_cache() -> None:
         _cache.clear()
 
 
+class ReadBudget:
+    """How many CRM reads (cache misses) one scheduler tick may make; past it
+    a miss counts as "no calendar" for this tick (every hour is office
+    hours) and the next tick tries again."""
+
+    def __init__(self, reads: int) -> None:
+        self.left = reads
+
+
 def read_for_connection(conn: Any, credentials: Dict[str, Any], *, now: datetime,
-                        transport: Any = None) -> CalendarRead:
+                        transport: Any = None, budget: Optional[ReadBudget] = None) -> CalendarRead:
     """The office hours of one Sorento connection (cached ``CACHE_SECONDS``;
     the holiday answer is refreshed when the cached day is not today)."""
     # The base URL and the key are part of the cache key: a saved change on
@@ -188,8 +208,18 @@ def read_for_connection(conn: Any, credentials: Dict[str, Any], *, now: datetime
         hours = hit[1].hours
         if hours is None or hours.holiday is None or hours.holiday == now.astimezone(hours.zone).date():
             return hit[1]
+    if budget is not None:
+        if budget.left <= 0:
+            return CalendarRead(hours=None, error=None)
+        budget.left -= 1
     read = _fetch(conn, credentials, now=now, transport=transport)
     with _lock:
+        # Bounded: entries past their hour go, and the oldest go first past
+        # ``MAX_CACHE_ENTRIES`` (each saved key / URL change is a new entry).
+        for old_key in [k for k, (t, _r) in _cache.items() if stamp - t >= CACHE_SECONDS]:
+            _cache.pop(old_key, None)
+        while len(_cache) >= MAX_CACHE_ENTRIES:
+            _cache.pop(min(_cache, key=lambda k: _cache[k][0]), None)
         _cache[key] = (stamp, read)
     return read
 
@@ -212,7 +242,9 @@ def _fetch(conn: Any, credentials: Dict[str, Any], *, now: datetime, transport: 
         return CalendarRead(hours=None, error="the work calendar could not be read")
 
 
-def read_for_company(db: Any, tenant_id: str, company: Any, *, now: datetime) -> CalendarRead:
+def read_for_company(
+    db: Any, tenant_id: str, company: Any, *, now: datetime, budget: Optional[ReadBudget] = None,
+) -> CalendarRead:
     """The office hours of the Sorento connection a company delivers to.
     No Sorento connection = no office hours (every hour counts)."""
     from .repositories import ConnectionRepository
@@ -230,7 +262,7 @@ def read_for_company(db: Any, tenant_id: str, company: Any, *, now: datetime) ->
         credentials = decrypt_secret(conn.credentials_json) if conn.credentials_json else {}
     except Exception:  # noqa: BLE001 - InvalidToken et al.: plain, never a 500
         return CalendarRead(hours=None, error="the Sorento API key could not be read")
-    return read_for_connection(conn, credentials or {}, now=now)
+    return read_for_connection(conn, credentials or {}, now=now, budget=budget)
 
 
 def hint_text(read: CalendarRead) -> Optional[str]:

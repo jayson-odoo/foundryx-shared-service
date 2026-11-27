@@ -25,6 +25,7 @@ at the sweep, called fresh against ``now`` so drift never compounds.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -140,6 +141,7 @@ def sweep_etl_tasks(
     """The beat tick body. Returns ``{fired, skipped, failed}`` - a plain dict
     so the Celery task can hand it straight back as the task result."""
     now = now or datetime.now(timezone.utc)
+    _SWEEP_READ_BUDGET.set(office_hours.ReadBudget(office_hours.SWEEP_MAX_READS))
     #     !!  A DEACTIVATED SERVICE / SUSPENDED TENANT MUST NEVER BE SWEPT.  !!
     # (S3 review BLOCKER 3.) After a tenant deactivates the autocount Service
     # (``tenant_modules`` INACTIVE - data kept, routes 403) or the tenant
@@ -583,6 +585,13 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
     return "fired"
 
 
+# One ``office_hours.ReadBudget`` per sweep tick (security review S2): a slow
+# CRM can delay the shared tick by at most SWEEP_MAX_READS x the timeout.
+_SWEEP_READ_BUDGET: "contextvars.ContextVar[Optional[office_hours.ReadBudget]]" = contextvars.ContextVar(
+    "autocount_sweep_read_budget", default=None,
+)
+
+
 def _outside_office_hours(db: Session, config: AcEntityConfig, now: datetime) -> Optional[datetime]:
     """The next office-hours start when ``now`` is outside Sorento CRM's
     office hours for this task's company, else ``None`` (also when the
@@ -593,7 +602,9 @@ def _outside_office_hours(db: Session, config: AcEntityConfig, now: datetime) ->
         company = CompanyRepository(db).get(config.tenant_id, config.company_id)
         if company is None:
             return None
-        read = office_hours.read_for_company(db, config.tenant_id, company, now=now)
+        read = office_hours.read_for_company(
+            db, config.tenant_id, company, now=now, budget=_SWEEP_READ_BUDGET.get(),
+        )
         if read.hours is None or read.hours.is_open(now):
             return None
         return read.hours.next_open(now)

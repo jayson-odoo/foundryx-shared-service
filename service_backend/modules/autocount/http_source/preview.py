@@ -110,6 +110,7 @@ def run_http_preview(
     transport: Optional[httpx.Client] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     auth_headers: Optional[Dict[str, str]] = None,
+    tenant_id: Optional[str] = None,
     # sprint-5/11 review round 2 (item 5, AC-11-40) - the SAME progress
     # checkpoint shape ``HttpApiSource``'s own ``heartbeat`` uses, stamped
     # before the page-1 request and before each lookup's own request.
@@ -134,7 +135,7 @@ def run_http_preview(
     # it takes the server's next turn ahead of scheduled sync pages.
     client = HttpApiClient(
         base_url, transport=transport, timeout_seconds=timeout_seconds,
-        priority=server_gate.PRIORITY_USER, **extra,
+        priority=server_gate.PRIORITY_USER, tenant_id=tenant_id, **extra,
     )
     started = time.monotonic()
     try:

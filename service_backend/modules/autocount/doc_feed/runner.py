@@ -293,6 +293,7 @@ def resolve_vendor(db, feed_row: AcDocFeed, *, vendor_transport=None) -> Resolve
         # AUTOCOUNT-LOAD-STRATEGY - the same one-request-per-server turn and
         # safety stop as every other read through this connection.
         server_policy=gentle.server_policy(conn.config_json or {}),
+        tenant_id=tenant_id,
     )
     vendor = DocFeedVendor(vendor_client, pacing=gentle.gentle_settings(conn.config_json or {}))
     if feed_row.feed in PROJNO_FEEDS:

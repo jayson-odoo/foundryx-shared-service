@@ -107,7 +107,10 @@ class AutoCountDocReader:
                 timeout=self._timeout
             )
             path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
-            response = server_gate.send_as_person(http, request, self.base_url, self._timeout)
+            response = server_gate.send_as_person(
+                    http, request, self.base_url, self._timeout,
+                    tenant_id=self._call_log.context.tenant_id if self._call_log is not None else "",
+                )
         except httpx.TimeoutException:
             self._log(path, started, None, None, cl.TIMEOUT, READ_FAILED)
             raise

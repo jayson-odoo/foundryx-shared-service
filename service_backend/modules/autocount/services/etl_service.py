@@ -1215,7 +1215,7 @@ class EtlService:
         try:
             result = run_http_preview(
                 base_url, path, transport=transport, timeout_seconds=timeout_seconds,
-                auth_headers=self._read_auth(conn),
+                auth_headers=self._read_auth(conn), tenant_id=conn.tenant_id,
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
@@ -1329,6 +1329,7 @@ class EtlService:
                 transport=transport,
                 timeout_seconds=timeout_seconds,
                 auth_headers=self._read_auth(conn),
+                tenant_id=conn.tenant_id,
                 on_page=on_page,
             )
         except HttpPreviewError as exc:

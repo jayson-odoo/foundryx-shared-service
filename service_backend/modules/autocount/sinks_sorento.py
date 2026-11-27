@@ -1448,15 +1448,39 @@ class SorentoSink:
         ``GET /api/v1/external/work-calendar/is-working-day`` (holidays).
         Returns ``(calendar, working_day)`` bodies; raises
         ``SorentoWorkCalendarError`` with a plain reason on any failure."""
+        from app.services.url_guard import UrlGuardError
+
+        from .http_client import (
+            OpenProbeError,
+            assert_autocount_base_url_deliverable,
+            autocount_guarded_client,
+        )
+
+        # Security review round 1 (S1): the base URL is tenant-typed, and this
+        # call runs on opening the connection and from the scheduler - the
+        # SSRF guard runs before the key leaves the process, and the send
+        # goes through the guarded transport (no private/loopback targets,
+        # no redirects).
+        try:
+            assert_autocount_base_url_deliverable(self._base_url)
+        except OpenProbeError as exc:
+            raise SorentoWorkCalendarError("the Sorento base URL is not allowed") from exc
         headers = {"X-API-Key": self._api_key}
         release_read_transactions()  # plan 34
         bodies: List[Optional[Dict[str, Any]]] = []
-        with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+        client = (
+            httpx.Client(timeout=self._timeout, transport=self._transport, follow_redirects=False)
+            if self._transport is not None
+            else autocount_guarded_client(self._timeout)
+        )
+        with client:
             for path in ("/api/v1/external/work-calendar", "/api/v1/external/work-calendar/is-working-day"):
                 try:
                     response = client.get(f"{self._base_url}{path}", headers=headers)
+                except UrlGuardError as exc:
+                    raise SorentoWorkCalendarError("the Sorento base URL is not allowed") from exc
                 except httpx.HTTPError as exc:
-                    raise SorentoWorkCalendarError("Sorento CRM could not be reached.") from exc
+                    raise SorentoWorkCalendarError("Sorento CRM could not be reached") from exc
                 if response.status_code in (401, 403):
                     raise SorentoWorkCalendarError(
                         "the Sorento API key has no access to the work calendar"

@@ -380,6 +380,7 @@ class HttpApiSource:
         self._client = HttpApiClient(
             base_url, transport=transport, timeout_seconds=sizing.request_timeout_seconds,
             auth_headers=read_auth, server_policy=gentle.server_policy(conn_config),
+            tenant_id=ctx.tenant_id,
         )
         # AUTOCOUNT-LOAD-STRATEGY (owner 27 Nov) - the stock balance walk asks
         # for the vendor's 3000 rows a page; its lookups and every other

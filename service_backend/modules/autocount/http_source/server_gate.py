@@ -120,17 +120,36 @@ def _warn(message: str, exc: Exception) -> None:
 
 
 def server_key(base_url: str) -> str:
+    """``scheme://host[:port]`` with the host lower-cased, a trailing dot and a
+    default port dropped, and an international name in its ASCII form, so
+    one server never gets two turns by a different spelling of its URL."""
     parts = urlsplit(base_url or "")
-    host = (parts.hostname or "").lower()
-    port = f":{parts.port}" if parts.port else ""
-    return f"{(parts.scheme or 'https').lower()}://{host}{port}"
+    scheme = (parts.scheme or "https").lower()
+    host = (parts.hostname or "").rstrip(".").lower()
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        pass
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    default = {"https": 443, "http": 80}.get(scheme)
+    suffix = f":{port}" if port and port != default else ""
+    return f"{scheme}://{host}{suffix}"
 
 
-def _keys(base_url: str) -> dict:
-    root = f"{KEY_PREFIX}:{server_key(base_url)}"
+def _keys(base_url: str, tenant_id: str = "") -> dict:
+    """The turn is ONE per server (owner: one request at a time per server).
+    Everything a caller can influence - the "a person is waiting" marker and
+    the safety stop - is kept per tenant, so one tenant can never hold back
+    or stop another tenant's sync (security review, round 1)."""
+    server = server_key(base_url)
+    root = f"{KEY_PREFIX}:{server}"
+    scoped = f"{KEY_PREFIX}:t:{tenant_id or '-'}:{server}"
     return {
-        "lock": f"{root}:lock", "urgent": f"{root}:urgent", "fails": f"{root}:fails",
-        "until": f"{root}:stopped_until", "probe": f"{root}:probe",
+        "lock": f"{root}:lock", "urgent": f"{scoped}:urgent", "fails": f"{scoped}:fails",
+        "until": f"{scoped}:stopped_until", "probe": f"{scoped}:probe",
     }
 
 
@@ -147,7 +166,7 @@ _sleep = time.sleep
 @contextmanager
 def turn(
     base_url: str, *, priority: str = PRIORITY_SYNC, hold_seconds: float,
-    policy: ServerPolicy = DEFAULT_POLICY,
+    policy: ServerPolicy = DEFAULT_POLICY, tenant_id: str = "",
 ) -> Iterator[float]:
     """Hold the server's one turn for one request. Yields the seconds waited.
 
@@ -157,7 +176,7 @@ def turn(
     if client is None:
         yield 0.0
         return
-    keys = _keys(base_url)
+    keys = _keys(base_url, tenant_id)
     try:
         _check_stop(client, keys, priority=priority, policy=policy, hold_seconds=hold_seconds)
     except ServerStopped:
@@ -241,7 +260,9 @@ def _check_stop(client: Any, keys: dict, *, priority: str, policy: ServerPolicy,
         raise ServerStopped(datetime.fromtimestamp(_now() + probe_ttl, tz=timezone.utc))
 
 
-def record_result(base_url: str, *, ok: bool, policy: ServerPolicy = DEFAULT_POLICY) -> Optional[datetime]:
+def record_result(
+    base_url: str, *, ok: bool, policy: ServerPolicy = DEFAULT_POLICY, tenant_id: str = "",
+) -> Optional[datetime]:
     """Count a request's outcome. Returns the stop's end when this failure
     switched the stop on (or a failed test call switched it on again)."""
     if policy.stop_after_failures <= 0:
@@ -249,7 +270,7 @@ def record_result(base_url: str, *, ok: bool, policy: ServerPolicy = DEFAULT_POL
     client = _redis()
     if client is None:
         return None
-    keys = _keys(base_url)
+    keys = _keys(base_url, tenant_id)
     try:
         if ok:
             client.delete(keys["fails"], keys["until"], keys["probe"])
@@ -271,13 +292,13 @@ def record_result(base_url: str, *, ok: bool, policy: ServerPolicy = DEFAULT_POL
     return None
 
 
-def stopped_until(base_url: str) -> Optional[datetime]:
+def stopped_until(base_url: str, *, tenant_id: str = "") -> Optional[datetime]:
     """When the safety stop on this server lifts, ``None`` when it is off."""
     client = _redis()
     if client is None:
         return None
     try:
-        raw = client.get(_keys(base_url)["until"])
+        raw = client.get(_keys(base_url, tenant_id)["until"])
     except Exception as exc:  # noqa: BLE001
         _warn("could not read the stop", exc)
         return None
@@ -286,7 +307,7 @@ def stopped_until(base_url: str) -> Optional[datetime]:
     return datetime.fromtimestamp(float(raw), tz=timezone.utc)
 
 
-def send_as_person(http: Any, request: Any, base_url: str, timeout: Any) -> Any:
+def send_as_person(http: Any, request: Any, base_url: str, timeout: Any, *, tenant_id: str = "") -> Any:
     """A write, or a read a person waits on (``write_back`` client + reader):
     takes the server's turn ahead of scheduled sync pages, so it waits at most
     for the page already in flight; its answer is counted for the safety stop,
@@ -294,11 +315,11 @@ def send_as_person(http: Any, request: Any, base_url: str, timeout: Any) -> Any:
     import httpx
 
     hold = float(timeout) if isinstance(timeout, (int, float)) else 90.0
-    with turn(base_url, priority=PRIORITY_USER, hold_seconds=hold):
+    with turn(base_url, priority=PRIORITY_USER, hold_seconds=hold, tenant_id=tenant_id):
         try:
             response = http.send(request)
         except (httpx.TimeoutException, httpx.TransportError):
-            record_result(base_url, ok=False)
+            record_result(base_url, ok=False, tenant_id=tenant_id)
             raise
-        record_result(base_url, ok=response.status_code < 500)
+        record_result(base_url, ok=response.status_code < 500, tenant_id=tenant_id)
         return response

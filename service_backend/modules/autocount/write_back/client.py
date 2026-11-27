@@ -143,7 +143,10 @@ class AutoCountWriteClient:
                     request = http.build_request(method, url, json=body, headers={**self._extra_headers, **self._auth_headers},
                                                  timeout=self._timeout)
                 sent_path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
-                response = server_gate.send_as_person(http, request, self.base_url, self._timeout)
+                response = server_gate.send_as_person(
+                    http, request, self.base_url, self._timeout,
+                    tenant_id=self._call_log.context.tenant_id if self._call_log is not None else "",
+                )
         except httpx.TimeoutException:
             self._log(method, sent_path, body, started, None, None, cl.TIMEOUT, "WRITE_TIMEOUT")
             raise WriteTransportError("WRITE_TIMEOUT") from None

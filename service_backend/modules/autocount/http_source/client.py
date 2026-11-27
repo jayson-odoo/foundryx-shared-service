@@ -210,6 +210,7 @@ class HttpApiClient:
         auth_headers: Optional[Dict[str, str]] = None,
         server_policy: Optional[server_gate.ServerPolicy] = None,
         priority: str = server_gate.PRIORITY_SYNC,
+        tenant_id: Optional[str] = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         # AUTOCOUNT-LOAD-STRATEGY - one request at a time per server + the
@@ -217,6 +218,9 @@ class HttpApiClient:
         # ``priority = PRIORITY_USER``.
         self.server_policy = server_policy or server_gate.DEFAULT_POLICY
         self.priority = priority
+        # The tenant the safety stop and "a person is waiting" marker are kept
+        # for (``server_gate._keys``); the turn itself is one per server.
+        self.tenant_id = str(tenant_id or "")
         # Seconds the last request took on the wire (the wait for a turn
         # excluded) - read by the walk's ``gentle.AdaptivePause``.
         self.last_latency_seconds: Optional[float] = None
@@ -301,7 +305,7 @@ class HttpApiClient:
         try:
             with server_gate.turn(
                 self.base_url, priority=self.priority, hold_seconds=self.timeout_seconds,
-                policy=self.server_policy,
+                policy=self.server_policy, tenant_id=self.tenant_id,
             ):
                 started = time.monotonic()
                 try:
@@ -313,11 +317,14 @@ class HttpApiClient:
                     )
                 except (httpx.TimeoutException, httpx.TransportError):
                     self.last_latency_seconds = time.monotonic() - started
-                    server_gate.record_result(self.base_url, ok=False, policy=self.server_policy)
+                    server_gate.record_result(
+                        self.base_url, ok=False, policy=self.server_policy, tenant_id=self.tenant_id,
+                    )
                     raise
                 self.last_latency_seconds = time.monotonic() - started
                 server_gate.record_result(
                     self.base_url, ok=response.status_code < 500, policy=self.server_policy,
+                    tenant_id=self.tenant_id,
                 )
         except server_gate.ServerStopped as exc:
             message = stopped_message(exc.until)
