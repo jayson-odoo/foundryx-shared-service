@@ -1,7 +1,7 @@
 import type { FieldHint } from '@/types/integration';
 
 /** Mirrors the backend range (`http_source/gentle.py`). */
-export const PAGE_PAUSE_MAX_SECONDS = 600;
+export const PAGE_PAUSE_MAX_SECONDS = 90;
 
 /**
  * SS-STOCK-PAGE-PAUSE-CONFIG - "About N pages per run → about X min per run"

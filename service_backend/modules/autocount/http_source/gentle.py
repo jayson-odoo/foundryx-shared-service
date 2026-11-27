@@ -6,7 +6,7 @@ neither key and gets the defaults):
 
 * ``pagePauseSeconds`` - a pause between two page requests of one walk, so a
   70-page stock walk is a trickle instead of a burst. SS-STOCK-PAGE-PAUSE-
-  CONFIG (owner 27 Nov): the owner sets it, 0-600 s, default 0 ("then you
+  CONFIG (owner 27 Nov): the owner sets it, 0-90 s, default 0 ("then you
   let me control"). The pause sleeps in ``PAUSE_SLICE_SECONDS`` slices and
   asks ``should_stop`` between them, so a stopped run never sits it out.
 * ``lookupCacheMinutes`` - a scheduled stock run reuses the item / item-UOM
@@ -29,8 +29,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 PAGE_PAUSE_FIELD_DEFAULT = 0.0
 PAGE_PAUSE_FIELD_MIN = 0.0
-PAGE_PAUSE_FIELD_MAX = 600.0
-PAGE_PAUSE_INVALID_MESSAGE = "Pause between pages must be a number from 0 to 600 seconds."
+# Crew 27 Nov: capped at 90 s so a ~70-page stock run stays under the 2 h job
+# limit (``background_job_soft_time_limit_seconds``).
+PAGE_PAUSE_FIELD_MAX = 90.0
+PAGE_PAUSE_INVALID_MESSAGE = (
+    "Pause between pages must be a number from 0 to 90 seconds "
+    "(max 90 s: longer pauses make the stock run exceed its 2 h limit)."
+)
 
 # One slice of a pause: between slices the run beats its heartbeat and checks
 # for a stop (abort / orphan sweep / abandoned build).

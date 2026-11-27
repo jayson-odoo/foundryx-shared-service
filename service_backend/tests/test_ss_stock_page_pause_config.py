@@ -1,7 +1,7 @@
 """SS-STOCK-PAGE-PAUSE-CONFIG - the owner sets the pause between AutoCount
 pages in the app (``documentation/plans/sprint-5/ss-stock-page-pause-config.md``).
 
-Owner 27 Nov: default 0 s ("then you let me control"), range 0-600 s. The
+Owner 27 Nov: default 0 s ("then you let me control"), range 0-90 s (crew 27 Nov: a 70-page run stays under the 2 h job limit). The
 pause sleeps in short slices and a stopped run never sits out the rest of it.
 Rig reused from ``test_ss_stock_bal_soothe.py`` (a fake 3-page balance
 endpoint behind a ``MockTransport``); no real waits anywhere.
@@ -88,17 +88,17 @@ def test_default_is_zero_for_a_connection_without_the_key():
     assert gentle_settings(None).page_pause_seconds == 0.0
 
 
-def test_saved_values_up_to_ten_minutes_are_read_back():
+def test_saved_values_up_to_90_seconds_are_read_back():
     from modules.autocount.http_source.gentle import gentle_settings
 
-    for raw, expected in (("60", 60.0), ("600", 600.0), ("2.5", 2.5), ("0", 0.0)):
+    for raw, expected in (("60", 60.0), ("90", 90.0), ("2.5", 2.5), ("0", 0.0)):
         assert gentle_settings({"pagePauseSeconds": raw}).page_pause_seconds == expected
     # A stored value is never trusted outright: past the max clamps, junk = default.
-    assert gentle_settings({"pagePauseSeconds": "9999"}).page_pause_seconds == 600.0
+    assert gentle_settings({"pagePauseSeconds": "600"}).page_pause_seconds == 90.0
     assert gentle_settings({"pagePauseSeconds": "abc"}).page_pause_seconds == 0.0
 
 
-def test_field_sits_next_to_page_size_with_default_zero_and_range_0_600():
+def test_field_sits_next_to_page_size_with_default_zero_and_range_0_90():
     from modules.autocount.provider import AutoCountProvider
 
     fields = AutoCountProvider().fields()
@@ -107,20 +107,23 @@ def test_field_sits_next_to_page_size_with_default_zero_and_range_0_600():
     field = next(f for f in fields if f["key"] == "pagePauseSeconds")
     assert field["label"] == "Pause between pages (seconds)"
     assert field["defaultValue"] == "0"
-    assert (field["min"], field["max"]) == (0, 600)
+    assert (field["min"], field["max"]) == (0, 90)
 
 
-@pytest.mark.parametrize("raw", ["601", "-1", "abc", "1e9"])
+@pytest.mark.parametrize("raw", ["91", "600", "-1", "abc", "1e9", "nan"])
 def test_out_of_range_is_rejected_with_a_plain_message(raw):
     from modules.autocount.provider import AutoCountProvider
 
     error = AutoCountProvider().validate_config(
         {"baseUrl": "", "auth": "none", "pagePauseSeconds": raw}
     )
-    assert error == "Pause between pages must be a number from 0 to 600 seconds."
+    assert error == (
+        "Pause between pages must be a number from 0 to 90 seconds "
+        "(max 90 s: longer pauses make the stock run exceed its 2 h limit)."
+    )
 
 
-@pytest.mark.parametrize("raw", ["0", "1", "60", "600", "0.5", ""])
+@pytest.mark.parametrize("raw", ["0", "1", "60", "90", "0.5", ""])
 def test_in_range_is_accepted(raw):
     from modules.autocount.provider import AutoCountProvider
 
@@ -186,8 +189,8 @@ def test_the_pause_sleeps_in_short_slices(slices):
 def test_a_stop_ends_the_pause_at_the_next_slice(slices):
     from modules.autocount.http_source.gentle import PAUSE_SLICE_SECONDS, sleep_between_pages
 
-    assert sleep_between_pages(600, should_stop=lambda: True) is False
-    assert slices == [PAUSE_SLICE_SECONDS], "one slice, never the full 600 s"
+    assert sleep_between_pages(90, should_stop=lambda: True) is False
+    assert slices == [PAUSE_SLICE_SECONDS], "one slice, never the full 90 s"
 
 
 def test_zero_never_sleeps(slices):
@@ -204,7 +207,7 @@ def test_a_stopped_walk_requests_no_further_page(session_factory, server, slices
     from tests.test_ss_stock_bal_soothe import _ctx
 
     db = session_factory()
-    conn = _open_connection(db, pagePauseSeconds="600")
+    conn = _open_connection(db, pagePauseSeconds="90")
     company = _company(db, conn.id)
     config = _stock_config(db, company, conn)
 
@@ -223,12 +226,12 @@ def test_an_aborted_run_stops_during_the_pause_and_reads_aborted(
     session_factory, server, monkeypatch
 ):
     """The job is aborted (from another session) while the run waits out a
-    10-minute pause: the run stops at the next slice, asks for no more pages,
+    90 s pause: the run stops at the next slice, asks for no more pages,
     and the operator's abort stands."""
     import modules.autocount.http_source.gentle as gentle
 
     db = session_factory()
-    conn = _open_connection(db, pagePauseSeconds="600")
+    conn = _open_connection(db, pagePauseSeconds="90")
     company = _company(db, conn.id)
     _stock_config(db, company, conn)
 
@@ -249,7 +252,7 @@ def test_an_aborted_run_stops_during_the_pause_and_reads_aborted(
     run = _run_job(db, company)
 
     assert server.count(BALANCE_PATH) == 1
-    assert len(slept) == 1, "stopped after one slice, not 600 s"
+    assert len(slept) == 1, "stopped after one slice, not 90 s"
     assert run.outcome == RUN_ABORTED
     job = db.query(BackgroundJob).filter(BackgroundJob.id == run.job_id).one()
     db.refresh(job)
@@ -313,7 +316,7 @@ def test_a_stop_after_the_orphan_sweep_leaves_its_verdict(session_factory, serve
     from modules.autocount.models import AcEntityConfig
 
     db = session_factory()
-    conn = _open_connection(db, pagePauseSeconds="600")
+    conn = _open_connection(db, pagePauseSeconds="90")
     company = _company(db, conn.id)
     _stock_config(db, company, conn)
 

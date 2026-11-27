@@ -31,10 +31,15 @@ describe('fieldHintText (pause between pages)', () => {
     );
   });
 
+  it('stays under the time limit at the 90 s max for 70 pages', () => {
+    // 60 s + 69 x 90 s = 6270 s = 105 min < 120 min.
+    expect(fieldHintText(hint, '90')).toBe('About 70 pages per run → about 105 min per run');
+  });
+
   it('says when the run would pass the time a run may take', () => {
-    // 60 s + 69 x 600 s = 41460 s = 691 min > 120 min.
-    expect(fieldHintText(hint, '600')).toBe(
-      'About 70 pages per run → about 691 min per run, longer than the 120 min a run may take.',
+    // 100 pages: 129 - 99 = 30 s of requests + 99 x 90 s = 8940 s = 149 min > 120 min.
+    expect(fieldHintText({ ...hint, pages: 100 }, '90')).toBe(
+      'About 100 pages per run → about 149 min per run, longer than the 120 min a run may take.',
     );
   });
 
@@ -48,7 +53,7 @@ describe('fieldHintText (pause between pages)', () => {
   });
 
   it('shows nothing for an invalid value or without a known run', () => {
-    expect(fieldHintText(hint, '601')).toBeNull();
+    expect(fieldHintText(hint, '91')).toBeNull();
     expect(fieldHintText(hint, '-1')).toBeNull();
     expect(fieldHintText(hint, 'abc')).toBeNull();
     expect(fieldHintText(undefined, '1')).toBeNull();

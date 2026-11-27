@@ -240,7 +240,7 @@ class AutoCountProvider:
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
             # SS-STOCK-BAL-SOOTHE - keep the wrapper's load low and even
-            # (`http_source/gentle.py`). The pause is owner-set, 0-600 s,
+            # (`http_source/gentle.py`). The pause is owner-set, 0-90 s,
             # default 0 (SS-STOCK-PAGE-PAUSE-CONFIG, owner 27 Nov).
             {
                 "key": "pagePauseSeconds",

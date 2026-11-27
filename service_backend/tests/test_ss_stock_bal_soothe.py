@@ -185,7 +185,7 @@ def test_gentle_settings_read_and_clamp_stored_values():
     s = gentle_settings({"pagePauseSeconds": "1.5", "lookupCacheMinutes": "0"})
     assert (s.page_pause_seconds, s.lookup_cache_minutes) == (1.5, 0)
     junk = gentle_settings({"pagePauseSeconds": "9999", "lookupCacheMinutes": "x"})
-    assert junk.page_pause_seconds == 600.0
+    assert junk.page_pause_seconds == 90.0
     assert junk.lookup_cache_minutes == 60
 
 
@@ -200,7 +200,7 @@ def test_provider_exposes_and_validates_the_new_fields():
     for key in ("stockSkipWhenUnchanged", "stockFullWalkMinutes"):
         assert key not in fields, "owner 26 Nov: no skip setting"
     base = {"baseUrl": "", "auth": "none"}
-    assert provider.validate_config({**base, "pagePauseSeconds": "601"})
+    assert provider.validate_config({**base, "pagePauseSeconds": "91"})
     assert provider.validate_config({**base, "pagePauseSeconds": "abc"})
     assert provider.validate_config({**base, "lookupCacheMinutes": "-1"})
     assert provider.validate_config({**base, "lookupCacheMinutes": "1441"})
