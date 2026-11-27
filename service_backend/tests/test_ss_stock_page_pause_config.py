@@ -267,23 +267,78 @@ def test_a_long_pause_keeps_the_job_alive(session_factory, server, monkeypatch):
     company = _company(db, conn.id)
     _stock_config(db, company, conn)
 
-    beats: List[object] = []
+    import modules.autocount.sync as sync_module
 
-    def record_beat(seconds):
-        other = session_factory()
-        job = other.query(BackgroundJob).filter(BackgroundJob.status == JOB_RUNNING).one()
-        beats.append(job.heartbeat_at)
-        other.close()
+    events: List[str] = []
+    real_heartbeat = sync_module._heartbeat
 
+    def counting_heartbeat(service, job_id):
+        events.append("beat")
+        return real_heartbeat(service, job_id)
+
+    monkeypatch.setattr(sync_module, "_heartbeat", counting_heartbeat)
     monkeypatch.setattr(gentle, "sleep_between_pages", REAL_SLEEP_BETWEEN_PAGES)
-    monkeypatch.setattr(gentle, "_sleep", record_beat)
+    monkeypatch.setattr(gentle, "_sleep", lambda s: events.append("slice"))
 
     run = _run_job(db, company)
 
     assert run.outcome == RUN_SUCCESS
     assert server.count(BALANCE_PATH) == 3
-    assert len(beats) == 4, "two 10 s pauses in 5 s slices"
-    assert all(b is not None for b in beats[1:])
+    assert events.count("slice") == 4, "two 10 s pauses in 5 s slices"
+    # Every slice is followed by a beat before the next slice or page.
+    for i, e in enumerate(events):
+        if e == "slice":
+            assert events[i + 1] == "beat", events
+    db.close()
+
+
+def test_a_run_records_its_pages_and_pause(session_factory, server, pauses):
+    db = session_factory()
+    conn = _open_connection(db, pagePauseSeconds="2.5")
+    company = _company(db, conn.id)
+    _stock_config(db, company, conn)
+
+    run = _run_job(db, company)
+
+    assert run.outcome == RUN_SUCCESS
+    assert (run.source_pages, run.page_pause_ms) == (3, 2500)
+    db.close()
+
+
+def test_a_stop_after_the_orphan_sweep_leaves_its_verdict(session_factory, server, monkeypatch):
+    """The job was failed elsewhere while the run paused: the run stops and
+    writes nothing over that verdict (no failure counted on the task)."""
+    import modules.autocount.http_source.gentle as gentle
+    from app.models.background_job import JOB_FAILED
+    from modules.autocount.models import AcEntityConfig
+
+    db = session_factory()
+    conn = _open_connection(db, pagePauseSeconds="600")
+    company = _company(db, conn.id)
+    _stock_config(db, company, conn)
+
+    def sweep_on_first_slice(seconds):
+        other = session_factory()
+        job = other.query(BackgroundJob).filter(BackgroundJob.status == JOB_RUNNING).one()
+        job.status = JOB_FAILED
+        job.error = "swept"
+        other.commit()
+        other.close()
+
+    monkeypatch.setattr(gentle, "sleep_between_pages", REAL_SLEEP_BETWEEN_PAGES)
+    monkeypatch.setattr(gentle, "_sleep", sweep_on_first_slice)
+
+    run = _run_job(db, company)
+
+    assert server.count(BALANCE_PATH) == 1
+    job = db.query(BackgroundJob).filter(BackgroundJob.id == run.job_id).one()
+    db.refresh(job)
+    assert (job.status, job.error) == (JOB_FAILED, "swept")
+    task = db.query(AcEntityConfig).filter(
+        AcEntityConfig.company_id == company.id,
+        AcEntityConfig.entity_type == ENTITY_STOCK_BALANCE,
+    ).one()
+    assert task.last_run_error is None
     db.close()
 
 
@@ -326,11 +381,12 @@ def test_a_scheduled_tick_during_a_long_running_run_is_skipped(session_factory):
 
 
 def _past_run(db, company, entity_type, *, rows, seconds, mode=RUN_MODE_INCREMENTAL,
-              outcome=RUN_SUCCESS, minutes_ago=10):
+              outcome=RUN_SUCCESS, minutes_ago=10, pages=None, pause_ms=None):
     finished = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     db.add(AcSyncRun(
         tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=entity_type,
         mode=mode, outcome=outcome, rows_scanned=rows, duration_ms=int(seconds * 1000),
+        source_pages=pages, page_pause_ms=pause_ms,
         started_at=finished - timedelta(seconds=seconds), finished_at=finished,
     ))
     db.commit()
@@ -355,7 +411,8 @@ def test_hint_reports_the_last_run_page_count(session_factory):
             "kind": "pageRun",
             "pages": 70,
             "lastRunSeconds": 150.0,
-            "savedPauseSeconds": 1.0,
+            "lastPauseSeconds": 1.0,
+            "maxRunSeconds": 7200,
         }
     }
     db.close()
@@ -384,4 +441,53 @@ def test_hint_ignores_another_connections_tasks(session_factory):
     _past_run(db, company, ENTITY_STOCK_BALANCE, rows=69_500, seconds=150)
 
     assert IntegrationService(db).get(DEFAULT_TENANT_ID, conn.id).fieldHints == {}
+    db.close()
+
+
+def test_hint_uses_the_pages_and_pause_the_run_recorded(session_factory):
+    from app.services.integration_service import IntegrationService
+
+    db = session_factory()
+    conn = _open_connection(db, pageSize="1000", pagePauseSeconds="0")
+    company = _company(db, conn.id)
+    _stock_config(db, company, conn)
+    _past_run(db, company, ENTITY_STOCK_BALANCE, rows=69_500, seconds=4200,
+              pages=71, pause_ms=60_000)
+
+    hint = IntegrationService(db).get(DEFAULT_TENANT_ID, conn.id).fieldHints["pagePauseSeconds"]
+
+    assert (hint["pages"], hint["lastPauseSeconds"]) == (71, 60.0)
+    db.close()
+
+
+def test_hint_survives_a_save(session_factory):
+    from app.schemas.integration import ConnectionUpdateRequest
+    from app.services.integration_service import IntegrationService
+
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _stock_config(db, company, conn)
+    _past_run(db, company, ENTITY_STOCK_BALANCE, rows=69_500, seconds=150)
+
+    out = IntegrationService(db).update(
+        DEFAULT_TENANT_ID, conn.id, ConnectionUpdateRequest(config={"pagePauseSeconds": "60"}),
+    )
+    assert out.fieldHints["pagePauseSeconds"]["pages"] == 70
+    db.close()
+
+
+def test_a_failing_hint_never_breaks_opening_the_connection(session_factory, monkeypatch):
+    import modules.autocount.services.page_pause_hint as hint_module
+    from app.services.integration_service import IntegrationService
+
+    def boom(db, connection):
+        raise RuntimeError("hint failed")
+
+    monkeypatch.setattr(hint_module, "page_run_hint", boom)
+    db = session_factory()
+    conn = _open_connection(db)
+    out = IntegrationService(db).get(DEFAULT_TENANT_ID, conn.id)
+    assert out.fieldHints == {}
+    assert out.config["baseUrl"]
     db.close()

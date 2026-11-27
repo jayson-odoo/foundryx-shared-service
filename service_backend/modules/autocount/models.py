@@ -584,6 +584,11 @@ class AcSyncRun(AutocountBase):
     # claimed it (job ``started_at - created_at``). NULL for skipped ticks,
     # API-path runs and rows written before the column existed.
     queue_wait_ms = Column(Integer, nullable=True)
+    # SS-STOCK-PAGE-PAUSE-CONFIG - an open-REST run's main-walk page count and
+    # the pause between pages it used (feed the connection's pause hint).
+    # NULL for every other run and rows written before the columns existed.
+    source_pages = Column(Integer, nullable=True)
+    page_pause_ms = Column(Integer, nullable=True)
 
 
 # ── integration failure alerts (plan 33) ─────────────────────────────────────

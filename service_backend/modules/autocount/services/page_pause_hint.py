@@ -6,7 +6,12 @@ The pause applies to every open-REST task reading through the connection
 (``http_source/source.py`` main walk), so the hint follows the task with the
 most pages - the one the owner is pacing (today the stock balance pull).
 The frontend recomputes X live as the field is edited:
-``max(lastRunSeconds - (pages-1)*savedPauseSeconds, 0) + (pages-1)*typed``.
+``max(lastRunSeconds - (pages-1)*lastPauseSeconds, 0) + (pages-1)*typed``,
+and warns when that passes ``maxRunSeconds`` (the worker's time limit, after
+which a run is stopped) or when ``maxConcurrentPages`` > 1 (no pause then).
+``pages``/``lastPauseSeconds`` are what that run actually used
+(``ac_sync_run.source_pages``/``page_pause_ms``); a run recorded before those
+columns falls back to rows / page size and the saved pause.
 """
 from __future__ import annotations
 
@@ -14,6 +19,8 @@ import math
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
+
+from app.config import settings
 
 from ..http_source.client import connection_sizing
 from ..http_source.gentle import gentle_settings
@@ -32,14 +39,19 @@ def page_run_hint(db: Session, connection: Any) -> Optional[Dict[str, Any]]:
         connection.tenant_id, connection.id
     ):
         run = runs.last_successful(task.tenant_id, task.company_id, task.entity_type)
-        if run is None or not run.rows_scanned:
+        if run is None or not (run.source_pages or run.rows_scanned):
             continue
-        pages = max(1, math.ceil(run.rows_scanned / page_size))
+        pages = run.source_pages or max(1, math.ceil(run.rows_scanned / page_size))
+        last_pause = (
+            run.page_pause_ms / 1000.0 if run.page_pause_ms is not None
+            else gentle_settings(config).page_pause_seconds
+        )
         if best is None or pages > best["pages"]:
             best = {
                 "kind": HINT_KIND_PAGE_RUN,
                 "pages": pages,
                 "lastRunSeconds": round((run.duration_ms or 0) / 1000.0, 1),
-                "savedPauseSeconds": gentle_settings(config).page_pause_seconds,
+                "lastPauseSeconds": last_pause,
+                "maxRunSeconds": settings.background_job_soft_time_limit_seconds,
             }
     return best

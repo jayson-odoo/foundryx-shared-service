@@ -243,6 +243,9 @@ class HttpApiSource:
         # read back by ``sync._run_pull_snapshot`` onto the snapshot's own
         # ``metadata_json.sourcePageSize``.
         self.source_page_size: Optional[int] = None
+        self.source_pages: Optional[int] = None
+        self.source_pause_seconds: Optional[float] = None
+        self._source_max_page = 0
         # Set by ``_walk_endpoint`` on EVERY successful walk it completes
         # (main path AND every lookup) - purely internal bookkeeping;
         # ``_walk`` alone promotes it onto the public attribute above,
@@ -414,6 +417,10 @@ class HttpApiSource:
         counter are SEPARATE: a 5xx followed by ONE timeout must not halve
         (only a SECOND consecutive timeout does), so a page that failed once
         for an unrelated reason is never one timeout away from a halve."""
+        if self._current_stage == "source":
+            # SS-STOCK-PAGE-PAUSE-CONFIG - the main walk's page count (a
+            # halving restart only shrinks pages, so the max is the final walk).
+            self._source_max_page = max(self._source_max_page, page)
         timeout_attempts = 0
         transport_attempts = 0
         while True:
@@ -944,6 +951,7 @@ class HttpApiSource:
         # constructor default, set explicitly here for symmetry with
         # ``_apply_lookups``' own per-lookup assignment below.
         self._current_stage = "source"
+        self._source_max_page = 0
         result = self._walk_endpoint(self.path)
         # review round 2 (item 2, AC-10-32/A7) - captured HERE, immediately
         # after the MAIN walk and before any lookup's own ``_walk_endpoint``
@@ -954,6 +962,12 @@ class HttpApiSource:
         # sprint-5/11 S6 (AC-11-11) - the SAME promotion, for the effective
         # concurrency the main walk actually used.
         self.source_concurrency = self._last_walk_concurrency
+        # SS-STOCK-PAGE-PAUSE-CONFIG - the main walk's page count and the
+        # pause it used between pages (the concurrent walk never pauses).
+        self.source_pages = self._source_max_page or None
+        self.source_pause_seconds = (
+            self._gentle.page_pause_seconds if self.source_concurrency == 1 else 0.0
+        )
         return result
 
     # ── lookups (AC-10-01/02/03, R9) ──────────────────────────────────────

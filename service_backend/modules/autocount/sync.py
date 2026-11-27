@@ -683,14 +683,25 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         )
         return
     except HttpSourceError as exc:
-        if exc.code == PAUSE_STOPPED_CODE and _aborted(db, job.id):
-            # SS-STOCK-PAGE-PAUSE-CONFIG - an operator stopped the run while it
-            # waited between pages: an abort, not a fault (watermark holds).
-            record_client_calls(
-                db, source, tenant_id=tenant_id, trace_id=trace_id,
-                external_ref=company.database_name,
+        if exc.code == PAUSE_STOPPED_CODE:
+            # SS-STOCK-PAGE-PAUSE-CONFIG - the run was stopped while it waited
+            # between pages; the watermark holds either way.
+            if _aborted(db, job.id):
+                # An operator abort: recorded as an abort, never a fault.
+                record_client_calls(
+                    db, source, tenant_id=tenant_id, trace_id=trace_id,
+                    external_ref=company.database_name,
+                )
+                _abort(db, service, run, started)
+                return
+            # Swept elsewhere (e.g. the orphan sweep failed the job): stop
+            # cleanly and write nothing - that verdict stands (same as the
+            # pre-push fence below).
+            db.rollback()
+            logger.warning(
+                "autocount sync stopped during a page pause: job %s is no longer running",
+                job.id,
             )
-            _abort(db, service, run, started)
             return
         # SF-2 (sprint-5/08 review round 2) - the open-API source's own
         # failures (transport, HTTP status, shape, row cap, delete guard)
@@ -887,6 +898,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     )
     run.added_count = result.added_count
     run.updated_count = result.updated_count
+    # SS-STOCK-PAGE-PAUSE-CONFIG - pages walked + pause used (open REST only).
+    pages = getattr(source, "source_pages", None)
+    pause = getattr(source, "source_pause_seconds", None)
+    if isinstance(pages, int):
+        run.source_pages = pages
+    if isinstance(pause, (int, float)):
+        run.page_pause_ms = int(round(pause * 1000))
     service.set_total(job, len(result.records))
     db.commit()
 

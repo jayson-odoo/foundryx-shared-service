@@ -107,12 +107,15 @@ function ProviderFieldRow({
   // SS-STOCK-PAGE-PAUSE-CONFIG - a provider's read-only hint under the field
   // (e.g. AutoCount's pages/run-time estimate), live while editing.
   const liveValue = useWatch({ control: form.control, name: fieldName(f) });
+  const liveConfig = useWatch({ control: form.control, name: 'config' });
   const hint = connection?.fieldHints?.[f.key];
   if (!editing) {
     // Same resolution as the edit prefill (`storedOrEffective`): a legacy
     // Sorento connection reads "1 (legacy)" here too, never "-".
     const value = f.secret ? undefined : storedOrEffective(f, connection?.config ?? {});
-    const hintText = f.secret ? null : fieldHintText(hint, value);
+    // The stored value, not the decorated display value.
+    const stored = connection?.config ?? {};
+    const hintText = f.secret ? null : fieldHintText(hint, stored[f.key], stored);
     return (
       <FormRow label={f.label}>
         {f.secret ? (
@@ -134,7 +137,7 @@ function ProviderFieldRow({
       </FormRow>
     );
   }
-  const editHintText = f.secret ? null : fieldHintText(hint, liveValue);
+  const editHintText = f.secret ? null : fieldHintText(hint, liveValue, liveConfig ?? {});
 
   return (
     <FormRow label={f.label} required={f.required && (creating || !f.secret)}>

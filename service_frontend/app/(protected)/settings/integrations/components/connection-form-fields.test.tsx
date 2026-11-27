@@ -137,7 +137,9 @@ const PAUSE_CONNECTION: Connection = {
   rateLimitPerMinute: 30,
   createdAt: '2026-11-27T00:00:00Z',
   updatedAt: '2026-11-27T00:00:00Z',
-  fieldHints: { pagePauseSeconds: { kind: 'pageRun', pages: 70, lastRunSeconds: 129, savedPauseSeconds: 1 } },
+  fieldHints: {
+    pagePauseSeconds: { kind: 'pageRun', pages: 70, lastRunSeconds: 129, lastPauseSeconds: 1, maxRunSeconds: 7200 },
+  },
 };
 
 function PauseWrapper({ editing, connection }: { editing: boolean; connection: Connection }) {

@@ -96,8 +96,10 @@ export interface PageRunFieldHint {
   kind: 'pageRun';
   pages: number;
   lastRunSeconds: number;
-  /** The pause saved when the hint was computed (the last run's pause). */
-  savedPauseSeconds: number;
+  /** The pause between pages that last run used. */
+  lastPauseSeconds: number;
+  /** A run is stopped after this long (the worker's time limit). */
+  maxRunSeconds: number;
 }
 
 export type FieldHint = PageRunFieldHint;
