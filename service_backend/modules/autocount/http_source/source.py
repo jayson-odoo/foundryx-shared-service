@@ -213,6 +213,11 @@ class HttpApiSource:
         # before each ``_walk_endpoint`` call, read back here); ``totalPages``
         # is ``None`` for a bare-array endpoint (never guessed).
         heartbeat: Optional[Callable[[str, int, Optional[int]], None]] = None,
+        # SS-STOCK-PAGE-PAUSE-CONFIG - asked between the slices of a pause
+        # between pages (``gentle.sleep_between_pages``): beats the job and
+        # returns ``True`` once the run was stopped, so a 10-minute pause is
+        # never sat out by an aborted run. ``None`` = never stopped (preview).
+        should_stop: Optional[Callable[[], bool]] = None,
         **_extra: Any,
     ) -> None:
         self.entity_type = entity_type
@@ -220,6 +225,7 @@ class HttpApiSource:
         self.persist_hashes = persist_hashes
         self.row_limit = row_limit
         self._on_page = heartbeat
+        self._should_stop = should_stop
         # sprint-5/11 S5 - which endpoint ``_walk_path`` is CURRENTLY
         # walking, set by ``_walk``/``_apply_lookups`` immediately before
         # each ``_walk_endpoint`` call, read back by ``_walk_path`` itself
@@ -565,8 +571,16 @@ class HttpApiSource:
                     and self._current_stage == "source"
                     and self._gentle.page_pause_seconds > 0
                 ):
-                    # SS-STOCK-BAL-SOOTHE - a trickle, never a burst.
-                    gentle.sleep_between_pages(self._gentle.page_pause_seconds)
+                    # SS-STOCK-BAL-SOOTHE - a trickle, never a burst; the
+                    # owner sets the length (SS-STOCK-PAGE-PAUSE-CONFIG).
+                    if not gentle.sleep_between_pages(
+                        self._gentle.page_pause_seconds, should_stop=self._should_stop
+                    ):
+                        raise HttpSourceError(
+                            "This run was stopped during the pause between pages.",
+                            code=gentle.PAUSE_STOPPED_CODE,
+                            page=page,
+                        )
                 response = self._fetch_page(path, page, page_size)
                 parsed = self._parse_envelope(response, page=page, path=path)
 

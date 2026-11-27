@@ -29,7 +29,6 @@ from tests.test_ss_stock_bal_soothe import (  # noqa: F401 - fixtures
     BALANCE_PATH,
     _company,
     _open_connection,
-    _run_job,
     _source,
     _stock_config,
     server,
@@ -59,6 +58,23 @@ def slices(monkeypatch):
     monkeypatch.setattr(gentle, "sleep_between_pages", REAL_SLEEP_BETWEEN_PAGES)
     monkeypatch.setattr(gentle, "_sleep", lambda s: recorded.append(s))
     return recorded
+
+
+def _run_job(db, company):
+    """A claimed (RUNNING) stock job run inline, as a worker would."""
+    from app.jobs.service import JobService
+    from modules.autocount.sync import AUTOCOUNT_SYNC, run_autocount_sync
+
+    job = JobService(db).create(
+        type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
+        payload={"companyId": company.id, "entityType": ENTITY_STOCK_BALANCE,
+                 "mode": RUN_MODE_INCREMENTAL},
+    )
+    job.status = JOB_RUNNING
+    job.started_at = datetime.now(timezone.utc)
+    db.commit()
+    run_autocount_sync(db, job)
+    return db.query(AcSyncRun).filter(AcSyncRun.job_id == job.id).one()
 
 
 # ── the setting ───────────────────────────────────────────────────────────

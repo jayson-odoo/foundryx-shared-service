@@ -513,13 +513,14 @@ _HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_|s11_)")
 
 @pytest.fixture(autouse=True)
 def _gentle_autocount_walks_in_tests(monkeypatch):
-    """SS-STOCK-BAL-SOOTHE - every open-REST walk pauses between pages by
-    default (1 s) and stock lookups are cached per process. Suite-wide: no
-    real pause, and each test starts with an empty lookup cache. A test that
-    pins the pause monkeypatches ``sleep_between_pages`` itself."""
+    """SS-STOCK-BAL-SOOTHE - an open-REST walk may pause between pages (the
+    owner-set ``pagePauseSeconds``, default 0 since SS-STOCK-PAGE-PAUSE-CONFIG)
+    and stock lookups are cached per process. Suite-wide: no real pause, and
+    each test starts with an empty lookup cache. A test that pins the pause
+    monkeypatches ``sleep_between_pages`` itself."""
     import modules.autocount.http_source.gentle as gentle
 
-    monkeypatch.setattr(gentle, "sleep_between_pages", lambda seconds: None)
+    monkeypatch.setattr(gentle, "sleep_between_pages", lambda seconds, **_kw: True)
     gentle.clear_lookup_cache()
     yield
     gentle.clear_lookup_cache()

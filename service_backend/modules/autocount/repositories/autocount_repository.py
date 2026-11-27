@@ -354,6 +354,23 @@ class EntityConfigRepository:
         )
 
 
+    def list_http_for_connection(self, tenant_id: str, connection_id: str) -> List[AcEntityConfig]:
+        """SS-STOCK-PAGE-PAUSE-CONFIG - every open-REST task reading through
+        ``connection_id`` (``source_config.connectionId``), tenant-scoped."""
+        rows = (
+            self.db.query(AcEntityConfig)
+            .filter(
+                AcEntityConfig.tenant_id == tenant_id,
+                AcEntityConfig.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP,
+            )
+            .all()
+        )
+        return [
+            r for r in rows
+            if isinstance(r.source_config, dict)
+            and str(r.source_config.get("connectionId") or "") == str(connection_id)
+        ]
+
     def list_for_alert_check(self, tenant_join, open_ids: Sequence[str]) -> List[AcEntityConfig]:
         """Plan 33 - every ACTIVE push integration of an active tenant/Service
         (``tenant_join`` is the sweep's own lifecycle predicate), plus any
@@ -1329,6 +1346,27 @@ class SyncRunRepository:
         self.db.add(run)
         self.db.flush()
         return run
+
+    def last_successful(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> Optional[AcSyncRun]:
+        """SS-STOCK-PAGE-PAUSE-CONFIG - the task's latest finished successful
+        run (never a skipped tick, which scanned nothing)."""
+        from ..models import RUN_MODE_SKIPPED, RUN_SUCCESS
+
+        return (
+            self.db.query(AcSyncRun)
+            .filter(
+                AcSyncRun.tenant_id == tenant_id,
+                AcSyncRun.company_id == company_id,
+                AcSyncRun.entity_type == entity_type,
+                AcSyncRun.mode != RUN_MODE_SKIPPED,
+                AcSyncRun.outcome == RUN_SUCCESS,
+                AcSyncRun.finished_at.isnot(None),
+            )
+            .order_by(AcSyncRun.finished_at.desc())
+            .first()
+        )
 
     def get_for_job(
         self, tenant_id: str, company_id: str, job_id: str

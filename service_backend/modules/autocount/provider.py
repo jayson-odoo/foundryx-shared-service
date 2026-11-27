@@ -240,7 +240,8 @@ class AutoCountProvider:
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
             # SS-STOCK-BAL-SOOTHE - keep the wrapper's load low and even
-            # (`http_source/gentle.py`); both on by default.
+            # (`http_source/gentle.py`). The pause is owner-set, 0-600 s,
+            # default 0 (SS-STOCK-PAGE-PAUSE-CONFIG, owner 27 Nov).
             {
                 "key": "pagePauseSeconds",
                 "label": "Pause between pages (seconds)",
@@ -306,6 +307,15 @@ class AutoCountProvider:
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
         ]
+
+    def field_hints(self, db: Any, connection: Any) -> Dict[str, Dict[str, Any]]:
+        """SS-STOCK-PAGE-PAUSE-CONFIG - per-connection read-only hints under
+        a field (``IntegrationService.get``): the pause field's page/run-time
+        estimate from the last run, once one is known."""
+        from .services.page_pause_hint import page_run_hint
+
+        hint = page_run_hint(db, connection)
+        return {"pagePauseSeconds": hint} if hint else {}
 
     def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
         """S5 (sprint-5/08 review round 1) - the SAME scheme rule `test()`

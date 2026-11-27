@@ -40,6 +40,10 @@ class ConnectionOut(ApiModel):
     rateLimitPerMinute: int
     createdAt: datetime
     updatedAt: datetime
+    # Per-field read-only hints a provider computes for ONE connection
+    # (``provider.field_hints(db, connection)``, optional) - only on the
+    # single-connection read, never the list. Keyed by field key.
+    fieldHints: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class ConnectionCreateRequest(ApiModel):

@@ -77,6 +77,7 @@ from .http_source.combine import (
 )
 from .http_source.envelope import ENVELOPE_LIST
 from .http_source.errors import HttpSourceError
+from .http_source.gentle import PAUSE_STOPPED_CODE
 from .mapping import (
     SCOPE_HEADER,
     UNQUALIFIED_REF_ENTITIES,
@@ -460,6 +461,9 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             # page of the main path and every lookup (the pull-snapshot build
             # already passed one); the SQL and vendor factories swallow it.
             heartbeat=lambda *_args, **_kw: _heartbeat(service, job.id),
+            # SS-STOCK-PAGE-PAUSE-CONFIG - between the slices of a pause
+            # between pages: beat, and stop once the job was aborted or swept.
+            should_stop=lambda: _lease_status(service, job.id) is not None,
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
         logger.exception("autocount sync setup failed for job %s", job.id)
@@ -679,6 +683,15 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         )
         return
     except HttpSourceError as exc:
+        if exc.code == PAUSE_STOPPED_CODE and _aborted(db, job.id):
+            # SS-STOCK-PAGE-PAUSE-CONFIG - an operator stopped the run while it
+            # waited between pages: an abort, not a fault (watermark holds).
+            record_client_calls(
+                db, source, tenant_id=tenant_id, trace_id=trace_id,
+                external_ref=company.database_name,
+            )
+            _abort(db, service, run, started)
+            return
         # SF-2 (sprint-5/08 review round 2) - the open-API source's own
         # failures (transport, HTTP status, shape, row cap, delete guard)
         # are a REPORTED fault, not a crash - the SAME WARNING/`error_code`
@@ -3077,12 +3090,24 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
                 "autocount pull snapshot: beat_progress for job %s failed",
                 job.id, exc_info=True,
             )
+        _raise_if_abandoned()
+
+    def _raise_if_abandoned() -> None:
         current = snap_repo.get(tenant_id, snapshot_id)
         if current is None or current.status != PULL_SNAPSHOT_STATUS_BUILDING:
             raise _BuildAbandoned(
                 f"This build was abandoned before it finished (snapshot "
                 f"{snapshot_id} is no longer building)."
             )
+
+    def _pause_should_stop() -> bool:
+        """SS-STOCK-PAGE-PAUSE-CONFIG - between the slices of a pause between
+        pages: beat (liveness only - the page progress stays as the last page
+        stamped it) and raise ``_BuildAbandoned`` the instant the build is no
+        longer ``building``."""
+        _heartbeat(service, job.id)
+        _raise_if_abandoned()
+        return False
 
     try:
         source = source_factory(config.source_impl)(
@@ -3101,6 +3126,7 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             # (``**_extra``); ``HttpApiSource`` fires it after every page,
             # main path AND every lookup.
             heartbeat=_beat_and_check,
+            should_stop=_pause_should_stop,
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
         logger.exception("autocount pull snapshot setup failed for job %s", job.id)
