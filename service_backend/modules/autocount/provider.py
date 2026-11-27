@@ -287,6 +287,9 @@ class AutoCountProvider:
                 "required": False,
                 "default": STOCK_PAGE_SIZE_FIELD_DEFAULT,
                 "defaultValue": str(STOCK_PAGE_SIZE_FIELD_DEFAULT),
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": str(STOCK_PAGE_SIZE_FIELD_DEFAULT),
                 "min": STOCK_PAGE_SIZE_FIELD_MIN,
                 "max": STOCK_PAGE_SIZE_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -298,6 +301,9 @@ class AutoCountProvider:
                 "required": False,
                 "default": ONE_AT_A_TIME_YES,
                 "defaultValue": ONE_AT_A_TIME_YES,
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": ONE_AT_A_TIME_YES,
                 "options": [
                     {"value": ONE_AT_A_TIME_YES, "label": "Yes"},
                     {"value": ONE_AT_A_TIME_NO, "label": "No"},
@@ -311,6 +317,9 @@ class AutoCountProvider:
                 "required": False,
                 "default": SLOW_PAGE_FIELD_DEFAULT,
                 "defaultValue": f"{SLOW_PAGE_FIELD_DEFAULT:g}",
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": f"{SLOW_PAGE_FIELD_DEFAULT:g}",
                 "min": SLOW_PAGE_FIELD_MIN,
                 "max": SLOW_PAGE_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -322,6 +331,9 @@ class AutoCountProvider:
                 "required": False,
                 "default": STOP_AFTER_FIELD_DEFAULT,
                 "defaultValue": str(STOP_AFTER_FIELD_DEFAULT),
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": str(STOP_AFTER_FIELD_DEFAULT),
                 "min": STOP_AFTER_FIELD_MIN,
                 "max": STOP_AFTER_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -333,6 +345,9 @@ class AutoCountProvider:
                 "required": False,
                 "default": STOP_MINUTES_FIELD_DEFAULT,
                 "defaultValue": str(STOP_MINUTES_FIELD_DEFAULT),
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": str(STOP_MINUTES_FIELD_DEFAULT),
                 "min": STOP_MINUTES_FIELD_MIN,
                 "max": STOP_MINUTES_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},

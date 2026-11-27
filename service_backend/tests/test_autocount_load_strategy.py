@@ -127,6 +127,9 @@ def test_connection_form_shows_the_new_fields_for_the_open_api_only():
     for key, (label, default) in expected.items():
         assert fields[key]["label"] == label
         assert fields[key]["defaultValue"] == default
+        # A connection saved before this lane stores none of the keys: the
+        # read view and the Edit prefill show what it runs at (crew pass F1).
+        assert fields[key]["effectiveValue"] == default
         assert fields[key]["showWhen"] == {"field": "auth", "values": ["none"]}
     assert fields["stockPageSize"]["max"] == 3000
     assert fields["pageSize"]["max"] == 1000, "products stay at 1000 (owner 27 Nov)"
