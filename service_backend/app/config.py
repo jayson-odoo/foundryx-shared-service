@@ -145,6 +145,12 @@ class Settings(BaseSettings):
     throttle_lead_gateway_window_minutes: int = 15
     throttle_lead_gateway_key_max_requests: int = 600
     throttle_lead_gateway_key_window_minutes: int = 5
+    # Planner 3D gateway (lane PLANNER-3D-S1, contract 2.1 + 4): failed keys per IP,
+    # and the per-key request budget (600 per 5 minutes, the lead-capture defaults).
+    throttle_planner3d_gateway_max_fails: int = 20
+    throttle_planner3d_gateway_window_minutes: int = 15
+    throttle_planner3d_gateway_key_max_requests: int = 600
+    throttle_planner3d_gateway_key_window_minutes: int = 5
     # Omnichannel replace-token attempts per channel (plan 42).
     throttle_channel_token_max: int = 10
     throttle_channel_token_window_minutes: int = 10
