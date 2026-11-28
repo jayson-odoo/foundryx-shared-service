@@ -198,6 +198,7 @@ def _session_factory_template():
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
         PLANNER3D_SCHEMA: "connector",
+        "app_dashboards": "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -351,6 +352,7 @@ def _ideation_session_factory_template():
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
         PLANNER3D_SCHEMA: "connector",
+        "app_dashboards": "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -685,6 +687,7 @@ def _meetings_session_factory_template():
         CONNECTOR_SCHEMA: "connector",
         LEAD_CAPTURE_SCHEMA: "connector",
         PLANNER3D_SCHEMA: "connector",
+        "app_dashboards": "connector",
     }
     engine = create_engine(
         "sqlite://",
@@ -800,6 +803,7 @@ def connector_session_factory():
             CONNECTOR_SCHEMA: "connector",
             LEAD_CAPTURE_SCHEMA: "connector",
             PLANNER3D_SCHEMA: "connector",
+            "app_dashboards": "connector",
         }
     )
     with engine.connect() as conn:

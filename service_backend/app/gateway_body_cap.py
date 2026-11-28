@@ -28,6 +28,13 @@ MULTIPART_BODY_CAP = 100 * 1024 * 1024 + 1024 * 1024
 SEND_PATH = "/api/v1/omnichannel/messages"
 TOO_LARGE = "Request body is too large."
 
+# Dashboards gateway (`/api/v1/dashboards`): the builder turn carries up to 5 images (15 MB decoded, ~20 MB
+# base64) plus the catalogue; every other route is small JSON. Refused with the gateway's flat 413 body.
+DASHBOARDS_PREFIX = "/api/v1/dashboards"
+DASHBOARDS_TURN_PATH = "/api/v1/dashboards/builder/turn"
+DASHBOARDS_TURN_CAP = 24 * 1024 * 1024
+DASHBOARDS_BODY_CAP = 1024 * 1024
+
 
 def _route_path(scope: Scope) -> str:
     """The request path with `root_path` stripped. Mirrors Starlette's
@@ -64,7 +71,8 @@ class GatewayBodyCapMiddleware:
             await self.app(scope, receive, send)
             return
         path = _route_path(scope)  # root_path stripped, so a configured root cannot skip the cap
-        if not path.startswith(GATEWAY_PREFIX):
+        dashboards = path == DASHBOARDS_PREFIX or path.startswith(DASHBOARDS_PREFIX + "/")
+        if not path.startswith(GATEWAY_PREFIX) and not dashboards:
             await self.app(scope, receive, send)
             return
 
@@ -73,12 +81,15 @@ class GatewayBodyCapMiddleware:
         is_send = scope.get("method") == "POST" and path.rstrip("/") == SEND_PATH
         multipart = is_send and is_multipart(_header(scope, b"content-type"))
         cap = MULTIPART_BODY_CAP if multipart else JSON_BODY_CAP
+        if dashboards:
+            is_turn = scope.get("method") == "POST" and path.rstrip("/") == DASHBOARDS_TURN_PATH
+            cap = DASHBOARDS_TURN_CAP if is_turn else DASHBOARDS_BODY_CAP
 
         declared = _header(scope, b"content-length")
         if declared is not None:
             try:
                 if int(declared) > cap:
-                    await self._refuse(scope, receive, send)
+                    await self._refuse(scope, receive, send, dashboards)
                     return
             except ValueError:
                 pass  # a malformed length is left to the server and the stream count
@@ -97,7 +108,7 @@ class GatewayBodyCapMiddleware:
                     # The framework turns an error raised from receive() into its
                     # own 400, so answer here, then end the stream for the app.
                     refused = True
-                    await self._refuse(scope, receive, send)
+                    await self._refuse(scope, receive, send, dashboards)
                     return {"type": "http.disconnect"}
             return message
 
@@ -114,6 +125,10 @@ class GatewayBodyCapMiddleware:
                 raise
 
     @staticmethod
-    async def _refuse(scope: Scope, receive: Receive, send: Send) -> None:
+    async def _refuse(scope: Scope, receive: Receive, send: Send, dashboards: bool = False) -> None:
+        if dashboards:  # the dashboards contract's flat error body (3.8)
+            await JSONResponse(status_code=413, content={"error": "payload_too_large", "message": TOO_LARGE},
+                               headers={"connection": "close"})(scope, receive, send)
+            return
         body = ApiError(422, "invalid_request", TOO_LARGE).to_body()
         await JSONResponse(status_code=422, content=body, headers={"connection": "close"})(scope, receive, send)

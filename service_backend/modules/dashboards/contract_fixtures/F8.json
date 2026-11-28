@@ -1,0 +1,22 @@
+{
+  "id": "F8",
+  "call": "get",
+  "key": "sorento",
+  "setup": [
+    "owner_dashboard"
+  ],
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/dashboards/{dashboard_id}",
+    "query": {
+      "actor_ref": "u-other-1"
+    }
+  },
+  "response": {
+    "status": 404,
+    "body": {
+      "error": "not_found",
+      "message": "A plain sentence."
+    }
+  }
+}

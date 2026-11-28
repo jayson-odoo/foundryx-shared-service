@@ -1,0 +1,145 @@
+{
+  "id": "F13",
+  "call": "save",
+  "key": "sorento",
+  "setup": [],
+  "repeat": 2,
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/dashboards/save",
+    "body": {
+      "actor_ref": "u-owner-1",
+      "dashboard_id": null,
+      "name": "Sales overview",
+      "spec": {
+        "version": 1,
+        "title": "Sales overview",
+        "period": "this_year",
+        "tiles": [
+          {
+            "id": "t1",
+            "title": "Invoiced sales by month",
+            "show": "line",
+            "source": {
+              "kind": "query",
+              "spec": {
+                "entity": "billing_document",
+                "group_by": [
+                  {
+                    "field": "doc_date",
+                    "bucket": "month"
+                  }
+                ],
+                "aggregates": [
+                  {
+                    "fn": "sum",
+                    "field": "sales_amount"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "id": "t2",
+            "title": "Top 10 customers",
+            "show": "table",
+            "source": {
+              "kind": "query",
+              "spec": {
+                "entity": "billing_document",
+                "group_by": [
+                  "customer_name"
+                ],
+                "aggregates": [
+                  {
+                    "fn": "sum",
+                    "field": "sales_amount"
+                  }
+                ],
+                "sort": [
+                  {
+                    "field": "sum_sales_amount",
+                    "dir": "desc"
+                  }
+                ],
+                "limit": 10
+              }
+            }
+          }
+        ]
+      },
+      "base_version": null,
+      "idempotency_key": "9b1c7e2a-0000-4000-8000-000000000007"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "d_00000000-0000-4000-8000-000000000001",
+      "name": "Sales overview",
+      "owner_ref": "u-owner-1",
+      "mine": true,
+      "shared_with": [],
+      "spec": {
+        "version": 1,
+        "title": "Sales overview",
+        "period": "this_year",
+        "tiles": [
+          {
+            "id": "t1",
+            "title": "Invoiced sales by month",
+            "show": "line",
+            "source": {
+              "kind": "query",
+              "spec": {
+                "entity": "billing_document",
+                "group_by": [
+                  {
+                    "field": "doc_date",
+                    "bucket": "month"
+                  }
+                ],
+                "aggregates": [
+                  {
+                    "fn": "sum",
+                    "field": "sales_amount"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "id": "t2",
+            "title": "Top 10 customers",
+            "show": "table",
+            "source": {
+              "kind": "query",
+              "spec": {
+                "entity": "billing_document",
+                "group_by": [
+                  "customer_name"
+                ],
+                "aggregates": [
+                  {
+                    "fn": "sum",
+                    "field": "sales_amount"
+                  }
+                ],
+                "sort": [
+                  {
+                    "field": "sum_sales_amount",
+                    "dir": "desc"
+                  }
+                ],
+                "limit": 10
+              }
+            }
+          }
+        ]
+      },
+      "version": 1,
+      "created_at": "2026-11-27T02:00:00Z",
+      "updated_at": "2026-11-28T04:30:00Z"
+    }
+  }
+}

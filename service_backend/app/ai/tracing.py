@@ -231,13 +231,26 @@ def append_span(
     return span
 
 
+def _without_image_bytes(message: Dict[str, Any]) -> Dict[str, Any]:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    blocks = [
+        {"type": "image", "media_type": (b.get("source") or {}).get("media_type"), "omitted": True}
+        if isinstance(b, dict) and b.get("type") == "image" else b
+        for b in content
+    ]
+    return {**message, "content": blocks}
+
+
 def llm_span_payload(
     *, system: str, messages: List[Dict[str, str]], output_schema: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """The standard `llm_call` span input shape."""
+    """The standard `llm_call` span input shape. Image content blocks are recorded as a
+    placeholder (type + media type), never their bytes: a trace must not store a user's screenshot."""
     return {
         "system": system,
-        "messages": messages,
+        "messages": [_without_image_bytes(m) for m in messages],
         "structured": output_schema is not None,
     }
 

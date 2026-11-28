@@ -1,0 +1,345 @@
+{
+  "id": "F10",
+  "call": "save",
+  "key": "sorento",
+  "setup": [],
+  "cases": [
+    {
+      "name": "sql-entity",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/dashboards/save",
+        "body": {
+          "actor_ref": "u-owner-1",
+          "dashboard_id": null,
+          "name": "Sales overview",
+          "spec": {
+            "version": 1,
+            "title": "Sales overview",
+            "period": "this_year",
+            "tiles": [
+              {
+                "id": "t1",
+                "title": "Invoiced sales by month",
+                "show": "line",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "x; drop table",
+                    "group_by": [
+                      {
+                        "field": "doc_date",
+                        "bucket": "month"
+                      }
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "sales_amount"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "id": "t2",
+                "title": "Top 10 customers",
+                "show": "table",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "group_by": [
+                      "customer_name"
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "sales_amount"
+                      }
+                    ],
+                    "sort": [
+                      {
+                        "field": "sum_sales_amount",
+                        "dir": "desc"
+                      }
+                    ],
+                    "limit": 10
+                  }
+                }
+              }
+            ]
+          },
+          "base_version": null,
+          "idempotency_key": "9b1c7e2a-0000-4000-8000-000000000007"
+        }
+      },
+      "response": {
+        "status": 422,
+        "body": {
+          "error": "spec_invalid",
+          "message": "A plain sentence.",
+          "problems": [
+            {
+              "path": "tiles[0].source.spec.entity",
+              "reason": "Only names and values can be used in a chart, not code or links."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "url",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/dashboards/save",
+        "body": {
+          "actor_ref": "u-owner-1",
+          "dashboard_id": null,
+          "name": "Sales overview",
+          "spec": {
+            "version": 1,
+            "title": "Sales overview",
+            "period": "this_year",
+            "tiles": [
+              {
+                "id": "t1",
+                "title": "see http://example.invalid/x",
+                "show": "line",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "group_by": [
+                      {
+                        "field": "doc_date",
+                        "bucket": "month"
+                      }
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "sales_amount"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "id": "t2",
+                "title": "Top 10 customers",
+                "show": "table",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "group_by": [
+                      "customer_name"
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "sales_amount"
+                      }
+                    ],
+                    "sort": [
+                      {
+                        "field": "sum_sales_amount",
+                        "dir": "desc"
+                      }
+                    ],
+                    "limit": 10
+                  }
+                }
+              }
+            ]
+          },
+          "base_version": null,
+          "idempotency_key": "9b1c7e2a-0000-4000-8000-000000000007"
+        }
+      },
+      "response": {
+        "status": 422,
+        "body": {
+          "error": "spec_invalid",
+          "message": "A plain sentence.",
+          "problems": [
+            {
+              "path": "tiles[0].source.spec.entity",
+              "reason": "Only names and values can be used in a chart, not code or links."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "html",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/dashboards/save",
+        "body": {
+          "actor_ref": "u-owner-1",
+          "dashboard_id": null,
+          "name": "Sales overview",
+          "spec": {
+            "version": 1,
+            "title": "Sales overview",
+            "period": "this_year",
+            "tiles": [
+              {
+                "id": "t1",
+                "title": "<b>bold</b>",
+                "show": "line",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "group_by": [
+                      {
+                        "field": "doc_date",
+                        "bucket": "month"
+                      }
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "sales_amount"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "id": "t2",
+                "title": "Top 10 customers",
+                "show": "table",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "group_by": [
+                      "customer_name"
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "sales_amount"
+                      }
+                    ],
+                    "sort": [
+                      {
+                        "field": "sum_sales_amount",
+                        "dir": "desc"
+                      }
+                    ],
+                    "limit": 10
+                  }
+                }
+              }
+            ]
+          },
+          "base_version": null,
+          "idempotency_key": "9b1c7e2a-0000-4000-8000-000000000007"
+        }
+      },
+      "response": {
+        "status": 422,
+        "body": {
+          "error": "spec_invalid",
+          "message": "A plain sentence.",
+          "problems": [
+            {
+              "path": "tiles[0].source.spec.entity",
+              "reason": "Only names and values can be used in a chart, not code or links."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extra-key",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/dashboards/save",
+        "body": {
+          "actor_ref": "u-owner-1",
+          "dashboard_id": null,
+          "name": "Sales overview",
+          "spec": {
+            "version": 1,
+            "title": "Sales overview",
+            "period": "this_year",
+            "tiles": [
+              {
+                "id": "t1",
+                "title": "Invoiced sales by month",
+                "show": "line",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "group_by": [
+                      {
+                        "field": "doc_date",
+                        "bucket": "month"
+                      }
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "sales_amount"
+                      }
+                    ]
+                  }
+                },
+                "unknown": 1
+              },
+              {
+                "id": "t2",
+                "title": "Top 10 customers",
+                "show": "table",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "group_by": [
+                      "customer_name"
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "sales_amount"
+                      }
+                    ],
+                    "sort": [
+                      {
+                        "field": "sum_sales_amount",
+                        "dir": "desc"
+                      }
+                    ],
+                    "limit": 10
+                  }
+                }
+              }
+            ]
+          },
+          "base_version": null,
+          "idempotency_key": "9b1c7e2a-0000-4000-8000-000000000007"
+        }
+      },
+      "response": {
+        "status": 422,
+        "body": {
+          "error": "spec_invalid",
+          "message": "A plain sentence.",
+          "problems": [
+            {
+              "path": "tiles[0].source.spec.entity",
+              "reason": "Only names and values can be used in a chart, not code or links."
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

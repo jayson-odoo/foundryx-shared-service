@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     throttle_planner3d_gateway_window_minutes: int = 15
     throttle_planner3d_gateway_key_max_requests: int = 600
     throttle_planner3d_gateway_key_window_minutes: int = 5
+    throttle_dashboards_gateway_max_fails: int = 20
+    throttle_dashboards_gateway_window_minutes: int = 15
+    throttle_dashboards_gateway_key_max_requests: int = 600
+    throttle_dashboards_gateway_key_window_minutes: int = 5
     # Omnichannel replace-token attempts per channel (plan 42).
     throttle_channel_token_max: int = 10
     throttle_channel_token_window_minutes: int = 10

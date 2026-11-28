@@ -89,6 +89,10 @@ THROTTLE_SCOPE_LEAD_GATEWAY_KEY = "lead_gateway_key"
 THROTTLE_SCOPE_PLANNER3D_GATEWAY = "planner3d_gateway"
 THROTTLE_SCOPE_PLANNER3D_GATEWAY_KEY = "planner3d_gateway_key"
 
+# Dashboards gateway (AI dashboard builder S1) - same pattern as Planner 3D.
+THROTTLE_SCOPE_DASHBOARDS_GATEWAY = "dashboards_gateway"
+THROTTLE_SCOPE_DASHBOARDS_GATEWAY_KEY = "dashboards_gateway_key"
+
 
 class AuthThrottle(Base):
     __tablename__ = "auth_throttle"

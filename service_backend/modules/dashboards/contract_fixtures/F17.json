@@ -1,0 +1,182 @@
+{
+  "id": "F17",
+  "call": "save",
+  "key": "sorento",
+  "setup": [],
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/dashboards/save",
+    "body": {
+      "actor_ref": "u-owner-1",
+      "dashboard_id": null,
+      "name": "Sales overview",
+      "spec": {
+        "version": 1,
+        "title": "Wide",
+        "period": "this_year",
+        "tiles": [
+          {
+            "id": "t1",
+            "title": "Share by customer",
+            "show": "pie",
+            "source": {
+              "kind": "query",
+              "spec": {
+                "entity": "billing_document",
+                "group_by": [
+                  "customer_name"
+                ],
+                "aggregates": [
+                  {
+                    "fn": "sum",
+                    "field": "sales_amount"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "id": "t2",
+            "title": "Two sources",
+            "show": "combo",
+            "series": [
+              {
+                "key": "s1",
+                "label": "Sales",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "aggregates": [
+                      {
+                        "fn": "count"
+                      }
+                    ]
+                  }
+                },
+                "as": "bar"
+              },
+              {
+                "key": "s2",
+                "label": "Orders",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "sales_order",
+                    "aggregates": [
+                      {
+                        "fn": "count"
+                      }
+                    ]
+                  }
+                },
+                "as": "line"
+              }
+            ],
+            "calc": [
+              {
+                "key": "c1",
+                "op": "ratio",
+                "args": [
+                  "s1.count",
+                  "s2.count"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "base_version": null,
+      "idempotency_key": "9b1c7e2a-0000-4000-8000-000000000007"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "d_00000000-0000-4000-8000-000000000001",
+      "name": "Sales overview",
+      "owner_ref": "u-owner-1",
+      "mine": true,
+      "shared_with": [],
+      "spec": {
+        "version": 1,
+        "title": "Wide",
+        "period": "this_year",
+        "tiles": [
+          {
+            "id": "t1",
+            "title": "Share by customer",
+            "show": "pie",
+            "source": {
+              "kind": "query",
+              "spec": {
+                "entity": "billing_document",
+                "group_by": [
+                  "customer_name"
+                ],
+                "aggregates": [
+                  {
+                    "fn": "sum",
+                    "field": "sales_amount"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "id": "t2",
+            "title": "Two sources",
+            "show": "combo",
+            "series": [
+              {
+                "key": "s1",
+                "label": "Sales",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "billing_document",
+                    "aggregates": [
+                      {
+                        "fn": "count"
+                      }
+                    ]
+                  }
+                },
+                "as": "bar"
+              },
+              {
+                "key": "s2",
+                "label": "Orders",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "sales_order",
+                    "aggregates": [
+                      {
+                        "fn": "count"
+                      }
+                    ]
+                  }
+                },
+                "as": "line"
+              }
+            ],
+            "calc": [
+              {
+                "key": "c1",
+                "op": "ratio",
+                "args": [
+                  "s1.count",
+                  "s2.count"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "version": 1,
+      "created_at": "2026-11-27T02:00:00Z",
+      "updated_at": "2026-11-28T04:30:00Z"
+    }
+  }
+}
