@@ -5,6 +5,7 @@ tool's `input_schema` and `tool_choice` pins that tool, so the model must emit a
 conforming object. That is Anthropic's mechanism and it stops here - callers
 only ever see `LLMResult.structured` (AC-BI-01).
 """
+import re
 from typing import Any, Dict, List, Optional
 
 from app.integrations.base import LLMError, LLMResult, ModelOption
@@ -22,6 +23,14 @@ API_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 # The tool the model is forced to call when a schema is requested.
 _EMIT_TOOL = "emit_result"
+# Newer models (sonnet/opus 5-5, fable 5-1+) refuse a forced `tool_choice` and a non-default
+# `temperature` with HTTP 400: they get `auto` + a strict emit tool + a system line instead.
+_AUTO_TOOL_MODELS = re.compile(r"^claude-((sonnet|opus)-5-5|fable-5-[1-9])")
+_AUTO_TOOL_SYSTEM = f"Answer by calling the {_EMIT_TOOL} tool with the result. Do not answer in plain text."
+
+
+def _uses_auto_tool_choice(model: str) -> bool:
+    return bool(_AUTO_TOOL_MODELS.match(model or ""))
 
 
 def _headers(api_key: str) -> Dict[str, str]:
@@ -81,23 +90,30 @@ class AnthropicProvider(LLMProviderBase):
         body: Dict[str, Any] = {
             "model": model,
             "max_tokens": DEFAULT_MAX_TOKENS,
-            "temperature": temperature,
             "messages": [
                 {"role": m["role"], "content": m["content"]} for m in messages
             ],
         }
-        if system:
+        auto = _uses_auto_tool_choice(model)
+        if not auto:
+            body["temperature"] = temperature
+        if output_schema is not None and auto:
+            body["system"] = f"{system}\n\n{_AUTO_TOOL_SYSTEM}" if system else _AUTO_TOOL_SYSTEM
+        elif system:
             body["system"] = system
         if output_schema is not None:
             # Forced tool use - Anthropic's structured-output mechanism.
-            body["tools"] = [
-                {
-                    "name": _EMIT_TOOL,
-                    "description": "Return the result in the required shape.",
-                    "input_schema": output_schema,
-                }
-            ]
-            body["tool_choice"] = {"type": "tool", "name": _EMIT_TOOL}
+            tool: Dict[str, Any] = {
+                "name": _EMIT_TOOL,
+                "description": "Return the result in the required shape.",
+                "input_schema": output_schema,
+            }
+            if auto:
+                tool["strict"] = True
+                body["tool_choice"] = {"type": "auto"}
+            else:
+                body["tool_choice"] = {"type": "tool", "name": _EMIT_TOOL}
+            body["tools"] = [tool]
 
         payload = _http_json(
             "POST",

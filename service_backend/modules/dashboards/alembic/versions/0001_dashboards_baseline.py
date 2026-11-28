@@ -1,7 +1,7 @@
 """dashboards baseline - creates the ``app_dashboards`` tables.
 
 Tables: dash_api_key, dash_api_audit, dash_dashboard, dash_share, dash_version,
-dash_idempotency, dash_usage. New tables only (additive); Postgres-only (per-module
+dash_idempotency, dash_usage, dash_model_price. New tables only (additive); Postgres-only (per-module
 Alembic is a no-op on the SQLite test engine).
 
 Revision ID: 0001_dashboards_baseline

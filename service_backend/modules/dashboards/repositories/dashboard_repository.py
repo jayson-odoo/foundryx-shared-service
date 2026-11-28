@@ -117,7 +117,7 @@ class DashboardRepository:
         row = (
             self.db.query(DashIdempotency)
             .filter(DashIdempotency.key_id == key_id, DashIdempotency.actor_ref == actor_ref,
-                    DashIdempotency.idempotency_key == idem, self._scoped(DashIdempotency))
+                    DashIdempotency.idem_ref == idem, self._scoped(DashIdempotency))
             .first()
         )
         if row is not None and row.created_at < since:

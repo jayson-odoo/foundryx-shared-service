@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -37,6 +38,8 @@ AGENT_KEY = "dashboard-builder"
 AGENT_NAME = "Dashboard builder"
 AGENT_DESCRIPTION = "Turns a request into changes to a dashboard specification."
 FEATURE = "dashboard_builder"
+# The builder model (owner ruling 28 Nov): set on the seeded agent; an existing agent with no model gets it.
+BUILDER_MODEL = "claude-sonnet-5-5"
 
 class BuilderService:
     def __init__(self, db: Session, key: DashKey):
@@ -52,10 +55,13 @@ class BuilderService:
             agent = repo.add(AiAgent(
                 tenant_id=self.key.tenant_id, key=AGENT_KEY, is_system=True, name=AGENT_NAME,
                 description=AGENT_DESCRIPTION, connection_id=connection.id if connection else None,
-                model="", temperature=0.0, is_enabled=True,
+                model=BUILDER_MODEL, temperature=0.0, is_enabled=True,
             ))
-        elif not agent.connection_id and connection is not None:
-            agent.connection_id = connection.id
+        else:
+            if not agent.connection_id and connection is not None:
+                agent.connection_id = connection.id
+            if not agent.model:
+                agent.model = BUILDER_MODEL
         self.db.commit()
         return agent
 
@@ -138,9 +144,15 @@ class BuilderService:
     def _log(self, body: schemas.TurnRequest, agent: AiAgent, meter: "_Meter") -> None:
         if meter.calls == 0:
             return
-        UsageRepository(self.db, self.key.tenant_id, self.key.product).add(DashUsage(
-            feature=FEATURE, dashboard_id=body.dashboard_id, actor_ref=body.actor_ref,
-            provider=meter.provider, model=meter.model or agent.model or "", tokens_in=meter.tokens_in,
+        repo = UsageRepository(self.db, self.key.tenant_id, self.key.product)
+        model = meter.model or agent.model or ""
+        price = repo.price(model)
+        cost = None
+        if price is not None:  # raw tokens stay as measured; cost is derived from the price row
+            cost = (Decimal(meter.tokens_in) * price.input_per_mtok + Decimal(meter.tokens_out) * price.output_per_mtok) / Decimal(1_000_000)
+        repo.add(DashUsage(
+            feature=FEATURE, cost_usd=cost, dashboard_id=body.dashboard_id, actor_ref=body.actor_ref,
+            provider=meter.provider, model=model, tokens_in=meter.tokens_in,
             tokens_out=meter.tokens_out, latency_ms=meter.latency_ms, llm_calls=meter.calls, trace_id=meter.trace_id,
         ))
 

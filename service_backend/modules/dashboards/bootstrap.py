@@ -8,6 +8,8 @@ Registers no workflow trigger or action (no WhatsApp path).
 """
 
 from __future__ import annotations
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import text
@@ -41,9 +43,26 @@ def create_schema_and_tables(engine: Engine) -> None:
     DashboardsBase.metadata.create_all(bind=engine)
 
 
+# Public Anthropic list prices, USD per million tokens (input, output, cache read), with where they came
+# from and when they were checked. Insert-if-missing: an operator's edit of a price row survives re-install.
+# Source: https://platform.claude.com/docs/en/about-claude/pricing (Model pricing table, fetched 2026-11-28)
+PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing (Model pricing table, fetched 2026-11-28)"
+SEED_PRICES = {"claude-sonnet-5-5": ("2.00", "10.00", "0.10", PRICING_URL, datetime(2026, 11, 28, tzinfo=timezone.utc))}
+
+
+def seed_prices(db: Session) -> None:
+    for model, (inp, out, cache, source, verified) in SEED_PRICES.items():
+        if db.get(models.DashModelPrice, model) is None:
+            db.add(models.DashModelPrice(model=model, input_per_mtok=Decimal(inp), output_per_mtok=Decimal(out),
+                                         cache_read_per_mtok=Decimal(cache), currency="USD", source=source,
+                                         verified_at=verified))
+    db.flush()
+
+
 def install(engine: Engine, db: Session) -> None:
     create_schema_and_tables(engine)
     PermissionRepository(db).sync(MODULE_NAME, load_csv(MODULE_CSV))
+    seed_prices(db)
 
 
 def install_tenant(db: Session, tenant_id: str) -> None:

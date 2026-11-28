@@ -128,7 +128,7 @@ class DashboardStore:
                                               actor_ref=actor, changes_json=changes))
         out = self._out(row, actor)
         self.repo.add_idempotent(DashIdempotency(key_id=self.key.key_id, actor_ref=actor,
-                                                 idempotency_key=body.idempotency_key, response_json=out))
+                                                 idem_ref=body.idempotency_key, response_json=out))
         self.db.commit()
         return out
 

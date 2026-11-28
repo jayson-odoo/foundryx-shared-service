@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.types import JSON
 
 from app.models.utc_datetime import UTCDateTime
@@ -122,7 +122,7 @@ class DashIdempotency(DashboardsBase):
 
     __tablename__ = "dash_idempotency"
     __table_args__ = (
-        UniqueConstraint("key_id", "actor_ref", "idempotency_key", name="uq_dash_idempotency"),
+        UniqueConstraint("key_id", "actor_ref", "idem_ref", name="uq_dash_idempotency"),
         Index("ix_dash_idempotency_tenant", "tenant_id", "product"),
     )
 
@@ -131,7 +131,7 @@ class DashIdempotency(DashboardsBase):
     product = Column(String(64), nullable=False)
     key_id = Column(String, nullable=False)
     actor_ref = Column(String(64), nullable=False)
-    idempotency_key = Column(String(128), nullable=False)
+    idem_ref = Column(String(128), nullable=False)
     response_json = Column(_JSON, nullable=False)
     created_at = Column(UTCDateTime(), default=_now, nullable=False)
 
@@ -152,7 +152,23 @@ class DashUsage(DashboardsBase):
     model = Column(String(128), nullable=False, default="")
     tokens_in = Column(Integer, nullable=False, default=0)
     tokens_out = Column(Integer, nullable=False, default=0)
+    cost_usd = Column(Numeric(14, 6), nullable=True)  # NULL when the model has no price row
     latency_ms = Column(Integer, nullable=False, default=0)
     llm_calls = Column(Integer, nullable=False, default=0)
     trace_id = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), default=_now, nullable=False)
+
+
+class DashModelPrice(DashboardsBase):
+    """List price per million tokens for a model (global, not tenant data). Usage cost is computed from it."""
+
+    __tablename__ = "dash_model_price"
+
+    model = Column(String(128), primary_key=True)
+    input_per_mtok = Column(Numeric(12, 4), nullable=False)
+    output_per_mtok = Column(Numeric(12, 4), nullable=False)
+    cache_read_per_mtok = Column(Numeric(12, 4), nullable=True)
+    currency = Column(String(3), nullable=False, default="USD")
+    source = Column(String(500), nullable=True)
+    verified_at = Column(UTCDateTime(), nullable=True)  # NULL = unverified
+    updated_at = Column(UTCDateTime(), default=_now, nullable=False)

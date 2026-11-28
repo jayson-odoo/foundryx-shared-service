@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from ..models import DashUsage
+from typing import Optional
+
+from ..models import DashModelPrice, DashUsage
 
 
 class UsageRepository:
@@ -17,3 +19,6 @@ class UsageRepository:
         self.db.add(row)
         self.db.commit()
         return row
+
+    def price(self, model: str) -> Optional[DashModelPrice]:
+        return self.db.get(DashModelPrice, model) if model else None
