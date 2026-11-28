@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     throttle_lead_gateway_window_minutes: int = 15
     throttle_lead_gateway_key_max_requests: int = 600
     throttle_lead_gateway_key_window_minutes: int = 5
+    # Hub Connector hub read API: bad keys per IP, then requests per key.
+    throttle_hub_api_max_fails: int = 30
+    throttle_hub_api_window_minutes: int = 15
+    throttle_hub_api_key_max_requests: int = 300
+    throttle_hub_api_key_window_minutes: int = 5
     # Planner 3D gateway (lane PLANNER-3D-S1, contract 2.1 + 4): failed keys per IP,
     # and the per-key request budget (600 per 5 minutes, the lead-capture defaults).
     throttle_planner3d_gateway_max_fails: int = 20

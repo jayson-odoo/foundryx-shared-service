@@ -415,6 +415,15 @@ export const MENU_SIDEBAR: MenuConfig = [
       { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
     ],
   },
+  // Hub Connector - module menu block (same tags in all three menu copies).
+  {
+    title: 'Hub Connector',
+    icon: Network,
+    module: 'hub_connector',
+    children: [
+      { title: 'Hubs', path: '/hub-connector', permission: 'hub_connector.view' },
+    ],
+  },
   // 3D Planner (lane PLANNER-3D-S1) - gateway keys + webhook receivers, visible
   // only while `planner3d` is ACTIVE and the user holds each page's key. Same
   // tags in all three menu copies.
@@ -627,6 +636,18 @@ export const MENU_MEGA: MenuConfig = [
               { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
               { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
               { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
+            ],
+          },
+        ],
+      },
+      // Hub Connector - desktop mega copy.
+      {
+        title: 'Hub Connector',
+        module: 'hub_connector',
+        children: [
+          {
+            children: [
+              { title: 'Hubs', path: '/hub-connector', permission: 'hub_connector.view' },
             ],
           },
         ],
@@ -856,6 +877,15 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
       { title: 'Keys', path: '/lead-capture/keys', permission: 'lead_capture.keys.manage' },
       { title: 'Delivery', path: '/lead-capture/delivery', permission: 'lead_capture.view' },
       { title: 'Fields', path: '/lead-capture/fields', permission: 'lead_capture.view' },
+    ],
+  },
+  // Hub Connector - module menu block (same tags in all three menu copies).
+  {
+    title: 'Hub Connector',
+    icon: Network,
+    module: 'hub_connector',
+    children: [
+      { title: 'Hubs', path: '/hub-connector', permission: 'hub_connector.view' },
     ],
   },
   // 3D Planner (lane PLANNER-3D-S1) - gateway keys + webhook receivers, visible

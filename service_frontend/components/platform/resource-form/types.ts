@@ -105,6 +105,10 @@ export interface ResourceFormConfig<T> {
   banner?: (ctx: { setActiveTab: (id: string) => void }) => ReactNode;
   /** Tab to open on mount (defaults to the first tab). */
   initialTabId?: string;
+  /** Below 640px an inactive tab that has an icon shows the icon only (label
+   *  kept for screen readers and as the title), so a four-tab strip fits at
+   *  375px without scrolling a tab out of view. Off by default. */
+  compactTabs?: boolean;
   /** Form-surface actions for the "…" menu. */
   actions: ResourceAction<T>[];
   /** The record, wrapped for action runtime ([] when creating). */

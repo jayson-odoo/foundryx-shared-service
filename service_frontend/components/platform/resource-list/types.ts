@@ -262,6 +262,10 @@ export interface ResourceListConfig<T extends object> {
    * sorting so drag order is meaningful). Mutually exclusive with column-drag.
    */
   rowReorder?: { onReorder: (orderedIds: string[]) => void | Promise<void> };
+  /** Start the row "..." column (id `actions`) pinned to the right edge, so
+   *  row actions stay on screen when a wide grid scrolls inside its card. The
+   *  header pin menu can still unpin it. Off by default. */
+  pinRowActions?: boolean;
   /** Base form path for a row; the shell appends ctx + index for record-nav. */
   rowHref: (row: T) => string;
   /**

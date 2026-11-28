@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
 import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
@@ -703,14 +704,25 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList
           variant="line"
-          className="w-full min-w-0 max-w-full overflow-x-auto"
+          className={cn('w-full min-w-0 max-w-full overflow-x-auto', config.compactTabs && 'max-sm:gap-4')}
         >
           {config.tabs.map((tab) => {
             const Icon = tab.icon;
             return (
-              <TabsTrigger key={tab.id} value={tab.id} disabled={tab.disabled}>
+              <TabsTrigger
+                key={tab.id}
+                value={tab.id}
+                disabled={tab.disabled}
+                title={config.compactTabs ? tab.label : undefined}
+              >
                 {Icon && <Icon />}
-                {tab.label}
+                {config.compactTabs ? (
+                  <span className={Icon && tab.id !== activeTab ? 'max-sm:sr-only' : undefined}>
+                    {tab.label}
+                  </span>
+                ) : (
+                  tab.label
+                )}
               </TabsTrigger>
             );
           })}

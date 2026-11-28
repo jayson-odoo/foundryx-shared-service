@@ -362,6 +362,10 @@ function ResourceListLegacy<T extends object>({
     columns: effectiveColumns,
     getRowId: (row) => config.getRowId(row),
     pageCount: Math.max(1, Math.ceil(list.total / list.pageSize)),
+    // Opt-in (`pinRowActions`): the row "..." column starts pinned right.
+    ...(config.pinRowActions && effectiveColumns.some((c) => c.id === 'actions')
+      ? { initialState: { columnPinning: { right: ['actions'] } } }
+      : {}),
     state: {
       pagination,
       sorting,

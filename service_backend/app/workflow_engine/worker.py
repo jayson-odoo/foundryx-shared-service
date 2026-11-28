@@ -108,6 +108,12 @@ celery_app.conf.beat_schedule = {
     # Lead Capture backfill (plan 64 AC-64-28) - re-reads every routing
     # source's forms for leads the webhook missed. Module-absence safe.
     "lead-capture-backfill-due": {"task": "lead_capture.backfill_due", "schedule": 900.0},
+    # Hub Connector availability webhooks (AC-18) - re-drives PENDING rows
+    # whose retry time passed (a lost self-reschedule). Module-absence safe.
+    "hub-connector-deliveries-due": {"task": "hub_connector.deliveries_due", "schedule": 60.0},
+    # Hub Connector CRM stock feed pull (AC-17) - one run per tenant with the
+    # module on and a feed connection. Module-absence safe.
+    "hub-connector-sync-due": {"task": "hub_connector.sync_due", "schedule": 600.0},
     # Planner 3D (lane PLANNER-3D-S1, contract 5.4 + 3.2) - re-drives PENDING
     # event deliveries whose retry time passed and removes uploads no job used
     # once they expired. Module-absence safe.
@@ -454,6 +460,76 @@ def lead_capture_deliveries_due() -> dict:
         return {"redriven": run_due(db)}
     except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("lead_capture delivery tick failed")
+        db.rollback()
+        return {"redriven": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="hub_connector.deliver")
+def hub_connector_deliver(delivery_id: str) -> str:
+    """One hub delivery attempt; a retry reschedules itself (the due tick is
+    the backstop after a crash). Eager dev runs one attempt inline."""
+    import math
+    from datetime import datetime, timezone
+
+    from app.database import SessionLocal
+
+    try:
+        from modules.hub_connector.models import HcDelivery
+        from modules.hub_connector.services.delivery_service import dispatch
+    except ImportError:
+        return "skip"
+    db = SessionLocal()
+    try:
+        outcome = dispatch(db, delivery_id)
+        if outcome in ("retry", "waiting") and not settings.celery_task_always_eager:
+            row = db.query(HcDelivery).filter(HcDelivery.id == delivery_id).first()
+            if row is not None and row.next_at is not None:
+                # Round UP: the claim needs next_at <= now, an early wake skips.
+                delay = (row.next_at - datetime.now(timezone.utc)).total_seconds()
+                hub_connector_deliver.apply_async((delivery_id,), countdown=max(1, math.ceil(delay)))
+        return outcome
+    except Exception:  # noqa: BLE001
+        logger.exception("hub_connector delivery %s failed", delivery_id)
+        db.rollback()
+        return "error"
+    finally:
+        db.close()
+
+
+@celery_app.task(name="hub_connector.sync_due")
+def hub_connector_sync_due() -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.hub_connector.services.sync_service import run_due
+    except ImportError:
+        return {"tenants": 0}
+    db = SessionLocal()
+    try:
+        return {"tenants": run_due(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("hub_connector sync_due failed")
+        db.rollback()
+        return {"tenants": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="hub_connector.deliveries_due")
+def hub_connector_deliveries_due() -> dict:
+    from app.database import SessionLocal
+
+    try:
+        from modules.hub_connector.services.delivery_service import run_due
+    except ImportError:
+        return {"redriven": 0}
+    db = SessionLocal()
+    try:
+        return {"redriven": run_due(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("hub_connector deliveries_due failed")
         db.rollback()
         return {"redriven": 0}
     finally:
