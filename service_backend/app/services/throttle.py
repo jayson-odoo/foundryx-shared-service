@@ -45,6 +45,8 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_LEAD_GATEWAY,
     THROTTLE_SCOPE_LEAD_GATEWAY_KEY,
+    THROTTLE_SCOPE_DASHBOARDS_GATEWAY,
+    THROTTLE_SCOPE_DASHBOARDS_GATEWAY_KEY,
     THROTTLE_SCOPE_PLANNER3D_GATEWAY,
     THROTTLE_SCOPE_PLANNER3D_GATEWAY_KEY,
     THROTTLE_SCOPE_PORTAL,
@@ -195,6 +197,18 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_lead_gateway_key_max_requests,
             timedelta(minutes=settings.throttle_lead_gateway_key_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_DASHBOARDS_GATEWAY:
+        return (
+            settings.throttle_dashboards_gateway_max_fails,
+            timedelta(minutes=settings.throttle_dashboards_gateway_window_minutes),
+            None,
+        )
+    if scope == THROTTLE_SCOPE_DASHBOARDS_GATEWAY_KEY:
+        return (
+            settings.throttle_dashboards_gateway_key_max_requests,
+            timedelta(minutes=settings.throttle_dashboards_gateway_key_window_minutes),
             None,
         )
     if scope == THROTTLE_SCOPE_PLANNER3D_GATEWAY:
@@ -554,6 +568,22 @@ class ThrottleService:
         self.store.record_failure(THROTTLE_SCOPE_LEAD_GATEWAY_KEY, key_id)
 
     # ---- Planner 3D gateway (own buckets, lane PLANNER-3D-S1) ----
+
+    def enforce_dashboards_gateway(self, *, ip: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_DASHBOARDS_GATEWAY, ip)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_dashboards_gateway_failure(self, *, ip: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_DASHBOARDS_GATEWAY, ip)
+
+    def enforce_dashboards_gateway_key(self, *, key_id: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_DASHBOARDS_GATEWAY_KEY, key_id)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_dashboards_gateway_key_request(self, *, key_id: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_DASHBOARDS_GATEWAY_KEY, key_id)
 
     def enforce_planner3d_gateway(self, *, ip: str) -> None:
         retry = self.store.check(THROTTLE_SCOPE_PLANNER3D_GATEWAY, ip)

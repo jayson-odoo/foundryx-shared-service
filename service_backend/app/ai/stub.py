@@ -53,12 +53,21 @@ class _StubState:
 # dispatcher/beat threads share this process).
 _local = threading.local()
 
+# The script a `stub_fixtures` block opened, with the thread that opened it. A sync FastAPI
+# endpoint (or the TestClient portal) runs on ANOTHER thread than the test that scripted the
+# stub, so a thread with no script of its own reads the open block's script instead - but only
+# while that block is open, so nothing bleeds between tests.
+_open_block: Optional[tuple] = None  # (thread ident, _StubState)
+
 
 def _state() -> _StubState:
     existing = getattr(_local, "state", None)
     if existing is None:
         existing = _StubState()
         _local.state = existing
+    block = _open_block
+    if block is not None and block[0] != threading.get_ident() and not existing.queue:
+        return block[1]
     return existing
 
 
@@ -74,12 +83,17 @@ def clear_stub_responses() -> None:
 @contextmanager
 def stub_fixtures(*responses: StubResponse) -> Iterator[None]:
     """Scope a stub script to a block, restoring the previous queue after."""
-    previous = list(_state().queue)
-    _state().queue = list(responses)
+    global _open_block
+    state = _state()
+    previous = list(state.queue)
+    state.queue = list(responses)
+    outer_block = _open_block
+    _open_block = (threading.get_ident(), state)
     try:
         yield
     finally:
-        _state().queue = previous
+        _open_block = outer_block
+        state.queue = previous
 
 
 def is_dev(credentials: Optional[Dict[str, Any]], *, has_connection: bool) -> bool:

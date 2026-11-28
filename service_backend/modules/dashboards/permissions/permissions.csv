@@ -1,0 +1,2 @@
+resource,resource_label,action,action_label,description
+dashboards.keys,Dashboards keys,manage,Manage,"Issue and revoke the dashboards API keys"
