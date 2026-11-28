@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 import base64
 import binascii
 
-from app.ai.client import AiClient
+from app.ai.client import AiClient, any_llm_connection
 from app.config import settings
 from app.integrations.base import LLMError
 from app.models.ai import AiAgent
@@ -78,6 +78,16 @@ class BuilderService:
         self.db.commit()
         return agent
 
+    def _require_connection(self) -> None:
+        """409 before AiClient is ever handed an agent that would raise. An Anthropic connection is needed;
+        only a tenant with NO LLM connection at all, in development, falls through to the stub."""
+        if ConnectionRepository(self.db).llm_for_provider(self.key.tenant_id, BUILDER_PROVIDER) is not None:
+            return
+        if any_llm_connection(self.db, self.key.tenant_id) is not None:
+            raise DashError(409, "ai_not_configured", "The dashboard builder needs an Anthropic AI connection.")
+        if settings.environment != "development":
+            raise DashError(409, "ai_not_configured", "No AI connection is set up for this tenant.")
+
     # -- the turn ------------------------------------------------------------------------------------
     def turn(self, body: schemas.TurnRequest) -> Dict[str, Any]:
         problems = validate_spec(body.draft)
@@ -89,9 +99,7 @@ class BuilderService:
         images = _check_images(body.images)  # before any model call
         if body.dashboard_id is not None:
             DashboardStore(self.db, self.key).owned(body.dashboard_id, body.actor_ref)
-        if (ConnectionRepository(self.db).llm_for_provider(self.key.tenant_id, BUILDER_PROVIDER) is None
-                and settings.environment != "development"):
-            raise DashError(409, "ai_not_configured", "No AI connection is set up for this tenant.")
+        self._require_connection()
 
         agent = self._agent()
         data = {
