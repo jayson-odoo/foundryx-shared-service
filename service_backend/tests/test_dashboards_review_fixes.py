@@ -271,3 +271,47 @@ def test_anthropic_body_key_order_for_an_older_model_matches_main(monkeypatch):
                                     messages=[{"role": "user", "content": "hi"}],
                                     output_schema={"type": "object"}, temperature=0.0)
     assert list(seen["body"].keys()) == ["model", "max_tokens", "temperature", "messages", "system", "tools", "tool_choice"]
+
+
+# -- 8. save accepts a null / omitted idempotency_key (contract 3.4: not required) -----------------
+
+def _raw_save(client, key, actor, name, spec, *, dashboard_id=None, base_version=None, **extra):
+    body = {"actor_ref": actor, "dashboard_id": dashboard_id, "name": name, "spec": spec, "base_version": base_version}
+    body.update(extra)
+    return client.post(f"{BASE}/save", json=body, headers=hdr(key))
+
+
+def test_save_with_null_idempotency_key_is_200(client, dash):
+    res = _raw_save(client, dash.sorento, OWNER, "Null key", f1_spec(), idempotency_key=None)
+    assert res.status_code == 200, res.text
+
+
+def test_save_with_omitted_idempotency_key_is_200(client, dash):
+    res = _raw_save(client, dash.sorento, OWNER, "No key", f1_spec())
+    assert res.status_code == 200, res.text
+
+
+def test_two_saves_with_null_key_create_two_dashboards(client, dash):
+    a = _raw_save(client, dash.sorento, OWNER, "Same", f1_spec(), idempotency_key=None)
+    b = _raw_save(client, dash.sorento, OWNER, "Same", f1_spec(), idempotency_key=None)
+    assert a.status_code == 200 and b.status_code == 200, (a.text, b.text)
+    assert a.json()["id"] != b.json()["id"]
+
+
+def test_recipient_save_with_null_key_is_403_not_owner(client, dash):
+    from tests.dashboards_helpers import VIEWER, create_dash, share
+
+    d = create_dash(client, dash.sorento)
+    share(client, dash.sorento, OWNER, d["id"], [VIEWER])
+    res = _raw_save(client, dash.sorento, VIEWER, "Mine now", d["spec"], dashboard_id=d["id"],
+                    base_version=d["version"], idempotency_key=None)
+    assert_flat_error(res, 403, "not_owner")
+
+
+def test_f17_pie_tile_save_with_null_key_is_200(client, dash):
+    tile = {"id": "t1", "title": "Pie", "show": "pie",
+            "source": {"kind": "query", "spec": {"entity": "billing_document", "group_by": ["customer_name"],
+                                                 "aggregates": [{"fn": "count"}]}}}
+    spec = {"version": 1, "title": "Wide", "period": "this_year", "tiles": [tile]}
+    res = _raw_save(client, dash.sorento, OWNER, "Pie", spec, idempotency_key=None)
+    assert res.status_code == 200, res.text
