@@ -1,6 +1,8 @@
-# Contract: shared service dashboards (builder + store), v1
+# Contract: shared service dashboards (builder + store), v2
 
-Status: v1, written by lane AI-DASHBOARD-BUILDER-S1-CRM (28 Nov 2026). Committed byte for byte in BOTH repos
+Status: v2, written by lane AI-DASHBOARD-BUILDER-S1-CRM (28 Nov 2026). v2 = owner 28 Nov ~13:45: up to 5 images per
+builder message, catalogue lookup on demand (no full dump per turn), the spec shape ready for every chart kind,
+formula, layout, drill-down and two-source chart (slice 1 still draws number / line / bar / table only). Committed byte for byte in BOTH repos
 (jayson-odoo/sorento-crm and jayson-odoo/foundryx-shared-service) at `documentation/plans/ai-builder/SS-dashboards-contract.md`.
 A change goes through a crew-ask to both lanes and changes the sha256 posted on both PRs; never one-sided.
 Plan: `PLAN-ai-dashboard-builder.md` sections 3, 4.3-4.5, 6. UAC: AC-1..AC-16b.
@@ -28,9 +30,9 @@ Words: the SS and CRM code say spec / tile / catalogue; no screen ever shows tho
   already authenticated that user and checked its own slugs (`dashboards.view` / `dashboards.build`); SS checks
   ownership and sharing against `actor_ref`. `actor_ref` and `owner_ref` are never shown on a screen.
 
-## 2. Spec schema v1 (JSON Schema, draft 2020-12)
+## 2. Spec schema (spec `version` 1; JSON Schema, draft 2020-12)
 
-Caps: at most 12 tiles per dashboard, spec at most 32768 bytes (UTF-8, compact JSON), `title` 1-80 chars after trim,
+Caps: at most 24 tiles per dashboard, spec at most 65536 bytes (UTF-8, compact JSON), `title` 1-80 chars after trim,
 tile `title` 1-80 chars, tile `id` matches `^t[0-9]{1,3}$` and is unique within the spec. Every object refuses extra keys.
 
 ```json
@@ -44,7 +46,7 @@ tile `title` 1-80 chars, tile `id` matches `^t[0-9]{1,3}$` and is unique within 
     "version": {"const": 1},
     "title": {"type": "string", "minLength": 1, "maxLength": 80},
     "period": {"$ref": "#/$defs/period"},
-    "tiles": {"type": "array", "maxItems": 12, "items": {"$ref": "#/$defs/tile"}}
+    "tiles": {"type": "array", "maxItems": 24, "items": {"$ref": "#/$defs/tile"}}
   },
   "$defs": {
     "period": {
@@ -58,12 +60,60 @@ tile `title` 1-80 chars, tile `id` matches `^t[0-9]{1,3}$` and is unique within 
     "tile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "title", "show", "source"],
+      "required": ["id", "title", "show"],
+      "oneOf": [{"required": ["source"]}, {"required": ["series"]}],
       "properties": {
         "id": {"type": "string", "pattern": "^t[0-9]{1,3}$"},
         "title": {"type": "string", "minLength": 1, "maxLength": 80},
-        "show": {"enum": ["number", "line", "bar", "table", "pivot", "widget"]},
-        "source": {"$ref": "#/$defs/source"}
+        "show": {"enum": ["number", "kpi_target", "gauge", "line", "area", "bar", "stacked_bar", "combo", "pie",
+                          "scatter", "heatmap", "table", "pivot", "map", "widget"]},
+        "source": {"$ref": "#/$defs/source"},
+        "series": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"$ref": "#/$defs/series_item"}},
+        "calc": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/calc"}},
+        "target": {"$ref": "#/$defs/target"},
+        "display": {"$ref": "#/$defs/display"},
+        "size": {"type": "object", "additionalProperties": false, "required": ["w", "h"],
+                 "properties": {"w": {"type": "integer", "minimum": 1, "maximum": 4},
+                                "h": {"type": "integer", "minimum": 1, "maximum": 4}}},
+        "position": {"type": "object", "additionalProperties": false, "required": ["x", "y"],
+                     "properties": {"x": {"type": "integer", "minimum": 0, "maximum": 3},
+                                    "y": {"type": "integer", "minimum": 0, "maximum": 99}}},
+        "drill": {"enum": ["list", "none"]}
+      }
+    },
+    "series_item": {
+      "type": "object", "additionalProperties": false, "required": ["key", "label", "source"],
+      "properties": {
+        "key": {"type": "string", "pattern": "^s[0-9]$"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 60},
+        "source": {"$ref": "#/$defs/source"},
+        "as": {"enum": ["bar", "line", "area"]}
+      }
+    },
+    "calc": {
+      "type": "object", "additionalProperties": false, "required": ["key", "op", "args"],
+      "properties": {
+        "key": {"type": "string", "pattern": "^c[0-9]$"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 60},
+        "op": {"enum": ["difference", "ratio", "percent_of_total", "percent_change", "running_total", "average_of",
+                        "sum_of", "percent_of_target"]},
+        "args": {"type": "array", "minItems": 1, "maxItems": 2,
+                 "items": {"type": "string", "pattern": "^([a-z][a-z0-9_]{0,127}|s[0-9]\\.[a-z][a-z0-9_]{0,127}|target)$"}}
+      }
+    },
+    "target": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["value"], "properties": {"value": {"type": "number"}}},
+        {"type": "object", "additionalProperties": false, "required": ["source"], "properties": {"source": {"$ref": "#/$defs/source"}}}
+      ]
+    },
+    "display": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "legend": {"type": "boolean"}, "values": {"type": "boolean"}, "stacked": {"type": "boolean"},
+        "axis_min": {"type": "number"}, "axis_max": {"type": "number"},
+        "top_n": {"type": "integer", "minimum": 1, "maximum": 50},
+        "other_bucket": {"type": "boolean"}
       }
     },
     "source": {
@@ -129,8 +179,20 @@ tile `title` 1-80 chars, tile `id` matches `^t[0-9]{1,3}$` and is unique within 
 
 Rules on top of the schema (both sides check them; SS on save, builder turn and get; CRM on every load and run):
 
-- Slice 1 accepts `source.kind = "query"` only and `show` in `number | line | bar | table` only. `report`, `widget`,
-  `pivot` are valid schema words refused with the plain reason "This chart type is not available yet."
+- The schema is the full vocabulary (owner 28 Nov ~13:45: "as much as we can imagine", always checked options, never
+  code). Slice 1 DRAWS: `source.kind = "query"`, `show` in `number | line | bar | table`, a single `source`; `size`
+  and `display` are accepted and may be ignored by the renderer. Every other kind / show / `series` / `calc` /
+  `target` / `position` / `drill` is valid schema that slice 1 answers per chart with the plain reason "This chart
+  type is not available yet." (the CRM shows it in the chart frame; SS never refuses to SAVE it). The builder model
+  is told in its prompt which subset the product draws today (`catalogue.draws`, section 4) and offers only those.
+- Meaning of the later options (fixed now so later slices add renderers, not schema): `series` = up to 4 sources on
+  one chart (combo, two-source over registered relations, each its own `run_query` as the viewer); `as` = how a
+  series draws on a combo; `calc` = a computed column over the chart's aggregates or series (`args` name an
+  aggregate alias such as `sum_sales_amount`, a series column `s1.sum_sales_amount`, or `target`); `target` = a fixed
+  number or a source for KPI-with-target and gauge; `map` needs a group field the catalogue marks `"type": "location"`;
+  `heatmap` needs two group fields; `pie` one group field and one aggregate; `scatter` two number aggregates over
+  one group field; `size` = grid cells (4 columns); `position` = free layout cell (absent = dashboard order);
+  `drill` = clicking a point opens the matching list screen filtered the same way.
 - No string anywhere in the spec may contain `<`, `>`, `://`, `;`, `--`, `/*` or a control character (SQL, URL and
   HTML refused, AC-7). Reason: "Only names and values can be used in a chart, not code or links."
 - `entity`, every field path and every group / aggregate field must be in the catalogue given with the turn
@@ -155,11 +217,19 @@ Request:
   "dashboard_id": "d_01J0000000000000000000000",
   "draft": {"version": 1, "title": "New dashboard", "period": "this_year", "tiles": []},
   "message": "monthly invoiced sales this year and top 10 customers",
-  "catalogue": {"version": 1, "entities": [ "... section 4 ..." ]},
+  "images": [{"name": "mockup.png", "media_type": "image/png", "data_base64": "<base64>"}],
+  "turn_id": "9b1c7e2a-0000-4000-8000-0000000000a1",
+  "catalogue": {"version": 2, "index": [ "... section 4 ..." ], "entities": [ "... section 4 ..." ], "draws": ["number", "line", "bar", "table"]},
   "refusals": [{"tile_id": "t2", "code": "no_access", "reason": "Billing documents are outside this user's access."}],
   "history": [{"role": "user", "text": "..."}, {"role": "assistant", "text": "..."}]
 }
 ```
+- `images`: 0-5 per message (owner: "5 screenshot ... dont limit"); `media_type` `image/png | image/jpeg |
+  image/webp`; each at most 5 MB decoded, all together at most 15 MB. Screenshots or mockups the user wants the
+  dashboard to look like or read numbers from; the model reads them, SS never stores them (logged as a count only).
+  Over the caps = 422 `images_invalid` with a plain reason. The CRM sends them through the existing assistant attach
+  button of the composer.
+- `turn_id`: one id per user message, the same on every lookup round of that message (below).
 - `dashboard_id` is null for an unsaved draft. `history` is at most the last 10 turns, each text at most 2000 chars;
   `message` at most 2000 chars. `refusals` carries the last dry run's refused charts (codes `no_access`,
   `restricted`, `module_disabled`, `unknown_entity`, `unknown_field`, `invalid`, `timeout`, `no_match`) so the model
@@ -177,6 +247,14 @@ Response 200:
   "usage": {"tokens_in": 2140, "tokens_out": 310, "model": "<provider model id>"}
 }
 ```
+- Catalogue lookup (no full dump per turn): the CRM sends `catalogue.index` (every entity the viewer may read: key,
+  label, module, one line) and in `catalogue.entities` the full entry only for the entities the current draft uses
+  and those SS asked for. When the model needs another entity's fields, SS answers 200 with
+  `{"need_entities": ["sales_order"], "draft": <unchanged>, "changed_tile_ids": [], "reply": null, "question": null,
+  "usage": {...}}`; the CRM repeats the SAME request (same `turn_id`, message, images) with those entries added. At
+  most 2 lookup rounds per `turn_id`; a third `need_entities` is answered by the CRM with 502 `ai_failed`. An entity
+  in `need_entities` that is not in `index` is dropped by the CRM (the viewer cannot read it). Each round's tokens
+  are logged under the same `turn_id`.
 - `question` is null or ONE clarifying question: `{"text": "Invoiced or delivered sales?", "options": ["Invoiced sales", "Delivered orders"]}`
   (2-5 options, each at most 60 chars, real names only). When `question` is set, `draft` is unchanged and
   `changed_tile_ids` is empty (AC-4: nothing is guessed).
@@ -185,7 +263,7 @@ Response 200:
 - SS logs the turn (tenant, product, actor_ref, tokens in/out, model, feature `dashboard_builder`) BEFORE answering (AC-16).
 - Errors: 401 `invalid_api_key`, 403 `service_not_enabled` / `tenant_mismatch` / `product_mismatch`, 404 `not_found`
   (dashboard_id given and not the actor's own), 403 `not_owner` (dashboard shared with the actor, not owned),
-  422 `spec_invalid` (the incoming draft or catalogue is malformed), 409 `ai_not_configured` (no LLM configured for
+  422 `spec_invalid` (the incoming draft or catalogue is malformed), 422 `images_invalid`, 409 `ai_not_configured` (no LLM configured for
   the tenant), 502 `ai_failed` (the LLM call failed or produced a draft that failed validation twice; nothing saved).
 
 ### 3.2 `GET /api/v1/dashboards?actor_ref=<ref>&scope=all|mine|shared&q=<text>&sort=name|updated_at|owner_ref&dir=asc|desc&page=1&limit=25`
@@ -281,7 +359,7 @@ Body: `{"error": "<code>", "message": "<plain sentence>"}` (+ `problems` for `sp
 | 422 | `spec_invalid` | schema or rule failure, with `problems` |
 | 502 | `ai_failed` | the LLM call failed or its draft failed validation twice |
 
-## 4. The catalogue (CRM -> SS on every builder turn)
+## 4. The catalogue (CRM -> SS on every builder turn: index always, full entries on demand)
 
 Built by the CRM from `assistant_registry` (never hand-copied), already filtered to what the viewer may read: the
 entity's view slug or its "only mine" slug with an own rule, module switch on, field slugs held. A restricted field
@@ -289,7 +367,12 @@ is left OUT, not flagged.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "draws": ["number", "line", "bar", "table"],
+  "index": [
+    {"entity": "billing_document", "label": "Billing documents (invoices, cash sales, debit and credit notes)", "module": "finance"},
+    {"entity": "retail_quotation", "label": "Quotations", "module": "sales"}
+  ],
   "entities": [
     {"entity": "billing_document", "label": "Billing documents (invoices, cash sales, debit and credit notes)",
      "only_own_rows": false, "totals_allowed": true, "period_field": "doc_date",
@@ -307,9 +390,12 @@ is left OUT, not flagged.
   "limits": {"tiles": 12, "rows": 50, "groups": 200}
 }
 ```
+- `draws` = the `show` values this product renders today; `index` = every entity the viewer may read (always sent,
+  small); `entities` = full entries for the draft's entities plus those SS asked for (section 3.1 lookup).
+- A field of `"type": "location"` (a place the map can draw) is marked so; none exist in slice 1.
 - `period_field` is the date field the dashboard period filters on (the CRM keeps one per entity), or null.
 - `totals_allowed` false (no `aggregate_permission`) = `show` is `["table"]` only.
-- Size: at most 120 kB compact JSON; the CRM drops `note`s first, then lookup-only relations, to fit.
+- Size: `index` at most 20 kB, each full entry at most 20 kB; the CRM drops `note`s first, then lookup-only relations, to fit.
 
 ## 5. Operations the model may emit (SS internal, echoed in `operations`)
 
@@ -321,6 +407,7 @@ is left OUT, not flagged.
 | `move_tile` | `{"tile_id": "t2", "to": 0}` | move to index |
 | `set_title` | `{"title": "..."}` | dashboard title |
 | `set_period` | `{"period": <period>}` | dashboard period |
+| `set_layout` | `{"tile_id": "t1", "size": {...}, "position": {...}}` | size / free position of a chart |
 | `ask` | `{"text": "...", "options": ["...", "..."]}` | becomes `question`; no other op in the same turn |
 
 SS validates the resulting draft against section 2 AND the catalogue it was given. A tile naming an entity, field
@@ -365,6 +452,10 @@ tenant `t-default`, product `ecohub`; `ss-test-key-off` = product with dashboard
 | F11 | save | stale `base_version` | 409 `version_conflict` |
 | F12 | builder/turn | tenant with no LLM | 409 `ai_not_configured` |
 | F13 | save twice | same `idempotency_key` | same response, one version row |
+| F14 | builder/turn | message "add sales orders by month", `catalogue.entities` without `sales_order` (in `index`) | 200 `need_entities: ["sales_order"]`, draft unchanged; repeated with it: 200, one tile added |
+| F15 | builder/turn | 6 images, or one over 5 MB, or `image/gif` | 422 `images_invalid` |
+| F16 | builder/turn | message "make it look like this" + 1 image | 200, the stub ignores the image bytes and returns F1's tiles (image count logged) |
+| F17 | save | a tile with `show: "pie"` / `series` / `calc` | 200 (valid schema; the CRM draws it as "This chart type is not available yet.") |
 
 F1 tiles:
 ```json
