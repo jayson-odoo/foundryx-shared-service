@@ -33,7 +33,7 @@ from ..gateway_auth import DashKey
 from ..models import DashUsage
 from ..repositories.connection_repository import ConnectionRepository
 from ..repositories.usage_repository import UsageRepository
-from ..spec import validate_against_catalogue, validate_catalogue, validate_spec
+from ..spec import validate_against_catalogue, validate_catalogue, validate_refusals, validate_spec
 from . import ops as ops_mod
 from .builder_prompt import OUTPUT_SCHEMA, SYSTEM_PROMPT
 from .errors import DashError, spec_invalid
@@ -52,6 +52,7 @@ CATALOGUE_CHECKS_TOUCHED_TILES_ONLY = True
 MAX_IMAGES = 5
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_IMAGES_TOTAL_BYTES = 15 * 1024 * 1024
+MAX_IMAGE_BASE64_CHARS = -(-MAX_IMAGE_BYTES * 4 // 3) + 4  # ceil(5 MB * 4/3) + padding
 IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp")
 
 class BuilderService:
@@ -71,7 +72,8 @@ class BuilderService:
                 model=BUILDER_MODEL, temperature=0.0, is_enabled=True,
             ))
         else:
-            if connection is not None:
+            if connection is not None and not ConnectionRepository(self.db).usable(
+                    self.key.tenant_id, agent.connection_id, BUILDER_PROVIDER):
                 agent.connection_id = connection.id
             if not agent.model:
                 agent.model = BUILDER_MODEL
@@ -97,6 +99,9 @@ class BuilderService:
         if problems:
             raise spec_invalid(problems, "The list of available data is not valid.")
         images = _check_images(body.images)  # before any model call
+        problems = validate_refusals(body.refusals)
+        if problems:
+            raise spec_invalid(problems, "The refused charts sent with the request are not valid.")
         if body.dashboard_id is not None:
             DashboardStore(self.db, self.key).owned(body.dashboard_id, body.actor_ref)
         self._require_connection()
@@ -144,6 +149,7 @@ class BuilderService:
     def _attempt(self, agent: AiAgent, system: str, messages: List[Dict[str, Any]], body: schemas.TurnRequest,
                  meter: "_Meter") -> Tuple[ops_mod.Applied, str]:
         started = time.monotonic()
+        meter.calls += 1  # counted when attempted, so a failed call still shows in the usage row
         result, trace = self._call_model(agent, system, messages)
         meter.add(result, trace, int((time.monotonic() - started) * 1000))
         out = result.structured if isinstance(result.structured, dict) else {}
@@ -224,6 +230,8 @@ def _check_images(images: List[Any]) -> List[Dict[str, str]]:
             raise _images_invalid("One of the images could not be read.")
         if item["media_type"] not in IMAGE_TYPES:
             raise _images_invalid("Images must be PNG, JPEG or WebP.")
+        if len(item["data_base64"]) > MAX_IMAGE_BASE64_CHARS:  # refuse before decoding anything that big
+            raise _images_invalid("Each image must be 5 MB or smaller.")
         try:
             size = len(base64.b64decode(item["data_base64"], validate=True))
         except (binascii.Error, ValueError):
@@ -251,7 +259,6 @@ class _Meter:
         self.last_ops: List[Any] = []
 
     def add(self, result, trace, latency_ms: int) -> None:
-        self.calls += 1
         self.tokens_in += int(result.tokens_in or 0)
         self.tokens_out += int(result.tokens_out or 0)
         self.latency_ms += latency_ms

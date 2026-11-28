@@ -57,10 +57,21 @@ def _enabled_tenant(db: Session, tenant_id: str) -> Optional[Tenant]:
     return tenant
 
 
+def _json_body(request: Request) -> Any:
+    """The JSON body, parsed only here (after the key resolved) from the bytes ``DashRoute`` already read."""
+    if not hasattr(request.state, "dash_json"):
+        raw = getattr(request.state, "dash_raw", b"")
+        try:
+            request.state.dash_json = json.loads(raw or b"null")
+        except ValueError:
+            request.state.dash_json = None
+    return request.state.dash_json
+
+
 def _echoed(request: Request, name: str) -> Optional[str]:
     """A ``tenant`` / ``product`` the caller echoed in the query or JSON body (never trusted, only compared)."""
     values: List[Any] = [request.query_params.get(name)]
-    body = getattr(request.state, "dash_body", None)
+    body = _json_body(request)
     if isinstance(body, dict):
         values.append(body.get(name))
     for v in values:
@@ -156,10 +167,7 @@ class DashRoute(APIRoute):
 
         async def wrapped(request: Request) -> Response:
             if request.method in ("POST", "PUT", "PATCH"):
-                try:
-                    request.state.dash_body = json.loads((await request.body()) or b"null")
-                except ValueError:
-                    request.state.dash_body = None
+                request.state.dash_raw = await request.body()  # bytes only; the body cap bounds it, parsing waits for the key
             try:
                 response = await handler(request)
             except DashError as exc:

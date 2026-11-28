@@ -37,6 +37,7 @@ class DashboardRepository:
     def delete(self, row: DashDashboard) -> None:
         self.db.query(DashShare).filter(DashShare.dashboard_id == row.id, self._scoped(DashShare)).delete()
         self.db.query(DashVersion).filter(DashVersion.dashboard_id == row.id, self._scoped(DashVersion)).delete()
+        self.db.query(DashIdempotency).filter(DashIdempotency.dashboard_id == row.id, self._scoped(DashIdempotency)).delete()
         self.db.delete(row)
         self.db.flush()
 

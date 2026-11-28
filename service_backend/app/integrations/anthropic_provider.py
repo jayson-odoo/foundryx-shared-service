@@ -87,32 +87,26 @@ class AnthropicProvider(LLMProviderBase):
         output_schema: Optional[Dict[str, Any]] = None,
         temperature: float = 0,
     ) -> LLMResult:
-        body: Dict[str, Any] = {
-            "model": model,
-            "max_tokens": DEFAULT_MAX_TOKENS,
-            "messages": [
-                {"role": m["role"], "content": m["content"]} for m in messages
-            ],
-        }
         auto = _uses_auto_tool_choice(model)
+        body: Dict[str, Any] = {"model": model, "max_tokens": DEFAULT_MAX_TOKENS}
         if not auto:
             body["temperature"] = temperature
+        body["messages"] = [{"role": m["role"], "content": m["content"]} for m in messages]
         if output_schema is not None and auto:
             body["system"] = f"{system}\n\n{_AUTO_TOOL_SYSTEM}" if system else _AUTO_TOOL_SYSTEM
         elif system:
             body["system"] = system
         if output_schema is not None:
-            # Forced tool use - Anthropic's structured-output mechanism.
-            tool: Dict[str, Any] = {
-                "name": _EMIT_TOOL,
-                "description": "Return the result in the required shape.",
-                "input_schema": output_schema,
-            }
-            if auto:
-                body["tool_choice"] = {"type": "auto"}
-            else:
-                body["tool_choice"] = {"type": "tool", "name": _EMIT_TOOL}
-            body["tools"] = [tool]
+            # Structured output = tool use: the older models are FORCED onto the emit tool,
+            # the newer ones (see _AUTO_TOOL_MODELS) get `auto` plus the system line above.
+            body["tools"] = [
+                {
+                    "name": _EMIT_TOOL,
+                    "description": "Return the result in the required shape.",
+                    "input_schema": output_schema,
+                }
+            ]
+            body["tool_choice"] = {"type": "auto"} if auto else {"type": "tool", "name": _EMIT_TOOL}
 
         payload = _http_json(
             "POST",

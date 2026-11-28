@@ -127,7 +127,7 @@ class DashboardStore:
             self.repo.add_version(DashVersion(dashboard_id=row.id, version=row.version, action=action,
                                               actor_ref=actor, changes_json=changes))
         out = self._out(row, actor)
-        self.repo.add_idempotent(DashIdempotency(key_id=self.key.key_id, actor_ref=actor,
+        self.repo.add_idempotent(DashIdempotency(key_id=self.key.key_id, dashboard_id=row.id, actor_ref=actor,
                                                  idem_ref=body.idempotency_key, response_json=out))
         self.db.commit()
         return out

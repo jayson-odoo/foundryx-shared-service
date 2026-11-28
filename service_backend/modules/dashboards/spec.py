@@ -27,6 +27,11 @@ MAX_TILES = 24
 MAX_SPEC_BYTES = 65536
 MAX_INDEX_BYTES = 20 * 1024
 MAX_ENTITY_BYTES = 20 * 1024
+MAX_CATALOGUE_BYTES = 800 * 1024
+MAX_ENTITIES = 40
+MAX_REFUSAL_REASON = 300
+MAX_CANDIDATES = 5
+MAX_CANDIDATE_CHARS = 80
 
 FORBIDDEN = "Only names and values can be used in a chart, not code or links."
 FORBIDDEN_SEQUENCES = ("<", ">", "://", ";", "--", "/*")
@@ -411,6 +416,10 @@ def validate_catalogue(catalogue: Any) -> List[Problem]:
         except (TypeError, ValueError):
             return True
 
+    if too_big(catalogue, MAX_CATALOGUE_BYTES):
+        return [{"path": "catalogue", "reason": "The list of available data is too large."}]
+    if isinstance(catalogue.get("entities"), list) and len(catalogue["entities"]) > MAX_ENTITIES:
+        return [{"path": "catalogue.entities", "reason": f"At most {MAX_ENTITIES} kinds of data can be sent in full."}]
     if too_big(catalogue.get("index", []), MAX_INDEX_BYTES):
         return [{"path": "catalogue.index", "reason": "The list of available data is too large."}]
     if isinstance(catalogue.get("entities"), list) and any(too_big(e, MAX_ENTITY_BYTES) for e in catalogue["entities"]):
@@ -436,6 +445,25 @@ def validate_catalogue(catalogue: Any) -> List[Problem]:
             out.append({"path": f"{base}.relations", "reason": "The related data is not written in the expected form."})
         if "show" in ent and not (isinstance(ent["show"], list) and all(isinstance(s, str) for s in ent["show"])):
             out.append({"path": f"{base}.show", "reason": "The chart types are not written in the expected form."})
+    return out
+
+
+def validate_refusals(refusals: Any) -> List[Problem]:
+    """The last dry run's refused charts: bounded text, so a caller cannot smuggle a large payload in."""
+    out: List[Problem] = []
+    for i, r in enumerate(refusals if isinstance(refusals, list) else []):
+        if not isinstance(r, dict):
+            out.append({"path": f"refusals[{i}]", "reason": "A refused chart must be an object."})
+            continue
+        reason = r.get("reason")
+        if isinstance(reason, str) and len(reason) > MAX_REFUSAL_REASON:
+            out.append({"path": f"refusals[{i}].reason", "reason": f"A reason can be at most {MAX_REFUSAL_REASON} characters."})
+        cands = r.get("candidates")
+        if cands is not None:
+            if not isinstance(cands, list) or len(cands) > MAX_CANDIDATES:
+                out.append({"path": f"refusals[{i}].candidates", "reason": f"At most {MAX_CANDIDATES} names can be offered."})
+            elif any(not isinstance(c, str) or len(c) > MAX_CANDIDATE_CHARS for c in cands):
+                out.append({"path": f"refusals[{i}].candidates", "reason": f"Each name can be at most {MAX_CANDIDATE_CHARS} characters."})
     return out
 
 

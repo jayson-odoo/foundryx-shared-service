@@ -35,3 +35,21 @@ class ConnectionRepository:
         if own is not None or tenant_id == PLATFORM_TENANT_ID:
             return own
         return self._first(PLATFORM_TENANT_ID, provider)
+
+    def usable(self, tenant_id: str, connection_id: Optional[str], provider: str) -> bool:
+        """Is this stored connection id an active, non-ERROR ``provider`` LLM connection of the tenant or the platform?"""
+        if not connection_id:
+            return False
+        return (
+            self.db.query(Connection.id)
+            .filter(
+                Connection.id == connection_id,
+                Connection.tenant_id.in_([tenant_id, PLATFORM_TENANT_ID]),
+                Connection.type == LLM_TYPE,
+                Connection.provider == provider,
+                Connection.is_active.is_(True),
+                Connection.status != CONNECTION_STATUS_ERROR,
+            )
+            .first()
+            is not None
+        )

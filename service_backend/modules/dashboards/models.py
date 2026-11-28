@@ -130,6 +130,7 @@ class DashIdempotency(DashboardsBase):
     tenant_id = Column(String, nullable=False)
     product = Column(String(64), nullable=False)
     key_id = Column(String, nullable=False)
+    dashboard_id = Column(String, nullable=True, index=True)  # so a delete can clear the saved response
     actor_ref = Column(String(64), nullable=False)
     idem_ref = Column(String(128), nullable=False)
     response_json = Column(_JSON, nullable=False)
