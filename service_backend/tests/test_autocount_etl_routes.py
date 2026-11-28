@@ -437,6 +437,7 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         "lastRunAt": None,
         "lastRunError": None,
         "lastRunErrorCode": None,
+        "pageRunHint": None,  # AUTOCOUNT-LOAD-STRATEGY s6: no run yet
         # Schedule (plan 22 S3) - NULL until the task is activated.
         "nextIncrementalAt": None,
         "nextReconcileAt": None,

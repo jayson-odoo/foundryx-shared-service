@@ -605,6 +605,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         lastRunAt=view.last_run_at,
         lastRunError=view.last_run_error,
         lastRunErrorCode=view.last_run_error_code,
+        pageRunHint=view.page_run_hint,
         nextIncrementalAt=view.next_incremental_at,
         nextReconcileAt=view.next_reconcile_at,
         initialLoad=view.initial_load,
@@ -760,6 +761,10 @@ def update_etl_task(
         # stored" (AC-10-80).
         if "combine" not in body.sourceConfig.model_fields_set:
             raw.pop("combine", None)
+        # AUTOCOUNT-LOAD-STRATEGY s6 - the same omitted-vs-null rule for the
+        # task's own pause: omitted keeps the stored value, null clears it.
+        if "pagePauseSeconds" not in body.sourceConfig.model_fields_set:
+            raw.pop("pagePauseSeconds", None)
         raw.update(alert_fields)
         view = EtlService(db).update_task(
             current_user.tenant_id,

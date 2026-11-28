@@ -25,6 +25,7 @@ from app.integrations.masking import mask_payload
 from app.services.url_guard import UrlGuardError
 
 from ..client import CallRecord
+from . import server_gate
 from ..http_client import (
     OpenProbeError,
     assert_autocount_base_url_deliverable,
@@ -168,10 +169,36 @@ class HttpTransportError(Exception):
     two retries with a longer backoff and never halves.
     """
 
-    def __init__(self, message: str, *, is_timeout: bool = False):
+    def __init__(
+        self, message: str, *, is_timeout: bool = False, stopped_until: Any = None, busy: bool = False,
+    ):
         super().__init__(message)
+        # The request got no turn on its server in time (``server_gate``):
+        # nothing was sent; never retried.
+        self.busy = busy
         self.message = message
         self.is_timeout = is_timeout
+        # AUTOCOUNT-LOAD-STRATEGY - set when the request was never sent
+        # because the server's safety stop is on (``server_gate``): a page
+        # walk must fail once, plainly, and never run its retry ladder.
+        self.stopped_until = stopped_until
+
+
+def stopped_message(until: Any) -> str:
+    """The plain reason a scheduled call was not sent (shown on the run)."""
+    from datetime import timezone as _tz
+    from zoneinfo import ZoneInfo
+
+    try:
+        local = until.astimezone(ZoneInfo("Asia/Kuala_Lumpur"))
+        # dd/mm/yyyy, h:mm am/pm (owner standing rule).
+        at = f"{local:%d/%m/%Y}, {local.hour % 12 or 12}:{local:%M} {'am' if local.hour < 12 else 'pm'}"
+    except Exception:  # noqa: BLE001 - the time is decoration only
+        at = until.astimezone(_tz.utc).isoformat() if until else "later"
+    return (
+        "AutoCount is not answering well, so the sync to this server is paused "
+        f"until {at}. It resumes by itself."
+    )
 
 
 class HttpApiClient:
@@ -186,8 +213,22 @@ class HttpApiClient:
         transport: Optional[httpx.Client] = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         auth_headers: Optional[Dict[str, str]] = None,
+        server_policy: Optional[server_gate.ServerPolicy] = None,
+        priority: str = server_gate.PRIORITY_SYNC,
+        tenant_id: Optional[str] = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
+        # AUTOCOUNT-LOAD-STRATEGY - one request at a time per server + the
+        # safety stop (``server_gate``); a caller a person waits on sets
+        # ``priority = PRIORITY_USER``.
+        self.server_policy = server_policy or server_gate.DEFAULT_POLICY
+        self.priority = priority
+        # The tenant the safety stop and "a person is waiting" marker are kept
+        # for (``server_gate._keys``); the turn itself is one per server.
+        self.tenant_id = str(tenant_id or "")
+        # Seconds the last request took on the wire (the wait for a turn
+        # excluded) - read by the walk's ``gentle.AdaptivePause``.
+        self.last_latency_seconds: Optional[float] = None
         self._auth_headers: Dict[str, str] = dict(auth_headers or {})
         self._secrets: Tuple[str, ...] = auth_secrets_of(auth_headers or {})
         self.timeout_seconds = timeout_seconds
@@ -267,12 +308,37 @@ class HttpApiClient:
         # locks on ac_company / ac_entity_config) across a vendor request.
         release_read_transactions()
         try:
-            response = self._client.get(
-                url,
-                params=params,
-                headers={"Accept": "application/json", "User-Agent": USER_AGENT, **self._auth_headers},
-                timeout=self.timeout_seconds,
-            )
+            with server_gate.turn(
+                self.base_url, priority=self.priority, hold_seconds=self.timeout_seconds,
+                policy=self.server_policy, tenant_id=self.tenant_id,
+            ):
+                started = time.monotonic()
+                try:
+                    response = self._client.get(
+                        url,
+                        params=params,
+                        headers={"Accept": "application/json", "User-Agent": USER_AGENT, **self._auth_headers},
+                        timeout=self.timeout_seconds,
+                    )
+                except (httpx.TimeoutException, httpx.TransportError):
+                    self.last_latency_seconds = time.monotonic() - started
+                    server_gate.record_result(
+                        self.base_url, ok=False, policy=self.server_policy, tenant_id=self.tenant_id,
+                    )
+                    raise
+                self.last_latency_seconds = time.monotonic() - started
+                server_gate.record_result(
+                    self.base_url, ok=response.status_code < 500, policy=self.server_policy,
+                    tenant_id=self.tenant_id,
+                )
+        except server_gate.ServerStopped as exc:
+            message = stopped_message(exc.until)
+            self._record_call(path, params, None, started, error=f"not sent: {message}")
+            raise HttpTransportError(message, stopped_until=exc.until) from exc
+        except server_gate.ServerBusy as exc:
+            message = f"AutoCount at {self.base_url} stayed busy; this request waited too long for its turn."
+            self._record_call(path, params, None, started, error=f"not sent: {message}")
+            raise HttpTransportError(message, is_timeout=False, busy=True) from exc
         except UrlGuardError as exc:
             self._record_call(path, params, None, started, error=self._masked(f"blocked: {exc}"))
             raise HttpTransportError(str(exc), is_timeout=False) from exc

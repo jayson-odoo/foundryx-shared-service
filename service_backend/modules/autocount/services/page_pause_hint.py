@@ -55,3 +55,19 @@ def page_run_hint(db: Session, connection: Any) -> Optional[Dict[str, Any]]:
                 "maxRunSeconds": settings.background_job_soft_time_limit_seconds,
             }
     return best
+
+
+def task_page_run_hint(db: Session, task: Any) -> Optional[Dict[str, Any]]:
+    """AUTOCOUNT-LOAD-STRATEGY s6 - the same hint for ONE task, from its own
+    last successful run (the pause it used is recorded on the run)."""
+    run = SyncRunRepository(db).last_successful(task.tenant_id, task.company_id, task.entity_type)
+    if run is None or not run.source_pages:
+        return None
+    last_pause = run.page_pause_ms / 1000.0 if run.page_pause_ms is not None else 0.0
+    return {
+        "kind": HINT_KIND_PAGE_RUN,
+        "pages": run.source_pages,
+        "lastRunSeconds": round((run.duration_ms or 0) / 1000.0, 1),
+        "lastPauseSeconds": last_pause,
+        "maxRunSeconds": settings.background_job_soft_time_limit_seconds,
+    }

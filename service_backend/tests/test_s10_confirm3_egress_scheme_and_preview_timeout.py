@@ -307,7 +307,7 @@ def test_run_http_preview_builds_its_client_with_the_given_timeout(monkeypatch):
     captured: Dict[str, Any] = {}
 
     class _SpyClient:
-        def __init__(self, base_url, *, transport: Optional[httpx.Client] = None, timeout_seconds=None):
+        def __init__(self, base_url, *, transport: Optional[httpx.Client] = None, timeout_seconds=None, **_kw):
             captured["timeout_seconds"] = timeout_seconds
             self._real = HttpApiClient(base_url, transport=transport, timeout_seconds=timeout_seconds)
 
@@ -340,7 +340,7 @@ def test_run_http_preview_defaults_to_90_seconds_when_no_timeout_is_given(monkey
     captured: Dict[str, Any] = {}
 
     class _SpyClient:
-        def __init__(self, base_url, *, transport: Optional[httpx.Client] = None, timeout_seconds=None):
+        def __init__(self, base_url, *, transport: Optional[httpx.Client] = None, timeout_seconds=None, **_kw):
             captured["timeout_seconds"] = timeout_seconds
             self._real = HttpApiClient(base_url, transport=transport, timeout_seconds=timeout_seconds)
 

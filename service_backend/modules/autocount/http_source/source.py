@@ -102,6 +102,11 @@ CLOUDFLARE_TIMEOUT_STATUS = 524
 # ladder as a 5xx (1 s, 4 s, never halving); a persistent one still fails.
 # Every other 4xx (401/403/404/422/...) stays a genuine fault, never retried.
 RETRYABLE_CLIENT_STATUSES = (400,)
+# ``HttpSourceError.code`` of a page not sent because the server's safety
+# stop is on (AUTOCOUNT-LOAD-STRATEGY, ``server_gate``).
+SERVER_STOPPED_CODE = "server_stopped"
+# ... and of a page that got no turn on its server in time.
+SERVER_BUSY_CODE = "server_busy"
 # How much of AutoCount's answer a failed-page error carries (what the
 # wrapper said is the only clue to WHY a page failed).
 ERROR_BODY_SNIPPET_CHARS = 160
@@ -364,8 +369,18 @@ class HttpApiSource:
         # ceiling (1..8, default 1 = byte-identical to today); read ONCE here
         # exactly like ``self._page_size``, never re-read mid-walk.
         self._page_concurrency = sizing.max_concurrent_pages
+        # AUTOCOUNT-LOAD-STRATEGY s7 - with "One request at a time per
+        # server" on (the default), only one request is ever in flight, so
+        # the walk runs one page at a time (and the pause between pages
+        # applies) whatever "Max concurrent pages" says.
+        if gentle.server_policy(conn_config).one_at_a_time:
+            self._page_concurrency = 1
         # SS-STOCK-BAL-SOOTHE - pause between pages + stock lookup cache.
-        self._gentle = gentle.gentle_settings(conn_config)
+        # AUTOCOUNT-LOAD-STRATEGY s6 - the task's own pause, when set, in
+        # place of the connection's (owner: "control per entity").
+        self._gentle = gentle.with_own_pause(
+            gentle.gentle_settings(conn_config), config.get("pagePauseSeconds")
+        )
         self._connection_id = connection_id
         self._base_url = base_url
         try:
@@ -376,7 +391,16 @@ class HttpApiSource:
             ) from None
         self._client = HttpApiClient(
             base_url, transport=transport, timeout_seconds=sizing.request_timeout_seconds,
-            auth_headers=read_auth,
+            auth_headers=read_auth, server_policy=gentle.server_policy(conn_config),
+            tenant_id=ctx.tenant_id,
+        )
+        # AUTOCOUNT-LOAD-STRATEGY (owner 27 Nov) - the stock balance walk asks
+        # for the vendor's 3000 rows a page; its lookups and every other
+        # entity keep the connection's own page size.
+        self._main_page_size = (
+            self._gentle.stock_page_size
+            if self.entity_type == ENTITY_STOCK_BALANCE
+            else self._page_size
         )
         # sprint-5/14 section 11 (D25) - the identity qualifier: the company's
         # database name for every entity but `branch`, which is qualified by
@@ -427,6 +451,12 @@ class HttpApiSource:
             try:
                 response = self._client.get(path, {"page": page, "pageSize": page_size})
             except HttpTransportError as exc:
+                if exc.stopped_until is not None:
+                    # AUTOCOUNT-LOAD-STRATEGY - the server's safety stop is on:
+                    # fail once, plainly; never retry against it.
+                    raise HttpSourceError(exc.message, code=SERVER_STOPPED_CODE, page=page) from exc
+                if exc.busy:
+                    raise HttpSourceError(exc.message, code=SERVER_BUSY_CODE, page=page) from exc
                 if exc.is_timeout:
                     timeout_attempts += 1
                     if timeout_attempts >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:
@@ -569,19 +599,26 @@ class HttpApiSource:
         # ROWS`, 200,000) hammering the endpoint the entire way there.
         previous_reported_page: Optional[int] = None
         page = 1
+        # AUTOCOUNT-LOAD-STRATEGY - the pause starts at the owner's floor and
+        # lengthens while AutoCount answers slowly (``gentle.AdaptivePause``).
+        pacer = gentle.AdaptivePause(
+            floor_seconds=self._gentle.page_pause_seconds,
+            slow_seconds=self._gentle.slow_page_seconds,
+        )
         while True:
             if page == 1 and prefetched is not None:
                 response, parsed = prefetched
             else:
+                pause = pacer.seconds
                 if (
                     page > 1
                     and self._current_stage == "source"
-                    and self._gentle.page_pause_seconds > 0
+                    and pause > 0
                 ):
                     # SS-STOCK-BAL-SOOTHE - a trickle, never a burst; the
                     # owner sets the length (SS-STOCK-PAGE-PAUSE-CONFIG).
                     if not gentle.sleep_between_pages(
-                        self._gentle.page_pause_seconds, should_stop=self._should_stop
+                        pause, should_stop=self._should_stop
                     ):
                         raise HttpSourceError(
                             "This run was stopped during the pause between pages.",
@@ -590,6 +627,16 @@ class HttpApiSource:
                         )
                 response = self._fetch_page(path, page, page_size)
                 parsed = self._parse_envelope(response, page=page, path=path)
+            if self._current_stage == "source":
+                before = pacer.seconds
+                after = pacer.after_page(self._client.last_latency_seconds)
+                if after > before:
+                    self._client.record_note(
+                        f"AutoCount answered page {page} slowly "
+                        f"({self._client.last_latency_seconds or 0:.0f} s); "
+                        f"pausing {after:g} s before the next page.",
+                        ok=True,
+                    )
 
             if established_kind is None:
                 established_kind = parsed.kind
@@ -918,7 +965,7 @@ class HttpApiSource:
         constant - the main path AND every lookup share the same starting
         size and the same halving budget mechanics, since both route
         through this one method."""
-        page_size = self._page_size
+        page_size = self._main_page_size if path == self.path and self._current_stage == "source" else self._page_size
         halvings = 0
         while True:
             try:

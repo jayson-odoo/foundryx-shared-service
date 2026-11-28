@@ -43,9 +43,14 @@ describe('fieldHintText (pause between pages)', () => {
     );
   });
 
-  it('says the pause is not used with concurrent pages', () => {
-    expect(fieldHintText(hint, '5', { maxConcurrentPages: '4' })).toBe(
+  it('says the pause is not used with concurrent pages once the queue is off', () => {
+    expect(fieldHintText(hint, '5', { maxConcurrentPages: '4', oneRequestAtATime: 'no' })).toBe(
       'Not used while Max concurrent pages is above 1.',
+    );
+    // AUTOCOUNT-LOAD-STRATEGY s7: with one request at a time per server (the
+    // default) the walk runs one page at a time, so the pause applies.
+    expect(fieldHintText(hint, '5', { maxConcurrentPages: '4' })).toBe(
+      'About 70 pages per run → about 7 min per run',
     );
     expect(fieldHintText(hint, '5', { maxConcurrentPages: '1' })).toBe(
       'About 70 pages per run → about 7 min per run',
@@ -57,5 +62,20 @@ describe('fieldHintText (pause between pages)', () => {
     expect(fieldHintText(hint, '-1')).toBeNull();
     expect(fieldHintText(hint, 'abc')).toBeNull();
     expect(fieldHintText(undefined, '1')).toBeNull();
+  });
+});
+
+describe('fieldHintText (a fixed line)', () => {
+  it('shows the office hours a Sorento connection reads', () => {
+    expect(
+      fieldHintText(
+        { kind: 'text', text: 'Office hours from Sorento CRM: Monday - Friday, 9:00 am - 5:30 pm' },
+        'https://crm.example.test',
+      ),
+    ).toBe('Office hours from Sorento CRM: Monday - Friday, 9:00 am - 5:30 pm');
+  });
+
+  it('shows nothing for an empty line', () => {
+    expect(fieldHintText({ kind: 'text', text: '' }, undefined)).toBeNull();
   });
 });

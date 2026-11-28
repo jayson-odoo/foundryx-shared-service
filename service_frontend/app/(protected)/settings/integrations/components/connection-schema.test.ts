@@ -355,3 +355,21 @@ describe('showWhen (plan sprint-5/08, D11/AC-08-01/04)', () => {
     expect(input.credentials.password).toBe('secret');
   });
 });
+
+// AUTOCOUNT-LOAD-STRATEGY crew pass (a2e1ac83 F2): a connection saved with an
+// EMPTY value (the prod db1 shape: pageSize "", requestTimeoutSeconds "")
+// runs at the default too, so it must show it, never "-".
+describe('storedOrEffective treats a stored empty value as unset', () => {
+  const pageSize: ProviderField = {
+    key: 'pageSize', label: 'Page size', type: 'number', required: false, effectiveValue: '1000',
+  };
+
+  it('shows the effective value for a stored empty or blank string', () => {
+    expect(storedOrEffective(pageSize, { pageSize: '' })).toBe('1000');
+    expect(storedOrEffective(pageSize, { pageSize: '   ' })).toBe('1000');
+  });
+
+  it('a stored value still wins', () => {
+    expect(storedOrEffective(pageSize, { pageSize: '500' })).toBe('500');
+  });
+});

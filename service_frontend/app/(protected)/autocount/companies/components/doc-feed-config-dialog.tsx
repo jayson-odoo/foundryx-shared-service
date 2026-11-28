@@ -1,5 +1,6 @@
 'use client';
 
+import { PagePauseField } from '@/app/(protected)/autocount/components/page-pause-field';
 import { useEffect, useState } from 'react';
 import { LoaderCircleIcon, TriangleAlert } from 'lucide-react';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
@@ -126,8 +127,15 @@ export function DocFeedConfigDialog({
       pollBasis: storedWindow.pollBasis,
       pollLookbackDays: storedWindow.pollLookbackDays,
       recheckDays: storedWindow.recheckDays,
+      pagePauseSeconds: storedWindow.pagePauseSeconds ?? null,
     });
-  }, [feed, storedWindow.pollBasis, storedWindow.pollLookbackDays, storedWindow.recheckDays]);
+  }, [
+    feed,
+    storedWindow.pollBasis,
+    storedWindow.pollLookbackDays,
+    storedWindow.recheckDays,
+    storedWindow.pagePauseSeconds,
+  ]);
 
   // Plan 72 - a by-date-only feed has no "Read by" choice to offer.
   const dateOnly = AC_DOC_FEED_DATE_ONLY_KEYS.includes(feed);
@@ -302,6 +310,12 @@ export function DocFeedConfigDialog({
                   onChange={(raw) => patchWindow({ recheckDays: daysValue(raw) })}
                 />
               }
+            />
+            <PagePauseField
+              id="doc-feed-page-pause"
+              value={readWindow.pagePauseSeconds ?? null}
+              onChange={(pagePauseSeconds) => patchWindow({ pagePauseSeconds })}
+              error={serverErrors.pagePauseSeconds}
             />
           </div>
         </DialogBody>

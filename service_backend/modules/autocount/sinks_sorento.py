@@ -1442,6 +1442,62 @@ class SorentoSink:
         except Exception:  # noqa: BLE001 - advisory only, must never propagate
             return None
 
+    def fetch_work_calendar(self) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """AUTOCOUNT-LOAD-STRATEGY - the CRM's office hours:
+        ``GET /api/v1/external/work-calendar`` and
+        ``GET /api/v1/external/work-calendar/is-working-day`` (holidays).
+        Returns ``(calendar, working_day)`` bodies; raises
+        ``SorentoWorkCalendarError`` with a plain reason on any failure."""
+        from app.services.url_guard import UrlGuardError
+
+        from .http_client import (
+            OpenProbeError,
+            assert_autocount_base_url_deliverable,
+            autocount_guarded_client,
+        )
+
+        # Security review round 1 (S1): the base URL is tenant-typed, and this
+        # call runs on opening the connection and from the scheduler - the
+        # SSRF guard runs before the key leaves the process, and the send
+        # goes through the guarded transport (no private/loopback targets,
+        # no redirects).
+        try:
+            assert_autocount_base_url_deliverable(self._base_url)
+        except OpenProbeError as exc:
+            raise SorentoWorkCalendarError("the Sorento base URL is not allowed") from exc
+        headers = {"X-API-Key": self._api_key}
+        release_read_transactions()  # plan 34
+        bodies: List[Optional[Dict[str, Any]]] = []
+        client = (
+            httpx.Client(timeout=self._timeout, transport=self._transport, follow_redirects=False)
+            if self._transport is not None
+            else autocount_guarded_client(self._timeout)
+        )
+        with client:
+            for path in ("/api/v1/external/work-calendar", "/api/v1/external/work-calendar/is-working-day"):
+                try:
+                    response = client.get(f"{self._base_url}{path}", headers=headers)
+                except UrlGuardError as exc:
+                    raise SorentoWorkCalendarError("the Sorento base URL is not allowed") from exc
+                except httpx.HTTPError as exc:
+                    raise SorentoWorkCalendarError("Sorento CRM could not be reached") from exc
+                if response.status_code in (401, 403):
+                    raise SorentoWorkCalendarError(
+                        "the Sorento API key has no access to the work calendar"
+                    )
+                if response.status_code != 200:
+                    raise SorentoWorkCalendarError(
+                        f"Sorento CRM answered HTTP {response.status_code}"
+                    )
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise SorentoWorkCalendarError("Sorento CRM did not answer JSON") from exc
+                if not isinstance(body, dict):
+                    raise SorentoWorkCalendarError("Sorento CRM answered an unexpected shape")
+                bodies.append(body)
+        return bodies[0], bodies[1]
+
     def fetch_contract(self) -> Optional[int]:
         """``GET /api/v1/external/contract`` -> the version Sorento advertises,
         or ``None`` on ANY failure (network, non-200, malformed body).
@@ -1994,6 +2050,10 @@ def describe_consumer_failure(
         detail = redact(detail)
     detail = _URL_RE.sub("[url]", detail)[:_CONSUMER_SNIPPET_MAX]
     return f"{prefix}{detail}".rstrip(), status, detail
+
+
+class SorentoWorkCalendarError(Exception):
+    """The CRM's work calendar could not be read; the message is plain."""
 
 
 def sorento_sink_from_connection(

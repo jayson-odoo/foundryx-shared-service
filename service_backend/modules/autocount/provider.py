@@ -47,6 +47,20 @@ from .write_back.auth import (
     settings_problem,
 )
 from .http_source.gentle import (
+    ONE_AT_A_TIME_NO,
+    ONE_AT_A_TIME_YES,
+    SLOW_PAGE_FIELD_DEFAULT,
+    SLOW_PAGE_FIELD_MAX,
+    SLOW_PAGE_FIELD_MIN,
+    STOCK_PAGE_SIZE_FIELD_DEFAULT,
+    STOCK_PAGE_SIZE_FIELD_MAX,
+    STOCK_PAGE_SIZE_FIELD_MIN,
+    STOP_AFTER_FIELD_DEFAULT,
+    STOP_AFTER_FIELD_MAX,
+    STOP_AFTER_FIELD_MIN,
+    STOP_MINUTES_FIELD_DEFAULT,
+    STOP_MINUTES_FIELD_MAX,
+    STOP_MINUTES_FIELD_MIN,
     LOOKUP_CACHE_FIELD_DEFAULT,
     LOOKUP_CACHE_FIELD_MAX,
     LOOKUP_CACHE_FIELD_MIN,
@@ -211,6 +225,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": PAGE_SIZE_FIELD_DEFAULT,
                 "defaultValue": str(PAGE_SIZE_FIELD_DEFAULT),
+                "effectiveValue": str(PAGE_SIZE_FIELD_DEFAULT),
                 "min": PAGE_SIZE_FIELD_MIN,
                 "max": PAGE_SIZE_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -222,6 +237,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": REQUEST_TIMEOUT_FIELD_DEFAULT,
                 "defaultValue": str(REQUEST_TIMEOUT_FIELD_DEFAULT),
+                "effectiveValue": f"{REQUEST_TIMEOUT_FIELD_DEFAULT:g}",
                 "max": REQUEST_TIMEOUT_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
@@ -235,6 +251,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": MAX_CONCURRENT_PAGES_FIELD_DEFAULT,
                 "defaultValue": str(MAX_CONCURRENT_PAGES_FIELD_DEFAULT),
+                "effectiveValue": str(MAX_CONCURRENT_PAGES_FIELD_DEFAULT),
                 "min": MAX_CONCURRENT_PAGES_FIELD_MIN,
                 "max": MAX_CONCURRENT_PAGES_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -249,6 +266,7 @@ class AutoCountProvider:
                 "required": False,
                 "default": PAGE_PAUSE_FIELD_DEFAULT,
                 "defaultValue": f"{PAGE_PAUSE_FIELD_DEFAULT:g}",
+                "effectiveValue": f"{PAGE_PAUSE_FIELD_DEFAULT:g}",
                 "min": PAGE_PAUSE_FIELD_MIN,
                 "max": PAGE_PAUSE_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
@@ -260,8 +278,83 @@ class AutoCountProvider:
                 "required": False,
                 "default": LOOKUP_CACHE_FIELD_DEFAULT,
                 "defaultValue": str(LOOKUP_CACHE_FIELD_DEFAULT),
+                "effectiveValue": str(LOOKUP_CACHE_FIELD_DEFAULT),
                 "min": LOOKUP_CACHE_FIELD_MIN,
                 "max": LOOKUP_CACHE_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            # AUTOCOUNT-LOAD-STRATEGY (owner 27 Nov) - our sync must never be
+            # the reason AutoCount is slow (`http_source/server_gate.py`).
+            {
+                "key": "stockPageSize",
+                "label": "Stock balance page size",
+                "type": "number",
+                "required": False,
+                "default": STOCK_PAGE_SIZE_FIELD_DEFAULT,
+                "defaultValue": str(STOCK_PAGE_SIZE_FIELD_DEFAULT),
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": str(STOCK_PAGE_SIZE_FIELD_DEFAULT),
+                "min": STOCK_PAGE_SIZE_FIELD_MIN,
+                "max": STOCK_PAGE_SIZE_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "oneRequestAtATime",
+                "label": "One request at a time per server",
+                "type": "select",
+                "required": False,
+                "default": ONE_AT_A_TIME_YES,
+                "defaultValue": ONE_AT_A_TIME_YES,
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": ONE_AT_A_TIME_YES,
+                "options": [
+                    {"value": ONE_AT_A_TIME_YES, "label": "Yes"},
+                    {"value": ONE_AT_A_TIME_NO, "label": "No"},
+                ],
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "slowPageSeconds",
+                "label": "Slow page (seconds)",
+                "type": "number",
+                "required": False,
+                "default": SLOW_PAGE_FIELD_DEFAULT,
+                "defaultValue": f"{SLOW_PAGE_FIELD_DEFAULT:g}",
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": f"{SLOW_PAGE_FIELD_DEFAULT:g}",
+                "min": SLOW_PAGE_FIELD_MIN,
+                "max": SLOW_PAGE_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "stopAfterFailures",
+                "label": "Stop after failed requests in a row",
+                "type": "number",
+                "required": False,
+                "default": STOP_AFTER_FIELD_DEFAULT,
+                "defaultValue": str(STOP_AFTER_FIELD_DEFAULT),
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": str(STOP_AFTER_FIELD_DEFAULT),
+                "min": STOP_AFTER_FIELD_MIN,
+                "max": STOP_AFTER_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "stopMinutes",
+                "label": "Stop for (minutes)",
+                "type": "number",
+                "required": False,
+                "default": STOP_MINUTES_FIELD_DEFAULT,
+                "defaultValue": str(STOP_MINUTES_FIELD_DEFAULT),
+                # A connection saved before these keys existed runs at the default:
+                # the read view and the Edit prefill show it (crew pass F1).
+                "effectiveValue": str(STOP_MINUTES_FIELD_DEFAULT),
+                "min": STOP_MINUTES_FIELD_MIN,
+                "max": STOP_MINUTES_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
             # plan 63 - the optional AutoCount API key. Blank key = no auth
@@ -314,8 +407,21 @@ class AutoCountProvider:
         estimate from the last run, once one is known."""
         from .services.page_pause_hint import page_run_hint
 
-        hint = page_run_hint(db, connection)
-        return {"pagePauseSeconds": hint} if hint else {}
+        from .http_source.client import connection_sizing
+        from .http_source.gentle import server_policy
+
+        hints: Dict[str, Dict[str, Any]] = {}
+        config = connection.config_json or {}
+        # AUTOCOUNT-LOAD-STRATEGY s7 - the queue overrides the field.
+        if server_policy(config).one_at_a_time and connection_sizing(config).max_concurrent_pages > 1:
+            hints["maxConcurrentPages"] = {
+                "kind": "text", "text": "Runs at 1 while One request at a time per server is Yes.",
+            }
+        if db is not None:
+            hint = page_run_hint(db, connection)
+            if hint:
+                hints["pagePauseSeconds"] = hint
+        return hints
 
     def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
         """S5 (sprint-5/08 review round 1) - the SAME scheme rule `test()`

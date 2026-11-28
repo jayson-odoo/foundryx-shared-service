@@ -25,12 +25,15 @@ MIN_RECHECK_DAYS = 1
 # Q5 - one vendor GET per day per re-check run; a longer reach is a backfill.
 MAX_RECHECK_DAYS = 180
 
-WINDOW_KEYS = ("pollBasis", "pollLookbackDays", "recheckDays")
+WINDOW_KEYS = ("pollBasis", "pollLookbackDays", "recheckDays", "pagePauseSeconds")
 
 DEFAULT_DOC_FEED_WINDOW: Dict[str, Any] = {
     "pollBasis": POLL_BASIS_LAST_MODIFIED,
     "pollLookbackDays": 1,
     "recheckDays": SWEEP_WINDOW_DAYS,
+    # AUTOCOUNT-LOAD-STRATEGY s6 - the feed's own pause between two day
+    # reads; None = the connection's "Pause between pages".
+    "pagePauseSeconds": None,
 }
 
 
@@ -80,4 +83,13 @@ def validate_doc_feed_window(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[
         errors["recheckDays"] = f"Between {MIN_RECHECK_DAYS} and {MAX_RECHECK_DAYS} days."
         recheck = DEFAULT_DOC_FEED_WINDOW["recheckDays"]
 
-    return {"pollBasis": basis, "pollLookbackDays": lookback, "recheckDays": recheck}, errors
+    from ..http_source.gentle import clean_page_pause
+
+    pause, pause_error = clean_page_pause(raw.get("pagePauseSeconds"))
+    if pause_error:
+        errors["pagePauseSeconds"] = pause_error
+
+    return {
+        "pollBasis": basis, "pollLookbackDays": lookback, "recheckDays": recheck,
+        "pagePauseSeconds": pause,
+    }, errors

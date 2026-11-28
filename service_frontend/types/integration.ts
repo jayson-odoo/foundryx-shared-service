@@ -102,7 +102,16 @@ export interface PageRunFieldHint {
   maxRunSeconds: number;
 }
 
-export type FieldHint = PageRunFieldHint;
+/**
+ * AUTOCOUNT-LOAD-STRATEGY - a fixed line under a field, e.g. the office hours
+ * a Sorento connection's work calendar gives.
+ */
+export interface TextFieldHint {
+  kind: 'text';
+  text: string;
+}
+
+export type FieldHint = PageRunFieldHint | TextFieldHint;
 
 /** A tenant's configured connection - credentials are NEVER returned. */
 export interface Connection {

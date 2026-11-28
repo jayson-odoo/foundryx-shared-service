@@ -112,7 +112,10 @@ def _open_connection(
     db, *, max_concurrent_pages: Optional[str] = "4", page_size: Optional[str] = None,
     name: str = "s11-s6 REST",
 ) -> Connection:
-    config: Dict[str, Any] = {"baseUrl": BASE_URL, "auth": "none"}
+    # AUTOCOUNT-LOAD-STRATEGY s7: with "One request at a time per server" on
+    # (the default) the walk is always serial; these suites test the
+    # concurrent walker itself, so the queue is switched off here.
+    config: Dict[str, Any] = {"baseUrl": BASE_URL, "auth": "none", "oneRequestAtATime": "no"}
     if max_concurrent_pages is not None:
         config["maxConcurrentPages"] = max_concurrent_pages
     if page_size is not None:

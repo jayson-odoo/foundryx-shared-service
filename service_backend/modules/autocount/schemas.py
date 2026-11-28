@@ -836,6 +836,11 @@ class EtlSourceConfigIn(ApiModel):
     quietHoursEnd: Optional[str] = None
     quietHoursTimezone: Optional[str] = None
     # ── HTTP (open REST API) shape only (sprint-5/08, AC-08-13) ──────────────
+    # AUTOCOUNT-LOAD-STRATEGY s6 - the task's own pause between pages
+    # (0-90 s, validated by the service; loose here so the 422 names the
+    # field). Omitted = keep the stored value; null / blank = the
+    # connection's value (the router keeps that distinction).
+    pagePauseSeconds: Optional[Any] = None
     path: Optional[str] = None
     keyFields: List[str] = []
     watermarkField: Optional[str] = None
@@ -949,6 +954,9 @@ class EtlTaskResponse(ApiModel):
     # here with its code, never as a per-record failure (Appendix A6).
     lastRunError: Optional[str] = None
     lastRunErrorCode: Optional[str] = None
+    # AUTOCOUNT-LOAD-STRATEGY s6 - the run-time hint under the task's own
+    # "Pause between pages" (``services/page_pause_hint.task_page_run_hint``).
+    pageRunHint: Optional[Dict[str, Any]] = None
     # ── schedule (plan 22 S3, AC-22-12/13) ───────────────────────────────────
     # When the sweep will next fire each cadence - armed at activate/resume,
     # recomputed on every PUT. NULL for a draft/paused task (the sweep never
@@ -1333,6 +1341,9 @@ class DocFeedWindowOut(BaseModel):
     pollBasis: str
     pollLookbackDays: int
     recheckDays: int
+    # AUTOCOUNT-LOAD-STRATEGY s6 - the feed's own pause between two day
+    # reads; None = the connection's "Pause between pages".
+    pagePauseSeconds: Optional[float] = None
 
 
 class DocFeedWindowIn(BaseModel):
@@ -1344,6 +1355,7 @@ class DocFeedWindowIn(BaseModel):
     pollBasis: Optional[Any] = None
     pollLookbackDays: Optional[Any] = None
     recheckDays: Optional[Any] = None
+    pagePauseSeconds: Optional[Any] = None
 
 
 class DocFeedItemOut(ApiModel):

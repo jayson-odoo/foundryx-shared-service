@@ -340,7 +340,8 @@ def test_the_gateway_header_is_byte_for_byte_appendix_a3s_amended_stock_example(
         "recordCount": 2,
         "complete": True,
         "contentHash": "<hash>",
-        "sourcePageSize": 1000,
+        # AUTOCOUNT-LOAD-STRATEGY (owner 27 Nov): the stock walk asks for 3000.
+        "sourcePageSize": 3000,
         "zeroPairs": 1,
         "negativePairs": 1,
         "fractionalPairs": 1,
@@ -388,7 +389,8 @@ def test_the_gateway_header_is_byte_for_byte_appendix_a3s_amended_stock_example(
         "recordCount": 2,
         "complete": True,
         "contentHash": "<hash>",
-        "sourcePageSize": 1000,
+        # AUTOCOUNT-LOAD-STRATEGY (owner 27 Nov): the stock walk asks for 3000.
+        "sourcePageSize": 3000,
         "excludedCount": 2,
         "excludedRows": [
             {

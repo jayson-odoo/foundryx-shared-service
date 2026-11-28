@@ -23,6 +23,7 @@ import httpx
 from app.services.url_guard import UrlGuardError
 
 from modules.autocount.http_client import shared_autocount_client
+from modules.autocount.http_source import server_gate
 from modules.autocount.write_back import auth, call_log as cl
 from modules.autocount.write_back.doc_kinds import KINDS
 
@@ -106,7 +107,10 @@ class AutoCountDocReader:
                 timeout=self._timeout
             )
             path = cl.vendor_path(self.base_url, request.url.raw_path.decode("ascii"))
-            response = http.send(request)
+            response = server_gate.send_as_person(
+                    http, request, self.base_url, self._timeout,
+                    tenant_id=self._call_log.context.tenant_id if self._call_log is not None else "",
+                )
         except httpx.TimeoutException:
             self._log(path, started, None, None, cl.TIMEOUT, READ_FAILED)
             raise

@@ -152,6 +152,7 @@ def _ledger_row(db, feed, key) -> AcDocFeedLedger:
 def test_null_window_resolves_to_todays_behaviour():
     assert resolve_window(None) == {
         "pollBasis": "last_modified", "pollLookbackDays": 1, "recheckDays": 45,
+        "pagePauseSeconds": None,  # AUTOCOUNT-LOAD-STRATEGY s6: blank = the connection's
     }
     assert DEFAULT_DOC_FEED_WINDOW == resolve_window(None)
 
@@ -159,6 +160,7 @@ def test_null_window_resolves_to_todays_behaviour():
 def test_a_partial_stored_window_fills_the_rest_from_defaults():
     assert resolve_window({"recheckDays": 90}) == {
         "pollBasis": "last_modified", "pollLookbackDays": 1, "recheckDays": 90,
+        "pagePauseSeconds": None,
     }
 
 
@@ -181,7 +183,9 @@ def test_bounds_are_accepted():
         {"pollBasis": "doc_date", "pollLookbackDays": 0, "recheckDays": 180}
     )
     assert errors == {}
-    assert clean == {"pollBasis": "doc_date", "pollLookbackDays": 0, "recheckDays": 180}
+    assert clean == {
+        "pollBasis": "doc_date", "pollLookbackDays": 0, "recheckDays": 180, "pagePauseSeconds": None,
+    }
 
 
 # ── content digest ───────────────────────────────────────────────────────────
@@ -219,6 +223,7 @@ def test_view_returns_the_default_window(client, session_factory):
     headers = auth_headers(client)
     assert _item(client, co, headers)["window"] == {
         "pollBasis": "last_modified", "pollLookbackDays": 1, "recheckDays": 45,
+        "pagePauseSeconds": None,  # AUTOCOUNT-LOAD-STRATEGY s6: blank = the connection's
     }
 
 
@@ -226,7 +231,7 @@ def test_put_window_is_stored_and_echoed_and_omitting_it_keeps_it(client, sessio
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
     headers = auth_headers(client)
-    window = {"pollBasis": "doc_date", "pollLookbackDays": 3, "recheckDays": 150}
+    window = {"pollBasis": "doc_date", "pollLookbackDays": 3, "recheckDays": 150, "pagePauseSeconds": 4.0}
     r = client.put(_url(co), json={"connectionId": ac_conn.id, "mode": "dry_run", "window": window}, headers=headers)
     assert r.status_code == 200, r.text
     assert r.json()["window"] == window
