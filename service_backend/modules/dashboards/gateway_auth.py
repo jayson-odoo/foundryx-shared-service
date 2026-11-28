@@ -68,16 +68,14 @@ def _json_body(request: Request) -> Any:
     return request.state.dash_json
 
 
-def _echoed(request: Request, name: str) -> Optional[str]:
-    """A ``tenant`` / ``product`` the caller echoed in the query or JSON body (never trusted, only compared)."""
+def _echoed(request: Request, name: str) -> List[str]:
+    """EVERY non-empty ``tenant`` / ``product`` the caller echoed in the query or JSON body (never trusted,
+    only compared): one matching value must not hide a mismatching one."""
     values: List[Any] = [request.query_params.get(name)]
     body = _json_body(request)
     if isinstance(body, dict):
         values.append(body.get(name))
-    for v in values:
-        if v not in (None, ""):
-            return str(v)
-    return None
+    return [str(v) for v in values if v not in (None, "")]
 
 
 def authenticate(request: Request, db: Session) -> DashKey:
@@ -101,11 +99,9 @@ def authenticate(request: Request, db: Session) -> DashKey:
         raise DashError(403, "service_not_enabled", "Dashboards is not enabled for this tenant.")
     key = DashKey(tenant_id=row.tenant_id, product=row.product, key_id=row.id, tenant_slug=tenant.slug)
     request.state.dash_key = key
-    tenant_echo = _echoed(request, "tenant")
-    if tenant_echo is not None and tenant_echo not in (key.tenant_id, key.tenant_slug):
+    if any(v not in (key.tenant_id, key.tenant_slug) for v in _echoed(request, "tenant")):
         raise DashError(403, "tenant_mismatch", "This key belongs to a different tenant.")
-    product_echo = _echoed(request, "product")
-    if product_echo is not None and product_echo != key.product:
+    if any(v != key.product for v in _echoed(request, "product")):
         raise DashError(403, "product_mismatch", "This key belongs to a different product.")
     try:
         throttle.enforce_dashboards_gateway_key(key_id=row.id)
