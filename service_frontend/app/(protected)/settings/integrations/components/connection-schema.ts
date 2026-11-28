@@ -91,7 +91,10 @@ const SORENTO_CONTRACT_VERSION_EFFECTIVE = '2';
  *  disagree about what the connection runs at. */
 export function storedOrEffective(f: ProviderField, config: Record<string, string>): string {
   const stored = config[f.key];
-  if (stored !== undefined) return stored;
+  // A stored EMPTY value runs at the default just like an absent key (the
+  // backend readers treat "" as unset), so it shows the default too
+  // (AUTOCOUNT-LOAD-STRATEGY crew pass: the prod db1 shape read "-").
+  if (stored !== undefined && String(stored).trim() !== '') return stored;
   if (f.effectiveValue !== undefined) return f.effectiveValue;
   return f.key === SORENTO_CONTRACT_VERSION_KEY ? SORENTO_CONTRACT_VERSION_EFFECTIVE : '';
 }

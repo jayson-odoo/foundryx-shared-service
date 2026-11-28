@@ -231,3 +231,45 @@ def test_a_feeds_own_pause_paces_its_days(session_factory, _contract, monkeypatc
     vendor = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[])))
     run_sweep(db, feed, dry_run=True, now=datetime(2026, 9, 29, 10, tzinfo=timezone.utc), vendor_transport=vendor)
     assert pauses == [2.0, 2.0]
+
+
+# ── crew pass a2e1ac83 F1: the pause must survive the HTTP route ───────────
+
+
+def _put(client, company_id, body):
+    from tests.test_autocount_etl_routes import _auth
+
+    return client.put(
+        f"/autocount/companies/{company_id}/entities/{ENTITY_PRODUCT}/etl-task",
+        json={"sourceImpl": "autocount_http", "sourceConfig": body}, headers=_auth(client),
+    )
+
+
+def test_the_route_saves_and_echoes_the_tasks_pause(client, session_factory):
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    conn_id, company_id = conn.id, company.id
+    db.close()
+    body = {k: v for k, v in _http_raw(conn_id, pagePauseSeconds=2).items() if k != "sourceImpl"}
+    r = _put(client, company_id, body)
+    assert r.status_code == 200, r.text
+    assert r.json()["sourceConfig"]["pagePauseSeconds"] == 2.0
+
+    # A save that does not send it keeps it; blank clears it.
+    body.pop("pagePauseSeconds")
+    assert _put(client, company_id, body).json()["sourceConfig"]["pagePauseSeconds"] == 2.0
+    cleared = _put(client, company_id, {**body, "pagePauseSeconds": None}).json()["sourceConfig"]
+    assert cleared.get("pagePauseSeconds") is None
+
+
+def test_the_route_refuses_a_pause_over_90_seconds(client, session_factory):
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    conn_id, company_id = conn.id, company.id
+    db.close()
+    body = {k: v for k, v in _http_raw(conn_id, pagePauseSeconds=95).items() if k != "sourceImpl"}
+    r = _put(client, company_id, body)
+    assert r.status_code == 422, r.text
+    assert "pagePauseSeconds" in r.json()["detail"]["fieldErrors"]

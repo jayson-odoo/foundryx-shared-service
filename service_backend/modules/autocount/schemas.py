@@ -836,6 +836,11 @@ class EtlSourceConfigIn(ApiModel):
     quietHoursEnd: Optional[str] = None
     quietHoursTimezone: Optional[str] = None
     # ── HTTP (open REST API) shape only (sprint-5/08, AC-08-13) ──────────────
+    # AUTOCOUNT-LOAD-STRATEGY s6 - the task's own pause between pages
+    # (0-90 s, validated by the service; loose here so the 422 names the
+    # field). Omitted = keep the stored value; null / blank = the
+    # connection's value (the router keeps that distinction).
+    pagePauseSeconds: Optional[Any] = None
     path: Optional[str] = None
     keyFields: List[str] = []
     watermarkField: Optional[str] = None
