@@ -17,6 +17,7 @@ from tests.dashboards_helpers import (
     add_op,
     assert_flat_error,
     assert_plain,
+    create_dash,
     delete,
     f1_spec,
     f1_tiles,
@@ -392,3 +393,58 @@ def test_refusals_under_32kb_are_accepted(client, dash):
     assert len(json.dumps(few, separators=(",", ":"))) < 32 * 1024
     with stub_fixtures(ops_out("ok")):
         ok(turn(client, dash.sorento, OWNER, "x", refusals=few))
+
+
+# -- 11. every tenant/product echo is checked, in the query AND the body --------------------------
+
+def _echo_calls(client, dash, did, *, query, body):
+    from urllib.parse import urlencode
+
+    qs = "?" + urlencode(query) if query else ""
+    h = hdr(dash.sorento)
+    return {
+        "save": lambda: client.post(f"{BASE}/save{qs}", headers=h, json={
+            "actor_ref": OWNER, "dashboard_id": None, "name": "Echo", "spec": f1_spec(), "base_version": None,
+            "idempotency_key": new_idem(), **body}),
+        "share": lambda: client.post(f"{BASE}/{did}/share{qs}", headers=h,
+                                     json={"actor_ref": OWNER, "shared_with": [], **body}),
+        "turn": lambda: client.post(f"{BASE}/builder/turn{qs}", headers=h, json={
+            "actor_ref": OWNER, "dashboard_id": None, "draft": {"version": 1, "title": "N", "period": "this_year", "tiles": []},
+            "message": "x", "catalogue": copy.deepcopy(CATALOGUE), "turn_id": new_idem(),
+            "refusals": [], "history": [], **body}),
+    }
+
+
+ECHO_CASES = {
+    "product_body_only": ({}, {"product": "ecohub"}, "product_mismatch"),
+    "product_query_only": ({"product": "ecohub"}, {}, "product_mismatch"),
+    "product_query_ok_body_wrong": ({"product": "sorento_crm"}, {"product": "ecohub"}, "product_mismatch"),
+    "product_body_ok_query_wrong": ({"product": "ecohub"}, {"product": "sorento_crm"}, "product_mismatch"),
+}
+
+
+@pytest.mark.parametrize("endpoint", ["save", "share", "turn"])
+@pytest.mark.parametrize("case", sorted(ECHO_CASES))
+def test_product_echo_checked_in_query_and_body(client, dash, endpoint, case):
+    d = create_dash(client, dash.sorento)
+    query, body, code = ECHO_CASES[case]
+    assert_flat_error(_echo_calls(client, dash, d["id"], query=query, body=body)[endpoint](), 403, code)
+
+
+@pytest.mark.parametrize("endpoint", ["save", "share", "turn"])
+@pytest.mark.parametrize("where", ["query_ok_body_wrong", "body_ok_query_wrong"])
+def test_tenant_echo_checked_in_query_and_body(client, dash, endpoint, where):
+    d = create_dash(client, dash.sorento)
+    own, other = dash.tenant_a_slug, dash.tenant_b
+    query, body = ({"tenant": own}, {"tenant": other}) if where == "query_ok_body_wrong" else ({"tenant": other}, {"tenant": own})
+    res = _echo_calls(client, dash, d["id"], query=query, body=body)[endpoint]()
+    assert_flat_error(res, 403, "tenant_mismatch")
+
+
+@pytest.mark.parametrize("endpoint", ["save", "share", "turn"])
+def test_matching_echoes_in_query_and_body_are_accepted(client, dash, endpoint):
+    d = create_dash(client, dash.sorento)
+    both = {"product": "sorento_crm", "tenant": dash.tenant_a_slug}
+    with stub_fixtures(ops_out("ok")):
+        res = _echo_calls(client, dash, d["id"], query=both, body=both)[endpoint]()
+    assert res.status_code == 200, res.text
