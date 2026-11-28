@@ -374,7 +374,7 @@ def test_get_returns_spec_problems_for_a_stored_spec_that_no_longer_validates(cl
         row = db.get(DashDashboard, d["id"])
         broken = copy.deepcopy(row.spec_json)
         broken["tiles"][0]["source"]["spec"]["entity"] = "x; drop table"
-        broken["tiles"][1]["show"] = "pivot"
+        broken["tiles"][1]["title"] = "a;b"  # v2: pivot is valid, so use a forbidden sequence
         row.spec_json = broken
         db.commit()
     finally:
@@ -385,4 +385,4 @@ def test_get_returns_spec_problems_for_a_stored_spec_that_no_longer_validates(cl
     assert body["spec"]["tiles"][0]["source"]["spec"]["entity"] == "x; drop table"
     problems = body["spec_problems"]
     assert problems and all(isinstance(p["path"], str) and isinstance(p["reason"], str) for p in problems)
-    assert any(p["reason"] == "This chart type is not available yet." for p in problems)
+    assert any(p["path"].startswith("tiles[1]") and p["reason"] == "Only names and values can be used in a chart, not code or links." for p in problems)
