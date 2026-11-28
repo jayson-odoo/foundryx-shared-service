@@ -70,13 +70,14 @@ from tests.dashboards_helpers import (
 from tests.meetings_helpers import make_admin_user, make_tenant
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "modules" / "dashboards" / "contract_fixtures"
-EXPECTED_IDS = [f"F{i}" for i in range(1, 14)]
+EXPECTED_IDS = [f"F{i}" for i in range(1, 18)]
 
 EXPECT = {
     "F1": (200, None), "F2": (200, None), "F3": (200, None), "F4": (502, "ai_failed"),
     "F5": (401, "invalid_api_key"), "F6": (403, "service_not_enabled"), "F7": (403, "product_mismatch"),
     "F8": (404, "not_found"), "F9": (403, "not_owner"), "F10": (422, "spec_invalid"),
     "F11": (409, "version_conflict"), "F12": (409, "ai_not_configured"), "F13": (200, None),
+    "F14": (200, None), "F15": (422, "images_invalid"), "F16": (200, None), "F17": (200, None),
 }
 
 
@@ -138,7 +139,7 @@ def assert_same_shape(actual: Any, expected: Any, path: str = "$") -> None:
 
 # -- fixture self-checks ---------------------------------------------------------------------------
 
-def test_fixture_files_cover_f1_to_f13():
+def test_fixture_files_cover_f1_to_f17():
     fixtures = load_fixtures()
     assert sorted(fixtures, key=lambda s: int(s[1:])) == EXPECTED_IDS, sorted(fixtures)
     assert len(list(FIXTURE_DIR.glob("*.json"))) == len(EXPECTED_IDS), "one file per fixture"

@@ -53,7 +53,7 @@ def calls(client, key, did, *, body_extra=None, query_extra=None, actor=OWNER):
 
     return {
         "turn": post("/builder/turn", {"actor_ref": actor, "dashboard_id": None, "draft": empty_draft(),
-                                       "message": "sales by month", "catalogue": CATALOGUE, "refusals": [], "history": []}),
+                                       "message": "sales by month", "catalogue": CATALOGUE, "turn_id": new_idem(), "refusals": [], "history": []}),
         "list": getter(""),
         "get": getter(f"/{did}"),
         "versions": getter(f"/{did}/versions"),

@@ -275,11 +275,11 @@ def test_f4_catalogue_without_billing_document_is_ai_failed(client, dash):
 
 
 @pytest.mark.parametrize("mutate", [
-    lambda t: t.update({"show": "pivot"}),
+    lambda t: t.update({"show": "gantt"}),  # v2 CHANGED: pivot is valid now
     lambda t: t["source"]["spec"].update({"entity": "x; drop table"}),
     lambda t: t["source"]["spec"]["aggregates"][0].update({"field": "salary"}),
     lambda t: t.update({"unknown_key": 1}),
-], ids=["pivot", "sql-entity", "unknown-field", "extra-key"])
+], ids=["gantt", "sql-entity", "unknown-field", "extra-key"])
 def test_model_output_failing_validation_never_reaches_the_draft(client, dash, mutate):
     t = f1_tiles()[0]
     mutate(t)

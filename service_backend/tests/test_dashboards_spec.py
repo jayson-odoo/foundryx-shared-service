@@ -13,7 +13,6 @@ import pytest
 from tests.dashboards_helpers import (
     CATALOGUE,
     FORBIDDEN,
-    NOT_YET,
     assert_plain,
     catalogue,
     catalogue_entity,
@@ -82,9 +81,9 @@ def test_all_named_periods_accepted():
         assert vs(spec_with(tile(1), period=p)) == [], p
 
 
-def test_twelve_tiles_is_fine_and_thirteen_is_not():
-    assert vs(spec_with(*[tile(i) for i in range(1, 13)])) == []
-    problems = vs(spec_with(*[tile(i) for i in range(1, 14)]))
+def test_twenty_four_tiles_is_fine_and_twenty_five_is_not():  # v2 CHANGED: cap 12 -> 24
+    assert vs(spec_with(*[tile(i) for i in range(1, 25)])) == []
+    problems = vs(spec_with(*[tile(i) for i in range(1, 26)]))
     assert_plain(problems)
 
 
@@ -187,16 +186,16 @@ def test_ordinary_text_with_dash_and_quotes_is_not_refused():
 
 # -- caps ------------------------------------------------------------------------------------------
 
-def test_spec_over_32768_bytes_refused():
+def test_spec_over_65536_bytes_refused():  # v2 CHANGED: cap 32768 -> 65536
     def big_filter(n):
         return [{"field": "customer_name", "op": "in", "value": [("x%d" % i).ljust(200, "y") for i in range(100)]}
                 for _ in range(n)]
 
-    ok = spec_with(tile(1, "number", filters=big_filter(1)))
-    assert len(json.dumps(ok, separators=(",", ":")).encode()) < 32768
+    ok = spec_with(tile(1, "number", filters=big_filter(3)))
+    assert 32768 < len(json.dumps(ok, separators=(",", ":")).encode()) < 65536
     assert vs(ok) == []
-    big = spec_with(tile(1, "number", filters=big_filter(2)))
-    assert len(json.dumps(big, separators=(",", ":")).encode()) > 32768
+    big = spec_with(tile(1, "number", filters=big_filter(4)))
+    assert len(json.dumps(big, separators=(",", ":")).encode()) > 65536
     assert_plain(vs(big))
 
 
@@ -225,28 +224,11 @@ def test_duplicate_tile_ids_refused():
     assert_plain(problems)
 
 
-# -- not available in slice 1 ----------------------------------------------------------------------
-
-@pytest.mark.parametrize("show", ["pivot", "widget"])
-def test_pivot_and_widget_show_refused_with_not_yet(show):
-    t = tile(1, "table")
-    t["show"] = show
-    problems = vs(spec_with(t))
-    assert any(p["reason"] == NOT_YET for p in problems), problems
-    assert_plain(problems)
-
-
-@pytest.mark.parametrize("kind", ["report", "widget"])
-def test_report_and_widget_source_kinds_refused_with_not_yet(kind):
-    t = tile(1, "table")
-    t["source"]["kind"] = kind
-    problems = vs(spec_with(t))
-    assert any(p["reason"] == NOT_YET for p in problems), problems
-
+# -- unknown values (v2: pivot/widget/report/widget kinds are valid, see test_dashboards_spec_v2) ----------------------------------------------------------------------
 
 def test_unknown_show_and_kind_and_op_and_fn_refused_plainly():
     t = tile(1, "table")
-    t["show"] = "pie"
+    t["show"] = "donut"  # v2 CHANGED: pie is valid now
     assert_plain(vs(spec_with(t)))
     t = tile(1, "table")
     t["source"]["kind"] = "sql"

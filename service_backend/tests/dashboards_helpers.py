@@ -45,7 +45,15 @@ JARGON = (
 # -- the contract's section-4 catalogue --------------------------------------------------------------
 
 CATALOGUE: Dict[str, Any] = {
-    "version": 1,
+    "version": 2,
+    "draws": ["number", "line", "bar", "table"],
+    "index": [
+        {"entity": "billing_document", "label": "Billing documents (invoices, cash sales, debit and credit notes)",
+         "module": "finance"},
+        {"entity": "customer", "label": "Customers", "module": "sales"},
+        {"entity": "support_ticket", "label": "Support tickets", "module": "support"},
+        {"entity": "sales_order", "label": "Sales orders", "module": "sales"},
+    ],
     "entities": [
         {
             "entity": "billing_document",
@@ -111,6 +119,17 @@ def catalogue_without(entity: str) -> Dict[str, Any]:
     cat = copy.deepcopy(CATALOGUE)
     cat["entities"] = [e for e in cat["entities"] if e["entity"] != entity]
     return cat
+
+
+SALES_ORDER_ENTITY: Dict[str, Any] = {
+    "entity": "sales_order", "label": "Sales orders", "only_own_rows": False, "totals_allowed": True,
+    "period_field": "order_date", "show": ["number", "line", "bar", "table"],
+    "fields": [
+        {"field": "order_date", "label": "Order date", "type": "date"},
+        {"field": "order_total", "label": "Total (RM)", "type": "number"},
+    ],
+    "relations": [],
+}
 
 
 def catalogue_entity(cat: Dict[str, Any], entity: str) -> Dict[str, Any]:
@@ -225,11 +244,28 @@ def listing(client, key, actor, **params):
     return client.get(BASE, params={"actor_ref": actor, **params}, headers=hdr(key))
 
 
+def png_b64(n: int = 8) -> str:
+    import base64
+
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * n).decode()
+
+
+def image(media_type: str = "image/png", size: int = 8, name: str = "mockup.png") -> Dict[str, Any]:
+    import base64
+
+    return {"name": name, "media_type": media_type, "data_base64": base64.b64encode(b"x" * size).decode()}
+
+
+def need_out(*entities: str, tokens_in: int = 90, tokens_out: int = 10) -> StubResponse:
+    return StubResponse(structured={"need_entities": list(entities), "reply": None, "operations": []},
+                        tokens_in=tokens_in, tokens_out=tokens_out)
+
+
 def turn(client, key, actor, message, *, draft=None, catalogue_=None, dashboard_id=None, **extra):
     body = {"actor_ref": actor, "dashboard_id": dashboard_id,
             "draft": draft if draft is not None else empty_draft(), "message": message,
             "catalogue": catalogue_ if catalogue_ is not None else copy.deepcopy(CATALOGUE),
-            "refusals": [], "history": []}
+            "turn_id": new_idem(), "refusals": [], "history": []}
     body.update(extra)
     return client.post(f"{BASE}/builder/turn", json=body, headers=hdr(key))
 
