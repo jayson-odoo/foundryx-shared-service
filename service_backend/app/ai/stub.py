@@ -109,6 +109,8 @@ def _derive(system: str, messages: List[Dict[str, str]]) -> str:
     last_user = next(
         (m["content"] for m in reversed(messages) if m.get("role") == "user"), ""
     )
+    if isinstance(last_user, list):  # content blocks (e.g. text + image): the text parts only
+        last_user = " ".join(b.get("text", "") for b in last_user if isinstance(b, dict) and b.get("type") == "text")
     digest = hashlib.sha256(
         json.dumps([system, [m.get("content", "") for m in messages]], sort_keys=True).encode()
     ).hexdigest()[:8]

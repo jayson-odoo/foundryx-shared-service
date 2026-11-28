@@ -11,6 +11,7 @@ key ``dashboard-builder``, ensured lazily on the first turn (existing tenants ne
 """
 from __future__ import annotations
 
+import copy
 import json
 import time
 from decimal import Decimal
@@ -18,7 +19,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.ai.client import AiClient, any_llm_connection
+import base64
+import binascii
+
+from app.ai.client import AiClient
 from app.config import settings
 from app.integrations.base import LLMError
 from app.models.ai import AiAgent
@@ -27,6 +31,7 @@ from app.repositories.ai_repository import AgentRepository
 from .. import schemas
 from ..gateway_auth import DashKey
 from ..models import DashUsage
+from ..repositories.connection_repository import ConnectionRepository
 from ..repositories.usage_repository import UsageRepository
 from ..spec import validate_against_catalogue, validate_catalogue, validate_spec
 from . import ops as ops_mod
@@ -40,6 +45,14 @@ AGENT_DESCRIPTION = "Turns a request into changes to a dashboard specification."
 FEATURE = "dashboard_builder"
 # The builder model (owner ruling 28 Nov): set on the seeded agent; an existing agent with no model gets it.
 BUILDER_MODEL = "claude-sonnet-5-5"
+BUILDER_PROVIDER = "anthropic"
+# Crew ruling (a): the catalogue gates only the tiles THIS turn added or changed; schema + rules gate the whole draft.
+CATALOGUE_CHECKS_TOUCHED_TILES_ONLY = True
+
+MAX_IMAGES = 5
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_IMAGES_TOTAL_BYTES = 15 * 1024 * 1024
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp")
 
 class BuilderService:
     def __init__(self, db: Session, key: DashKey):
@@ -50,7 +63,7 @@ class BuilderService:
     def _agent(self) -> AiAgent:
         repo = AgentRepository(self.db)
         agent = repo.get_by_key(self.key.tenant_id, AGENT_KEY)
-        connection = any_llm_connection(self.db, self.key.tenant_id)
+        connection = ConnectionRepository(self.db).llm_for_provider(self.key.tenant_id, BUILDER_PROVIDER)
         if agent is None:
             agent = repo.add(AiAgent(
                 tenant_id=self.key.tenant_id, key=AGENT_KEY, is_system=True, name=AGENT_NAME,
@@ -58,7 +71,7 @@ class BuilderService:
                 model=BUILDER_MODEL, temperature=0.0, is_enabled=True,
             ))
         else:
-            if not agent.connection_id and connection is not None:
+            if connection is not None:
                 agent.connection_id = connection.id
             if not agent.model:
                 agent.model = BUILDER_MODEL
@@ -73,9 +86,11 @@ class BuilderService:
         problems = validate_catalogue(body.catalogue)
         if problems:
             raise spec_invalid(problems, "The list of available data is not valid.")
+        images = _check_images(body.images)  # before any model call
         if body.dashboard_id is not None:
             DashboardStore(self.db, self.key).owned(body.dashboard_id, body.actor_ref)
-        if any_llm_connection(self.db, self.key.tenant_id) is None and settings.environment != "development":
+        if (ConnectionRepository(self.db).llm_for_provider(self.key.tenant_id, BUILDER_PROVIDER) is None
+                and settings.environment != "development"):
             raise DashError(409, "ai_not_configured", "No AI connection is set up for this tenant.")
 
         agent = self._agent()
@@ -84,7 +99,11 @@ class BuilderService:
             "refusals": body.refusals, "history": [h.model_dump() for h in body.history],
         }
         system = SYSTEM_PROMPT + "\n\nDATA\n" + json.dumps(data, ensure_ascii=False)
-        messages: List[Dict[str, str]] = [{"role": "user", "content": body.message}]
+        content: Any = body.message
+        if images:
+            content = [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["data_base64"]}}
+                       for i in images] + [{"type": "text", "text": body.message}]
+        messages: List[Dict[str, Any]] = [{"role": "user", "content": content}]
         meter = _Meter()
         try:
             applied, reply = self._attempt(agent, system, messages, body, meter)
@@ -98,18 +117,23 @@ class BuilderService:
                 ]
                 applied, reply = self._attempt(agent, system, messages, body, meter)
         except LLMError:
-            self._log(body, agent, meter)
+            self._log(body, agent, meter, len(images))
             raise DashError(502, "ai_failed", "The builder could not produce a dashboard. Nothing was saved.")
-        self._log(body, agent, meter)
+        self._log(body, agent, meter, len(images))
         if applied.problems:
             raise DashError(502, "ai_failed", "The builder could not produce a valid dashboard. Nothing was saved.")
+        usage = schemas.TurnUsage(tokens_in=meter.tokens_in, tokens_out=meter.tokens_out, model=meter.model or agent.model or "")
+        if applied.need_entities:
+            return schemas.TurnResponse(
+                draft=applied.draft, changed_tile_ids=[], reply=None, question=None,
+                need_entities=applied.need_entities, usage=usage,
+            ).model_dump(mode="json", exclude={"operations"})
         return schemas.TurnResponse(
             draft=applied.draft, operations=applied.operations, changed_tile_ids=applied.changed_tile_ids,
-            reply=reply, question=schemas.Question(**applied.question) if applied.question else None,
-            usage=schemas.TurnUsage(tokens_in=meter.tokens_in, tokens_out=meter.tokens_out, model=meter.model or agent.model or ""),
-        ).model_dump(mode="json")
+            reply=reply, question=schemas.Question(**applied.question) if applied.question else None, usage=usage,
+        ).model_dump(mode="json", exclude={"need_entities"})
 
-    def _attempt(self, agent: AiAgent, system: str, messages: List[Dict[str, str]], body: schemas.TurnRequest,
+    def _attempt(self, agent: AiAgent, system: str, messages: List[Dict[str, Any]], body: schemas.TurnRequest,
                  meter: "_Meter") -> Tuple[ops_mod.Applied, str]:
         started = time.monotonic()
         result, trace = self._call_model(agent, system, messages)
@@ -118,12 +142,19 @@ class BuilderService:
         reply = out.get("reply") if isinstance(out.get("reply"), str) else ""
         operations = out.get("operations", [])
         meter.last_ops = operations if isinstance(operations, list) else []
+        wanted = out.get("need_entities")
+        if isinstance(wanted, list) and wanted:
+            allowed = _lookup_ids(wanted, body.catalogue)
+            if allowed:
+                return ops_mod.Applied(draft=copy.deepcopy(body.draft), need_entities=allowed), ""
+            return ops_mod.Applied(draft=copy.deepcopy(body.draft), problems=[
+                {"path": "need_entities", "reason": "Those kinds of data are not available to this user."}]), ""
         applied = ops_mod.apply_operations(body.draft, operations)
         if not applied.problems and applied.question is None:
             applied.problems = self._validate(applied, body.catalogue)
         return applied, reply[:1000]
 
-    def _call_model(self, agent: AiAgent, system: str, messages: List[Dict[str, str]]):
+    def _call_model(self, agent: AiAgent, system: str, messages: List[Dict[str, Any]]):
         """The ONE place the LLM is called (core's AiClient). The prompt lives in ``builder_prompt.py``
         and the model is the agent's / connection's default; swap either without touching the rest."""
         return AiClient(self.db).complete(
@@ -137,11 +168,13 @@ class BuilderService:
             return problems
         # The catalogue is the gate for what THIS turn added or changed; a chart the turn left alone
         # (e.g. one the viewer lost access to since) is the product's "No access", not a refusal here.
+        found = validate_against_catalogue(applied.draft, catalogue)
+        if not CATALOGUE_CHECKS_TOUCHED_TILES_ONLY:
+            return found
         touched = {i for i, t in enumerate(applied.draft["tiles"]) if t.get("id") in set(applied.changed_tile_ids)}
-        return [p for p in validate_against_catalogue(applied.draft, catalogue)
-                if any(p["path"].startswith(f"tiles[{i}]") for i in touched)]
+        return [p for p in found if any(p["path"].startswith(f"tiles[{i}]") for i in touched)]
 
-    def _log(self, body: schemas.TurnRequest, agent: AiAgent, meter: "_Meter") -> None:
+    def _log(self, body: schemas.TurnRequest, agent: AiAgent, meter: "_Meter", image_count: int) -> None:
         if meter.calls == 0:
             return
         repo = UsageRepository(self.db, self.key.tenant_id, self.key.product)
@@ -151,10 +184,49 @@ class BuilderService:
         if price is not None:  # raw tokens stay as measured; cost is derived from the price row
             cost = (Decimal(meter.tokens_in) * price.input_per_mtok + Decimal(meter.tokens_out) * price.output_per_mtok) / Decimal(1_000_000)
         repo.add(DashUsage(
-            feature=FEATURE, cost_usd=cost, dashboard_id=body.dashboard_id, actor_ref=body.actor_ref,
+            feature=FEATURE, cost_usd=cost, dashboard_id=body.dashboard_id, turn_id=body.turn_id, image_count=image_count, actor_ref=body.actor_ref,
             provider=meter.provider, model=model, tokens_in=meter.tokens_in,
             tokens_out=meter.tokens_out, latency_ms=meter.latency_ms, llm_calls=meter.calls, trace_id=meter.trace_id,
         ))
+
+
+def _lookup_ids(wanted: List[Any], catalogue: Dict[str, Any]) -> List[str]:
+    """The ids the model asked for that the viewer may read (in ``index``) and that are not already sent in full."""
+    indexed = {i.get("entity") for i in catalogue.get("index") or [] if isinstance(i, dict)}
+    have = {e.get("entity") for e in catalogue.get("entities") or [] if isinstance(e, dict)}
+    seen: List[str] = []
+    for e in wanted:
+        if isinstance(e, str) and e in indexed and e not in have and e not in seen:
+            seen.append(e)
+    return seen
+
+
+def _images_invalid(message: str) -> DashError:
+    return DashError(422, "images_invalid", message)
+
+
+def _check_images(images: List[Any]) -> List[Dict[str, str]]:
+    """0-5 png / jpeg / webp images, each at most 5 MB decoded, 15 MB together. Never stored, never sniffed."""
+    if len(images) > MAX_IMAGES:
+        raise _images_invalid(f"Attach at most {MAX_IMAGES} images.")
+    total = 0
+    checked: List[Dict[str, str]] = []
+    for item in images:
+        if not isinstance(item, dict) or not isinstance(item.get("data_base64"), str) or not isinstance(item.get("media_type"), str):
+            raise _images_invalid("One of the images could not be read.")
+        if item["media_type"] not in IMAGE_TYPES:
+            raise _images_invalid("Images must be PNG, JPEG or WebP.")
+        try:
+            size = len(base64.b64decode(item["data_base64"], validate=True))
+        except (binascii.Error, ValueError):
+            raise _images_invalid("One of the images could not be read.")
+        if size > MAX_IMAGE_BYTES:
+            raise _images_invalid("Each image must be 5 MB or smaller.")
+        total += size
+        checked.append({"media_type": item["media_type"], "data_base64": item["data_base64"]})
+    if total > MAX_IMAGES_TOTAL_BYTES:
+        raise _images_invalid("The images together must be 15 MB or smaller.")
+    return checked
 
 
 class _Meter:

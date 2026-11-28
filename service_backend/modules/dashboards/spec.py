@@ -16,25 +16,29 @@ import datetime as _dt
 import json
 import re
 import unicodedata
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StringConstraints, ValidationError
 from typing_extensions import Annotated
 
 Problem = Dict[str, str]
 
-MAX_TILES = 12
-MAX_SPEC_BYTES = 32768
-MAX_CATALOGUE_BYTES = 120 * 1024
+MAX_TILES = 24
+MAX_SPEC_BYTES = 65536
+MAX_INDEX_BYTES = 20 * 1024
+MAX_ENTITY_BYTES = 20 * 1024
 
-NOT_YET = "This chart type is not available yet."
 FORBIDDEN = "Only names and values can be used in a chart, not code or links."
 FORBIDDEN_SEQUENCES = ("<", ">", "://", ";", "--", "/*")
 
 PERIODS = ("today", "yesterday", "this_week", "last_week", "this_month", "last_month",
            "this_quarter", "last_quarter", "this_year", "last_year")
-SHOWS_ALL = ("number", "line", "bar", "table", "pivot", "widget")
+SHOWS_ALL = ("number", "kpi_target", "gauge", "line", "area", "bar", "stacked_bar", "combo", "pie",
+             "scatter", "heatmap", "table", "pivot", "map", "widget")
+# The four charts whose shape rules SS checks (the rest are valid vocabulary; the product draws what it can).
 SHOWS_NOW = ("number", "line", "bar", "table")
+CALC_OPS = ("difference", "ratio", "percent_of_total", "percent_change", "running_total", "average_of",
+            "sum_of", "percent_of_target")
 BUCKETS = ("day", "week", "month", "quarter", "year")
 AGGREGATES = ("count", "count_distinct", "sum", "avg", "min", "max")
 FILTER_OPS = ("eq", "ne", "in", "not_in", "lt", "lte", "gt", "gte", "between", "contains",
@@ -80,11 +84,64 @@ class _Source(_Strict):
     spec: _Query
 
 
+_Number = Union[StrictInt, StrictFloat]
+
+
+class _SeriesItem(_Strict):
+    key: Annotated[str, StringConstraints(pattern=r"^s[0-9]$")]
+    label: Annotated[str, StringConstraints(min_length=1, max_length=60)]
+    source: _Source
+    as_: Optional[Literal["bar", "line", "area"]] = Field(default=None, alias="as")
+
+
+class _Calc(_Strict):
+    key: Annotated[str, StringConstraints(pattern=r"^c[0-9]$")]
+    label: Optional[Annotated[str, StringConstraints(min_length=1, max_length=60)]] = None
+    op: Literal[CALC_OPS]  # type: ignore[valid-type]
+    args: List[Annotated[str, StringConstraints(
+        pattern=r"^([a-z][a-z0-9_]{0,127}|s[0-9]\.[a-z][a-z0-9_]{0,127}|target)$")]] = Field(min_length=1, max_length=2)
+
+
+class _Display(_Strict):
+    legend: Optional[StrictBool] = None
+    values: Optional[StrictBool] = None
+    stacked: Optional[StrictBool] = None
+    axis_min: Optional[_Number] = None
+    axis_max: Optional[_Number] = None
+    top_n: Optional[StrictInt] = Field(default=None, ge=1, le=50)
+    other_bucket: Optional[StrictBool] = None
+
+
+class _Size(_Strict):
+    w: StrictInt = Field(ge=1, le=4)
+    h: StrictInt = Field(ge=1, le=4)
+
+
+class _Position(_Strict):
+    x: StrictInt = Field(ge=0, le=3)
+    y: StrictInt = Field(ge=0, le=99)
+
+
+class _TargetValue(_Strict):
+    value: _Number
+
+
+class _TargetSource(_Strict):
+    source: _Source
+
+
 class _Tile(_Strict):
     id: Annotated[str, StringConstraints(pattern=r"^t[0-9]{1,3}$")]
     title: _Title
     show: Literal[SHOWS_ALL]  # type: ignore[valid-type]
-    source: _Source
+    source: Optional[_Source] = None
+    series: Optional[List[_SeriesItem]] = Field(default=None, min_length=1, max_length=4)
+    calc: Optional[List[_Calc]] = Field(default=None, max_length=4)
+    target: Any = None
+    display: Optional[_Display] = None
+    size: Optional[_Size] = None
+    position: Optional[_Position] = None
+    drill: Optional[Literal["list", "none"]] = None
 
 
 class _Spec(_Strict):
@@ -132,6 +189,8 @@ def _plain(err: Dict[str, Any]) -> str:
         return f"At most {ctx.get('max_length')} items are allowed here."
     if kind == "too_short":
         return "At least one item is needed here."
+    if kind in ("bool_type", "bool_parsing"):
+        return "This must be yes or no."
     if kind in ("greater_than_equal", "less_than_equal", "greater_than", "less_than"):
         return "This number is outside the allowed range."
     if kind.endswith("_type") or kind.endswith("_parsing"):
@@ -268,6 +327,27 @@ def _check_query_rules(show: str, q: Dict[str, Any], base: str, out: List[Proble
             out.append({"path": base, "reason": "A table needs either fields to list, or a group with a calculation."})
 
 
+def _check_tile_extras(tile: Dict[str, Any], base: str, out: List[Problem]) -> None:
+    """Hand-checked parts of a tile: the target (value XOR source), unique series / calc keys."""
+    if tile.get("target") is not None:
+        target = tile["target"]
+        if not isinstance(target, dict) or set(target) not in ({"value"}, {"source"}):
+            out.append({"path": f"{base}.target", "reason": "A target is either a number (value) or a source, not both and not neither."})
+        else:
+            model = _TargetValue if "value" in target else _TargetSource
+            try:
+                model.model_validate(target)
+            except ValidationError as exc:
+                out += [{"path": f"{base}.target" + (("." + p["path"]) if p["path"] else ""), "reason": p["reason"]}
+                        for p in _pydantic_problems(exc)]
+    for name, key in (("series", "key"), ("calc", "key")):
+        items = tile.get(name)
+        if isinstance(items, list):
+            keys = [i.get(key) for i in items if isinstance(i, dict)]
+            if len(keys) != len(set(keys)):
+                out.append({"path": f"{base}.{name}", "reason": "Two entries share the same key."})
+
+
 def validate_spec(spec: Any) -> List[Problem]:
     """Section 2: shape, caps, forbidden text, slice-1 availability and chart-shape rules."""
     if not isinstance(spec, dict):
@@ -277,7 +357,7 @@ def validate_spec(spec: Any) -> List[Problem]:
     except (TypeError, ValueError):
         return [{"path": "", "reason": "The dashboard holds a value that cannot be stored."}]
     if size > MAX_SPEC_BYTES:
-        return [{"path": "", "reason": "This dashboard is too large (at most 32 KB)."}]
+        return [{"path": "", "reason": "This dashboard is too large (at most 64 KB)."}]
 
     problems: List[Problem] = []
     _scan_strings(spec, "", problems)
@@ -303,13 +383,12 @@ def validate_spec(spec: Any) -> List[Problem]:
                 seen.add(tid)
             show = tile.get("show")
             source = tile.get("source") if isinstance(tile.get("source"), dict) else {}
-            if show in ("pivot", "widget"):
-                problems.append({"path": f"{base}.show", "reason": NOT_YET})
-            if source.get("kind") in ("report", "widget"):
-                problems.append({"path": f"{base}.source.kind", "reason": NOT_YET})
+            if ("source" in tile) == ("series" in tile):
+                problems.append({"path": base, "reason": "A chart needs either one source or a list of series, not both and not neither."})
             q = source.get("spec")
-            if show in SHOWS_NOW and source.get("kind") == "query" and isinstance(q, dict):
+            if show in SHOWS_NOW and isinstance(q, dict):
                 _check_query_rules(show, q, f"{base}.source.spec", problems)
+            _check_tile_extras(tile, base, problems)
     seen_paths = set()
     unique: List[Problem] = []
     for p in problems:
@@ -326,15 +405,23 @@ def validate_catalogue(catalogue: Any) -> List[Problem]:
     """The catalogue the CRM sends with a turn: well formed enough to check names against."""
     if not isinstance(catalogue, dict):
         return [{"path": "catalogue", "reason": "The list of available data is missing."}]
-    try:
-        if len(json.dumps(catalogue, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_CATALOGUE_BYTES:
-            return [{"path": "catalogue", "reason": "The list of available data is too large."}]
-    except (TypeError, ValueError):
-        return [{"path": "catalogue", "reason": "The list of available data holds a value that cannot be read."}]
+    def too_big(node: Any, cap: int) -> bool:
+        try:
+            return len(json.dumps(node, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > cap
+        except (TypeError, ValueError):
+            return True
+
+    if too_big(catalogue.get("index", []), MAX_INDEX_BYTES):
+        return [{"path": "catalogue.index", "reason": "The list of available data is too large."}]
+    if isinstance(catalogue.get("entities"), list) and any(too_big(e, MAX_ENTITY_BYTES) for e in catalogue["entities"]):
+        return [{"path": "catalogue.entities", "reason": "One kind of data in the list is too large."}]
     out: List[Problem] = []
     entities = catalogue.get("entities")
     if not isinstance(entities, list):
         return [{"path": "catalogue.entities", "reason": "The list of available data is missing."}]
+    index = catalogue.get("index", [])
+    if not isinstance(index, list) or not all(isinstance(i, dict) and isinstance(i.get("entity"), str) for i in index):
+        out.append({"path": "catalogue.index", "reason": "The index of available data is not written in the expected form."})
     for i, ent in enumerate(entities):
         base = f"catalogue.entities[{i}]"
         if not isinstance(ent, dict) or not isinstance(ent.get("entity"), str) or not ent["entity"]:
@@ -394,64 +481,80 @@ def validate_against_catalogue(spec: Any, catalogue: Any) -> List[Problem]:
         return out
     cat = _Catalogue(catalogue)
     for i, tile in enumerate(spec.get("tiles") or []):
-        if not isinstance(tile, dict) or not isinstance(tile.get("source"), dict):
-            continue
-        q = tile["source"].get("spec")
-        if not isinstance(q, dict):
+        if not isinstance(tile, dict):
             continue
         base = f"tiles[{i}]"
-        qb = f"{base}.source.spec"
-        name = q.get("entity")
-        ent = cat.entities.get(name) if isinstance(name, str) else None
-        if ent is None:
-            out.append({"path": f"{qb}.entity", "reason": f'"{_short(name)}" is not available to this user.'})
-            continue
-        show = tile.get("show")
-        if ent["totals_allowed"] is False and show != "table":
-            out.append({"path": f"{base}.show", "reason": "This data can only be shown as a table."})
-        elif isinstance(ent["show"], list) and show not in ent["show"]:
-            out.append({"path": f"{base}.show", "reason": f"This data cannot be shown as a {_short(show)}."})
-
-        def check(path: Any, where: str) -> Optional[str]:
-            if not isinstance(path, str):
-                return None
-            t = cat.resolve(ent, path)
-            if t is None:
-                out.append({"path": where, "reason": f'"{_short(path)}" is not a field this user can use.'})
-            return t
-
-        known_aliases = set()
-        for j, f in enumerate(q.get("filters") or []):
-            if isinstance(f, dict):
-                check(f.get("field"), f"{qb}.filters[{j}].field")
-        for j, g in enumerate(q.get("group_by") or []):
-            parts = _group_parts(g)
-            if parts is None:
-                continue
-            gt = check(parts[0], f"{qb}.group_by[{j}]")
-            if parts[1] and gt is not None and gt not in _DATE_TYPES:
-                out.append({"path": f"{qb}.group_by[{j}]", "reason": "Only date fields can be grouped by day, week, month, quarter or year."})
-            alias = parts[0].replace(".", "_")
-            known_aliases.update({alias, f"{alias}_{parts[1]}"} if parts[1] else {alias})
-        for j, a in enumerate(q.get("aggregates") or []):
-            if not isinstance(a, dict):
-                continue
-            fn, fld = a.get("fn"), a.get("field")
-            if fld is not None:
-                at = check(fld, f"{qb}.aggregates[{j}].field")
-                if fn in ("sum", "avg") and at is not None and at.lower() in _NON_NUMERIC:
-                    out.append({"path": f"{qb}.aggregates[{j}]", "reason": "Only number fields can be added up or averaged."})
-                known_aliases.add(f"{fn}_{str(fld).replace('.', '_')}")
-            elif fn == "count":
-                known_aliases.add("count")
-        for j, f in enumerate(q.get("fields") or []):
-            check(f, f"{qb}.fields[{j}]")
-            if isinstance(f, str):
-                known_aliases.add(f.replace(".", "_"))
-        for j, s in enumerate(q.get("sort") or []):
-            if not isinstance(s, dict) or not isinstance(s.get("field"), str):
-                continue
-            sf = s["field"]
-            if sf not in known_aliases and cat.resolve(ent, sf) is None:
-                out.append({"path": f"{qb}.sort[{j}].field", "reason": f'"{_short(sf)}" is not something this chart shows, so it cannot be sorted on.'})
+        sources = [(tile["source"], f"{base}.source")] if isinstance(tile.get("source"), dict) else []
+        for j, item in enumerate(tile.get("series") or []):
+            if isinstance(item, dict) and isinstance(item.get("source"), dict):
+                sources.append((item["source"], f"{base}.series[{j}].source"))
+        target = tile.get("target")
+        if isinstance(target, dict) and isinstance(target.get("source"), dict):
+            sources.append((target["source"], f"{base}.target.source"))
+        for source, sb in sources:
+            _check_source(cat, tile, source, sb, out, whole_tile=sb == f"{base}.source")
     return out
+
+
+def _check_source(cat: "_Catalogue", tile: Dict[str, Any], source: Dict[str, Any], sb: str,
+                  out: List[Problem], *, whole_tile: bool) -> None:
+    base = sb.split(".")[0]
+    q = source.get("spec")
+    if not isinstance(q, dict):
+        return
+    qb = f"{sb}.spec"
+    name = q.get("entity")
+    ent = cat.entities.get(name) if isinstance(name, str) else None
+    if ent is None:
+        out.append({"path": f"{qb}.entity", "reason": f'"{_short(name)}" is not available to this user.'})
+        return
+    show = tile.get("show")
+    if not whole_tile:
+        pass  # a series / target source is read as data: only its names are checked, not how the tile shows
+    elif ent["totals_allowed"] is False and show != "table":
+        out.append({"path": f"{base}.show", "reason": "This data can only be shown as a table."})
+    elif isinstance(ent["show"], list) and show not in ent["show"]:
+        out.append({"path": f"{base}.show", "reason": f"This data cannot be shown as a {_short(show)}."})
+
+    def check(path: Any, where: str) -> Optional[str]:
+        if not isinstance(path, str):
+            return None
+        t = cat.resolve(ent, path)
+        if t is None:
+            out.append({"path": where, "reason": f'"{_short(path)}" is not a field this user can use.'})
+        return t
+
+    known_aliases = set()
+    for j, f in enumerate(q.get("filters") or []):
+        if isinstance(f, dict):
+            check(f.get("field"), f"{qb}.filters[{j}].field")
+    for j, g in enumerate(q.get("group_by") or []):
+        parts = _group_parts(g)
+        if parts is None:
+            continue
+        gt = check(parts[0], f"{qb}.group_by[{j}]")
+        if parts[1] and gt is not None and gt not in _DATE_TYPES:
+            out.append({"path": f"{qb}.group_by[{j}]", "reason": "Only date fields can be grouped by day, week, month, quarter or year."})
+        alias = parts[0].replace(".", "_")
+        known_aliases.update({alias, f"{alias}_{parts[1]}"} if parts[1] else {alias})
+    for j, a in enumerate(q.get("aggregates") or []):
+        if not isinstance(a, dict):
+            continue
+        fn, fld = a.get("fn"), a.get("field")
+        if fld is not None:
+            at = check(fld, f"{qb}.aggregates[{j}].field")
+            if fn in ("sum", "avg") and at is not None and at.lower() in _NON_NUMERIC:
+                out.append({"path": f"{qb}.aggregates[{j}]", "reason": "Only number fields can be added up or averaged."})
+            known_aliases.add(f"{fn}_{str(fld).replace('.', '_')}")
+        elif fn == "count":
+            known_aliases.add("count")
+    for j, f in enumerate(q.get("fields") or []):
+        check(f, f"{qb}.fields[{j}]")
+        if isinstance(f, str):
+            known_aliases.add(f.replace(".", "_"))
+    for j, s in enumerate(q.get("sort") or []):
+        if not isinstance(s, dict) or not isinstance(s.get("field"), str):
+            continue
+        sf = s["field"]
+        if sf not in known_aliases and cat.resolve(ent, sf) is None:
+            out.append({"path": f"{qb}.sort[{j}].field", "reason": f'"{_short(sf)}" is not something this chart shows, so it cannot be sorted on.'})

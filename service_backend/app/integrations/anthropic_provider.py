@@ -24,7 +24,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 # The tool the model is forced to call when a schema is requested.
 _EMIT_TOOL = "emit_result"
 # Newer models (sonnet/opus 5-5, fable 5-1+) refuse a forced `tool_choice` and a non-default
-# `temperature` with HTTP 400: they get `auto` + a strict emit tool + a system line instead.
+# `temperature` with HTTP 400: they get `auto` + the emit tool + a system line instead (no `strict`: it can reject a caller's schema).
 _AUTO_TOOL_MODELS = re.compile(r"^claude-((sonnet|opus)-5-5|fable-5-[1-9])")
 _AUTO_TOOL_SYSTEM = f"Answer by calling the {_EMIT_TOOL} tool with the result. Do not answer in plain text."
 
@@ -109,7 +109,6 @@ class AnthropicProvider(LLMProviderBase):
                 "input_schema": output_schema,
             }
             if auto:
-                tool["strict"] = True
                 body["tool_choice"] = {"type": "auto"}
             else:
                 body["tool_choice"] = {"type": "tool", "name": _EMIT_TOOL}

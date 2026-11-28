@@ -18,8 +18,38 @@
         "tiles": []
       },
       "message": "sales by month",
+      "turn_id": "9b1c7e2a-0000-4000-8000-0000000000a1",
+      "images": [],
       "catalogue": {
-        "version": 1,
+        "version": 2,
+        "draws": [
+          "number",
+          "line",
+          "bar",
+          "table"
+        ],
+        "index": [
+          {
+            "entity": "billing_document",
+            "label": "Billing documents (invoices, cash sales, debit and credit notes)",
+            "module": "finance"
+          },
+          {
+            "entity": "customer",
+            "label": "Customers",
+            "module": "sales"
+          },
+          {
+            "entity": "support_ticket",
+            "label": "Support tickets",
+            "module": "support"
+          },
+          {
+            "entity": "sales_order",
+            "label": "Sales orders",
+            "module": "sales"
+          }
+        ],
         "entities": [
           {
             "entity": "billing_document",

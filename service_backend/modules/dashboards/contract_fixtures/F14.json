@@ -1,0 +1,519 @@
+{
+  "id": "F14",
+  "call": "builder/turn",
+  "key": "sorento",
+  "setup": [],
+  "cases": [
+    {
+      "name": "lookup-round",
+      "stub_outputs": [
+        {
+          "reply": null,
+          "operations": [],
+          "need_entities": [
+            "sales_order"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/dashboards/builder/turn",
+        "body": {
+          "actor_ref": "u-owner-1",
+          "dashboard_id": null,
+          "draft": {
+            "version": 1,
+            "title": "New dashboard",
+            "period": "this_year",
+            "tiles": []
+          },
+          "message": "add sales orders by month",
+          "turn_id": "9b1c7e2a-0000-4000-8000-0000000000a1",
+          "images": [],
+          "catalogue": {
+            "version": 2,
+            "draws": [
+              "number",
+              "line",
+              "bar",
+              "table"
+            ],
+            "index": [
+              {
+                "entity": "billing_document",
+                "label": "Billing documents (invoices, cash sales, debit and credit notes)",
+                "module": "finance"
+              },
+              {
+                "entity": "customer",
+                "label": "Customers",
+                "module": "sales"
+              },
+              {
+                "entity": "support_ticket",
+                "label": "Support tickets",
+                "module": "support"
+              },
+              {
+                "entity": "sales_order",
+                "label": "Sales orders",
+                "module": "sales"
+              }
+            ],
+            "entities": [
+              {
+                "entity": "billing_document",
+                "label": "Billing documents (invoices, cash sales, debit and credit notes)",
+                "only_own_rows": false,
+                "totals_allowed": true,
+                "period_field": "doc_date",
+                "show": [
+                  "number",
+                  "line",
+                  "bar",
+                  "table"
+                ],
+                "fields": [
+                  {
+                    "field": "doc_date",
+                    "label": "Document date",
+                    "type": "date",
+                    "note": "The date sales are counted by."
+                  },
+                  {
+                    "field": "customer_name",
+                    "label": "Customer",
+                    "type": "text"
+                  },
+                  {
+                    "field": "sales_amount",
+                    "label": "Sales (RM)",
+                    "type": "number",
+                    "note": "THE sales figure."
+                  }
+                ],
+                "relations": [
+                  {
+                    "name": "customer",
+                    "entity": "customer",
+                    "fields": [
+                      {
+                        "field": "name",
+                        "label": "Name",
+                        "type": "text"
+                      }
+                    ]
+                  }
+                ],
+                "default_note": "Cancelled documents excluded."
+              },
+              {
+                "entity": "customer",
+                "label": "Customers",
+                "only_own_rows": false,
+                "totals_allowed": true,
+                "period_field": "created_on",
+                "show": [
+                  "number",
+                  "bar",
+                  "table"
+                ],
+                "fields": [
+                  {
+                    "field": "name",
+                    "label": "Name",
+                    "type": "text"
+                  },
+                  {
+                    "field": "created_on",
+                    "label": "Created on",
+                    "type": "date"
+                  },
+                  {
+                    "field": "region",
+                    "label": "Region",
+                    "type": "text"
+                  }
+                ],
+                "relations": []
+              },
+              {
+                "entity": "support_ticket",
+                "label": "Support tickets",
+                "only_own_rows": true,
+                "totals_allowed": false,
+                "period_field": null,
+                "show": [
+                  "table"
+                ],
+                "fields": [
+                  {
+                    "field": "subject",
+                    "label": "Subject",
+                    "type": "text"
+                  },
+                  {
+                    "field": "opened_on",
+                    "label": "Opened on",
+                    "type": "date"
+                  }
+                ],
+                "relations": []
+              }
+            ],
+            "buckets": [
+              "day",
+              "week",
+              "month",
+              "quarter",
+              "year"
+            ],
+            "aggregates": [
+              "count",
+              "count_distinct",
+              "sum",
+              "avg",
+              "min",
+              "max"
+            ],
+            "limits": {
+              "tiles": 12,
+              "rows": 50,
+              "groups": 200
+            }
+          },
+          "refusals": [],
+          "history": []
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "need_entities": [
+            "sales_order"
+          ],
+          "draft": {
+            "version": 1,
+            "title": "New dashboard",
+            "period": "this_year",
+            "tiles": []
+          },
+          "changed_tile_ids": [],
+          "reply": null,
+          "question": null,
+          "usage": {
+            "tokens_in": 2140,
+            "tokens_out": 310,
+            "model": "gemini-2.5-flash"
+          }
+        }
+      }
+    },
+    {
+      "name": "repeat-with-entities",
+      "stub_outputs": [
+        {
+          "reply": "Added sales orders by month.",
+          "operations": [
+            {
+              "op": "add_tile",
+              "tile": {
+                "id": "t1",
+                "title": "Orders by month",
+                "show": "line",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "sales_order",
+                    "group_by": [
+                      {
+                        "field": "order_date",
+                        "bucket": "month"
+                      }
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "order_total"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/dashboards/builder/turn",
+        "body": {
+          "actor_ref": "u-owner-1",
+          "dashboard_id": null,
+          "draft": {
+            "version": 1,
+            "title": "New dashboard",
+            "period": "this_year",
+            "tiles": []
+          },
+          "message": "add sales orders by month",
+          "turn_id": "9b1c7e2a-0000-4000-8000-0000000000a1",
+          "images": [],
+          "catalogue": {
+            "version": 2,
+            "draws": [
+              "number",
+              "line",
+              "bar",
+              "table"
+            ],
+            "index": [
+              {
+                "entity": "billing_document",
+                "label": "Billing documents (invoices, cash sales, debit and credit notes)",
+                "module": "finance"
+              },
+              {
+                "entity": "customer",
+                "label": "Customers",
+                "module": "sales"
+              },
+              {
+                "entity": "support_ticket",
+                "label": "Support tickets",
+                "module": "support"
+              },
+              {
+                "entity": "sales_order",
+                "label": "Sales orders",
+                "module": "sales"
+              }
+            ],
+            "entities": [
+              {
+                "entity": "billing_document",
+                "label": "Billing documents (invoices, cash sales, debit and credit notes)",
+                "only_own_rows": false,
+                "totals_allowed": true,
+                "period_field": "doc_date",
+                "show": [
+                  "number",
+                  "line",
+                  "bar",
+                  "table"
+                ],
+                "fields": [
+                  {
+                    "field": "doc_date",
+                    "label": "Document date",
+                    "type": "date",
+                    "note": "The date sales are counted by."
+                  },
+                  {
+                    "field": "customer_name",
+                    "label": "Customer",
+                    "type": "text"
+                  },
+                  {
+                    "field": "sales_amount",
+                    "label": "Sales (RM)",
+                    "type": "number",
+                    "note": "THE sales figure."
+                  }
+                ],
+                "relations": [
+                  {
+                    "name": "customer",
+                    "entity": "customer",
+                    "fields": [
+                      {
+                        "field": "name",
+                        "label": "Name",
+                        "type": "text"
+                      }
+                    ]
+                  }
+                ],
+                "default_note": "Cancelled documents excluded."
+              },
+              {
+                "entity": "customer",
+                "label": "Customers",
+                "only_own_rows": false,
+                "totals_allowed": true,
+                "period_field": "created_on",
+                "show": [
+                  "number",
+                  "bar",
+                  "table"
+                ],
+                "fields": [
+                  {
+                    "field": "name",
+                    "label": "Name",
+                    "type": "text"
+                  },
+                  {
+                    "field": "created_on",
+                    "label": "Created on",
+                    "type": "date"
+                  },
+                  {
+                    "field": "region",
+                    "label": "Region",
+                    "type": "text"
+                  }
+                ],
+                "relations": []
+              },
+              {
+                "entity": "support_ticket",
+                "label": "Support tickets",
+                "only_own_rows": true,
+                "totals_allowed": false,
+                "period_field": null,
+                "show": [
+                  "table"
+                ],
+                "fields": [
+                  {
+                    "field": "subject",
+                    "label": "Subject",
+                    "type": "text"
+                  },
+                  {
+                    "field": "opened_on",
+                    "label": "Opened on",
+                    "type": "date"
+                  }
+                ],
+                "relations": []
+              },
+              {
+                "entity": "sales_order",
+                "label": "Sales orders",
+                "only_own_rows": false,
+                "totals_allowed": true,
+                "period_field": "order_date",
+                "show": [
+                  "number",
+                  "line",
+                  "bar",
+                  "table"
+                ],
+                "fields": [
+                  {
+                    "field": "order_date",
+                    "label": "Order date",
+                    "type": "date"
+                  },
+                  {
+                    "field": "order_total",
+                    "label": "Total (RM)",
+                    "type": "number"
+                  }
+                ],
+                "relations": []
+              }
+            ],
+            "buckets": [
+              "day",
+              "week",
+              "month",
+              "quarter",
+              "year"
+            ],
+            "aggregates": [
+              "count",
+              "count_distinct",
+              "sum",
+              "avg",
+              "min",
+              "max"
+            ],
+            "limits": {
+              "tiles": 12,
+              "rows": 50,
+              "groups": 200
+            }
+          },
+          "refusals": [],
+          "history": []
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "draft": {
+            "version": 1,
+            "title": "New dashboard",
+            "period": "this_year",
+            "tiles": [
+              {
+                "id": "t1",
+                "title": "Orders by month",
+                "show": "line",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "sales_order",
+                    "group_by": [
+                      {
+                        "field": "order_date",
+                        "bucket": "month"
+                      }
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "order_total"
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "operations": [
+            {
+              "op": "add_tile",
+              "tile": {
+                "id": "t1",
+                "title": "Orders by month",
+                "show": "line",
+                "source": {
+                  "kind": "query",
+                  "spec": {
+                    "entity": "sales_order",
+                    "group_by": [
+                      {
+                        "field": "order_date",
+                        "bucket": "month"
+                      }
+                    ],
+                    "aggregates": [
+                      {
+                        "fn": "sum",
+                        "field": "order_total"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "changed_tile_ids": [
+            "t1"
+          ],
+          "reply": "Added sales orders by month.",
+          "question": null,
+          "usage": {
+            "tokens_in": 2140,
+            "tokens_out": 310,
+            "model": "gemini-2.5-flash"
+          }
+        }
+      }
+    }
+  ]
+}

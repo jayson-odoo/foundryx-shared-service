@@ -1,4 +1,4 @@
-"""Anthropic provider request shape: forced tool_choice + temperature for older models, auto + strict
+"""Anthropic provider request shape: forced tool_choice + temperature for older models, auto
 tool and no temperature for the models that refuse the former (HTTP 400). `_http_json` is mocked."""
 import pytest
 
@@ -35,11 +35,11 @@ def test_other_models_keep_forced_tool_choice_and_temperature(monkeypatch, model
 
 
 @pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-fable-5-2"])
-def test_new_models_use_auto_tool_choice_strict_tool_and_no_temperature(monkeypatch, model):
+def test_new_models_use_auto_tool_choice_plain_tool_and_no_temperature(monkeypatch, model):
     body, result = _run(monkeypatch, model)
     assert body["tool_choice"] == {"type": "auto"}
     assert "temperature" not in body
-    assert body["tools"][0]["strict"] is True and body["tools"][0]["name"] == ap._EMIT_TOOL
+    assert "strict" not in body["tools"][0] and body["tools"][0]["name"] == ap._EMIT_TOOL
     assert body["system"].startswith("sys") and ap._EMIT_TOOL in body["system"]
     assert result.structured == {"a": "x"}
 

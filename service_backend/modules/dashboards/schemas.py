@@ -36,6 +36,8 @@ class TurnRequest(BaseModel):
     dashboard_id: Optional[str] = Field(default=None, max_length=64)
     draft: Dict[str, Any]
     message: str = Field(min_length=1, max_length=2000)
+    turn_id: str = Field(min_length=1, max_length=64)
+    images: List[Any] = Field(default_factory=list)  # checked by the builder: 422 images_invalid, not spec_invalid
     catalogue: Dict[str, Any]
     refusals: List[Dict[str, Any]] = Field(default_factory=list, max_length=50)
     history: List[TurnHistory] = Field(default_factory=list, max_length=10)
@@ -133,10 +135,11 @@ class TurnUsage(BaseModel):
 
 class TurnResponse(BaseModel):
     draft: Dict[str, Any]
-    operations: List[Dict[str, Any]]
+    operations: Optional[List[Dict[str, Any]]] = None
     changed_tile_ids: List[str]
-    reply: str
+    reply: Optional[str] = None
     question: Optional[Question] = None
+    need_entities: Optional[List[str]] = None  # lookup round (contract 3.1): only this, the draft and usage
     usage: TurnUsage
 
 

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 TILE_ID = re.compile(r"^t([0-9]{1,3})$")
 MAX_OPTION_CHARS = 60
+_DATA_KEYS = ("source", "show", "series", "calc", "target")
 
 
 @dataclass
@@ -22,6 +23,7 @@ class Applied:
     changed_tile_ids: List[str] = field(default_factory=list)
     question: Optional[Dict[str, Any]] = None
     problems: List[Dict[str, str]] = field(default_factory=list)
+    need_entities: List[str] = field(default_factory=list)  # a lookup round: the model asked for these entries
 
 
 def next_free_id(tiles: List[Dict[str, Any]]) -> str:
@@ -107,6 +109,17 @@ def apply_operations(draft: Dict[str, Any], operations: Any) -> Applied:
             else:
                 tiles.insert(to, tiles.pop(at))
                 out.operations.append({"op": "move_tile", "tile_id": op["tile_id"], "to": to})
+        elif kind == "set_layout":
+            at = _index(tiles, op.get("tile_id"))
+            given = [k for k in ("size", "position") if k in op]
+            if at < 0:
+                out.problems.append(_problem(i, "That chart does not exist, so it cannot be laid out."))
+            elif not given or not all(isinstance(op[k], dict) for k in given):
+                out.problems.append(_problem(i, "A layout change needs a size or a position."))
+            else:
+                for k in given:
+                    tiles[at][k] = copy.deepcopy(op[k])
+                out.operations.append({"op": "set_layout", "tile_id": tiles[at]["id"], **{k: copy.deepcopy(op[k]) for k in given}})
         elif kind == "set_title":
             if not isinstance(op.get("title"), str):
                 out.problems.append(_problem(i, "A title must be text."))
@@ -129,6 +142,7 @@ def apply_operations(draft: Dict[str, Any], operations: Any) -> Applied:
     before = {t.get("id"): t for t in draft.get("tiles", []) if isinstance(t, dict)}
     for t in tiles:
         old = before.get(t.get("id"))
-        if old is None or old.get("source") != t.get("source") or old.get("show") != t.get("show"):
+        # a data change: what the chart reads or how it draws; layout, display and drill are not
+        if old is None or any(old.get(k) != t.get(k) for k in _DATA_KEYS):
             out.changed_tile_ids.append(t["id"])
     return out

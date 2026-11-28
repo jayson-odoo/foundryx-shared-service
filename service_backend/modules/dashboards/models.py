@@ -140,13 +140,16 @@ class DashUsage(DashboardsBase):
     """One row per builder turn (tokens summed over the turn's LLM calls). Kept: not pruned by AI retention."""
 
     __tablename__ = "dash_usage"
-    __table_args__ = (Index("ix_dash_usage_tenant_created", "tenant_id", "product", "created_at"),)
+    __table_args__ = (Index("ix_dash_usage_tenant_created", "tenant_id", "product", "created_at"),
+                      Index("ix_dash_usage_turn", "tenant_id", "turn_id"))
 
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False)
     product = Column(String(64), nullable=False)
     feature = Column(String(32), nullable=False, default="dashboard_builder")
     dashboard_id = Column(String, nullable=True)
+    turn_id = Column(String(64), nullable=True)  # one id per user message; every lookup round shares it
+    image_count = Column(Integer, nullable=False, default=0)  # a count only: images are never stored
     actor_ref = Column(String(64), nullable=False)
     provider = Column(String(64), nullable=True)
     model = Column(String(128), nullable=False, default="")
