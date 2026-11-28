@@ -49,7 +49,7 @@ class SaveRequest(BaseModel):
     name: Name
     spec: Dict[str, Any]
     base_version: Optional[int] = Field(default=None, ge=1)
-    idempotency_key: str = Field(min_length=1, max_length=128)
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=128)  # null / omitted = no replay
 
 
 class ShareRequest(BaseModel):

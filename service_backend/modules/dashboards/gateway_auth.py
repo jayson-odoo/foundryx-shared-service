@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import Depends, Header, Request, Response
+from fastapi import Depends, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -80,11 +80,9 @@ def _echoed(request: Request, name: str) -> Optional[str]:
     return None
 
 
-def get_dash_key(
-    request: Request,
-    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-    db: Session = Depends(get_db),
-) -> DashKey:
+def authenticate(request: Request, db: Session) -> DashKey:
+    """Per-IP throttle -> key -> tenant + module -> echo check -> per-key budget. Runs on the raw request
+    (headers, query, the already-read body BYTES) before anything is parsed."""
     ip = client_ip(request)
     throttle = ThrottleService(db)
     try:
@@ -92,7 +90,7 @@ def get_dash_key(
     except Throttled as exc:
         raise DashError(429, "rate_limited", "Too many failed attempts. Try again shortly.",
                         headers={"Retry-After": str(int(exc.retry_after_seconds))})
-    row = key_service.resolve(db, (x_api_key or "").strip() or None)
+    row = key_service.resolve(db, (request.headers.get("x-api-key") or "").strip() or None)
     if row is None:
         throttle.record_dashboards_gateway_failure(ip=ip)
         raise DashError(401, "invalid_api_key", "Missing, malformed, unknown or revoked key.")
@@ -116,7 +114,14 @@ def get_dash_key(
                         headers={"Retry-After": str(int(exc.retry_after_seconds))})
     throttle.record_dashboards_gateway_key_request(key_id=row.id)
     key_service.mark_used(db, row)
+    request.state.dash_authenticated = key
     return key
+
+
+def get_dash_key(request: Request, db: Session = Depends(get_db)) -> DashKey:
+    """The key ``DashRoute`` already resolved BEFORE the body was parsed (authenticates here only if a
+    route is ever mounted without ``DashRoute``)."""
+    return getattr(request.state, "dash_authenticated", None) or authenticate(request, db)
 
 
 # -- audit ---------------------------------------------------------------------------------------------
@@ -158,6 +163,20 @@ def _request_problems(exc: RequestValidationError) -> List[Dict[str, str]]:
     return problems
 
 
+def _authenticate_first(request: Request) -> None:
+    """Resolve the key and run both throttles on the raw request, in a session of their own, before FastAPI
+    parses the body (it decodes a JSON body before it solves dependencies, so a dependency alone is too late)."""
+    from app.database import get_db as core_get_db
+
+    provider = request.app.dependency_overrides.get(core_get_db, core_get_db)
+    gen = provider()
+    db = next(gen)
+    try:
+        authenticate(request, db)
+    finally:
+        gen.close()
+
+
 class DashRoute(APIRoute):
     """Audits every call whose key resolved and renders every error as the contract's flat body."""
 
@@ -167,8 +186,9 @@ class DashRoute(APIRoute):
 
         async def wrapped(request: Request) -> Response:
             if request.method in ("POST", "PUT", "PATCH"):
-                request.state.dash_raw = await request.body()  # bytes only; the body cap bounds it, parsing waits for the key
+                request.state.dash_raw = await request.body()  # bytes only (the body cap bounds them); parsed after the key is resolved
             try:
+                _authenticate_first(request)
                 response = await handler(request)
             except DashError as exc:
                 response = JSONResponse(exc.body(), status_code=exc.status_code, headers=exc.headers)

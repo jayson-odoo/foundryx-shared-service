@@ -92,7 +92,8 @@ class DashboardStore:
     # -- writes --------------------------------------------------------------------------------------
     def save(self, body: schemas.SaveRequest) -> Dict[str, Any]:
         actor = body.actor_ref
-        replay = self.repo.get_idempotent(self.key.key_id, actor, body.idempotency_key, _now() - IDEMPOTENCY_WINDOW)
+        replay = (self.repo.get_idempotent(self.key.key_id, actor, body.idempotency_key, _now() - IDEMPOTENCY_WINDOW)
+                  if body.idempotency_key else None)
         if replay is not None:
             return replay.response_json
         row: Optional[DashDashboard] = None
@@ -127,8 +128,9 @@ class DashboardStore:
             self.repo.add_version(DashVersion(dashboard_id=row.id, version=row.version, action=action,
                                               actor_ref=actor, changes_json=changes))
         out = self._out(row, actor)
-        self.repo.add_idempotent(DashIdempotency(key_id=self.key.key_id, dashboard_id=row.id, actor_ref=actor,
-                                                 idem_ref=body.idempotency_key, response_json=out))
+        if body.idempotency_key:
+            self.repo.add_idempotent(DashIdempotency(key_id=self.key.key_id, dashboard_id=row.id, actor_ref=actor,
+                                                     idem_ref=body.idempotency_key, response_json=out))
         self.db.commit()
         return out
 

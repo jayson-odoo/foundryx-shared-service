@@ -448,22 +448,45 @@ def validate_catalogue(catalogue: Any) -> List[Problem]:
     return out
 
 
+REFUSAL_CODES = ("no_access", "restricted", "module_disabled", "unknown_entity", "unknown_field", "invalid",
+                 "timeout", "no_match")
+MAX_REFUSALS_BYTES = 32 * 1024
+
+
 def validate_refusals(refusals: Any) -> List[Problem]:
-    """The last dry run's refused charts: bounded text, so a caller cannot smuggle a large payload in."""
+    """The last dry run's refused charts, whitelisted: only ``tile_id`` / ``code`` / ``reason`` /
+    ``candidates``, each bounded, so nothing a caller sends in this list is free-form."""
+    if not isinstance(refusals, list):
+        return [{"path": "refusals", "reason": "The refused charts must be a list."}]
+    try:
+        if len(json.dumps(refusals, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_REFUSALS_BYTES:
+            return [{"path": "refusals", "reason": "The refused charts are too large (at most 32 KB)."}]
+    except (TypeError, ValueError):
+        return [{"path": "refusals", "reason": "The refused charts hold a value that cannot be read."}]
     out: List[Problem] = []
-    for i, r in enumerate(refusals if isinstance(refusals, list) else []):
+    for i, r in enumerate(refusals):
+        base = f"refusals[{i}]"
         if not isinstance(r, dict):
-            out.append({"path": f"refusals[{i}]", "reason": "A refused chart must be an object."})
+            out.append({"path": base, "reason": "A refused chart must be an object."})
             continue
+        for key in r:
+            if key not in ("tile_id", "code", "reason", "candidates"):
+                out.append({"path": f"{base}.{key}", "reason": "This is not something a refused chart can contain."})
+        if not (isinstance(r.get("tile_id"), str) and re.fullmatch(r"t[0-9]{1,3}", r["tile_id"])):
+            out.append({"path": f"{base}.tile_id", "reason": "A chart id looks like t1, t2 or t12."})
+        if r.get("code") not in REFUSAL_CODES:
+            out.append({"path": f"{base}.code", "reason": "This is not one of the known refusal reasons."})
         reason = r.get("reason")
-        if isinstance(reason, str) and len(reason) > MAX_REFUSAL_REASON:
-            out.append({"path": f"refusals[{i}].reason", "reason": f"A reason can be at most {MAX_REFUSAL_REASON} characters."})
+        if not isinstance(reason, str):
+            out.append({"path": f"{base}.reason", "reason": "A reason must be text."})
+        elif len(reason) > MAX_REFUSAL_REASON:
+            out.append({"path": f"{base}.reason", "reason": f"A reason can be at most {MAX_REFUSAL_REASON} characters."})
         cands = r.get("candidates")
         if cands is not None:
             if not isinstance(cands, list) or len(cands) > MAX_CANDIDATES:
-                out.append({"path": f"refusals[{i}].candidates", "reason": f"At most {MAX_CANDIDATES} names can be offered."})
+                out.append({"path": f"{base}.candidates", "reason": f"At most {MAX_CANDIDATES} names can be offered."})
             elif any(not isinstance(c, str) or len(c) > MAX_CANDIDATE_CHARS for c in cands):
-                out.append({"path": f"refusals[{i}].candidates", "reason": f"Each name can be at most {MAX_CANDIDATE_CHARS} characters."})
+                out.append({"path": f"{base}.candidates", "reason": f"Each name can be at most {MAX_CANDIDATE_CHARS} characters."})
     return out
 
 
