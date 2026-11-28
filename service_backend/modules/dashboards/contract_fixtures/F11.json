@@ -1,0 +1,84 @@
+{
+  "id": "F11",
+  "call": "save",
+  "key": "sorento",
+  "setup": [
+    "owner_dashboard_v2"
+  ],
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/dashboards/save",
+    "body": {
+      "actor_ref": "u-owner-1",
+      "dashboard_id": "{dashboard_id}",
+      "name": "Sales overview",
+      "spec": {
+        "version": 1,
+        "title": "Sales overview",
+        "period": "this_year",
+        "tiles": [
+          {
+            "id": "t1",
+            "title": "Invoiced sales by month",
+            "show": "line",
+            "source": {
+              "kind": "query",
+              "spec": {
+                "entity": "billing_document",
+                "group_by": [
+                  {
+                    "field": "doc_date",
+                    "bucket": "month"
+                  }
+                ],
+                "aggregates": [
+                  {
+                    "fn": "sum",
+                    "field": "sales_amount"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "id": "t2",
+            "title": "Top 10 customers",
+            "show": "table",
+            "source": {
+              "kind": "query",
+              "spec": {
+                "entity": "billing_document",
+                "group_by": [
+                  "customer_name"
+                ],
+                "aggregates": [
+                  {
+                    "fn": "sum",
+                    "field": "sales_amount"
+                  }
+                ],
+                "sort": [
+                  {
+                    "field": "sum_sales_amount",
+                    "dir": "desc"
+                  }
+                ],
+                "limit": 10
+              }
+            }
+          }
+        ]
+      },
+      "base_version": 1,
+      "idempotency_key": "9b1c7e2a-0000-4000-8000-000000000007"
+    }
+  },
+  "response": {
+    "status": 409,
+    "body": {
+      "error": "version_conflict",
+      "message": "A plain sentence.",
+      "current_version": 2
+    }
+  }
+}

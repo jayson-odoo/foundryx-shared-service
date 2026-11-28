@@ -1,0 +1,43 @@
+{
+  "id": "F5",
+  "call": "any",
+  "setup": [],
+  "cases": [
+    {
+      "name": "no-key",
+      "key": "none",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/dashboards",
+        "query": {
+          "actor_ref": "u-owner-1"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": "invalid_api_key",
+          "message": "A plain sentence."
+        }
+      }
+    },
+    {
+      "name": "bad-key",
+      "key": "bad",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/dashboards",
+        "query": {
+          "actor_ref": "u-owner-1"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": "invalid_api_key",
+          "message": "A plain sentence."
+        }
+      }
+    }
+  ]
+}
