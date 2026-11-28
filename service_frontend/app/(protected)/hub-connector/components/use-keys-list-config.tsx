@@ -154,6 +154,7 @@ export function useKeysListConfig(hubId: string, onCreate: () => void, refreshKe
     };
     return {
       enableStatusViews: false,
+      pinRowActions: true,
       ...embeddedListConfig<ApiKey>({
         viewKey: 'hub-connector.keys',
         columns,

@@ -158,6 +158,7 @@ export function useHubsListConfig(onCreate: () => void, refreshKey = 0): Resourc
       searchPlaceholder: 'Search hubs…',
       defaultSort: { id: 'name', desc: false },
       enableStatusViews: false,
+      pinRowActions: true,
       urlState: true,
       createLabel: 'Create',
       createPermission: HUB_MANAGE,

@@ -251,6 +251,7 @@ export function HubDetailView({ hubId }: { hubId: string }) {
         },
       ],
       initialTabId: 'details',
+      compactTabs: true,
       actions,
       actionRows: [loaded],
       onReload: reload,

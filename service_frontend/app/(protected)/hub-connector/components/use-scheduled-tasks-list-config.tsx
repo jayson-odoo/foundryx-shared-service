@@ -122,6 +122,7 @@ export function useScheduledTasksListConfig(): ResourceListConfig<ScheduledTask>
       applyClientQuery(await hubConnectorService.listScheduledTasks(), query, spec);
     return {
       enableStatusViews: false,
+      pinRowActions: true,
       ...embeddedListConfig<ScheduledTask>({
         viewKey: 'hub-connector.scheduled-tasks',
         columns,
